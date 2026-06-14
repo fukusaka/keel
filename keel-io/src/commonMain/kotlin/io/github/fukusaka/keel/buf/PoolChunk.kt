@@ -70,11 +70,61 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
         if (queueIdx == -1) return NO_HANDLE
         val queue = runsAvail[queueIdx]
         val handle = queue.poll()
+        // [runFirstBestFit] only returns a non-`-1` index for a non-empty queue,
+        // so [poll] must hand back a *well-formed free-run handle* here — never
+        // [LongPriorityQueue.NO_VALUE] (the empty marker), and never a handle
+        // whose structural fields contradict "free run" (`isUsed`, `isSubpage`,
+        // any non-zero `bitmapIdx`, zero `runPages`, out-of-range `runOffset`).
+        // Each of those would indicate corruption upstream of this call — a
+        // queue heap-invariant break, a `runsAvail` / `subpages` cross-contamination,
+        // or a [splitLargeRun] under-flow that produced a degenerate run handle —
+        // and the right place to make the violation loud is the trust boundary
+        // between the queue and the chunk's allocator state. Validating here
+        // catches the previous task #75 surface (`handle = 0L`), plus future
+        // regressions that would otherwise slip through `splitLargeRun` and
+        // surface several layers downstream (in `PoolSubpage`, `ChunkArena`,
+        // or `PooledAllocator.close()`) where the originating bug is hard to
+        // reach from the failure site.
+        require(isFreeRunHandle(handle, queueIdx))
         // poll() already removed it from the queue; drop its map endpoints too.
         removeAvailRunFromMap(handle)
         val allocated = splitLargeRun(handle, pages)
         freeBytes -= runSize(pageShifts, allocated)
         return allocated
+    }
+
+    /**
+     * Validates that [handle] is a well-formed free-run handle. A free run
+     * has `isUsed = 0`, `isSubpage = 0`, `bitmapIdx = 0`, `runPages >= 1`, and
+     * `runOffset < chunkPages`; any deviation means the chunk's free-run index
+     * has been corrupted. Throws [IllegalStateException] with a diagnostic
+     * message that names which field failed and which `runsAvail[queueIdx]`
+     * surfaced the violation, so the failure points at the originating layer
+     * rather than the layer that happened to dereference it first.
+     */
+    private fun isFreeRunHandle(handle: Long, queueIdx: Int): Boolean {
+        if (handle == LongPriorityQueue.NO_VALUE) {
+            error("runsAvail[$queueIdx] reported non-empty but poll returned NO_VALUE — heap invariant violated")
+        }
+        if (handle <= 0L) {
+            error("runsAvail[$queueIdx] returned non-positive handle $handle — handle value-space invariant violated")
+        }
+        if (isUsed(handle)) {
+            error("runsAvail[$queueIdx] returned a used handle $handle — used-handle leak into free-run index")
+        }
+        if (isSubpage(handle)) {
+            error("runsAvail[$queueIdx] returned a subpage handle $handle — subpage-handle leak into run queue")
+        }
+        if (bitmapIdx(handle) != 0) {
+            error("runsAvail[$queueIdx] returned handle $handle with non-zero bitmapIdx — low-bits corruption")
+        }
+        if (runPages(handle) <= 0) {
+            error("runsAvail[$queueIdx] returned handle $handle with runPages=0 — degenerate run handle")
+        }
+        if (runOffset(handle) >= chunkPages) {
+            error("runsAvail[$queueIdx] returned handle $handle with runOffset >= $chunkPages — out-of-range offset")
+        }
+        return true
     }
 
     /**
