@@ -84,6 +84,7 @@ object PipelineHttpIoUringBenchmark : EngineBenchmark {
             config = IoEngineConfig(
                 threads = threads,
                 loggerFactory = benchmarkLoggerFactory(),
+                allocator = benchmarkAllocator(config),
             ),
             writeModeSelector = modeSelector,
             capabilities = caps,
