@@ -6,6 +6,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.ptr
+import platform.posix.pthread_mutex_destroy
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
@@ -32,22 +33,20 @@ import platform.posix.pthread_mutex_unlock
  * **ABA safety**: structural — there is no CAS, so the classic Treiber-stack
  * ABA hazard does not apply.
  *
- * ## Lifecycle (current limitation)
+ * ## Lifecycle
  *
  * The `pthread_mutex_t` is allocated from `nativeHeap` at construction and
- * never destroyed; its lifetime is the process lifetime. This matches the rest
- * of the allocator stack today — `BufferAllocator` has no shutdown contract,
- * `SlabAllocator` does not drain its pool on disposal, and `NativeIoBuf`s
- * sitting in a pool when the allocator is dropped already leak their backing
- * memory to the native heap. Fixing that is out of scope for this class and is
- * tracked as a separate task ("Define BufferAllocator / PooledAllocator
- * lifecycle"). Once the allocator gains a real shutdown contract this class
- * will add `pthread_mutex_destroy` on the same path.
+ * released on [close] (`pthread_mutex_destroy` + `nativeHeap.free`).
+ * [PooledAllocator.close] invokes [close] after draining pooled buffers so
+ * the destroy lands when the mutex is guaranteed quiescent. After [close]
+ * the freelist must not be used.
  */
 class MutexFreelist(private val maxSlots: Int) : Freelist {
     private val list = ArrayDeque<IoBuf>(maxSlots)
 
-    // Process-lifetime allocation: see the class-level lifecycle KDoc.
+    @kotlin.concurrent.Volatile
+    private var closed: Boolean = false
+
     private val mutex = nativeHeap.alloc<pthread_mutex_t>().also {
         // `pthread_mutex_init` returns 0 on success; non-zero is the errno code
         // (EAGAIN / ENOMEM / EBUSY / EINVAL / EPERM per POSIX). Fail fast on any
@@ -110,5 +109,26 @@ class MutexFreelist(private val maxSlots: Int) : Freelist {
 
     override fun snapshotInto(out: MutableList<IoBuf>) {
         withMutex { out.addAll(list) }
+    }
+
+    /**
+     * Destroys the underlying `pthread_mutex_t` and frees its native-heap
+     * slot. Idempotent — a second call is a no-op.
+     *
+     * The caller (typically [PooledAllocator.close]) must ensure no other
+     * thread is mid-lock when this runs. After [close] all freelist
+     * methods are undefined; the allocator's closed-flag guard prevents
+     * them from being reached on the documented teardown path.
+     */
+    override fun close() {
+        if (closed) return
+        closed = true
+        // POSIX: destroying an initialised mutex with no waiters returns 0.
+        // A non-zero return indicates programmer error (the mutex is still
+        // locked or has waiters); surface it so a teardown-race regression
+        // does not silently leak the mutex slot.
+        val rc = pthread_mutex_destroy(mutex.ptr)
+        check(rc == 0) { "pthread_mutex_destroy() failed with errno=$rc" }
+        nativeHeap.free(mutex.rawPtr)
     }
 }

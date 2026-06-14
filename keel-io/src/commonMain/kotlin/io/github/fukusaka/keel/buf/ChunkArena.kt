@@ -101,4 +101,18 @@ internal class ChunkArena(
             }
         }
     }
+
+    /**
+     * Drops the arena's own reference to every tracked chunk and clears the
+     * list. Idle chunks (no live views) free their backing immediately as
+     * their refCount drops to 0; chunks with live views stay alive on the
+     * views' references and free themselves once the last view is released.
+     *
+     * Called from [PooledAllocator.close] once. After [close] the arena is
+     * empty and must not service further [carve] requests.
+     */
+    fun close() {
+        for (i in chunks.indices) chunks[i].backing.release()
+        chunks.clear()
+    }
 }

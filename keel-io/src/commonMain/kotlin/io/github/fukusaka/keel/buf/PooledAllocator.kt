@@ -80,6 +80,34 @@ abstract class PooledAllocator(
     @kotlin.concurrent.Volatile
     private var ladder: Ladder = Ladder(arrayOfNulls(sizeClasses.nSizes), IntArray(sizeClasses.nSizes), 0L)
 
+    /**
+     * Closed state for the lifecycle contract. Written once on [close] and
+     * read from [allocate] / [createForEventLoop] / [returnToPool] so:
+     *
+     * - post-close [allocate] / [createForEventLoop] fail fast with
+     *   `IllegalStateException`.
+     * - post-close [returnToPool] (driven by a buffer that was in use at
+     *   close and is now being released) frees the backing directly
+     *   instead of pushing to an already-drained freelist.
+     *
+     * `@Volatile` so a release on a thread other than the allocator's
+     * owning EventLoop sees the flip without crossing a synchronisation
+     * primitive on the hot path.
+     */
+    @kotlin.concurrent.Volatile
+    private var closed: Boolean = false
+
+    /**
+     * Per-EventLoop children produced by [createForEventLoop]. The parent's
+     * [close] propagates to each child first so the close direction matches
+     * the construction direction (engine → group → per-EL allocators →
+     * engine teardown closes parent which fans back out). Mutated only at
+     * EventLoop construction (`createChild` invocations) and at teardown
+     * (`close`) — both single-threaded by contract — so a plain
+     * `MutableList` suffices.
+     */
+    private val children: MutableList<PooledAllocator> = mutableListOf()
+
     // Cache-trim bookkeeping (per-EventLoop, single-thread — same writer contract as
     // registerPoolSize). Kept off the COW Ladder because they mutate on the hot path.
     /** Cached entries per size class (push ++ / pop --); exposed for test/diagnostics. */
@@ -196,6 +224,7 @@ abstract class PooledAllocator(
 
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     final override fun allocate(capacity: Int): IoBuf {
+        check(!closed) { "allocator is closed" }
         // Preserve the empty-buffer marker semantics: allocate(0) yields a true
         // zero-capacity buffer rather than rounding up to the smallest class.
         if (capacity == 0) {
@@ -235,6 +264,16 @@ abstract class PooledAllocator(
     }
 
     private fun returnToPool(buf: IoBuf) {
+        if (closed) {
+            // Allocator was closed while this buffer was in use; the freelist
+            // is already drained and any Freelist OS resources are released,
+            // so go straight to freeBacking instead of pushing into a closed
+            // pool. Chunk-backed views return their run to the chunk; the
+            // chunk's own refCount drops once all its views are released and
+            // frees its backing.
+            (buf as AbstractIoBuf).freeBacking()
+            return
+        }
         val cap = buf.capacity
         if (cap in 1..MAX_CACHED_CAPACITY) {
             val l = ladder
@@ -306,7 +345,50 @@ abstract class PooledAllocator(
     final override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         sliceDefaultIoBuf(source, offset, length)
 
-    final override fun createForEventLoop(): BufferAllocator = createChild(maxTotalBytes)
+    final override fun createForEventLoop(): BufferAllocator {
+        check(!closed) { "allocator is closed" }
+        val child = createChild(maxTotalBytes)
+        children.add(child)
+        return child
+    }
+
+    /**
+     * Closes this allocator and every child produced by
+     * [createForEventLoop]. Idempotent — a second call is a no-op.
+     *
+     * Order: children are closed first (matching construction direction),
+     * then this instance's freelists are drained (each pooled buffer's
+     * `freeBacking` is invoked), each [Freelist.close] runs (releasing any
+     * OS resource such as a `pthread_mutex_t`), and the chunk arena drops
+     * its own references to every chunk. Chunks with no live views free
+     * their backing immediately; chunks still referenced by an in-flight
+     * buffer survive until the last view is released — those releases go
+     * through the closed-flag branch in [returnToPool] and free directly.
+     *
+     * The contract guarantees a single-threaded teardown: engines stop
+     * their EventLoop threads before invoking [close], so there are no
+     * concurrent [allocate] calls. Implementations may still observe a
+     * post-close [returnToPool] from a buffer whose owner held it across
+     * the close (e.g. an in-flight write that has not yet flushed); that
+     * path is handled by the closed-flag branch in [returnToPool].
+     */
+    final override fun close() {
+        if (closed) return
+        closed = true
+        for (i in children.indices) children[i].close()
+        children.clear()
+        val l = ladder
+        for (i in l.pools.indices) {
+            val pool = l.pools[i] ?: continue
+            while (true) {
+                val buf = pool.pop() ?: break
+                cachedCount[i]--
+                (buf as AbstractIoBuf).freeBacking()
+            }
+            pool.close()
+        }
+        chunkArena.close()
+    }
 
     /**
      * Snapshot of every pooled buffer currently held across all size classes,
