@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.nodejs
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
@@ -79,6 +80,18 @@ class NodeEngine(
     private val channelLogger = config.loggerFactory.logger("NodePipelinedChannel")
     private var closed = false
 
+    /**
+     * Engine-owned allocator child. Node.js runs a single libuv event
+     * loop, so the engine takes one [BufferAllocator.createChild] off
+     * the user-passed [config].allocator and routes every connection's
+     * buffers through it. The platform default ([DefaultAllocator] on
+     * JS) is stateless and its `createChild()` returns `this`, so the
+     * indirection is free at runtime; a user-passed pooled allocator
+     * (e.g. via a future JS pool backend) is properly engine-owned and
+     * gets `close()`d on teardown. The parent stays borrowed.
+     */
+    private val allocator: BufferAllocator = config.allocator.createChild()
+
     override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): KeelStreamServer = when (address) {
         is InetSocketAddress -> bindInet(address, bindConfig)
         is UnixSocketAddress -> bindUnix(address, bindConfig)
@@ -98,7 +111,7 @@ class NodeEngine(
                 val serverChannel = NodeStreamServer(
                     srv,
                     address,
-                    config.allocator,
+                    allocator,
                     bindConfig,
                     channelLogger,
                     config.idleTimeoutMillis,
@@ -136,7 +149,7 @@ class NodeEngine(
                 val serverChannel = NodeStreamServer(
                     srv,
                     localAddr,
-                    config.allocator,
+                    allocator,
                     bindConfig,
                     channelLogger,
                     config.idleTimeoutMillis,
@@ -218,7 +231,7 @@ class NodeEngine(
             val channelLogger = this.channelLogger
             val transport = NodeIoTransport(
                 typedSocket,
-                this.config.allocator,
+                this.allocator,
                 idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
             )
             val channel = NodePipelinedChannel(
@@ -269,7 +282,7 @@ class NodeEngine(
             val channelLogger = this.channelLogger
             val transport = NodeIoTransport(
                 typedSocket,
-                this.config.allocator,
+                this.allocator,
                 idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
             )
             val channel = NodePipelinedChannel(
@@ -332,7 +345,7 @@ class NodeEngine(
                 val channelLogger = this@NodeEngine.channelLogger
                 val transport = NodeIoTransport(
                     socket,
-                    config.allocator,
+                    allocator,
                     idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
                 )
                 val channel = NodePipelinedChannel(
@@ -391,7 +404,7 @@ class NodeEngine(
                 val channelLogger = this@NodeEngine.channelLogger
                 val transport = NodeIoTransport(
                     socket,
-                    config.allocator,
+                    allocator,
                     idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
                 )
                 val channel = NodePipelinedChannel(
@@ -422,6 +435,12 @@ class NodeEngine(
         if (!closed) {
             closed = true
             coroutineContext.job.cancelAndJoin()
+            // Close the engine-owned allocator child. Node.js runs on a
+            // single libuv thread; the SupervisorJob cancel above
+            // guarantees every coroutine that touched the allocator has
+            // finished before we drain its pool. The user-passed parent
+            // (`config.allocator`) stays borrowed.
+            allocator.close()
             logger.debug { "Engine closed" }
         }
     }

@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ConnectConfig
@@ -113,6 +114,18 @@ class NwEngine(
     private var closed = false
 
     /**
+     * Engine-owned allocator child. NwEngine has no per-thread split
+     * (NWConnection dispatches connections across GCD workers), so the
+     * engine takes a single [BufferAllocator.createChild] off the
+     * user-passed [config].allocator and routes every connection's
+     * buffers through it. The parent stays borrowed — multiple engines
+     * may share one parent allocator — but every per-connection use
+     * goes through this child so [close] can release the child's pool
+     * resources without touching the parent.
+     */
+    private val allocator: BufferAllocator = config.allocator.createChild()
+
+    /**
      * Binds a TCP listener on the given host and port.
      *
      * Creates an NWListener, starts it, and suspends until the listener
@@ -150,7 +163,7 @@ class NwEngine(
             // arrive during startup. localAddress is updated after the
             // assigned port is known.
             val serverChannel = NwStreamServer(
-                lsnr, InetSocketAddress(host, 0), config.allocator, bindConfig, config.loggerFactory, config.idleReadPolicy,
+                lsnr, InetSocketAddress(host, 0), allocator, bindConfig, config.loggerFactory, config.idleReadPolicy,
                 config.idleTimeoutMillis,
             )
 
@@ -306,7 +319,7 @@ class NwEngine(
                     nw_connection_start(conn)
 
                     val transport = NwIoTransport(
-                        conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy, logger,
+                        conn, connQueue, this@NwEngine.allocator, this@NwEngine.config.idleReadPolicy, logger,
                         idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
                     )
                     val channel = NwPipelinedChannel(transport, logger)
@@ -419,7 +432,7 @@ class NwEngine(
         logger.debug { "Connected to $remoteAddr" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
         val transport = NwIoTransport(
-            conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy, channelLogger,
+            conn, connQueue, allocator, this@NwEngine.config.idleReadPolicy, channelLogger,
             idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
         )
         return NwPipelinedChannel(transport, channelLogger, remoteAddr, null)
@@ -458,7 +471,7 @@ class NwEngine(
                 "io.github.fukusaka.keel.nwconnection.listener.unix", null,
             )
             val serverChannel = NwStreamServer(
-                lsnr, address, config.allocator, bindConfig, config.loggerFactory, this@NwEngine.config.idleReadPolicy,
+                lsnr, address, allocator, bindConfig, config.loggerFactory, this@NwEngine.config.idleReadPolicy,
                 this@NwEngine.config.idleTimeoutMillis,
             )
             nw_listener_set_queue(lsnr, listenerQueue)
@@ -526,7 +539,7 @@ class NwEngine(
         logger.debug { "Connected to UDS ${address.path}" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
         val transport = NwIoTransport(
-            conn, connQueue, config.allocator, this@NwEngine.config.idleReadPolicy, channelLogger,
+            conn, connQueue, allocator, this@NwEngine.config.idleReadPolicy, channelLogger,
             idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
         )
         return NwPipelinedChannel(transport, channelLogger, address, address)
@@ -582,7 +595,7 @@ class NwEngine(
                     nw_connection_start(conn)
 
                     val transport = NwIoTransport(
-                        conn, connQueue, this@NwEngine.config.allocator, this@NwEngine.config.idleReadPolicy, logger,
+                        conn, connQueue, this@NwEngine.allocator, this@NwEngine.config.idleReadPolicy, logger,
                         idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
                     )
                     val channel = NwPipelinedChannel(transport, logger)
@@ -648,6 +661,12 @@ class NwEngine(
             closed = true
             coroutineContext.job.cancelAndJoin()
             listener?.let { nw_listener_cancel(it) }
+            // Close the engine-owned allocator child. NWConnection has no
+            // EL thread to join; the SupervisorJob cancel above ensures
+            // every coroutine that touches the allocator is finished
+            // before we drain its pool. The user-passed parent
+            // (`config.allocator`) stays borrowed.
+            allocator.close()
             logger.debug { "Engine closed" }
         }
     }

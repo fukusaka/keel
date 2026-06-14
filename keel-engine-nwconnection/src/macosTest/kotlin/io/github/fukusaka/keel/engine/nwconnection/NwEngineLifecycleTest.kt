@@ -27,6 +27,33 @@ class NwEngineLifecycleTest {
     }
 
     @Test
+    fun engineCloseClosesEngineOwnedAllocator() = runBlocking {
+        withTimeout(5.seconds) {
+            val tracker = io.github.fukusaka.keel.buf.TrackingAllocator(
+                io.github.fukusaka.keel.buf.SlabAllocator(),
+            )
+            val engine = NwEngine(
+                config = io.github.fukusaka.keel.core.IoEngineConfig(allocator = tracker),
+            )
+            // NwEngine takes a single `tracker.createChild()` at init
+            // (no per-thread split — NWConnection dispatches across GCD
+            // workers but every connection routes through the one
+            // engine-owned child).
+            engine.close()
+            assertEquals(
+                1,
+                tracker.totalCloseCount(),
+                "engine.close() must close the single engine-owned allocator child",
+            )
+            assertEquals(
+                0,
+                tracker.closeCount,
+                "engine.close() must NOT close the user-owned parent allocator",
+            )
+        }
+    }
+
+    @Test
     fun bindReturnsActiveServerChannel() = runBlocking {
         withTimeout(5.seconds) {
             val engine = NwEngine()
