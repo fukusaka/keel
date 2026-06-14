@@ -28,16 +28,19 @@ package io.github.fukusaka.keel.buf
  * be pulled out of the middle of its queue. That is an O(n) scan plus an O(log n)
  * sift, which is fine — coalescing is off the hot path.
  *
- * **Algorithm shape.** Heap maintenance uses the Sedgewick & Wayne shift-cascade
- * pattern (save the value once, shift parents/children through the path with a
- * single write per level, write the saved value at the final position) rather
- * than the swap-based shape that Netty's `IntPriorityQueue` ships verbatim. Both
- * patterns are correct and equivalent in big-O terms; shift-cascade halves the
- * number of array writes when the value percolates multiple levels, which is the
- * Algorithms book's recommended form. The keel port adopts it as a small
- * pre-existing optimisation, not a deliberate divergence from upstream — the
- * observable contract (`offer` / `poll` / `peek` / `remove` / `isEmpty`,
- * including [NO_VALUE]'s value space) matches the upstream queue exactly.
+ * **Algorithm shape.** Heap maintenance uses the **shift-cascade** form (save
+ * the value once, shift parents/children through the path with a single write
+ * per level, write the saved value at the final position). This is the form
+ * Sedgewick & Wayne's Algorithms book recommends, and the one mainstream Java
+ * heap implementations use — Lucene's `org.apache.lucene.util.PriorityQueue<T>`
+ * and Solr's `org.apache.solr.util.LongPriorityQueue` (a same-named class but a
+ * different bounded-top-K design) both ship the same shape verbatim. Netty's
+ * `IntPriorityQueue` is the outlier: it uses a swap-based shape, presumably for
+ * readability. Both are correct and equivalent in big-O terms; shift-cascade
+ * halves the number of array writes when a value percolates multiple levels.
+ * The observable contract (`offer` / `poll` / `peek` / `remove` / `isEmpty`,
+ * including [NO_VALUE]'s value space) matches Netty's upstream queue exactly
+ * regardless of the inner shape.
  *
  * **Indexing.** keel uses 0-indexed storage (root at `array[0]`) where Netty's
  * upstream is 1-indexed (root at `array[1]`, slot 0 unused). The choice is
