@@ -70,6 +70,16 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
         if (queueIdx == -1) return NO_HANDLE
         val queue = runsAvail[queueIdx]
         val handle = queue.poll()
+        // [runFirstBestFit] only returns a non-`-1` index for a non-empty queue,
+        // so [poll] must hand back a stored handle here — never [LongPriorityQueue.NO_VALUE]
+        // (the empty marker) and never the `0L` clear-fill value. Either would
+        // indicate that the queue's heap invariant was broken upstream of this
+        // call; surfacing it as a [check] makes the violation loud at its origin
+        // instead of silently propagating a degenerate handle into [splitLargeRun]
+        // and corrupting the chunk's subpage table.
+        check(handle != LongPriorityQueue.NO_VALUE && handle > 0L) {
+            "runsAvail[$queueIdx] reported non-empty but poll returned $handle — heap invariant violated"
+        }
         // poll() already removed it from the queue; drop its map endpoints too.
         removeAvailRunFromMap(handle)
         val allocated = splitLargeRun(handle, pages)
