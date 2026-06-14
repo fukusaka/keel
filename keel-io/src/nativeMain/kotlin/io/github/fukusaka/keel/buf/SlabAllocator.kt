@@ -21,7 +21,7 @@ import kotlin.concurrent.AtomicReference
  * essentially free; see `benchmark --bench=freelist-variants` /
  * `--bench=freelist-contended`).
  *
- * **Per-EventLoop pooling**: [createForEventLoop] returns a fresh sibling that
+ * **Per-EventLoop pooling**: [createChild] returns a fresh sibling that
  * installs the same ladder, so each EventLoop owns its own pool confined to a
  * single thread. The parent allocator (the instance passed to `IoEngineConfig`)
  * is used only for size-class setup at startup; the per-EL children perform the
@@ -57,7 +57,7 @@ class SlabAllocator(
 
     override fun defaultFreelist(maxSlots: Int): Freelist = SpinLockFreelist(maxSlots)
 
-    override fun createChild(maxTotalBytes: Long): PooledAllocator =
+    override fun newChildInstance(maxTotalBytes: Long): PooledAllocator =
         SlabAllocator(maxTotalBytes, freelistFactory)
 
     @OptIn(ExperimentalForeignApi::class)

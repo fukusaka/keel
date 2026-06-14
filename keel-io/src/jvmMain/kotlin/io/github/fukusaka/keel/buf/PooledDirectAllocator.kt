@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicReference
  * for the ABA evidence on both platforms, and `FreelistContendedBenchmark` for
  * the JVM measurement.
  *
- * **Per-EventLoop pooling**: [createForEventLoop] returns a fresh sibling that
+ * **Per-EventLoop pooling**: [createChild] returns a fresh sibling that
  * installs the same ladder, so each EventLoop owns its own pool confined to a
  * single thread. The parent allocator (the instance passed to `IoEngineConfig`)
  * is used only for size-class setup at startup; the per-EL children perform the
@@ -56,7 +56,7 @@ class PooledDirectAllocator(
 
     override fun defaultFreelist(maxSlots: Int): Freelist = TreiberStackFreelist(maxSlots)
 
-    override fun createChild(maxTotalBytes: Long): PooledAllocator =
+    override fun newChildInstance(maxTotalBytes: Long): PooledAllocator =
         PooledDirectAllocator(maxTotalBytes, freelistFactory)
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
@@ -76,7 +76,7 @@ class PooledDirectAllocator(
  *
  * **Concurrency invariant**: ABA-unsafe under genuine MPMC. Safe here because
  * each [PooledDirectAllocator] instance is owned by a single EventLoop thread
- * after `createForEventLoop()`, so push/pop never race in practice. An
+ * after `createChild()`, so push/pop never race in practice. An
  * arbitrary-concurrency allocator should select a blocking or ABA-safe variant
  * instead (see `benchmark --bench=freelist-contended`).
  */

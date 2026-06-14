@@ -859,7 +859,7 @@ internal class KqueueEventLoop(
             arena.clear()
             // Close the per-EL allocator child. By construction the
             // EventLoopGroup hands each EL the result of
-            // `BufferAllocator.createForEventLoop()`, so closing here drains
+            // `BufferAllocator.createChild()`, so closing here drains
             // this loop's freelists and runs `Freelist.close()` (mutex
             // destroy / nativeHeap.free for `MutexFreelist`). Safe because
             // the EL thread is joined above — no concurrent allocate /

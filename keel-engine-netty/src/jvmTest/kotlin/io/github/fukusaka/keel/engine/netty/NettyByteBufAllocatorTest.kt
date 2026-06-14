@@ -32,8 +32,8 @@ class NettyByteBufAllocatorTest {
     }
 
     @Test
-    fun `createForEventLoop returns this (per-EL sharding handled by Netty internally)`() {
-        assertSame(alloc, alloc.createForEventLoop())
+    fun `createChild returns this (per-EL sharding handled by Netty internally)`() {
+        assertSame(alloc, alloc.createChild())
     }
 
     @Test

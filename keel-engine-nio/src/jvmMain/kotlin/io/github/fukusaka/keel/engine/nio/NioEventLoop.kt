@@ -499,7 +499,7 @@ internal class NioEventLoop(
         selector.close()
         // Close the per-EL allocator child. By construction the
         // NioEventLoopGroup hands each EL the result of
-        // `BufferAllocator.createForEventLoop()`, so closing here drains
+        // `BufferAllocator.createChild()`, so closing here drains
         // this loop's freelists and releases any Freelist-held OS
         // resources (currently a no-op on JVM where the default
         // `TreiberStackFreelist` has no OS state; the seam is here so a
@@ -520,7 +520,7 @@ internal class NioEventLoop(
  * @param size Number of EventLoop threads.
  * @param namePrefix Thread name prefix (e.g., "keel-nio-worker").
  * @param logger Logger for each EventLoop in the group.
- * @param allocator Base allocator; [BufferAllocator.createForEventLoop] is called per EventLoop.
+ * @param allocator Base allocator; [BufferAllocator.createChild] is called per EventLoop.
  * @param readBufferSize Per-read buffer size propagated to each EventLoop
  *   (see [io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]).
  */
@@ -533,7 +533,7 @@ internal class NioEventLoopGroup(
     idleTimeoutMillis: Long = 0,
 ) {
     private val loops = Array(size) { i ->
-        NioEventLoop("$namePrefix-$i", logger, allocator.createForEventLoop(), readBufferSize, idleTimeoutMillis)
+        NioEventLoop("$namePrefix-$i", logger, allocator.createChild(), readBufferSize, idleTimeoutMillis)
     }
     private val index = java.util.concurrent.atomic.AtomicInteger(0)
 

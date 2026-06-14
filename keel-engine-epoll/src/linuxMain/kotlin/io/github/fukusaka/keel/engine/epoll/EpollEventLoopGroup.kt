@@ -14,11 +14,11 @@ import kotlin.concurrent.AtomicInt
  * so channels on different EventLoops never contend for the same lock.
  *
  * Each EventLoop has its own [BufferAllocator] instance created via
- * [BufferAllocator.createForEventLoop], enabling lock-free pooling.
+ * [BufferAllocator.createChild], enabling lock-free pooling.
  *
  * @param size Number of EventLoop threads. Must be >= 1.
  * @param logger Logger for each EventLoop in the group.
- * @param allocator Base allocator; [createForEventLoop] is called per EventLoop.
+ * @param allocator Base allocator; [createChild] is called per EventLoop.
  * @param readBufferSize Per-read buffer size propagated to each EventLoop
  *   (see [io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]).
  * @param idleTimeoutMillis Engine-wide idle (no-progress) timeout propagated to
@@ -33,7 +33,7 @@ internal class EpollEventLoopGroup(
 ) {
 
     private val loops =
-        Array(size) { EpollEventLoop(logger, allocator.createForEventLoop(), readBufferSize, idleTimeoutMillis) }
+        Array(size) { EpollEventLoop(logger, allocator.createChild(), readBufferSize, idleTimeoutMillis) }
     private val index = AtomicInt(0)
 
     /** Number of EventLoops in this group. */

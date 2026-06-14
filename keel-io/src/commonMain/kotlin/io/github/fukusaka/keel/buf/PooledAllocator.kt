@@ -8,7 +8,7 @@ package io.github.fukusaka.keel.buf
  *
  * Holds the cross-platform machinery — the [SizeClasses] table, the size-class
  * indexed freelists, the per-class budget, [registerPoolSize] /
- * [installDefaultLadder], [createForEventLoop] propagation, and the allocate /
+ * [installDefaultLadder], [createChild] propagation, and the allocate /
  * return-to-pool routing — while delegating the two platform- and
  * strategy-specific seams to subclasses:
  *
@@ -54,13 +54,13 @@ package io.github.fukusaka.keel.buf
  *   [FreelistFactory] to swap in a different `Freelist` implementation — for
  *   example `::MutexFreelist` for an arbitrary-concurrency public allocator. The
  *   factory is invoked once per pooled size class with that class's slot cap, and
- *   is forwarded to every per-EventLoop child produced by [createForEventLoop].
+ *   is forwarded to every per-EventLoop child produced by [createChild].
  */
 abstract class PooledAllocator(
     private val maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
     /**
      * Exposed `protected` so subclasses can forward the same factory to
-     * per-EventLoop children produced by [createChild]. Treat as read-only.
+     * per-EventLoop children produced by [newChildInstance]. Treat as read-only.
      */
     protected val freelistFactory: FreelistFactory? = null,
 ) : BufferAllocator {
@@ -82,9 +82,9 @@ abstract class PooledAllocator(
 
     /**
      * Closed state for the lifecycle contract. Written once on [close] and
-     * read from [allocate] / [createForEventLoop] / [returnToPool] so:
+     * read from [allocate] / [createChild] / [returnToPool] so:
      *
-     * - post-close [allocate] / [createForEventLoop] fail fast with
+     * - post-close [allocate] / [createChild] fail fast with
      *   `IllegalStateException`.
      * - post-close [returnToPool] (driven by a buffer that was in use at
      *   close and is now being released) frees the backing directly
@@ -98,11 +98,11 @@ abstract class PooledAllocator(
     private var closed: Boolean = false
 
     /**
-     * Per-EventLoop children produced by [createForEventLoop]. The parent's
+     * Per-EventLoop children produced by [createChild]. The parent's
      * [close] propagates to each child first so the close direction matches
      * the construction direction (engine → group → per-EL allocators →
      * engine teardown closes parent which fans back out). Mutated only at
-     * EventLoop construction (`createChild` invocations) and at teardown
+     * EventLoop construction (`newChildInstance` invocations) and at teardown
      * (`close`) — both single-threaded by contract — so a plain
      * `MutableList` suffices.
      */
@@ -129,7 +129,7 @@ abstract class PooledAllocator(
      * run/subpage view out of a large chunk instead of a per-buffer system
      * allocation. The size-class freelist sits in front, so [ChunkArena.carve]
      * only runs on misses (off the hot path). Each allocator instance — and each
-     * per-EventLoop child from [createChild] — owns its own arena.
+     * per-EventLoop child from [newChildInstance] — owns its own arena.
      */
     private val chunkArena: ChunkArena = ChunkArena(
         sizeClasses = sizeClasses,
@@ -171,7 +171,7 @@ abstract class PooledAllocator(
      * Subclasses must propagate the same [freelistFactory] so per-EL children
      * inherit the user-selected strategy.
      */
-    protected abstract fun createChild(maxTotalBytes: Long): PooledAllocator
+    protected abstract fun newChildInstance(maxTotalBytes: Long): PooledAllocator
 
     /**
      * Installs the default Netty-style size-class ladder: every cached class
@@ -345,16 +345,16 @@ abstract class PooledAllocator(
     final override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         sliceDefaultIoBuf(source, offset, length)
 
-    final override fun createForEventLoop(): BufferAllocator {
+    final override fun createChild(): BufferAllocator {
         check(!closed) { "allocator is closed" }
-        val child = createChild(maxTotalBytes)
+        val child = newChildInstance(maxTotalBytes)
         children.add(child)
         return child
     }
 
     /**
      * Closes this allocator and every child produced by
-     * [createForEventLoop]. Idempotent — a second call is a no-op.
+     * [createChild]. Idempotent — a second call is a no-op.
      *
      * Order: children are closed first (matching construction direction),
      * then this instance's freelists are drained (each pooled buffer's

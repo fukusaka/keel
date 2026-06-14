@@ -33,7 +33,7 @@ class TrackingAllocator private constructor(
 
     /**
      * Counters shared across an allocator tree: a parent and every child it
-     * produces via [createForEventLoop] reference the same [Stats] instance,
+     * produces via [createChild] reference the same [Stats] instance,
      * so totals such as [totalCloseCount] reflect the full per-EventLoop
      * fan-out without each test having to keep a separate reference to every
      * child.
@@ -89,8 +89,8 @@ class TrackingAllocator private constructor(
     override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         delegate.slice(source, offset, length)
 
-    override fun createForEventLoop(): BufferAllocator =
-        TrackingAllocator(delegate.createForEventLoop(), stats)
+    override fun createChild(): BufferAllocator =
+        TrackingAllocator(delegate.createChild(), stats)
 
     override fun close() {
         closeCount++
@@ -100,7 +100,7 @@ class TrackingAllocator private constructor(
 
     /**
      * Aggregate [close] call count across this tracker and every child
-     * produced via [createForEventLoop]. Useful for asserting that an engine
+     * produced via [createChild]. Useful for asserting that an engine
      * teardown closed every per-EventLoop allocator it created.
      */
     fun totalCloseCount(): Int = stats.totalCloseCount

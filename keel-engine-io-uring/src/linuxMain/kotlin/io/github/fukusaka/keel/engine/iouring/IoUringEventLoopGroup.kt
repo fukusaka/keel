@@ -31,7 +31,7 @@ import kotlin.coroutines.EmptyCoroutineContext
  * so channels on different EventLoops never contend for the same ring.
  *
  * Each EventLoop has its own [BufferAllocator] instance created via
- * [BufferAllocator.createForEventLoop], enabling lock-free pooling.
+ * [BufferAllocator.createChild], enabling lock-free pooling.
  *
  * Each worker EventLoop owns a [ProvidedBufferRing] for multishot recv
  * with kernel-managed buffer selection. The ring is registered with the
@@ -40,7 +40,7 @@ import kotlin.coroutines.EmptyCoroutineContext
  *
  * @param size Number of EventLoop threads. Must be >= 1.
  * @param logger Logger for each EventLoop in the group.
- * @param allocator Base allocator; [createForEventLoop] is called per EventLoop.
+ * @param allocator Base allocator; [createChild] is called per EventLoop.
  * @param capabilities Runtime-detected io_uring kernel capabilities.
  * @param ringSize SQE ring size per EventLoop. See [IoUringEventLoop.DEFAULT_RING_SIZE].
  * @param readBufferSize Per-read receive buffer size (see
@@ -97,7 +97,7 @@ internal class IoUringEventLoopGroup(
     val size: Int = size
 
     private val loops = Array(size) { IoUringEventLoop(logger, capabilities, ringSize, idleTimeoutMillis = idleTimeoutMillis) }
-    private val allocators = Array(size) { allocator.createForEventLoop() }
+    private val allocators = Array(size) { allocator.createChild() }
     private val bufferRings: Array<ProvidedBufferRing?> = if (capabilities.providedBufferRing) {
         Array(size) { i ->
             ProvidedBufferRing(loops[i], logger, bufferCount = bufferRingSlotCount, bufferSize = readBufferSize, bgid = i)

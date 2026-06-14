@@ -34,7 +34,7 @@ class NioEngineLifecycleTest {
             ),
         )
         // NioEngineGroup builds `threads` worker EventLoops, each handed a
-        // fresh `tracker.createForEventLoop()` child. Boss isn't an
+        // fresh `tracker.createChild()` child. Boss isn't an
         // NioEventLoop (it shares the server channel's selector), so we
         // expect exactly `threads` per-EL trackers.
         engine.close()
@@ -44,7 +44,7 @@ class NioEngineLifecycleTest {
             "engine.close() must close every per-EventLoop allocator child",
         )
         // The user-passed parent tracker stays open — the engine borrows
-        // it for `createForEventLoop` and never closes the borrowed
+        // it for `createChild` and never closes the borrowed
         // allocator.
         assertEquals(0, tracker.closeCount, "engine.close() must NOT close the user-owned parent allocator")
     }

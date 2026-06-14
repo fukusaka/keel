@@ -79,9 +79,9 @@ class TrackingAllocatorTest {
     }
 
     @Test
-    fun `createForEventLoop returns TrackingAllocator wrapping delegate`() {
+    fun `createChild returns TrackingAllocator wrapping delegate`() {
         val tracker = TrackingAllocator()
-        val perLoop = tracker.createForEventLoop()
+        val perLoop = tracker.createChild()
         assertTrue(perLoop is TrackingAllocator)
 
         val buf = perLoop.allocate(64)

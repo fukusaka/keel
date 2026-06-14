@@ -75,10 +75,10 @@ class ProfilingAllocatorTest {
     }
 
     @Test
-    fun `createForEventLoop shares the same profile across EventLoops`() {
+    fun `createChild shares the same profile across EventLoops`() {
         val parent = DefaultAllocator.withProfiling()
-        val el1 = parent.createForEventLoop() as ProfilingAllocator
-        val el2 = parent.createForEventLoop() as ProfilingAllocator
+        val el1 = parent.createChild() as ProfilingAllocator
+        val el2 = parent.createChild() as ProfilingAllocator
 
         // both children share the parent's profile instance
         assertTrue(el1.profile === parent.profile)

@@ -45,7 +45,7 @@ class EpollEngineLifecycleTest {
                 ),
             )
             // EpollEventLoopGroup hands each worker EL a fresh
-            // `tracker.createForEventLoop()` child. Boss uses the default
+            // `tracker.createChild()` child. Boss uses the default
             // no-op allocator and is not part of the tracker tree.
             engine.close()
             assertEquals(

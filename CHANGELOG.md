@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING** (`io`): `BufferAllocator.createForEventLoop()` is renamed to `BufferAllocator.createChild()`. The original name overcommitted to the EL-pinned engine model and reads wrong for engines that have no per-thread split (NwEngine, NodeEngine). The new name reflects the real semantics: "create a child allocator scoped to the caller's lifecycle, the caller closes it". KDoc rewritten accordingly. The `protected createChild(maxTotalBytes: Long)` seam on `PooledAllocator` is renamed to `newChildInstance(maxTotalBytes: Long)` to free up the public name. Callers in keel (every engine and the lifecycle tests) updated; out-of-tree implementations of `BufferAllocator` that override `createForEventLoop()` will need to rename the override. (#790)
+
 ### Added
 
 - `engine-epoll`, `engine-kqueue`, `engine-nio`, `engine-netty`, `engine-io-uring`: wire `allocator.close()` into each engine's teardown path so the `BufferAllocator` shutdown contract defined in #788 actually drives the per-EventLoop allocator children. `EpollEventLoop` / `KqueueEventLoop` / `NioEventLoop` close their per-EL allocator after joining the EL thread; `IoUringEventLoopGroup.close` walks every worker allocator after `loop.close()` joined its pthread; `NettyEngine.close` iterates the `eventLoopAllocators` map after Netty's `shutdownGracefully`. The user-passed parent allocator is **borrowed**, not owned, so it stays open across `engine.close()` — multiple engines can share one parent. `TrackingAllocator` gained `closeCount` / `totalCloseCount()` so engine-lifecycle tests can pin "engine.close() closes every per-EL child but not the parent" deterministically; new tests cover epoll / kqueue / nio / io_uring. (#789)

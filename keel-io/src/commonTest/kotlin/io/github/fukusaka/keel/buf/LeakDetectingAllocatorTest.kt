@@ -44,11 +44,11 @@ class LeakDetectingAllocatorTest {
     }
 
     @Test
-    fun `createForEventLoop wraps delegate`() {
+    fun `createChild wraps delegate`() {
         val allocator = LeakDetectingAllocator(DefaultAllocator) { }
-        val perLoop = allocator.createForEventLoop()
+        val perLoop = allocator.createChild()
 
-        assertTrue(perLoop is LeakDetectingAllocator, "createForEventLoop should return LeakDetectingAllocator")
+        assertTrue(perLoop is LeakDetectingAllocator, "createChild should return LeakDetectingAllocator")
     }
 
     @Test

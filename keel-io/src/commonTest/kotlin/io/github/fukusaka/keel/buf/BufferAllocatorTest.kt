@@ -45,8 +45,8 @@ class BufferAllocatorTest {
     }
 
     @Test
-    fun createForEventLoopReturnsSelf() {
-        val allocator = DefaultAllocator.createForEventLoop()
+    fun createChildReturnsSelf() {
+        val allocator = DefaultAllocator.createChild()
         assertEquals(DefaultAllocator, allocator)
     }
 

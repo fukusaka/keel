@@ -42,7 +42,7 @@ class TlsHandlerPlaintextBufferSizeTest {
             delegate.registerPoolSize(size, maxSlots)
         }
 
-        override fun createForEventLoop(): BufferAllocator = this
+        override fun createChild(): BufferAllocator = this
     }
 
     /**

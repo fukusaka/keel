@@ -98,8 +98,8 @@ class LeakDetectingAllocator(
     override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         delegate.slice(source, offset, length)
 
-    override fun createForEventLoop(): BufferAllocator =
-        LeakDetectingAllocator(delegate.createForEventLoop(), onLeak)
+    override fun createChild(): BufferAllocator =
+        LeakDetectingAllocator(delegate.createChild(), onLeak)
 }
 
 /**

@@ -14,7 +14,7 @@ import io.netty.buffer.ByteBufAllocator
  * `ByteBuf` to `nettyChannel.writeAndFlush` without wrapping through
  * `Unpooled.wrappedBuffer`.
  *
- * **Per-EventLoop usage**: [createForEventLoop] returns `this` since
+ * **Per-EventLoop usage**: [createChild] returns `this` since
  * Netty's own `ByteBufAllocator` (e.g. [ByteBufAllocator.DEFAULT] or
  * `PooledByteBufAllocator`) manages its own per-thread arenas
  * internally. No keel-side per-EL wrapping needed.
@@ -54,5 +54,5 @@ internal class NettyByteBufAllocator(
         // Netty's own allocator manages sizing; no-op.
     }
 
-    override fun createForEventLoop(): BufferAllocator = this
+    override fun createChild(): BufferAllocator = this
 }
