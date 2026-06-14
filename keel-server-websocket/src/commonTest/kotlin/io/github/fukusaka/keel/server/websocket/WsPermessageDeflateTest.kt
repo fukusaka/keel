@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.websocket
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.CompressionCapabilities
@@ -40,7 +41,13 @@ private val deflateMinWindowBits: Int = deflateEncoderCaps.windowBits.first
 class WsPermessageDeflateTest {
 
     private fun engine(options: WsDeflateOptions = WsDeflateOptions.Default): WsPermessageDeflate =
-        WsPermessageDeflate(DeflateCodec, options, serverMaxWindowBits = null, clientMaxWindowBits = null)
+        WsPermessageDeflate(
+            allocator = DefaultAllocator,
+            codec = DeflateCodec,
+            options = options,
+            serverMaxWindowBits = null,
+            clientMaxWindowBits = null,
+        )
 
     // --- compress / decompress round-trip ---
 
@@ -141,14 +148,16 @@ class WsPermessageDeflateTest {
     @Test
     fun `multiple messages round-trip with context takeover`() {
         val encoder = WsPermessageDeflate(
-            DeflateCodec,
-            WsDeflateOptions(contextTakeover = true, threshold = 0),
+            allocator = DefaultAllocator,
+            codec = DeflateCodec,
+            options = WsDeflateOptions(contextTakeover = true, threshold = 0),
             serverMaxWindowBits = null,
             clientMaxWindowBits = null,
         )
         val decoder = WsPermessageDeflate(
-            DeflateCodec,
-            WsDeflateOptions(contextTakeover = true, threshold = 0),
+            allocator = DefaultAllocator,
+            codec = DeflateCodec,
+            options = WsDeflateOptions(contextTakeover = true, threshold = 0),
             serverMaxWindowBits = null,
             clientMaxWindowBits = null,
         )
@@ -471,6 +480,32 @@ class WsPermessageDeflateTest {
         assertEquals(15, deflate.serverMaxWindowBits)
     }
 
+    // --- allocator borrow contract ---
+
+    @Test
+    fun `close releases encoder and decoder but does NOT close the borrowed allocator`() {
+        // Pre-fix the engine constructed `defaultAllocator()` internally
+        // and never closed it — every WS-deflate connection leaked a
+        // fresh pool allocator for the engine's lifetime. The fix is to
+        // borrow the channel's per-EL allocator instead. This test pins
+        // the borrow side of the contract: a TrackingAllocator passed
+        // in must NOT see close() during the engine's own close().
+        val tracker = io.github.fukusaka.keel.buf.TrackingAllocator(DefaultAllocator)
+        val engine = WsPermessageDeflate(
+            allocator = tracker,
+            codec = DeflateCodec,
+            options = WsDeflateOptions.Default,
+            serverMaxWindowBits = null,
+            clientMaxWindowBits = null,
+        )
+        engine.close()
+        assertEquals(
+            0,
+            tracker.closeCount,
+            "WsPermessageDeflate.close() must NOT close the borrowed allocator",
+        )
+    }
+
     // --- close idempotency (4th deep-review S9, gates the M3 upgrade leak fix) ---
 
     @Test
@@ -491,8 +526,9 @@ class WsPermessageDeflateTest {
         // stays at 1.
         val codec = CountingCloseCodec(DeflateCodec)
         val engine = WsPermessageDeflate(
-            codec,
-            WsDeflateOptions.Default,
+            allocator = DefaultAllocator,
+            codec = codec,
+            options = WsDeflateOptions.Default,
             serverMaxWindowBits = null,
             clientMaxWindowBits = null,
         )
@@ -520,8 +556,9 @@ class WsPermessageDeflateTest {
         // `encoderBroken` guard makes the second compress() fail fast with
         // IllegalStateException without touching the encoder.
         val engine = WsPermessageDeflate(
-            ThrowOnEncodeCodec(DeflateCodec),
-            WsDeflateOptions(threshold = 0),
+            allocator = DefaultAllocator,
+            codec = ThrowOnEncodeCodec(DeflateCodec),
+            options = WsDeflateOptions(threshold = 0),
             serverMaxWindowBits = null,
             clientMaxWindowBits = null,
         )

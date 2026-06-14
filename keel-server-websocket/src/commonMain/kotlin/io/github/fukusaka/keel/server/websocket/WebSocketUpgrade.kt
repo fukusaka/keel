@@ -156,6 +156,14 @@ public suspend fun runWebSocketUpgrade(
     val deflateEngine = when (extension) {
         is WsExtensionResult.None -> null
         is WsExtensionResult.Deflate -> WsPermessageDeflate(
+            // Borrow the channel's per-EL allocator instead of spinning
+            // up a fresh `defaultAllocator()` per connection: a fresh
+            // pool allocator per WS-deflate connection had no close path
+            // (the encoder/decoder closed but the allocator was
+            // orphaned), so its freelists / chunk arena / `pthread_mutex_t`s
+            // (with `MutexFreelist` on Native) leaked for the engine's
+            // lifetime.
+            allocator = channel.allocator,
             // deflateConfig is non-null whenever negotiation returns Deflate.
             codec = checkNotNull(deflateConfig).codec,
             options = extension.effectiveOptions,
