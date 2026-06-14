@@ -27,6 +27,24 @@ package io.github.fukusaka.keel.buf
  * *arbitrary* element: when two adjacent free runs coalesce, the neighbour must
  * be pulled out of the middle of its queue. That is an O(n) scan plus an O(log n)
  * sift, which is fine — coalescing is off the hot path.
+ *
+ * **Algorithm shape.** Heap maintenance uses the Sedgewick & Wayne shift-cascade
+ * pattern (save the value once, shift parents/children through the path with a
+ * single write per level, write the saved value at the final position) rather
+ * than the swap-based shape that Netty's `IntPriorityQueue` ships verbatim. Both
+ * patterns are correct and equivalent in big-O terms; shift-cascade halves the
+ * number of array writes when the value percolates multiple levels, which is the
+ * Algorithms book's recommended form. The keel port adopts it as a small
+ * pre-existing optimisation, not a deliberate divergence from upstream — the
+ * observable contract (`offer` / `poll` / `peek` / `remove` / `isEmpty`,
+ * including [NO_VALUE]'s value space) matches the upstream queue exactly.
+ *
+ * **Indexing.** keel uses 0-indexed storage (root at `array[0]`) where Netty's
+ * upstream is 1-indexed (root at `array[1]`, slot 0 unused). The choice is
+ * cosmetic — Kotlin convention — and shows up only in the parent/child
+ * arithmetic (`(i - 1) ushr 1`, `(i shl 1) + 1`) and in the growth expression
+ * (plain doubling vs Netty's `1 + (length - 1) * 2` adjustment for the unused
+ * slot).
  */
 internal class LongPriorityQueue {
     private var array = LongArray(INITIAL_CAPACITY)
