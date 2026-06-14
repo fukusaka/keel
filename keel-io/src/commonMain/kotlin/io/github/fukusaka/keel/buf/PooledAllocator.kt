@@ -63,6 +63,16 @@ abstract class PooledAllocator(
      * per-EventLoop children produced by [newChildInstance]. Treat as read-only.
      */
     protected val freelistFactory: FreelistFactory? = null,
+    /**
+     * Optional opt-in instrumentation: when non-`null`, every [allocate] dispatch
+     * records the path it took (pool hit / miss / empty / huge) into this profile
+     * — see [PoolMissProfile] for the taxonomy. Off by default; only wire when
+     * profiling (e.g. a benchmark `--profile-alloc` flag). The shared profile is
+     * thread-safe and forwarded to per-EventLoop children produced by [createChild]
+     * so all EventLoops aggregate into one histogram. Each recorded path adds a
+     * single atomic increment to the otherwise hot allocate path.
+     */
+    val missProfile: PoolMissProfile? = null,
 ) : BufferAllocator {
 
     /** The size-class table driving round-up. Built once with keel's pooling parameters. */
@@ -228,6 +238,7 @@ abstract class PooledAllocator(
         // Preserve the empty-buffer marker semantics: allocate(0) yields a true
         // zero-capacity buffer rather than rounding up to the smallest class.
         if (capacity == 0) {
+            missProfile?.recordEmpty()
             val empty = newBuffer(0)
             (empty as AbstractIoBuf).owner = poolOwner
             return empty
@@ -240,6 +251,7 @@ abstract class PooledAllocator(
                 val pool = l.pools[idx]
                 val recycled = pool?.pop()
                 if (recycled != null) {
+                    missProfile?.recordHit(idx)
                     allocsSinceTrim[idx]++ // working-set signal: this class served from cache
                     cachedCount[idx]--
                     (recycled as AbstractIoBuf).resetForReuse()
@@ -251,6 +263,7 @@ abstract class PooledAllocator(
                 // system allocation). The view's capacity is the class size, so it
                 // pools on release like any cached buffer; its freeBacking returns
                 // the run to the chunk when the pool is full.
+                missProfile?.recordMiss(idx)
                 val fresh = chunkArena.carve(idx)
                 (fresh as AbstractIoBuf).owner = poolOwner
                 maybeTrim()
@@ -258,6 +271,7 @@ abstract class PooledAllocator(
             }
         }
         // Above the cache cap or above the whole ladder (huge): exact, unpooled.
+        missProfile?.recordHuge()
         val fresh = newBuffer(capacity)
         (fresh as AbstractIoBuf).owner = poolOwner
         return fresh

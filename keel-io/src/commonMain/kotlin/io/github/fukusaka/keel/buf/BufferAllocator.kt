@@ -163,5 +163,11 @@ object DefaultAllocator : BufferAllocator {
  * - **Native** (Linux/macOS): [SlabAllocator] — per-EventLoop nativeHeap pool
  * - **JVM**: [PooledDirectAllocator] — per-EventLoop DirectByteBuffer pool
  * - **JS**: [DefaultAllocator] — V8 GC manages Int8Array; pooling is unnecessary
+ *
+ * The optional [missProfile] is wired into platforms whose default allocator is
+ * a [PooledAllocator] (Native + JVM); other platforms ignore it. Pass `null`
+ * (default) for normal runs; pass a profile for `--profile-alloc`-style
+ * instrumentation so every dispatch records its path (hit / miss / empty /
+ * huge).
  */
-expect fun defaultAllocator(): BufferAllocator
+expect fun defaultAllocator(missProfile: PoolMissProfile? = null): BufferAllocator
