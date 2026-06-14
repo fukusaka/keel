@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.websocket
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
@@ -191,8 +192,9 @@ class WsFrameAggregatorTest {
     /** A `permessage-deflate` engine wired as the aggregator's inflater. */
     private fun deflateEngine(): WsPermessageDeflate =
         WsPermessageDeflate(
-            DeflateCodec,
-            WsDeflateOptions(contextTakeover = false, threshold = 0),
+            allocator = DefaultAllocator,
+            codec = DeflateCodec,
+            options = WsDeflateOptions(contextTakeover = false, threshold = 0),
             serverMaxWindowBits = null,
             clientMaxWindowBits = null,
         )

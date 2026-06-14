@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.server.websocket
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBufAccumulator
 import io.github.fukusaka.keel.buf.IoBufChunks
-import io.github.fukusaka.keel.buf.defaultAllocator
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.CompressionCodec
 import io.github.fukusaka.keel.compression.DecoderOptions
@@ -51,6 +50,20 @@ import io.github.fukusaka.keel.compression.WrapFormat
  * run concurrently for one connection. Concurrent calls corrupt the
  * underlying DEFLATE state.
  *
+ * @property allocator buffer allocator borrowed from the channel
+ *   (`PipelinedChannel.allocator`, which the engine populates with its
+ *   per-EL pool). Used for the encoder / decoder session output chunks
+ *   plus the [IoBufAccumulator] scratch buffers. Borrowed, not owned:
+ *   [close] does NOT close this allocator. Switching from the previous
+ *   per-instance `defaultAllocator()` to the channel's allocator fixes
+ *   a per-WS-connection leak — that fresh allocator had no path to
+ *   `close()` (the encoder/decoder closed but the allocator was
+ *   orphaned), so its size-class freelists / chunk arena / (on Native
+ *   with `MutexFreelist`) `pthread_mutex_t`s leaked for the engine's
+ *   lifetime. Routing through the channel's per-EL allocator also
+ *   means deflate output reuses the same pool the rest of the
+ *   pipeline already exercises, so cross-connection pool warmth is
+ *   preserved.
  * @property codec the compression backend supplying encoder / decoder.
  * @property options the effective (post-negotiation) deflate options.
  * @property serverMaxWindowBits negotiated server LZ77 window-bits cap,
@@ -59,6 +72,7 @@ import io.github.fukusaka.keel.compression.WrapFormat
  *   or null for the backend default (15).
  */
 internal class WsPermessageDeflate(
+    private val allocator: BufferAllocator,
     private val codec: CompressionCodec,
     private val options: WsDeflateOptions,
     serverMaxWindowBits: Int?,
@@ -76,8 +90,6 @@ internal class WsPermessageDeflate(
     serverContextTakeover: Boolean = options.contextTakeover,
     clientContextTakeover: Boolean = options.contextTakeover,
 ) : AutoCloseable {
-
-    private val allocator: BufferAllocator = defaultAllocator()
 
     private val encoder: EncoderSession = codec.encoder.newSession(
         allocator,

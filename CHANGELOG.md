@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `server-websocket`: `WsPermessageDeflate` now borrows the channel's per-EventLoop allocator instead of spinning up a fresh `defaultAllocator()` per WebSocket connection. The per-instance allocator had no path to `close()` — the encoder and decoder closed correctly but the allocator itself was orphaned, leaking its size-class freelists, chunk arena, and (on Native with `MutexFreelist`) one `pthread_mutex_t` per pooled size class for the engine's lifetime, once per permessage-deflate WS connection. Routing the deflate sessions through `channel.allocator` also lets the existing per-EL pool warmth cover the deflate output buffers. (#791)
+
 ### Changed
 
 - **BREAKING** (`io`): `BufferAllocator.createForEventLoop()` is renamed to `BufferAllocator.createChild()`. The original name overcommitted to the EL-pinned engine model and reads wrong for engines that have no per-thread split (NwEngine, NodeEngine). The new name reflects the real semantics: "create a child allocator scoped to the caller's lifecycle, the caller closes it". KDoc rewritten accordingly. The `protected createChild(maxTotalBytes: Long)` seam on `PooledAllocator` is renamed to `newChildInstance(maxTotalBytes: Long)` to free up the public name. Callers in keel (every engine and the lifecycle tests) updated; out-of-tree implementations of `BufferAllocator` that override `createForEventLoop()` will need to rename the override. (#790)
