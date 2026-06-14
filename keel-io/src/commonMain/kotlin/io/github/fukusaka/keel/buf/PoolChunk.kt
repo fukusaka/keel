@@ -173,6 +173,15 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
         var finalRun = collapseRuns(handle)
         finalRun = finalRun and (1L shl IS_USED_SHIFT).inv()
         finalRun = finalRun and (1L shl IS_SUBPAGE_SHIFT).inv()
+        // Clear the low 32 bits (bitmapIdx encoding) so the handle stored in
+        // runsAvail is a well-formed free-run handle. When a subpage with
+        // multi-element bitmap is fully drained and falls through here, the
+        // original handle still carries the last freed element's bitmapIdx
+        // > 0; without this clear, runsAvail picks up corrupted handles and
+        // the `isFreeRunHandle` 7-field check (#794) trips on the next
+        // allocate. Bug previously hidden by tests that only freed an
+        // element with bitmapIdx == 0.
+        finalRun = finalRun and BITMAP_IDX_MASK.inv()
         insertAvailRun(runOffset(finalRun), runPages(finalRun), finalRun)
     }
 
@@ -317,6 +326,9 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
         const val SIZE_SHIFT = 34
         const val RUN_OFFSET_SHIFT = 49
         private const val FIELD_MASK = 0x7fffL // 15-bit runOffset / runPages fields
+
+        /** Low 32 bits where subpage handles encode bitmapIdx; cleared on the subpage→run reclaim path. */
+        private const val BITMAP_IDX_MASK = 0xFFFFFFFFL
 
         /** First page index of the run. */
         fun runOffset(handle: Long): Int = ((handle ushr RUN_OFFSET_SHIFT) and FIELD_MASK).toInt()
