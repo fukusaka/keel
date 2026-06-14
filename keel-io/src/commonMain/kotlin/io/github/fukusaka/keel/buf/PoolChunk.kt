@@ -34,8 +34,8 @@ package io.github.fukusaka.keel.buf
  *   page can have thousands of pages while only a handful of runs are free); the
  *   map's footprint scales with live entries instead. `0` means "no run".
  *
- * **Thread safety.** None of its own — the wiring layer serialises access (Netty's
- * arena holds `runsAvailLock`). Phase 3 is single-threaded pure logic.
+ * **Thread safety.** None of its own — the wiring layer ([PooledAllocator]'s
+ * arena lock + per-class subpage head locks) serialises access.
  *
  * @param sizeClasses the size-class table shared with the allocator.
  */

@@ -43,8 +43,20 @@ class PooledChunk internal constructor(
     /**
      * Outstanding carves (live + cached views) referencing this chunk. Mirrors the
      * extra references on [backing] beyond the arena's own hold, so `liveCarves == 0`
-     * means the chunk is fully idle and reclaimable. Maintained on the single
-     * owning thread (per-EventLoop), like the rest of the allocator's bookkeeping.
+     * means the chunk is fully idle and reclaimable.
+     *
+     * **Concurrency**: under [PooledAllocator]'s Option B lock topology,
+     * [retainForCarve] can run from the subpage fast path under a per-class
+     * subpage head lock only — different size classes carving from the same chunk
+     * race on this counter. Decrements always run under the arena lock (via
+     * [freeRun]). The race is bounded: a lost increment can make [isIdle]
+     * report `true` while view references are still live, in which case
+     * [PooledAllocator]'s `reclaim` pass drops the arena's own backing reference
+     * early — the chunk's backing then stays alive on the live view references
+     * and frees naturally when the last view releases. No use-after-free; only
+     * pooling-efficiency drift. Reading the live count atomically (or moving
+     * the counter onto [backing]'s `refCount`) is deferred to the A/B adoption
+     * pass that selects the final lock topology.
      */
     internal var liveCarves: Int = 0
         private set
@@ -87,7 +99,7 @@ class PooledChunk internal constructor(
     internal fun freeRun(handle: Long) {
         val allocator = owningAllocator
         // Post-close release path: the allocator has already destroyed its
-        // platform locks; PoolledAllocator.close()'s contract guarantees no
+        // platform locks; PooledAllocator.close()'s contract guarantees no
         // concurrent allocate at this point so the teardown branch in
         // returnToPool routes here only via close-time single-thread freeBacking.
         // Run the bookkeeping unsynchronised.

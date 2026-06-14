@@ -107,7 +107,7 @@ class PooledAllocatorConcurrentTest {
             }
             workers.forEach { it.start() }
             workers.forEach { it.join() }
-            assertEquals(0, exc.get(), "concurrent batched workload triggered $exc exceptions")
+            assertEquals(0, exc.get(), "concurrent batched workload triggered ${exc.get()} exceptions")
         } finally {
             allocator.close()
         }

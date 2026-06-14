@@ -17,7 +17,7 @@ package io.github.fukusaka.keel.buf
  * class manages its own [prev] / [next] pointers via [addToPool] / [removeFromPool].
  *
  * **Thread safety.** None of its own — callers serialise access (the arena holds
- * the head's lock in the wired allocator). Phase 3 is pure single-threaded logic.
+ * the per-class subpage head lock in the wired allocator).
  *
  * @property runOffset the run's first page index within the owning chunk.
  * @property runSize the run length in bytes.
