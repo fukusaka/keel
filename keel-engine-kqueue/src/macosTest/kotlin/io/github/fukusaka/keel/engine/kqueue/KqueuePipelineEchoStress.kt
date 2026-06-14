@@ -23,27 +23,26 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Cross-thread funnel regression stress for [KqueueEngine] (`*Stress` per
- * `.claude/rules/testing.md`).
+ * Cross-thread funnel regression stress for [KqueueEngine].
  *
- * **Purpose**: guards the I/O ownership invariant (design.md §36) — every
- * syscall against a channel must reach the channel's owning EventLoop via
- * the cross-thread funnel. 50 concurrent client coroutines on
- * [Dispatchers.Default] drive [PosixRawClient] writes/reads against a
- * multi-EL kqueue engine (`threads = 4`). Each round-trip exercises the
- * funnel because the coroutine thread differs from the engine EL thread,
- * so any regression that bypasses `assertInEventLoop` would surface as an
- * `IllegalStateException` propagating through the assert.
+ * **Purpose**: guards the I/O ownership invariant — every syscall against
+ * a channel must reach the channel's owning EventLoop via the cross-thread
+ * funnel. Client coroutines on [Dispatchers.Default] drive [PosixRawClient]
+ * writes/reads against a kqueue-backed pipeline echo handler. Each
+ * round-trip exercises the funnel because the coroutine thread differs
+ * from the engine EL thread, so any regression that bypasses
+ * `assertInEventLoop` would surface as an `IllegalStateException`
+ * propagating through the assert.
  *
- * **Why echo over WS/HTTP**: the funnel verification is workload-agnostic.
- * Plain TCP echo keeps the test small (no codec, no protocol framing) and
- * unifies the topology across all seven engine modules — see plan.md
- * "§36-A5 stress test CI gate".
+ * **Why plain TCP echo over WS/HTTP**: the funnel verification is
+ * workload-agnostic. Plain echo keeps the test small (no codec, no
+ * protocol framing) and unifies the topology across the engine modules
+ * that ship the same stress.
  *
  * **Gating**: every `@Test` returns early unless the `KEEL_STRESS`
  * environment variable is set (`quick` runs the quick scenario only,
  * `full` runs both). The CI quick-gate workflow sets `KEEL_STRESS=quick`
- * on engine PRs; `workflow_dispatch` for the engine's stress yml sets
+ * on engine PRs; the engine's stress `workflow_dispatch` yml sets
  * `KEEL_STRESS=full`.
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -88,8 +87,8 @@ class KqueuePipelineEchoStress {
         // coroutines run on `Dispatchers.Default` workers, distinct from
         // the engine EL thread, so every `Channel.write` round-trips
         // through `runOnEventLoop`. Multi-EL routing is a separate
-        // dimension tracked by the follow-up investigation listed in
-        // plan.md "§36-A5 stress test CI gate" (kqueue threads=4 race).
+        // dimension to be investigated in a follow-up before this test is
+        // promoted to `threads = 4`.
         val engine = KqueueEngine(IoEngineConfig(threads = 1))
         try {
             val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
