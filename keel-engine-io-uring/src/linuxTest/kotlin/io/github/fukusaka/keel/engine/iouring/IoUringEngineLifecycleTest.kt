@@ -29,6 +29,37 @@ class IoUringEngineLifecycleTest {
     }
 
     @Test
+    fun `engine close closes every per-EventLoop allocator`() = runBlocking {
+        withTimeout(15.seconds) {
+            val tracker = io.github.fukusaka.keel.buf.TrackingAllocator(
+                io.github.fukusaka.keel.buf.SlabAllocator(),
+            )
+            val threads = 2
+            val engine = IoUringEngine(
+                config = io.github.fukusaka.keel.core.IoEngineConfig(
+                    threads = threads,
+                    allocator = tracker,
+                ),
+            )
+            // IoUringEventLoopGroup tracks `threads` worker allocators
+            // (one per EL); the boss IoUringEventLoop has no allocator
+            // field of its own. engine.close() → group.close() closes
+            // every worker allocator after joining its pthread.
+            engine.close()
+            assertEquals(
+                threads,
+                tracker.totalCloseCount(),
+                "engine.close() must close every per-EventLoop allocator child",
+            )
+            assertEquals(
+                0,
+                tracker.closeCount,
+                "engine.close() must NOT close the user-owned parent allocator",
+            )
+        }
+    }
+
+    @Test
     fun `bind returns active server channel`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = IoUringEngine()

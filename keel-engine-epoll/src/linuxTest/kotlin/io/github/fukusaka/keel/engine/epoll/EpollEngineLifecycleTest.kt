@@ -32,6 +32,36 @@ class EpollEngineLifecycleTest {
     }
 
     @Test
+    fun engineCloseClosesEveryPerEventLoopAllocator() = runBlocking {
+        withTimeout(5.seconds) {
+            val tracker = io.github.fukusaka.keel.buf.TrackingAllocator(
+                io.github.fukusaka.keel.buf.SlabAllocator(),
+            )
+            val threads = 2
+            val engine = EpollEngine(
+                config = io.github.fukusaka.keel.core.IoEngineConfig(
+                    threads = threads,
+                    allocator = tracker,
+                ),
+            )
+            // EpollEventLoopGroup hands each worker EL a fresh
+            // `tracker.createForEventLoop()` child. Boss uses the default
+            // no-op allocator and is not part of the tracker tree.
+            engine.close()
+            assertEquals(
+                threads,
+                tracker.totalCloseCount(),
+                "engine.close() must close every per-EventLoop allocator child",
+            )
+            assertEquals(
+                0,
+                tracker.closeCount,
+                "engine.close() must NOT close the user-owned parent allocator",
+            )
+        }
+    }
+
+    @Test
     fun bindReturnsActiveServerChannel() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
