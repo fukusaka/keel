@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `engine-nwconnection`, `engine-nodejs`: take a single `config.allocator.createChild()` at engine construction and route every per-connection use through that engine-owned child, then close it in `engine.close()`. Both engines used to use `config.allocator` directly, so the user-passed allocator's pool resources stayed live for the user's lifetime — fine if the user remembered to close the parent, leak otherwise. The borrow-vs-own model now matches the other five engines (#789): the parent stays borrowed (multiple engines may share one), the child is engine-owned and gets `close()`d alongside the engine. Lifecycle tests `NwEngineLifecycleTest.engineCloseClosesEngineOwnedAllocator` and `NodeEngineLifecycleTest.engineCloseClosesEngineOwnedAllocator` pin the contract via `TrackingAllocator.totalCloseCount`. Closes the task_0580040f lifecycle wiring across all seven engines. (#792)
+
 ### Fixed
 
 - `server-websocket`: `WsPermessageDeflate` now borrows the channel's per-EventLoop allocator instead of spinning up a fresh `defaultAllocator()` per WebSocket connection. The per-instance allocator had no path to `close()` — the encoder and decoder closed correctly but the allocator itself was orphaned, leaking its size-class freelists, chunk arena, and (on Native with `MutexFreelist`) one `pthread_mutex_t` per pooled size class for the engine's lifetime, once per permessage-deflate WS connection. Routing the deflate sessions through `channel.allocator` also lets the existing per-EL pool warmth cover the deflate output buffers. (#791)

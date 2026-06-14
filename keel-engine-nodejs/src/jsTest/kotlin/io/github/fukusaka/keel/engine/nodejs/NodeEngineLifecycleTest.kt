@@ -22,6 +22,30 @@ class NodeEngineLifecycleTest {
     }
 
     @Test
+    fun engineCloseClosesEngineOwnedAllocator() = runTest(timeout = 15.seconds) {
+        // JS's defaultAllocator() returns the stateless `DefaultAllocator`
+        // whose `createChild()` returns `this`, so a TrackingAllocator
+        // wrapping it is shared with the engine-owned child (both
+        // trackers reference the same delegate). The shared `Stats`
+        // object counts the engine's `child.close()` exactly once.
+        val tracker = io.github.fukusaka.keel.buf.TrackingAllocator(DefaultAllocator)
+        val engine = NodeEngine(
+            config = io.github.fukusaka.keel.core.IoEngineConfig(allocator = tracker),
+        )
+        engine.close()
+        assertEquals(
+            1,
+            tracker.totalCloseCount(),
+            "engine.close() must close the engine-owned allocator child exactly once",
+        )
+        assertEquals(
+            0,
+            tracker.closeCount,
+            "engine.close() must NOT close the user-owned parent allocator",
+        )
+    }
+
+    @Test
     fun bindReturnsActiveServerChannel() = runTest(timeout = 15.seconds) {
         val engine = NodeEngine()
         val server = engine.bind("127.0.0.1", 0)
