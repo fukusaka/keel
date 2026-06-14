@@ -23,6 +23,22 @@ package io.github.fukusaka.keel.buf
  * @property runSize the run length in bytes.
  * @property elemSize the element size in bytes (a [SizeClasses] small class size).
  * @property sizeIdx the [SizeClasses] index of [elemSize] (carried for the pool head).
+ * @property headIndex the index of the size-class head sentinel where this subpage
+ *   was placed at creation. **Frozen at construction**: alloc and release paths use
+ *   it to look up the same head and therefore acquire the same lock, regardless of
+ *   what `sizeIdx` the caller computes at runtime. This mirrors the fix in Netty
+ *   PR #13626 (Issue #13625, 2023-09): under non-zero `directMemoryCacheAlignment`
+ *   the runtime `sizeIdx` can differ between alloc and release because the requested
+ *   size is rounded up at alignment, but the subpage continues to live under its
+ *   creation-time head. Freezing the head index here prevents alloc / release from
+ *   locking on different sentinels and corrupting the chain. keel currently has
+ *   alignment = 0 so `headIndex == sizeIdx` in practice, but the field is captured
+ *   defensively so future alignment changes do not re-introduce the bug.
+ * @property owningChunk the [PooledChunk] this subpage was carved from, or `null`
+ *   for size-class head sentinels (which do not represent any backing run). The
+ *   back-pointer lets the allocator-level per-class chain walker locate the chunk
+ *   it must build a view from when it finds a free subpage, without a separate
+ *   `(subpage, chunk)` lookup table. Set once at construction and never mutated.
  */
 internal class PoolSubpage private constructor(
     val pageShifts: Int,
@@ -30,6 +46,8 @@ internal class PoolSubpage private constructor(
     val runSize: Int,
     val elemSize: Int,
     val sizeIdx: Int,
+    val headIndex: Int,
+    val owningChunk: PooledChunk?,
     private val isHead: Boolean,
 ) {
     /** Total element slots in the run. */
@@ -157,14 +175,40 @@ internal class PoolSubpage private constructor(
         private const val BITS_PER_LONG = 64
         private const val BITS_PER_LONG_SHIFT = 6
 
-        /** Creates a list-head sentinel for one size class (carries no elements). */
-        fun newHead(pageShifts: Int): PoolSubpage =
-            PoolSubpage(pageShifts, runOffset = 0, runSize = 0, elemSize = 0, sizeIdx = -1, isHead = true).also {
+        /**
+         * Creates a list-head sentinel for one size class (carries no elements).
+         *
+         * @param pageShifts `log2(pageSize)`; carried for arithmetic only — head
+         *   sentinels do not allocate.
+         * @param headIndex the size-class index this head represents. Used by
+         *   non-head subpages created at this head so that alloc and release
+         *   always look up the same sentinel (see the `headIndex` property KDoc
+         *   above for the Netty PR #13626 rationale).
+         */
+        fun newHead(pageShifts: Int, headIndex: Int = -1): PoolSubpage =
+            PoolSubpage(
+                pageShifts,
+                runOffset = 0,
+                runSize = 0,
+                elemSize = 0,
+                sizeIdx = -1,
+                headIndex = headIndex,
+                owningChunk = null,
+                isHead = true,
+            ).also {
                 it.prev = it
                 it.next = it
             }
 
-        /** Carves a subpage from a run and links it into [head]'s pool. */
+        /**
+         * Carves a subpage from a run and links it into [head]'s pool.
+         *
+         * The subpage inherits [head]'s `headIndex` so all future operations on
+         * this subpage (`allocate` from `chunk.allocate` path, `free` from
+         * `chunk.free` path) lock the same head sentinel — matching the fix in
+         * Netty PR #13626. [owningChunk] is the `PooledChunk` whose backing memory
+         * supplies this subpage's run.
+         */
         fun create(
             head: PoolSubpage,
             pageShifts: Int,
@@ -172,8 +216,18 @@ internal class PoolSubpage private constructor(
             runSize: Int,
             elemSize: Int,
             sizeIdx: Int,
+            owningChunk: PooledChunk? = null,
         ): PoolSubpage {
-            val sub = PoolSubpage(pageShifts, runOffset, runSize, elemSize, sizeIdx, isHead = false)
+            val sub = PoolSubpage(
+                pageShifts,
+                runOffset,
+                runSize,
+                elemSize,
+                sizeIdx,
+                headIndex = head.headIndex,
+                owningChunk = owningChunk,
+                isHead = false,
+            )
             sub.addToPool(head)
             return sub
         }

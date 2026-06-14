@@ -59,7 +59,7 @@ class PooledChunk internal constructor(
             val handle = first.allocate()
             if (handle != PoolSubpage.NO_HANDLE) return handle
         }
-        return poolChunk.allocateSubpage(sizeIdx, head)
+        return poolChunk.allocateSubpage(sizeIdx, head, this)
     }
 
     /**

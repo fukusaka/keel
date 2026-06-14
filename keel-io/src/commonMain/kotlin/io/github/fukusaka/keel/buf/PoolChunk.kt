@@ -134,7 +134,7 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
      * free subpage across chunks is the arena's job (Phase 4) — this only creates
      * a new subpage in this chunk.
      */
-    fun allocateSubpage(sizeIdx: Int, head: PoolSubpage): Long {
+    fun allocateSubpage(sizeIdx: Int, head: PoolSubpage, owningChunk: PooledChunk? = null): Long {
         val runSize = calculateRunSize(sizeIdx)
         val runHandle = allocateRun(runSize)
         if (runHandle == NO_HANDLE) return NO_HANDLE
@@ -147,6 +147,7 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
             runSize = runSize(pageShifts, runHandle),
             elemSize = elemSize,
             sizeIdx = sizeIdx,
+            owningChunk = owningChunk,
         )
         subpages[runOffset] = subpage
         return subpage.allocate()
