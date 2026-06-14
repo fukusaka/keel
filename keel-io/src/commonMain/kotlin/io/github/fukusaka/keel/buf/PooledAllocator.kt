@@ -145,7 +145,32 @@ abstract class PooledAllocator(
         sizeClasses = sizeClasses,
         newChunkBacking = { newBuffer(CHUNK_SIZE) },
         newChunkView = ::newChunkView,
+        owningAllocator = this,
     )
+
+    /**
+     * Single arena-level lock guarding every mutation of [chunkArena] / [PooledChunk]
+     * state (chunks list, run / subpage carve, run / subpage release, chunk reclaim).
+     * Option A topology: all paths through the chunk back-end serialise on this
+     * one mutex. The per-size-class [Freelist] in front of [chunkArena] supplies
+     * its own concurrency for the hot allocate / release path; this lock only
+     * fires on the freelist-miss carve path and on the release path that returns
+     * a run / subpage to its chunk.
+     *
+     * Held by:
+     * - the freelist-miss carve path in [allocate] (around `chunkArena.carve`).
+     * - the freelist-miss release path in [returnToPool] / [trim] (around
+     *   `freeBacking` → [PooledChunk.freeRun] via the `owningAllocator` back
+     *   pointer's [withArenaLock]).
+     * - the cache-trim pass in [trim] (around `chunkArena.reclaim`).
+     *
+     * Destroyed in [close] **after** [chunkArena.close] so any straggler release
+     * from an in-flight buffer that survives until close still finds a live
+     * mutex; the post-close branch ([isClosed]) routes those releases to the
+     * unsynchronised path because the close contract forbids concurrent
+     * allocate at that point.
+     */
+    private val arenaLock: PlatformLock = PlatformLock()
 
     /** Constructs a fresh backing buffer of exactly [capacity] bytes (platform seam). */
     protected abstract fun newBuffer(capacity: Int): IoBuf
@@ -264,7 +289,7 @@ abstract class PooledAllocator(
                 // pools on release like any cached buffer; its freeBacking returns
                 // the run to the chunk when the pool is full.
                 missProfile?.recordMiss(idx)
-                val fresh = chunkArena.carve(idx)
+                val fresh = arenaLock.withLock { chunkArena.carve(idx) }
                 (fresh as AbstractIoBuf).owner = poolOwner
                 maybeTrim()
                 return fresh
@@ -353,8 +378,23 @@ abstract class PooledAllocator(
                 evict--
             }
         }
-        chunkArena.reclaim(WARM_RESERVE)
+        arenaLock.withLock { chunkArena.reclaim(WARM_RESERVE) }
     }
+
+    /**
+     * Whether [close] has run. Exposed `internal` so [PooledChunk]'s release
+     * path can detect a post-close release and skip lock acquisition — the
+     * close contract guarantees no concurrent allocate at that point, so the
+     * unsynchronised teardown is safe.
+     */
+    internal val isClosed: Boolean get() = closed
+
+    /**
+     * Runs [block] under the arena lock. Exposed `internal` so the
+     * [PooledChunk] release path takes the same lock as the allocate miss
+     * path and the trim pass.
+     */
+    internal inline fun <T> withArenaLock(block: () -> T): T = arenaLock.withLock(block)
 
     final override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         sliceDefaultIoBuf(source, offset, length)
@@ -402,6 +442,14 @@ abstract class PooledAllocator(
             pool.close()
         }
         chunkArena.close()
+        // Release the arena mutex this allocator owns. Idempotent at the
+        // PlatformLock level. Done after chunkArena.close() so any chunk-backed
+        // view that gets released between the freelist drain above and this
+        // line still finds a live lock; releases land in the closed-flag
+        // branch of returnToPool which freeBacking()s directly, but
+        // freeBacking() can still call into PooledChunk.freeRun which routes
+        // through the isClosed branch to skip the lock acquire on the way out.
+        arenaLock.close()
     }
 
     /**

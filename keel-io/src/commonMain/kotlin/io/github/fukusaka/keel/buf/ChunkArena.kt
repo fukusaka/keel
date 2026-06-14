@@ -36,6 +36,14 @@ internal class ChunkArena(
     private val sizeClasses: SizeClasses,
     private val newChunkBacking: () -> IoBuf,
     private val newChunkView: ChunkViewFactory,
+    /**
+     * The owning [PooledAllocator] used as `PooledChunk.owningAllocator`.
+     * Nullable for direct ChunkArena tests / bench harnesses that exercise the
+     * chunk back-end without an allocator (e.g. `ChunkArenaCarveBenchmark`);
+     * the release path then runs unsynchronised, which is correct because
+     * those tests pin a single thread to the arena.
+     */
+    private val owningAllocator: PooledAllocator? = null,
 ) {
     private val chunks = ArrayList<PooledChunk>()
 
@@ -55,7 +63,7 @@ internal class ChunkArena(
             val handle = if (subpage) pc.carveSubpage(sizeIdx) else pc.carveRun(classSize)
             if (handle != PoolChunk.NO_HANDLE) return makeView(pc, handle, classSize)
         }
-        val fresh = PooledChunk(newChunkBacking(), PoolChunk(sizeClasses))
+        val fresh = PooledChunk(newChunkBacking(), PoolChunk(sizeClasses), owningAllocator)
         chunks.add(fresh)
         val handle = if (subpage) fresh.carveSubpage(sizeIdx) else fresh.carveRun(classSize)
         check(handle != PoolChunk.NO_HANDLE) { "fresh chunk failed to carve size class $sizeIdx ($classSize bytes)" }
