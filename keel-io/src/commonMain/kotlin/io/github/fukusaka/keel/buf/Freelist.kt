@@ -53,4 +53,16 @@ interface Freelist {
      * registration). Not a hot-path operation.
      */
     fun snapshotInto(out: MutableList<IoBuf>)
+
+    /**
+     * Releases any OS resources the implementation acquired (`pthread_mutex_t`,
+     * file descriptors, etc.) Called once from [PooledAllocator.close] after
+     * the allocator has drained pooled buffers via [pop]. Default no-op for
+     * implementations whose only state is GC-managed.
+     *
+     * After [close] the freelist must not be used; calling [push] / [pop] is
+     * undefined behaviour. Implementations should be idempotent so a double
+     * close does not crash.
+     */
+    fun close() {}
 }

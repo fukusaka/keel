@@ -83,4 +83,27 @@ class MutexFreelistAllocatorTest {
         assertEquals(5, tracker.releaseCount)
         assertEquals(0, tracker.outstandingCount)
     }
+
+    @Test
+    fun closeDestroysEveryMutexFreelistIdempotently() {
+        val a = allocator()
+        // Touch a few size classes so their MutexFreelist instances are
+        // actually exercised before close. Without a pop/push the freelist
+        // is still constructed (its mutex is initialised); close must
+        // destroy each one cleanly either way.
+        val small = a.allocate(64)
+        val page = a.allocate(8192)
+        val large = a.allocate(16 * 1024)
+        small.release()
+        page.release()
+        large.release()
+
+        // `pthread_mutex_destroy` on an initialised mutex with no waiters
+        // returns 0. If the closed-flag guard in MutexFreelist is wrong
+        // and the second close re-runs destroy on the freed slot, the
+        // POSIX call returns EINVAL and `check()` throws — so the second
+        // close passes here iff every freelist tracks its own closed flag.
+        a.close()
+        a.close()
+    }
 }

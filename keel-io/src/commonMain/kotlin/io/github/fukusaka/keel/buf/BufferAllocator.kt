@@ -82,6 +82,34 @@ interface BufferAllocator {
      * Engines call this once per EventLoop at construction.
      */
     fun createForEventLoop(): BufferAllocator = this
+
+    /**
+     * Releases the allocator's pooled buffers and any platform resources
+     * (`pthread_mutex_t`, file descriptors, etc.) it holds. Engines call
+     * this on teardown after they have stopped their EventLoop threads,
+     * so the close path is single-threaded with no in-flight [allocate]
+     * calls.
+     *
+     * **Buffers in use at close time stay alive.** Pool-managed
+     * `IoBuf`s whose refCount is still positive (e.g. an in-flight write
+     * not yet flushed) are not touched; their `release()` later runs the
+     * "allocator closed" branch and frees the backing directly instead of
+     * returning to the pool. The implementation may log a warning naming
+     * the in-use count.
+     *
+     * Implementations must be **idempotent** — a second [close] is a
+     * no-op. Calling [allocate] or [createForEventLoop] after [close]
+     * throws [IllegalStateException]. The default body is a no-op,
+     * covering pool-less allocators ([DefaultAllocator], JS).
+     *
+     * Not declared on [AutoCloseable] — adding that supertype changes
+     * the Kotlin/JS name mangling of every interface method that takes
+     * a [BufferAllocator] (`Encoder.newSession`, etc.) and de-syncs
+     * implementation / call-site bytecode across modules. Callers that
+     * want `use { }` should wrap the allocator in a thin `AutoCloseable`
+     * adapter at the call site.
+     */
+    fun close() {}
 }
 
 /**
