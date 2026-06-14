@@ -163,5 +163,13 @@ class PoolAllocatorTest {
  */
 expect fun createPoolAllocator(): BufferAllocator
 
+/**
+ * Creates a [PooledAllocator] wired with the given [PoolMissProfile]. The
+ * concrete platform allocator returned is the same as [createPoolAllocator];
+ * this overload exists so [PoolMissProfileTest] can verify the wiring without
+ * the test file needing platform-specific imports.
+ */
+expect fun createPoolAllocatorWithProfile(profile: PoolMissProfile): BufferAllocator
+
 /** Returns true if the platform has a real pool allocator (Native/JVM). */
 expect fun isPoolAllocator(): Boolean

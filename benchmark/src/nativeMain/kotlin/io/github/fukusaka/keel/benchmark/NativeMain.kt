@@ -116,13 +116,17 @@ fun main(args: Array<String>) {
     signal(SIGINT, handler)
 
     // Block main thread. The signal handler terminates the process.
-    // Under --profile-alloc, dump the allocation-size histogram every few
-    // seconds so the accumulated profile is visible in the bench log before
-    // the signal handler _exit(0)s (there is no clean-shutdown dump point).
+    // Under --profile-alloc, dump both the allocation-size histogram (request
+    // shape at the public boundary) and the pool-miss profile (what the pool
+    // dispatch did with those requests) every few seconds so the accumulated
+    // profiles are visible in the bench log before the signal handler
+    // _exit(0)s (there is no clean-shutdown dump point).
     if (config.profileAlloc) {
+        val sizeIdx2size = io.github.fukusaka.keel.buf.PoolMissProfile.defaultPoolSizeIdx2size()
         while (true) {
             platform.posix.sleep(PROFILE_DUMP_INTERVAL_SECONDS)
             println(benchmarkAllocationProfile.format())
+            println(benchmarkPoolMissProfile.format(sizeIdx2size))
         }
     }
     while (true) {

@@ -36,7 +36,8 @@ import java.util.concurrent.atomic.AtomicReference
 class PooledDirectAllocator(
     maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
     freelistFactory: FreelistFactory? = null,
-) : PooledAllocator(maxTotalBytes, freelistFactory) {
+    missProfile: PoolMissProfile? = null,
+) : PooledAllocator(maxTotalBytes, freelistFactory, missProfile) {
 
     init {
         installDefaultLadder()
@@ -57,7 +58,7 @@ class PooledDirectAllocator(
     override fun defaultFreelist(maxSlots: Int): Freelist = TreiberStackFreelist(maxSlots)
 
     override fun newChildInstance(maxTotalBytes: Long): PooledAllocator =
-        PooledDirectAllocator(maxTotalBytes, freelistFactory)
+        PooledDirectAllocator(maxTotalBytes, freelistFactory, missProfile)
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
         if (length == 0) return null
