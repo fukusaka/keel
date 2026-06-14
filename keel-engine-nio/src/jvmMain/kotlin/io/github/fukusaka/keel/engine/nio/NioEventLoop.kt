@@ -497,6 +497,17 @@ internal class NioEventLoop(
         selector.wakeup()
         thread.join(2000)
         selector.close()
+        // Close the per-EL allocator child. By construction the
+        // NioEventLoopGroup hands each EL the result of
+        // `BufferAllocator.createForEventLoop()`, so closing here drains
+        // this loop's freelists and releases any Freelist-held OS
+        // resources (currently a no-op on JVM where the default
+        // `TreiberStackFreelist` has no OS state; the seam is here so a
+        // future mutex-backed strategy works without revisiting the
+        // teardown path). Safe because the EL thread is joined above.
+        // Default no-op for `DefaultAllocator` (tests that instantiate
+        // this loop with the stateless allocator).
+        allocator.close()
     }
 }
 

@@ -335,6 +335,16 @@ internal class IoUringEventLoopGroup(
      */
     fun close() {
         for (loop in loops) loop.close()
+        // Close the per-EL allocator children. Order matters: each loop's
+        // pthread is joined first by `loop.close()` above, so by the time
+        // we touch the allocators no thread can race a returnToPool /
+        // allocate against the closed-flag guard. The allocators are
+        // stored on `IoUringEventLoopGroup` (not on the loop) because the
+        // io_uring registered-buffer / fixed-file / provided-buffer-ring
+        // tables also live here — keeping the close points local to this
+        // group keeps the teardown surface small. Default no-op for
+        // `DefaultAllocator`.
+        for (a in allocators) a.close()
     }
 
     /**

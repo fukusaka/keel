@@ -582,6 +582,15 @@ class NettyEngine(
             // causes CI timeouts when channels are not fully drained.
             workerGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
             bossGroup.shutdownGracefully(0, 2, java.util.concurrent.TimeUnit.SECONDS).sync()
+            // Close the per-EL `NettyByteBufAllocator` wrappers. The
+            // underlying Netty `ByteBufAllocator` is owned by Netty and
+            // released by `shutdownGracefully` above; the wrapper's
+            // `close()` is a no-op today, but iterating here completes
+            // the contract so a future allocator decorator with real
+            // OS state (e.g. a `TrackingAllocator` debug wrapper) gets
+            // its teardown call.
+            for (a in eventLoopAllocators.values) a.close()
+            eventLoopAllocators.clear()
             logger.debug { "Engine closed (transport=${nettyTransport.name})" }
         }
     }

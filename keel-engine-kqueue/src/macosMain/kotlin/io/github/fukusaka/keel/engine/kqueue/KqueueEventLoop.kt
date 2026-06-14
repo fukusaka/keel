@@ -857,6 +857,15 @@ internal class KqueueEventLoop(
             }
             // taskQueue is MpscQueue (lock-free, no mutex to destroy)
             arena.clear()
+            // Close the per-EL allocator child. By construction the
+            // EventLoopGroup hands each EL the result of
+            // `BufferAllocator.createForEventLoop()`, so closing here drains
+            // this loop's freelists and runs `Freelist.close()` (mutex
+            // destroy / nativeHeap.free for `MutexFreelist`). Safe because
+            // the EL thread is joined above — no concurrent allocate /
+            // returnToPool calls. Default no-op for `DefaultAllocator` (tests
+            // that instantiate this loop with the stateless allocator).
+            allocator.close()
         }
     }
 

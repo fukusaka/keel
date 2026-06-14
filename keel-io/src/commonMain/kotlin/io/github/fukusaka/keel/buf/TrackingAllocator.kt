@@ -24,9 +24,25 @@ package io.github.fukusaka.keel.buf
  *
  * @param delegate The underlying allocator to delegate to.
  */
-class TrackingAllocator(
-    private val delegate: BufferAllocator = DefaultAllocator,
+class TrackingAllocator private constructor(
+    private val delegate: BufferAllocator,
+    private val stats: Stats,
 ) : BufferAllocator {
+
+    constructor(delegate: BufferAllocator = DefaultAllocator) : this(delegate, Stats())
+
+    /**
+     * Counters shared across an allocator tree: a parent and every child it
+     * produces via [createForEventLoop] reference the same [Stats] instance,
+     * so totals such as [totalCloseCount] reflect the full per-EventLoop
+     * fan-out without each test having to keep a separate reference to every
+     * child.
+     */
+    class Stats {
+        /** Total [close] calls observed across this tracker tree. */
+        var totalCloseCount: Int = 0
+            internal set
+    }
 
     /** Total number of [allocate] calls since creation or last [reset]. */
     var allocateCount: Int = 0
@@ -34,6 +50,10 @@ class TrackingAllocator(
 
     /** Total number of release calls since creation or last [reset]. */
     var releaseCount: Int = 0
+        private set
+
+    /** [close] call count on this individual tracker. See [totalCloseCount] for the tree total. */
+    var closeCount: Int = 0
         private set
 
     /** Outstanding buffers: `allocateCount - releaseCount`. Zero means no leak. */
@@ -70,7 +90,20 @@ class TrackingAllocator(
         delegate.slice(source, offset, length)
 
     override fun createForEventLoop(): BufferAllocator =
-        TrackingAllocator(delegate.createForEventLoop())
+        TrackingAllocator(delegate.createForEventLoop(), stats)
+
+    override fun close() {
+        closeCount++
+        stats.totalCloseCount++
+        delegate.close()
+    }
+
+    /**
+     * Aggregate [close] call count across this tracker and every child
+     * produced via [createForEventLoop]. Useful for asserting that an engine
+     * teardown closed every per-EventLoop allocator it created.
+     */
+    fun totalCloseCount(): Int = stats.totalCloseCount
 
     /**
      * Asserts that all allocated buffers have been released.

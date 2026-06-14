@@ -19,6 +19,37 @@ class NioEngineLifecycleTest {
     }
 
     @Test
+    fun engineCloseClosesEveryPerEventLoopAllocator() = runTest {
+        // Wrap the platform default allocator in a TrackingAllocator so we
+        // can observe how many per-EventLoop children the engine creates
+        // and that engine.close() drives close() on every one of them.
+        val tracker = io.github.fukusaka.keel.buf.TrackingAllocator(
+            io.github.fukusaka.keel.buf.PooledDirectAllocator(),
+        )
+        val threads = 2
+        val engine = NioEngine(
+            config = io.github.fukusaka.keel.core.IoEngineConfig(
+                threads = threads,
+                allocator = tracker,
+            ),
+        )
+        // NioEngineGroup builds `threads` worker EventLoops, each handed a
+        // fresh `tracker.createForEventLoop()` child. Boss isn't an
+        // NioEventLoop (it shares the server channel's selector), so we
+        // expect exactly `threads` per-EL trackers.
+        engine.close()
+        assertEquals(
+            threads,
+            tracker.totalCloseCount(),
+            "engine.close() must close every per-EventLoop allocator child",
+        )
+        // The user-passed parent tracker stays open — the engine borrows
+        // it for `createForEventLoop` and never closes the borrowed
+        // allocator.
+        assertEquals(0, tracker.closeCount, "engine.close() must NOT close the user-owned parent allocator")
+    }
+
+    @Test
     fun bindReturnsActiveServerChannel() = runTest {
         val engine = NioEngine()
         val server = engine.bind("0.0.0.0", 0)
