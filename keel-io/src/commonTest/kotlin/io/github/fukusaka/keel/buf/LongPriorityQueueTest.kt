@@ -1,7 +1,9 @@
 package io.github.fukusaka.keel.buf
 
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class LongPriorityQueueTest {
@@ -222,5 +224,166 @@ class LongPriorityQueueTest {
         val q = LongPriorityQueue()
         for (i in 100 downTo 1) q.offer(i.toLong())
         for (i in 1..100) assertEquals(i.toLong(), q.poll())
+    }
+
+    /**
+     * `remove(value)` is a linear scan that returns on the **first** match, so
+     * a queue holding the same value twice loses only one occurrence per call.
+     * Pinning this matters because a future change to `removeAll`-style
+     * semantics would be a silent contract break — `PoolChunk` does not insert
+     * duplicates today, but the queue is an internal primitive whose
+     * contract may be reused.
+     */
+    @Test
+    fun `remove of a duplicate value removes only one occurrence`() {
+        val q = LongPriorityQueue()
+        listOf(10L, 20L, 10L, 30L).forEach { q.offer(it) }
+        q.remove(10L)
+        assertEquals(
+            // One 10 remains; the rest are intact and sorted.
+            listOf(10L, 20L, 30L),
+            generateSequence { q.poll() }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList(),
+        )
+    }
+
+    /**
+     * `offer` accepts any `Long` value except [LongPriorityQueue.NO_VALUE]
+     * (`-1L`). The queue is an internal primitive — `PoolChunk` only stores
+     * positive run handles, but the contract surface is broader, and a future
+     * caller could reasonably offer `0L`, [Long.MAX_VALUE], [Long.MIN_VALUE],
+     * or any other negative value. Pin that none of these confuse the heap
+     * (in particular, no aliasing with the sentinel) and that they poll back
+     * in ascending `Long` order.
+     */
+    @Test
+    fun `offer accepts any Long value except NO_VALUE`() {
+        val q = LongPriorityQueue()
+        // Mix of values around the contract boundary: most negative, just above
+        // the sentinel, zero (which used to BE the sentinel), small positives,
+        // and the largest representable `Long`.
+        val values = listOf(Long.MIN_VALUE, -100L, 0L, 1L, 100L, Long.MAX_VALUE)
+        values.forEach { q.offer(it) }
+        // Ascending order = sorted natural `Long` order, which is what the
+        // min-heap delivers; verifies the sift comparisons hold across the
+        // full `Long` range (no overflow or sign-bit confusion).
+        assertEquals(
+            values.sorted(),
+            generateSequence { q.poll() }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList(),
+        )
+    }
+
+    /**
+     * `0L` deserves a separate sanity test: it used to be the sentinel itself,
+     * and the previous bug propagated as a literal `0L` masquerading as the
+     * empty marker. After the sentinel moved to `-1L`, `0L` is a perfectly
+     * legal stored value — offering it must not confuse `poll` / `peek` /
+     * `isEmpty`.
+     */
+    @Test
+    fun `zero is a legal stored value after the sentinel moved to -1L`() {
+        val q = LongPriorityQueue()
+        q.offer(0L)
+        assertFalse(q.isEmpty())
+        assertEquals(0L, q.peek())
+        assertEquals(0L, q.poll())
+        assertTrue(q.isEmpty())
+        assertEquals(LongPriorityQueue.NO_VALUE, q.poll())
+    }
+
+    /**
+     * Cross-product state-coherence: an arbitrary interleaving of `offer`,
+     * `poll`, `remove`, and `peek` must keep `size` and the heap in sync.
+     * Drives the queue through every API in mixed order and verifies state
+     * at each step against a reference `sorted-list` oracle. Catches the
+     * class of bug where one method silently violates an invariant that
+     * a different method then trusts (the way the previous regression went
+     * undetected by single-method tests until `engine.close()` happened to
+     * drain a corrupted freelist).
+     */
+    @Test
+    fun `interleaved offer poll remove keeps the queue consistent with a sorted-list oracle`() {
+        val q = LongPriorityQueue()
+        // A mutable sorted view used as the truth source. After every queue
+        // operation, the smallest value of `oracle` must equal `q.peek()`,
+        // and `oracle.isEmpty()` must match `q.isEmpty()`.
+        val oracle = mutableListOf<Long>()
+
+        fun expect() {
+            assertEquals(oracle.isEmpty(), q.isEmpty(), "isEmpty drift")
+            if (oracle.isEmpty()) {
+                assertEquals(LongPriorityQueue.NO_VALUE, q.peek(), "peek on empty")
+            } else {
+                assertEquals(oracle.min(), q.peek(), "peek root drift")
+            }
+        }
+
+        fun offer(v: Long) {
+            q.offer(v); oracle.add(v); expect()
+        }
+
+        fun poll() {
+            val expected = oracle.min()
+            oracle.remove(expected)
+            assertEquals(expected, q.poll(), "poll value drift")
+            expect()
+        }
+
+        fun remove(v: Long) {
+            val present = oracle.remove(v) // remove first occurrence
+            q.remove(v)
+            if (!present) {
+                // Removing a missing value must be a no-op; oracle unchanged.
+                expect()
+            } else {
+                expect()
+            }
+        }
+
+        // Interleaving exercise: build up, drain partly, add more around
+        // remove'd holes, drain to empty.
+        offer(5L); offer(1L); offer(10L) // [1, 5, 10]
+        poll()                            // [5, 10]
+        offer(3L); offer(8L)              // [3, 5, 8, 10]
+        remove(5L)                        // [3, 8, 10]
+        remove(99L)                       // missing → no-op
+        offer(2L); offer(4L)              // [2, 3, 4, 8, 10]
+        poll(); poll()                    // [4, 8, 10]
+        remove(8L)                        // [4, 10]
+        offer(7L); offer(1L)              // [1, 4, 7, 10]
+        while (!oracle.isEmpty()) poll()  // drain
+        assertTrue(q.isEmpty(), "queue not empty after oracle drained")
+        assertEquals(LongPriorityQueue.NO_VALUE, q.poll(), "poll on drained queue")
+    }
+
+    /**
+     * Randomised broad correctness net. Generates a deterministic sequence of
+     * `N` `Long` values from a seeded PRNG, offers all of them, then polls
+     * the queue until empty and asserts the popped sequence matches the
+     * input sorted ascending. Exercises sift orderings the hand-written
+     * tests would not enumerate. Seeded so failures are reproducible from
+     * the test name alone.
+     */
+    @Test
+    fun `randomised offer-then-poll yields sorted output`() {
+        val q = LongPriorityQueue()
+        val n = 1_000
+        // Fixed seed → deterministic test; bump on intentional regen.
+        val rng = Random(seed = 0xC0FFEE5EEDL)
+        val input = LongArray(n) {
+            // Generate any `Long` in the valid value space (everything except
+            // the sentinel). Reject-resample is fine — collisions are vanishingly
+            // rare and the loop terminates almost always on the first draw.
+            var v: Long
+            do { v = rng.nextLong() } while (v == LongPriorityQueue.NO_VALUE)
+            v
+        }
+        input.forEach { q.offer(it) }
+        val expected = input.toList().sorted()
+        val actual = buildList(n) {
+            repeat(n) { add(q.poll()) }
+        }
+        assertEquals(expected, actual, "poll order does not match sorted input")
+        assertTrue(q.isEmpty(), "queue not drained after $n polls")
+        assertEquals(LongPriorityQueue.NO_VALUE, q.poll(), "poll on drained queue")
     }
 }
