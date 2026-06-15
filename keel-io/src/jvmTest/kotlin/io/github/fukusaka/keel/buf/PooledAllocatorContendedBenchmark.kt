@@ -27,6 +27,17 @@ import kotlin.test.Test
  *   — the regime where the upcoming Netty-style per-size-class subpage lock
  *   (Option B) is expected to outperform a single arena-wide mutex (Option A).
  *
+ * Two freelist front-ends are measured:
+ * - **TreiberStackFreelist** (default): intrusive lock-free stack. ABA-unsafe
+ *   under genuine MPMC, so the unsafe-baseline `contendedUniform` /
+ *   `contendedMixed` rows mostly capture exception bursts rather than steady
+ *   throughput.
+ * - **MutexFreelist** (`contendedUniformMutex` / `contendedMixedMutex`):
+ *   mutex-backed, MPMC-correct, and the freelist a public off-EL
+ *   `Channel.allocator` API would require. Phase 3 reads these rows against
+ *   the Option A / Option B branches to isolate the arena-lock topology cost
+ *   from the freelist-front cost.
+ *
  * **What this bench does not measure**: the chunk-arena cold path (carve /
  * freeRun) directly. The freelist absorbs the steady state, so once warmed up
  * every allocate is a pop and every release is a push. For cold-path numbers
@@ -72,7 +83,7 @@ class PooledAllocatorContendedBenchmark {
 
     @Test
     fun contendedUniform() {
-        println("Contended allocate+release, uniform size (JVM, java threads)")
+        println("Contended allocate+release, uniform size (JVM, java threads, TreiberStackFreelist)")
         println("size|threads|ns/op|Mops/sec|exceptions")
         for (size in UNIFORM_SIZES) {
             for (n in THREAD_COUNTS) {
@@ -85,10 +96,52 @@ class PooledAllocatorContendedBenchmark {
 
     @Test
     fun contendedMixed() {
-        println("Contended allocate+release, mixed-size rotation (JVM, java threads)")
+        println("Contended allocate+release, mixed-size rotation (JVM, java threads, TreiberStackFreelist)")
         println("scenario|threads|ns/op|Mops/sec|exceptions")
         for (n in THREAD_COUNTS) {
             val r = contendedTrial(MIXED_SIZES, n)
+            println(formatTrial("mixed", n, r))
+        }
+        println("blackhole=$blackhole")
+    }
+
+    /**
+     * Same workload as [contendedUniform] but with [MutexFreelist] in front of
+     * the chunk-arena, matching the freelist contract a public off-EL
+     * `Channel.allocator` API would require (the default
+     * `TreiberStackFreelist` is ABA-unsafe under genuine MPMC — see
+     * `FreelistContendedBenchmark`). Phase 3 reads this row to isolate the
+     * arena-lock cost from the freelist-front cost: with both layers
+     * mutex-backed, the only remaining variable in the A vs B comparison is
+     * the arena lock topology.
+     */
+    @Test
+    fun contendedUniformMutex() {
+        println("Contended allocate+release, uniform size (JVM, java threads, MutexFreelist)")
+        println("size|threads|ns/op|Mops/sec|exceptions")
+        for (size in UNIFORM_SIZES) {
+            for (n in THREAD_COUNTS) {
+                val r = contendedTrial(intArrayOf(size), n, freelistFactory = ::MutexFreelist)
+                println(formatTrial(size.toString(), n, r))
+            }
+        }
+        println("blackhole=$blackhole")
+    }
+
+    /**
+     * Mixed-size counterpart to [contendedUniformMutex]. The combination of
+     * heterogeneous size classes and a mutex-backed freelist is the regime
+     * where Option B's per-class subpage head lock is expected to spread
+     * concurrent allocate work across multiple locks (different classes
+     * proceed in parallel), while Option A's single arena mutex serialises
+     * everything once the freelist misses.
+     */
+    @Test
+    fun contendedMixedMutex() {
+        println("Contended allocate+release, mixed-size rotation (JVM, java threads, MutexFreelist)")
+        println("scenario|threads|ns/op|Mops/sec|exceptions")
+        for (n in THREAD_COUNTS) {
+            val r = contendedTrial(MIXED_SIZES, n, freelistFactory = ::MutexFreelist)
             println(formatTrial("mixed", n, r))
         }
         println("blackhole=$blackhole")
@@ -127,8 +180,12 @@ class PooledAllocatorContendedBenchmark {
         }
     }
 
-    private fun contendedTrial(sizes: IntArray, nThreads: Int): TrialResult {
-        val allocator = PooledDirectAllocator()
+    private fun contendedTrial(
+        sizes: IntArray,
+        nThreads: Int,
+        freelistFactory: FreelistFactory? = null,
+    ): TrialResult {
+        val allocator = PooledDirectAllocator(freelistFactory = freelistFactory)
         try {
             // Hot-pool warmup parallels [uncontendedTrial]: the per-size-class
             // freelist must already hold buffers when the worker threads start, so
