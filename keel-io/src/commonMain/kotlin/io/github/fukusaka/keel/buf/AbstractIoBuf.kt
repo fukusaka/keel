@@ -106,19 +106,43 @@ abstract class AbstractIoBuf internal constructor(
     final override var owner: IoBufOwner = HeapOwner
 
     final override fun retain(): IoBuf {
-        val before = refCount.fetchAndAdd(1)
-        check(before > 0) { "Cannot retain a released buffer" }
-        return this
+        // CAS-loop instead of fetchAndAdd-then-check so a retain that loses to
+        // a concurrent release (or close) does not leave a stale increment in
+        // [refCount] after the check throws. Each iteration:
+        //
+        //   1. snapshot the current count
+        //   2. throw if the buffer is already released / closed (count == 0)
+        //   3. CAS-bump to count + 1; retry on contention
+        //
+        // Under low contention the loop runs once and costs roughly the same
+        // as a fetchAndAdd; only a contended buffer (off-EL retain races) does
+        // any retry work. Importantly, a thread whose check fails never
+        // perturbs [refCount] — the bug-prone fetchAndAdd-first design would
+        // increment first, throw second, and leave count == 1 even though the
+        // buffer was released, corrupting any subsequent release / retain.
+        while (true) {
+            val cur = refCount.load()
+            check(cur > 0) { "Cannot retain a released buffer" }
+            if (refCount.compareAndSet(cur, cur + 1)) return this
+        }
     }
 
     final override fun release(): Boolean {
-        val before = refCount.fetchAndAdd(-1)
-        check(before > 0) { "Buffer already released" }
-        if (before == 1) {
-            owner.release(this)
-            return true
+        // CAS-loop, same rationale as [retain]: a release that loses to a
+        // concurrent release / close must not leave a stale decrement, and the
+        // owner.release(this) dispatch must run exactly once — only on the
+        // thread whose CAS drove count from 1 to 0.
+        while (true) {
+            val cur = refCount.load()
+            check(cur > 0) { "Buffer already released" }
+            if (refCount.compareAndSet(cur, cur - 1)) {
+                if (cur == 1) {
+                    owner.release(this)
+                    return true
+                }
+                return false
+            }
         }
-        return false
     }
 
     /**
@@ -147,9 +171,36 @@ abstract class AbstractIoBuf internal constructor(
     /**
      * Teardown escape hatch: frees the backing without invoking
      * [owner]. Pool returns and external-resource unpins are
-     * intentionally skipped — see [IoBuf.close]. Idempotent.
+     * intentionally skipped — see [IoBuf.close].
+     *
+     * **Concurrency.** Idempotent and thread-safe with concurrent
+     * [retain] / [release] / [close] on the same buffer: the
+     * `compareAndSet` to force [refCount] to zero runs at most once
+     * per buffer (winning thread sets it from a positive value to
+     * zero), so [freeBacking] is invoked exactly once and concurrent
+     * retain / release on the lifecycle path observe the released
+     * state on their next CAS attempt and throw `IllegalStateException`.
+     *
+     * **Caller's responsibility.** Concurrent content access (any
+     * `read*` / `write*` / `getByte` / index update) from another
+     * thread that still believed it held a reference will read or
+     * write the freed backing — that is use-after-free at the
+     * memory layer and the lifecycle CAS cannot prevent it. This
+     * matches the `IoBuf` contract: content access is
+     * single-thread-at-a-time and the [close] caller must guarantee
+     * no other thread is mid-access. [close] is documented as an
+     * "engine shutdown / emergency teardown" escape hatch precisely
+     * because the calling context is expected to have already
+     * quiesced the buffer's content users.
      */
     final override fun close() {
-        freeBacking()
+        while (true) {
+            val cur = refCount.load()
+            if (cur == 0) return // Already closed / released — idempotent no-op.
+            if (refCount.compareAndSet(cur, 0)) {
+                freeBacking()
+                return
+            }
+        }
     }
 }

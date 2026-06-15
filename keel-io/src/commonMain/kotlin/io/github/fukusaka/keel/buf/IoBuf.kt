@@ -41,28 +41,49 @@ package io.github.fukusaka.keel.buf
  *
  * **Thread safety**: split by API category.
  *
- * - **Lifecycle ([retain] / [release] / [close]) is thread-safe.** The
- *   reference count is atomic, so any thread that holds a reference to
- *   this buffer may call retain / release / close concurrently. This
- *   matches Netty `ByteBuf`'s contract and is the foundation that lets
- *   off-EL `Channel.allocator` consumers retain / release buffers
- *   safely across threads.
+ * - **[retain] / [release] are thread-safe.** The reference count is
+ *   atomic and the update protocol (CAS-loop with check-before-bump)
+ *   is correct under concurrent retain / release / close on the same
+ *   buffer: a thread whose retain or release loses its CAS retries on
+ *   the fresh count, and a thread that observes a released count never
+ *   perturbs the field. Any thread that holds a reference may call
+ *   retain or release without coordination — this matches Netty
+ *   `ByteBuf`'s contract and is the foundation that lets off-EL
+ *   `Channel.allocator` consumers retain / release buffers safely
+ *   across threads.
+ *
+ * - **[close] is idempotent and thread-safe against concurrent retain
+ *   / release on the same buffer's lifecycle.** Multiple close calls
+ *   resolve to a single backing release (an atomic CAS forces the
+ *   refcount from a positive value to zero; the winning call runs the
+ *   teardown). Concurrent retain / release observe the released
+ *   refcount on their next CAS attempt and throw
+ *   `IllegalStateException` rather than silently corrupting state.
+ *   **However, content access (read* / write* / index updates) by a
+ *   thread that still believed it held a reference will read or
+ *   write the freed backing.** That is use-after-free at the memory
+ *   layer and the lifecycle CAS cannot prevent it. The close
+ *   contract therefore says the caller must guarantee the buffer is
+ *   quiesced — no other thread is mid-content-access — which is the
+ *   shape of "engine shutdown / emergency teardown" the escape hatch
+ *   is documented for.
  *
  * - **Content access (read* / write* / [readerIndex] / [writerIndex] /
- *   [clear]) is NOT thread-safe.** Indices and content reads/writes
+ *   [clear]) is NOT thread-safe.** Indices and content reads / writes
  *   assume at most one thread accesses the buffer's content at any
  *   instant. Two threads writing into the same buffer, or one thread
  *   writing while another reads, is a contract violation that this
  *   interface does not guard against (and would not be a meaningful
  *   operation in any case).
  *
- * Handoff between threads requires a happens-before edge (e.g. channel
- * send, queue offer, EventLoop `dispatch`, `volatile` write paired with
- * `volatile` read). After such a handoff the receiving thread becomes
- * the sole content accessor; the previous owner must not touch
- * content. The lifecycle thread-safety lets the previous owner still
- * retain or release without coordination, which is the common pattern
- * for fan-out fan-in dataflows.
+ * Handoff of content access between threads requires a happens-before
+ * edge (e.g. channel send, queue offer, EventLoop `dispatch`,
+ * `volatile` write paired with `volatile` read). After such a handoff
+ * the receiving thread becomes the sole content accessor; the
+ * previous owner must not touch content. The lifecycle thread-safety
+ * lets the previous owner still retain or release without
+ * coordination, which is the common pattern for fan-out fan-in
+ * dataflows.
  *
  * **Engine-layer zero-copy access**: platform-specific implementations
  * expose `unsafePointer` (Native: `CPointer<ByteVar>`) or
