@@ -54,6 +54,31 @@ import java.nio.ByteBuffer
  * leaked because the wrapper's owning context is going away anyway).
  * Callers relying on normal lifecycle use [release].
  *
+ * **Race window between `close()` and a concurrent `retain()`.**
+ * The `!closed` check in [retain] is not atomically bonded with the
+ * `byteBuf.retain()` call that follows (the underlying ByteBuf has its
+ * own atomic refcount, but we cannot fuse a single CAS across the two
+ * primitives). If thread A passes the `!closed` check just before
+ * thread B's `close()` flips `closed = true`, A then runs
+ * `byteBuf.retain()` and returns a wrapper that the caller treats as
+ * successfully retained — but A's subsequent [release] will observe
+ * `closed = true` and throw [IllegalStateException], leaving one extra
+ * reserve on the underlying ByteBuf that the wrapper no longer knows
+ * how to release. The leak is bounded (one ByteBuf reserve per race
+ * occurrence) and structurally inseparable from the `close()`
+ * escape-hatch contract that already promises to intentionally leak
+ * the wrapper's underlying pool slot. No use-after-free, no
+ * double-free, no cross-thread state corruption — only an additional
+ * reserve added to the pool slot that close already abandons.
+ * Closing the gap entirely would require either folding the wrapper
+ * close into `byteBuf.release()` (breaks the PR #351 intentional-leak
+ * contract that this wrapper exists to honour) or coordinating every
+ * retain through a wrapper-side lock (defeats the lock-free delegate
+ * design). Acceptable as a documented edge of the escape-hatch
+ * contract; the standard usage pattern of [close] — single-threaded
+ * engine shutdown coordinator with no concurrent retain — does not
+ * exercise the race.
+ *
  * @param byteBuf    The Netty [ByteBuf] backing this buffer.
  * @param baseOffset Index in [byteBuf] that corresponds to keel-index 0.
  *                   Zero for the allocator path (fresh buf, fill from 0);
