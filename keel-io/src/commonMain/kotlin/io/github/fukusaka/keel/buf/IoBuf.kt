@@ -39,12 +39,30 @@ package io.github.fukusaka.keel.buf
  * retains ownership throughout. See `website/docs/architecture/buffer.md`
  * for details.
  *
- * **Thread safety**: the reference count and indices are non-atomic. All
- * operations on a given buffer must happen on the single EventLoop thread
- * that owns it.
- * Cross-thread access is a contract violation (not guarded by atomics);
- * ownership transfer across threads must go through a dispatch mechanism
- * (e.g., EventLoop `dispatch`) that provides a happens-before relation.
+ * **Thread safety**: split by API category.
+ *
+ * - **Lifecycle ([retain] / [release] / [close]) is thread-safe.** The
+ *   reference count is atomic, so any thread that holds a reference to
+ *   this buffer may call retain / release / close concurrently. This
+ *   matches Netty `ByteBuf`'s contract and is the foundation that lets
+ *   off-EL `Channel.allocator` consumers retain / release buffers
+ *   safely across threads.
+ *
+ * - **Content access (read* / write* / [readerIndex] / [writerIndex] /
+ *   [clear]) is NOT thread-safe.** Indices and content reads/writes
+ *   assume at most one thread accesses the buffer's content at any
+ *   instant. Two threads writing into the same buffer, or one thread
+ *   writing while another reads, is a contract violation that this
+ *   interface does not guard against (and would not be a meaningful
+ *   operation in any case).
+ *
+ * Handoff between threads requires a happens-before edge (e.g. channel
+ * send, queue offer, EventLoop `dispatch`, `volatile` write paired with
+ * `volatile` read). After such a handoff the receiving thread becomes
+ * the sole content accessor; the previous owner must not touch
+ * content. The lifecycle thread-safety lets the previous owner still
+ * retain or release without coordination, which is the common pattern
+ * for fan-out fan-in dataflows.
  *
  * **Engine-layer zero-copy access**: platform-specific implementations
  * expose `unsafePointer` (Native: `CPointer<ByteVar>`) or

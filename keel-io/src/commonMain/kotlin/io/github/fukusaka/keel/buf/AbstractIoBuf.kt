@@ -13,7 +13,7 @@ import kotlin.concurrent.atomics.AtomicInt
  *
  * - the index pair ([readerIndex] / [writerIndex] + derived
  *   [readableBytes] / [writableBytes]),
- * - the non-atomic [refCount] + [owner] dispatch underlying
+ * - the atomic [refCount] + [owner] dispatch underlying
  *   [retain] / [release],
  * - the [close] escape hatch routing through [freeBacking].
  *
@@ -30,10 +30,19 @@ import kotlin.concurrent.atomics.AtomicInt
  * - override [resetForReuse] if they have additional pool-reuse state
  *   to reset (the concrete `nextLink`, ByteBuffer position/limit, …).
  *
- * **Reference counting**: non-atomic — all access must happen on the
- * single EventLoop thread that owns the buffer (see [IoBuf]'s thread
- * safety contract). Cross-thread access is a contract violation, not
- * guarded by atomics.
+ * **Reference counting**: atomic ([AtomicInt] + `fetchAndAdd`) so
+ * lifecycle ([retain] / [release] / [close]) is thread-safe across every
+ * keel buffer implementation — see [IoBuf]'s thread-safety contract.
+ * Content access (read / write / index updates) remains single-thread
+ * by contract; the atomic refcount carries the memory-order guarantees
+ * lifecycle needs without lifting the single-thread restriction on
+ * content. The original motivation was the GCD-backed
+ * NWConnection engine (serial-per-connection but migrating across OS
+ * worker pthreads), which exhibited the
+ * `Buffer already released` SIGABRT inside `HttpHeaders.resetForReuse()`
+ * on `server-http × nwconnection` HTTPS sweeps at ~7 % per-run rate
+ * (the GCD cross-worker refcount race) before the field became atomic;
+ * the contract is now uniform across all engines.
  *
  * **Dispatch**: [retain] / [release] / [close] / [clear] are `final`
  * so JVM / Native compilers can resolve them statically through the
@@ -66,18 +75,25 @@ abstract class AbstractIoBuf internal constructor(
     /**
      * Atomic reference count.
      *
-     * Single-EventLoop ownership is the assumed contract for kqueue /
-     * epoll / io_uring / nio / netty / JS engines (each has one pthread
-     * per worker and never migrates a connection's IoBuf calls off it).
-     * GCD-backed engines (NWConnection) serialise blocks per-connection
-     * but migrate them across OS threads, so the refcount must carry
-     * explicit memory-order guarantees or the optimiser may reorder /
-     * cache reads across thread boundaries and observe a stale value.
-     * The race manifested as a sporadic SIGABRT
-     * `Buffer already released` inside `HttpHeaders.resetForReuse()`
-     * on `server-http × nwconnection` HTTPS sweeps at ~7 % per-run rate
-     * (the GCD cross-worker refcount race). Atomic adds the missing memory barriers without changing
-     * the single-owner contract on the well-behaved engines.
+     * Maintains the cross-thread lifecycle invariant from the [IoBuf]
+     * contract: lifecycle ([retain] / [release] / [close]) is thread-safe
+     * regardless of which engine produced the buffer. Content access
+     * (read / write / index updates) remains single-thread by contract,
+     * so this is the only atomic field on the buffer's hot path; the
+     * fetch-and-add cost (~5-10 ns on x86_64) only fires on lifecycle
+     * transitions, not per byte / per read / per write.
+     *
+     * The historical trigger was the GCD-backed NWConnection engine
+     * (serialises blocks per-connection but migrates them across OS
+     * worker pthreads), where a non-atomic refcount let the optimiser
+     * reorder / cache the field across thread boundaries — observed as
+     * `Buffer already released` SIGABRT inside
+     * `HttpHeaders.resetForReuse()` on `server-http × nwconnection`
+     * HTTPS sweeps at ~7 % per-run rate. The atomic field eliminated
+     * that race; making it the uniform contract across every engine
+     * eliminates the corresponding contract-boundary trap when an
+     * allocator hands a buffer to a thread that wasn't its original
+     * owner (e.g. an off-EL `Channel.allocator` consumer).
      */
     private val refCount = AtomicInt(1)
 
