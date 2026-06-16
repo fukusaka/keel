@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.NioByteBufferBacking
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.netty.buffer.ByteBuf
+import io.netty.util.IllegalReferenceCountException
 import java.nio.ByteBuffer
 
 /**
@@ -31,20 +32,38 @@ import java.nio.ByteBuffer
  *   [io.github.fukusaka.keel.buf.IoBufOwner] closure path with a
  *   single `NettyByteBufIoBuf` allocation per receive.
  *
- * **Refcount bridging**: Netty `ByteBuf.refCnt` is atomic (multi-threaded
- * pool safety); keel [IoBuf] refcount is non-atomic (EventLoop-confined).
- * keel's refcount is the logical ref count; the underlying `ByteBuf`
- * carries one reserve that is released when keel's refcount drops to
- * zero (engine-direct: does not extend
- * [io.github.fukusaka.keel.buf.AbstractIoBuf], the wrapper
- * self-manages the `ByteBuf` reserve in [release]). Explicit
- * extra holds on the `ByteBuf` (e.g. `retainedSlice` during flush) are
- * independent of the keel-side count.
+ * **Refcount**: delegated 1:1 to the underlying Netty [ByteBuf]'s atomic
+ * `refCnt`. Every keel-side [retain] / [release] is a direct pass-through
+ * to [ByteBuf.retain] / [ByteBuf.release] — the wrapper carries no
+ * separate counter and no non-atomic mirror. This makes the lifecycle
+ * thread-safe through to the underlying ByteBuf's atomic CAS, matching
+ * the [IoBuf] contract that lifecycle (retain / release / close) is
+ * thread-safe across every keel buffer implementation. Explicit extra
+ * holds on the `ByteBuf` (e.g. `retainedSlice` during flush) compose
+ * naturally: every reserve, regardless of where it originated,
+ * contributes to the same `refCnt` and the buffer goes back to the
+ * Netty pool when `refCnt` reaches zero. [IllegalReferenceCountException]
+ * from a retain / release on an already-freed `ByteBuf` is rewrapped as
+ * [IllegalStateException] to honour the [IoBuf] contract's exception
+ * type.
  *
- * **`close()` semantics**: escape hatch — drops the refcount to zero
- * and does NOT release the underlying ByteBuf (matches the contract
- * introduced by PR #351). Callers relying on normal lifecycle use
- * [release].
+ * **`close()` semantics — delegates to `byteBuf.release()`**, **not** the
+ * `AbstractIoBuf` intentional-leak shape from PR #351. PR #351's leak
+ * exists because `AbstractIoBuf` close-time runs `freeBacking()` on
+ * own-memory backings (`nativeHeap.free` / chunk-arena `returnChunkRun`),
+ * and engine shutdown can land that on a pool that is itself going away.
+ * `NettyByteBufIoBuf` sits over a Netty `PooledByteBufAllocator` pool —
+ * those pools are process-lifetime (no `close()` API in
+ * `PooledByteBufAllocator`), so returning the wrapper's reserve to the
+ * pool at close time is always safe and is the right cleanup. Folding
+ * close into `byteBuf.release()` also eliminates the TOCTOU window that
+ * a separate `closed` flag would carry (the flag check and
+ * `byteBuf.retain()` cannot be fused into a single CAS across two
+ * independent atomic primitives), so every retain / release / close runs
+ * exclusively through `byteBuf.refCnt`'s atomic CAS — fully thread-safe
+ * with no leak window. `close()` is idempotent: a second call lands on
+ * an already-released `ByteBuf` and the resulting
+ * [IllegalReferenceCountException] is swallowed.
  *
  * @param byteBuf    The Netty [ByteBuf] backing this buffer.
  * @param baseOffset Index in [byteBuf] that corresponds to keel-index 0.
@@ -98,8 +117,6 @@ internal class NettyByteBufIoBuf(
     @UnsafeIoBufApi
     override val unsafeNioByteBuffer: ByteBuffer = byteBuf.nioBuffer(baseOffset, capacity)
 
-    private var refCount: Int = 1
-
     override fun writeByte(value: Byte) {
         byteBuf.setByte(baseOffset + writerIndex, value.toInt())
         writerIndex++
@@ -148,27 +165,40 @@ internal class NettyByteBufIoBuf(
     }
 
     override fun retain(): IoBuf {
-        check(refCount > 0) { "Cannot retain a released buffer" }
-        refCount++
+        try {
+            byteBuf.retain()
+        } catch (e: IllegalReferenceCountException) {
+            throw IllegalStateException("Cannot retain a released buffer", e)
+        }
         return this
     }
 
     override fun release(): Boolean {
-        check(refCount > 0) { "Buffer already released" }
-        if (--refCount == 0) {
-            // Engine-direct: no IoBufOwner dispatch. Release the backing Netty ByteBuf
-            // reserve directly. ByteBuf.release() is thread-safe (atomic CAS).
+        return try {
+            // Delegate directly to the atomic refCnt. Returns true when the
+            // underlying ByteBuf went back to the Netty pool (refCnt 1 → 0).
             byteBuf.release()
-            return true
+        } catch (e: IllegalReferenceCountException) {
+            throw IllegalStateException("Buffer already released", e)
         }
-        return false
     }
 
     override fun close() {
-        refCount = 0
-        // Escape hatch. Does NOT release the underlying Netty ByteBuf
-        // (matches PR #351's close() contract). Callers should use
-        // release() for the normal lifecycle.
+        // Delegates to byteBuf.release() — see class KDoc's "close()
+        // semantics" section for why this wrapper does NOT follow
+        // AbstractIoBuf's PR #351 intentional-leak shape (in short: Netty's
+        // pool is process-lifetime so returning the reserve is always safe,
+        // and delegating eliminates the TOCTOU window a separate flag
+        // would carry). Idempotent: a second call lands on an
+        // already-released ByteBuf and the resulting
+        // IllegalReferenceCountException is swallowed.
+        try {
+            byteBuf.release()
+        } catch (e: IllegalReferenceCountException) {
+            // Already released — IoBuf.close() is documented as idempotent.
+            @Suppress("SwallowedException", "UnusedPrivateMember")
+            val ignored = e
+        }
     }
 
     companion object {
