@@ -14,7 +14,7 @@ import kotlin.time.measureTime
  * allocators into commonMain. The `pools` map (`Int size -> Pool`) is the only
  * concurrency-bearing structure that must be re-homed. Its access pattern is
  * **read-mostly** (lookups on every `allocate` / `returnToPool`; writes only at
- * `registerPoolSize`, i.e. startup / TLS setup) with **tiny cardinality** (1
+ * `hintSizeClass`, i.e. startup / TLS setup) with **tiny cardinality** (1
  * default 8 KiB class, +1-2 for TLS). On the hot path the lookup is always a
  * **single-threaded read** (the owning EventLoop thread). This bench quantifies
  * the per-lookup overhead each strategy imposes on that read path.

@@ -50,7 +50,7 @@ class NettyReadPathAllocationBenchmark {
     private val tmx = ManagementFactory.getThreadMXBean() as ThreadMXBean
     private val nettyAlloc = ByteBufAllocator.DEFAULT
     private val keelAlloc = PooledDirectAllocator().also {
-        it.registerPoolSize(POOL_CAP, 16)
+        it.hintSizeClass(POOL_CAP, 16)
     }.createChild()
 
     private fun measure(iterations: Int, path: (ByteArray) -> Unit): Long {

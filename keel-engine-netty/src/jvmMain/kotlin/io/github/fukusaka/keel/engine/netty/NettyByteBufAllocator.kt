@@ -50,8 +50,9 @@ internal class NettyByteBufAllocator(
         return buf
     }
 
-    override fun registerPoolSize(size: Int, maxSlots: Int) {
-        // Netty's own allocator manages sizing; no-op.
+    override fun hintSizeClass(byteSize: Int, maxCount: Int) {
+        // Netty's own allocator manages size-class structure internally; the
+        // hint has no actionable equivalent on this delegate path.
     }
 
     override fun createChild(): BufferAllocator = this

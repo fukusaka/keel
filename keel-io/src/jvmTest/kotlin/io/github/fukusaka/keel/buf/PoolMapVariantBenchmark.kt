@@ -12,7 +12,7 @@ import kotlin.test.Test
  * Measures per-lookup ns/op for the `pools` size-class map used by
  * [PooledDirectAllocator] on the allocation hot path. The access pattern is
  * read-mostly (lookups on every allocate/return; writes only at
- * `registerPoolSize`) with tiny cardinality. On the hot path the lookup is a
+ * `hintSizeClass`) with tiny cardinality. On the hot path the lookup is a
  * single-threaded read by the owning EventLoop thread.
  *
  * Adds the JVM-only [ConcurrentHashMap] candidate (the current

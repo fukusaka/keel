@@ -176,7 +176,7 @@ internal class KqueueIoTransport(
             // Idempotent; on the EventLoop thread that owns the allocator.
             // No-op for the engine-default size already pooled by the
             // allocator child, and for pool-less allocators.
-            allocator.registerPoolSize(readBufferSize, READ_BUFFER_POOL_SLOTS)
+            allocator.hintSizeClass(readBufferSize, READ_BUFFER_HINT_COUNT)
             readPoolRegistered = true
         }
         val buf = allocator.allocate(readBufferSize)
@@ -432,10 +432,12 @@ internal class KqueueIoTransport(
         const val INITIAL_WRITEV_CAPACITY = 8
 
         /**
-         * Pool slots to register for this connection's read buffer size class.
-         * Matches the allocator's default read-buffer pooling depth; the call
-         * is idempotent so it is a no-op for the already-registered default.
+         * `maxCount` hint for the read-buffer size class — passed to
+         * [BufferAllocator.hintSizeClass] at bind time. Matches the
+         * allocator's default read-buffer pooling depth; the hint is
+         * a best-effort no-op for the already-registered default and
+         * for allocators that do not structure memory by size class.
          */
-        const val READ_BUFFER_POOL_SLOTS = 16
+        const val READ_BUFFER_HINT_COUNT = 16
     }
 }

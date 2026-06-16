@@ -373,8 +373,8 @@ engine は各 EventLoop 起動時に `allocator.createForEventLoop()` を呼び�
 size class 毎に Treiber stack を持ち、lock-free で pool を操作する。stack head は `AtomicReference<DirectIoBuf?>`、pool 内の連結は `IoBuf.nextLink` 経由の intrusive リンクで行う。
 
 - **allocate**: pool から CAS で pop、miss 時のみ `ByteBuffer.allocateDirect(capacity)` を新規確保。返却する buffer の `memoryOwner` には当該 pool 専用の共有 `PoolOwner` を設定する
-- **release (refCount 0 到達時)**: `PoolOwner` が CAS で stack に push。pool が満杯 (`maxSlots` 超) なら push を諦め、backing direct buffer は JVM GC に任せる
-- **`registerPoolSize(size, maxSlots)`**: lazy registration。総メモリ予算 (`maxTotalBytes` デフォルト 251 KiB) を超える場合は `maxSlots` を自動削減。重複登録は no-op
+- **release (refCount 0 到達時)**: `PoolOwner` が CAS で stack に push。pool が満杯 (`maxCount` 超) なら push を諦め、backing direct buffer は JVM GC に任せる
+- **`hintSizeClass(byteSize, maxCount)`**: lazy registration。総メモリ予算 (`maxTotalBytes` デフォルト 251 KiB) を超える場合は `maxCount` を自動削減。重複登録は no-op
 - **`createForEventLoop()`**: 親の size class を引き継いだ新 instance を返し、per-pool 上限は `LOCAL_POOL_SLOTS = 8`（親のデフォルト 16 から縮小）
 - **`wrapBytes`**: `ByteBuffer.wrap(bytes, offset, length)` で zero-copy wrap、`DirectIoBuf.wrapExternal` として返す。backing は caller の heap array であり release まで mutate 禁止
 - **`slice`**: `ByteBuffer.duplicate().slice()` で zero-copy、source を retain し、slice 解放時に parent を release する `SliceOwner(source)` を仕込む
@@ -385,7 +385,7 @@ size class 毎に `ArrayDeque<NativeIoBuf>` を持つ LIFO pool。pool 全体の
 
 - **allocate**: spin-lock 下で `removeLast()`、miss 時のみ `NativeIoBuf(capacity)` を `nativeHeap` から新規確保。返却する buffer の `memoryOwner` には当該 pool 専用の共有 `PoolOwner` を設定する
 - **release (refCount 0 到達時)**: `PoolOwner` が spin-lock 下で `addLast()`。pool が満杯なら backing を `nativeHeap.free` で直接解放
-- **`registerPoolSize(size, maxSlots)`**: lazy registration。予算 (`maxTotalBytes` デフォルト 256 KiB) を超える場合は `maxSlots` を自動削減。spin-lock 下で重複チェックと挿入を atomic に実施
+- **`hintSizeClass(byteSize, maxCount)`**: lazy registration。予算 (`maxTotalBytes` デフォルト 256 KiB) を超える場合は `maxCount` を自動削減。spin-lock 下で重複チェックと挿入を atomic に実施
 - **`createForEventLoop()`**: 親の size class を引き継ぎ per-pool `LOCAL_POOL_SLOTS = 8` を適用した新 instance を返す
 - **`wrapBytes`**: `ByteArray` を pin して `CPointer` を取り、`NativeIoBuf.wrapExternal` として返す。release 時に unpin する `ExternalWrapOwner` を仕込む
 - **`slice`**: pointer 加算による zero-copy。source を retain し、slice 解放時に source を release する
@@ -393,7 +393,7 @@ size class 毎に `ArrayDeque<NativeIoBuf>` を持つ LIFO pool。pool 全体の
 ### 共通の設計方針
 
 - **pool hit path の cost を最小化**: PooledDirect は CAS のみ、Slab は spin-lock のみ。いずれも heap allocation を発生させない
-- **budget 超過時の graceful degradation**: `maxTotalBytes` を守るため、`registerPoolSize` は自動的に `maxSlots` を縮小する
+- **budget 超過時の graceful degradation**: `maxTotalBytes` を守るため、`hintSizeClass` は自動的に `maxCount` を縮小する
 - **size class 未登録時は fallback**: 登録されていない size を要求すると pool が存在せず、常に fresh allocation になる（機能上は動作、性能は劣化）
 
 ### io_uring engine の特殊性
