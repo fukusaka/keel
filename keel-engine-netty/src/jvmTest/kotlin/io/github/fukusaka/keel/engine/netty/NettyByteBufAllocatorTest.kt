@@ -42,8 +42,8 @@ class NettyByteBufAllocatorTest {
     }
 
     @Test
-    fun `registerPoolSize is a no-op`() {
-        alloc.registerPoolSize(1024, 8)
+    fun `hintSizeClass is a no-op`() {
+        alloc.hintSizeClass(1024, 8)
         // Nothing to assert — just verify it doesn't throw or mutate shared state.
         val buf = alloc.allocate(1024)
         assertEquals(1024, buf.capacity)

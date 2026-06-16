@@ -7,7 +7,7 @@ package io.github.fukusaka.keel.buf
  * ([SlabAllocator] on Native, [PooledDirectAllocator] on JVM).
  *
  * Holds the cross-platform machinery — the [SizeClasses] table, the size-class
- * indexed freelists, the per-class budget, [registerPoolSize] /
+ * indexed freelists, the per-class budget, [hintSizeClass] /
  * [installDefaultLadder], [createChild] propagation, and the allocate /
  * return-to-pool routing — while delegating the two platform- and
  * strategy-specific seams to subclasses:
@@ -38,7 +38,7 @@ package io.github.fukusaka.keel.buf
  *
  * **Thread safety**: [allocate] / [returnToPool] are safe for concurrent callers
  * to the extent the chosen [Freelist] is (the ladder is read through a single
- * `@Volatile` reference). [registerPoolSize] / [installDefaultLadder] are
+ * `@Volatile` reference). [hintSizeClass] / [installDefaultLadder] are
  * copy-on-write writers and must not run concurrently with themselves on the same
  * instance — they are invoked at construction and at per-EventLoop setup
  * (bind / TLS handler) on the owning thread, never on the hot path.
@@ -79,7 +79,7 @@ abstract class PooledAllocator(
     private val sizeClasses: SizeClasses = SizeClasses(PAGE_SIZE, PAGE_SHIFTS, CHUNK_SIZE, NO_ALIGNMENT)
 
     /**
-     * Immutable ladder snapshot, replaced wholesale on [registerPoolSize] /
+     * Immutable ladder snapshot, replaced wholesale on [hintSizeClass] /
      * [installDefaultLadder] (copy-on-write). [pools] is indexed by size-class
      * index; a `null` entry means that class is not pooled (uncached or not yet
      * installed). [committedBytes] is the worst-case byte budget the installed
@@ -119,7 +119,7 @@ abstract class PooledAllocator(
     private val children: MutableList<PooledAllocator> = mutableListOf()
 
     // Cache-trim bookkeeping (per-EventLoop, single-thread — same writer contract as
-    // registerPoolSize). Kept off the COW Ladder because they mutate on the hot path.
+    // hintSizeClass). Kept off the COW Ladder because they mutate on the hot path.
     /** Cached entries per size class (push ++ / pop --); exposed for test/diagnostics. */
     private val cachedCount = IntArray(sizeClasses.nSizes)
 
@@ -211,15 +211,15 @@ abstract class PooledAllocator(
         ladder = Ladder(pools, caps, committed)
     }
 
-    final override fun registerPoolSize(size: Int, maxSlots: Int) {
-        if (size <= 0 || maxSlots <= 0) return
-        val idx = sizeClasses.size2SizeIdx(size)
+    final override fun hintSizeClass(byteSize: Int, maxCount: Int) {
+        if (byteSize <= 0 || maxCount <= 0) return
+        val idx = sizeClasses.size2SizeIdx(byteSize)
         if (idx >= sizeClasses.nSizes) return // huge: not poolable
         val classSize = sizeClasses.sizeIdx2size(idx)
         if (classSize > MAX_CACHED_CAPACITY) return // above the cache cap: unpooled
         val cur = ladder
         if (cur.pools[idx] != null) return // class already pooled (no-op, matches prior duplicate behaviour)
-        var cap = maxSlots
+        var cap = maxCount
         val budgetLeft = maxTotalBytes - cur.committedBytes
         if (classSize.toLong() * cap > budgetLeft) {
             cap = (budgetLeft / classSize).toInt()

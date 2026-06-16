@@ -372,8 +372,8 @@ A stateless implementation that allocates fresh on every call. It simply invokes
 Holds a Treiber stack per size class and operates on the pool lock-free. The stack head is an `AtomicReference<DirectIoBuf?>`; pool entries are linked intrusively via `IoBuf.nextLink`.
 
 - **`allocate`**: CAS-pop from the pool; on miss, fresh `ByteBuffer.allocateDirect(capacity)`. The returned buffer's `memoryOwner` is a shared `PoolOwner` bound to this pool.
-- **`release` (refCount reaches 0)**: `PoolOwner` CAS-pushes onto the stack. If the pool is full (`maxSlots` exceeded), the push is abandoned and the backing direct buffer is left to the JVM GC.
-- **`registerPoolSize(size, maxSlots)`**: lazy registration. If the total-memory budget (`maxTotalBytes`, default 251 KiB) is exceeded, `maxSlots` is automatically reduced. Duplicate registrations are no-ops.
+- **`release` (refCount reaches 0)**: `PoolOwner` CAS-pushes onto the stack. If the pool is full (`maxCount` exceeded), the push is abandoned and the backing direct buffer is left to the JVM GC.
+- **`hintSizeClass(byteSize, maxCount)`**: lazy registration. If the total-memory budget (`maxTotalBytes`, default 251 KiB) is exceeded, `maxCount` is automatically reduced. Duplicate registrations are no-ops.
 - **`createForEventLoop()`**: returns a new instance with the parent's size classes propagated, per-pool limit reduced to `LOCAL_POOL_SLOTS = 8` (from the parent's default of 16).
 - **`wrapBytes`**: zero-copy via `ByteBuffer.wrap(bytes, offset, length)`, returned as `DirectIoBuf.wrapExternal`. The backing array is caller-owned and must not be mutated until release.
 - **`slice`**: zero-copy via `ByteBuffer.duplicate().slice()`. Retains `source` and installs a `SliceOwner(source)` that releases the parent on slice release.
@@ -384,7 +384,7 @@ Holds an `ArrayDeque<NativeIoBuf>` per size class as a LIFO pool. The whole pool
 
 - **`allocate`**: `removeLast()` under the spin-lock; on miss, fresh `NativeIoBuf(capacity)` via `nativeHeap`. The returned buffer's `memoryOwner` is a shared `PoolOwner` bound to this pool.
 - **`release` (refCount reaches 0)**: `PoolOwner` `addLast()` under the spin-lock. If the pool is full, the backing is freed via `nativeHeap.free`.
-- **`registerPoolSize(size, maxSlots)`**: lazy, budget-aware (`maxTotalBytes`, default 256 KiB). Duplicate check and insert happen atomically under the spin-lock.
+- **`hintSizeClass(byteSize, maxCount)`**: lazy, budget-aware (`maxTotalBytes`, default 256 KiB). Duplicate check and insert happen atomically under the spin-lock.
 - **`createForEventLoop()`**: returns a new instance with parent's size classes and `LOCAL_POOL_SLOTS = 8`.
 - **`wrapBytes`**: zero-copy via a pinned `ByteArray` + `CPointer`, returned as `NativeIoBuf.wrapExternal`. An `ExternalWrapOwner` unpins on release.
 - **`slice`**: zero-copy via pointer arithmetic. Retains `source` and installs a `SliceOwner(source)` that releases the parent on slice release.
@@ -392,7 +392,7 @@ Holds an `ArrayDeque<NativeIoBuf>` per size class as a LIFO pool. The whole pool
 ### Shared design principles
 
 - **Minimal pool-hit cost**: `PooledDirectAllocator` uses CAS only; `SlabAllocator` uses a spin-lock only. Neither triggers heap allocation on a pool hit.
-- **Graceful degradation under budget limits**: `registerPoolSize` auto-reduces `maxSlots` to keep within `maxTotalBytes`.
+- **Graceful degradation under budget limits**: `hintSizeClass` auto-reduces `maxCount` to keep within `maxTotalBytes`.
 - **Fallback on unregistered sizes**: requesting a size that was never registered yields no pool; allocation always falls back to a fresh buffer (functionally correct, performance-degraded).
 
 ### io_uring engine specifics

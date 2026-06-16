@@ -38,8 +38,8 @@ class TlsHandlerPlaintextBufferSizeTest {
         override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
             delegate.slice(source, offset, length)
 
-        override fun registerPoolSize(size: Int, maxSlots: Int) {
-            delegate.registerPoolSize(size, maxSlots)
+        override fun hintSizeClass(byteSize: Int, maxCount: Int) {
+            delegate.hintSizeClass(byteSize, maxCount)
         }
 
         override fun createChild(): BufferAllocator = this

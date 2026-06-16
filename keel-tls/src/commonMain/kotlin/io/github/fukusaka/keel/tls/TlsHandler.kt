@@ -77,7 +77,7 @@ class TlsHandler(
 
     override fun handlerAdded(ctx: PipelineHandlerContext) {
         this.ctx = ctx
-        ctx.allocator.registerPoolSize(plaintextBufferSize, PLAINTEXT_POOL_SLOTS)
+        ctx.allocator.hintSizeClass(plaintextBufferSize, PLAINTEXT_HINT_COUNT)
     }
 
     override fun handlerRemoved(ctx: PipelineHandlerContext) {
@@ -532,10 +532,11 @@ class TlsHandler(
          * ### Buffer pooling
          *
          * Plaintext buffers (`plaintextBufferSize`, default 16 KiB) are
-         * registered as a pool size class via
-         * [io.github.fukusaka.keel.buf.BufferAllocator.registerPoolSize]
+         * hinted as a hot size class via
+         * [io.github.fukusaka.keel.buf.BufferAllocator.hintSizeClass]
          * in [handlerAdded], so inbound plaintext allocations hit the pool
-         * on steady-state connections. Ciphertext buffers (17 KiB) are not
+         * on steady-state connections (when the allocator honours the hint;
+         * the call is a best-effort no-op for pool-less allocators). Ciphertext buffers (17 KiB) are not
          * pooled: JFR profiling showed TLS buffer allocation accounts for
          * ~1% of total allocation samples, with JSSE crypto byte[] and
          * kernel TLS processing as the dominant costs. Pooling ciphertext
@@ -601,15 +602,17 @@ class TlsHandler(
          */
         private const val TLS_CIPHERTEXT_BUF_SIZE = 17 * 1024
 
-        // Per-EventLoop pool slots for plaintext buffers (size is the
-        // per-connection `plaintextBufferSize`, default 16 KiB). Typical
-        // HTTPS connection uses 1-2 concurrent inbound buffers; 4 slots
-        // accommodate a small burst without over-committing memory.
-        // Callers configuring a larger plaintextBufferSize trade pool
-        // capacity for per-slot memory accordingly; pool slot count itself
-        // is not configurable here (follow-up if a per-bind slot knob
+        // `maxCount` hint for the plaintext size class — passed to
+        // [io.github.fukusaka.keel.buf.BufferAllocator.hintSizeClass] at
+        // pipeline setup (size is the per-connection `plaintextBufferSize`,
+        // default 16 KiB). Typical HTTPS connection uses 1-2 concurrent
+        // inbound buffers; the hint of 4 accommodates a small burst
+        // without over-committing memory on allocators that honour it.
+        // Callers configuring a larger `plaintextBufferSize` trade pool
+        // capacity for per-buffer memory accordingly; the hint count
+        // itself is not configurable here (follow-up if a per-bind knob
         // turns out to matter empirically).
-        private const val PLAINTEXT_POOL_SLOTS = 4
+        private const val PLAINTEXT_HINT_COUNT = 4
 
         // Defense-in-depth: bounds total flushHandshakeResponse iterations.
         // A TLS 1.2 flight is typically 2-5 KB; 64 × 17 KB = 1 MB far exceeds

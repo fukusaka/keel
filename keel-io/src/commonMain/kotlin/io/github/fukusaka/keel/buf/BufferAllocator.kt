@@ -57,27 +57,41 @@ interface BufferAllocator {
     fun slice(source: IoBuf, offset: Int, length: Int): IoBuf
 
     /**
-     * Registers a pool slot for buffers of exactly [size] bytes.
+     * Hints to the allocator that buffers of exactly [byteSize] bytes
+     * will be allocated frequently and that the allocator should keep
+     * up to [maxCount] of them ready for reuse.
      *
-     * When [allocate] is called with a capacity matching a registered
-     * size, the allocator attempts to reuse a previously released buffer
-     * from the pool instead of allocating fresh memory. [maxSlots]
-     * limits how many buffers of this size are retained in the pool;
-     * excess buffers are freed on release.
+     * This is a **best-effort hint, not a contract**. Allocators that
+     * use a size-class pool may honour it by sizing or registering a
+     * cache for the requested size class; allocators that do not
+     * structure memory by size class (e.g. [DefaultAllocator],
+     * the Netty `PooledByteBufAllocator` wrapper, mimalloc-style
+     * heaps) silently ignore the call. Callers must not depend on the
+     * hint being honoured for correctness — only for warm-cache /
+     * pool-residency optimisation.
      *
-     * Duplicate registrations for the same [size] are no-ops.
-     * Pool-less allocators (e.g. [DefaultAllocator]) ignore this call.
+     * Allocators that honour the hint:
+     * - **Treat duplicate hints for the same `byteSize` as no-ops** —
+     *   the first hint wins; subsequent calls do not override the
+     *   `maxCount` retained.
+     * - **May clamp `maxCount` downward** to respect an internal
+     *   memory budget. The hint does not guarantee `maxCount`
+     *   buffers will actually be retained.
      *
-     * **Important**: registrations are not propagated retroactively to
-     * child allocators already created by [createChild]. Callers
-     * must invoke this on the per-EventLoop allocator instance (typically
-     * via `ctx.allocator`) rather than the parent engine-wide allocator.
+     * **Scope**: hints apply to this allocator instance only; they
+     * are not propagated retroactively to child allocators already
+     * produced by [createChild]. Callers should invoke this on the
+     * per-EventLoop allocator instance (typically via
+     * `ctx.allocator`) rather than the parent engine-wide allocator.
      *
      * Typical callers:
-     * - Engine: `registerPoolSize(READ_BUFFER_SIZE, 16)` at bind time
-     * - TlsHandler: `registerPoolSize(TLS_PLAINTEXT_BUF_SIZE, 4)` at pipeline setup
+     * - Engine: `hintSizeClass(READ_BUFFER_SIZE, 16)` at bind time —
+     *   signals the recv-buffer size class as hot.
+     * - TlsHandler: `hintSizeClass(TLS_PLAINTEXT_BUF_SIZE, 4)` at
+     *   pipeline setup — signals the plaintext-record size class as
+     *   hot for the duration of the TLS session.
      */
-    fun registerPoolSize(size: Int, maxSlots: Int) {}
+    fun hintSizeClass(byteSize: Int, maxCount: Int) {}
 
     /**
      * Creates a child allocator instance scoped to the caller's
