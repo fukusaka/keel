@@ -47,37 +47,23 @@ import java.nio.ByteBuffer
  * [IllegalStateException] to honour the [IoBuf] contract's exception
  * type.
  *
- * **`close()` semantics**: escape hatch — marks the wrapper as closed
- * so future [retain] / [release] throw [IllegalStateException], but
- * does NOT release the underlying ByteBuf (matches the contract
- * introduced by PR #351 — the underlying pool slot is intentionally
- * leaked because the wrapper's owning context is going away anyway).
- * Callers relying on normal lifecycle use [release].
- *
- * **Race window between `close()` and a concurrent `retain()`.**
- * The `!closed` check in [retain] is not atomically bonded with the
- * `byteBuf.retain()` call that follows (the underlying ByteBuf has its
- * own atomic refcount, but we cannot fuse a single CAS across the two
- * primitives). If thread A passes the `!closed` check just before
- * thread B's `close()` flips `closed = true`, A then runs
- * `byteBuf.retain()` and returns a wrapper that the caller treats as
- * successfully retained — but A's subsequent [release] will observe
- * `closed = true` and throw [IllegalStateException], leaving one extra
- * reserve on the underlying ByteBuf that the wrapper no longer knows
- * how to release. The leak is bounded (one ByteBuf reserve per race
- * occurrence) and structurally inseparable from the `close()`
- * escape-hatch contract that already promises to intentionally leak
- * the wrapper's underlying pool slot. No use-after-free, no
- * double-free, no cross-thread state corruption — only an additional
- * reserve added to the pool slot that close already abandons.
- * Closing the gap entirely would require either folding the wrapper
- * close into `byteBuf.release()` (breaks the PR #351 intentional-leak
- * contract that this wrapper exists to honour) or coordinating every
- * retain through a wrapper-side lock (defeats the lock-free delegate
- * design). Acceptable as a documented edge of the escape-hatch
- * contract; the standard usage pattern of [close] — single-threaded
- * engine shutdown coordinator with no concurrent retain — does not
- * exercise the race.
+ * **`close()` semantics — delegates to `byteBuf.release()`**, **not** the
+ * `AbstractIoBuf` intentional-leak shape from PR #351. PR #351's leak
+ * exists because `AbstractIoBuf` close-time runs `freeBacking()` on
+ * own-memory backings (`nativeHeap.free` / chunk-arena `returnChunkRun`),
+ * and engine shutdown can land that on a pool that is itself going away.
+ * `NettyByteBufIoBuf` sits over a Netty `PooledByteBufAllocator` pool —
+ * those pools are process-lifetime (no `close()` API in
+ * `PooledByteBufAllocator`), so returning the wrapper's reserve to the
+ * pool at close time is always safe and is the right cleanup. Folding
+ * close into `byteBuf.release()` also eliminates the TOCTOU window that
+ * a separate `closed` flag would carry (the flag check and
+ * `byteBuf.retain()` cannot be fused into a single CAS across two
+ * independent atomic primitives), so every retain / release / close runs
+ * exclusively through `byteBuf.refCnt`'s atomic CAS — fully thread-safe
+ * with no leak window. `close()` is idempotent: a second call lands on
+ * an already-released `ByteBuf` and the resulting
+ * [IllegalReferenceCountException] is swallowed.
  *
  * @param byteBuf    The Netty [ByteBuf] backing this buffer.
  * @param baseOffset Index in [byteBuf] that corresponds to keel-index 0.
@@ -131,17 +117,6 @@ internal class NettyByteBufIoBuf(
     @UnsafeIoBufApi
     override val unsafeNioByteBuffer: ByteBuffer = byteBuf.nioBuffer(baseOffset, capacity)
 
-    /**
-     * Wrapper-level closed flag. Set by [close] to mark the wrapper as
-     * abandoned (the underlying [ByteBuf] is intentionally leaked per
-     * the [close] contract). `@Volatile` so the flip is visible across
-     * threads — the [retain] / [release] checks rely on it to translate
-     * post-close operations into [IllegalStateException] without
-     * touching the underlying `ByteBuf`'s atomic `refCnt`.
-     */
-    @Volatile
-    private var closed: Boolean = false
-
     override fun writeByte(value: Byte) {
         byteBuf.setByte(baseOffset + writerIndex, value.toInt())
         writerIndex++
@@ -190,20 +165,15 @@ internal class NettyByteBufIoBuf(
     }
 
     override fun retain(): IoBuf {
-        check(!closed) { "Cannot retain a released buffer" }
         try {
             byteBuf.retain()
         } catch (e: IllegalReferenceCountException) {
-            // Underlying ByteBuf was released between the closed check and
-            // here, or naturally drained to refCnt == 0 by a prior release().
-            // Translate to the IoBuf contract's exception type.
             throw IllegalStateException("Cannot retain a released buffer", e)
         }
         return this
     }
 
     override fun release(): Boolean {
-        check(!closed) { "Buffer already released" }
         return try {
             // Delegate directly to the atomic refCnt. Returns true when the
             // underlying ByteBuf went back to the Netty pool (refCnt 1 → 0).
@@ -214,12 +184,21 @@ internal class NettyByteBufIoBuf(
     }
 
     override fun close() {
-        // Idempotent: marks the wrapper as abandoned. Does NOT release the
-        // underlying Netty ByteBuf (matches PR #351's close() contract —
-        // the pool slot is intentionally leaked because the wrapper's
-        // owning context is going away anyway). Callers should use
-        // release() for the normal lifecycle.
-        closed = true
+        // Delegates to byteBuf.release() — see class KDoc's "close()
+        // semantics" section for why this wrapper does NOT follow
+        // AbstractIoBuf's PR #351 intentional-leak shape (in short: Netty's
+        // pool is process-lifetime so returning the reserve is always safe,
+        // and delegating eliminates the TOCTOU window a separate flag
+        // would carry). Idempotent: a second call lands on an
+        // already-released ByteBuf and the resulting
+        // IllegalReferenceCountException is swallowed.
+        try {
+            byteBuf.release()
+        } catch (e: IllegalReferenceCountException) {
+            // Already released — IoBuf.close() is documented as idempotent.
+            @Suppress("SwallowedException", "UnusedPrivateMember")
+            val ignored = e
+        }
     }
 
     companion object {

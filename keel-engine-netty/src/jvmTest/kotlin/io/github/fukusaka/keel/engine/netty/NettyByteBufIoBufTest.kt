@@ -152,13 +152,24 @@ class NettyByteBufIoBufTest {
     }
 
     @Test
-    fun `close is escape hatch, does NOT release underlying ByteBuf`() {
+    fun `close delegates to byteBuf release and is idempotent`() {
         val buf = newBuf()
         val nativeRef = buf.byteBuf
+        // close() decrements byteBuf.refCnt — Netty's pool is process-lifetime
+        // so returning the reserve at close-time is always safe (and is the
+        // right cleanup), unlike AbstractIoBuf's PR #351 intentional-leak
+        // shape which exists for pool-tied own-memory backings.
         buf.close()
-        assertEquals(1, nativeRef.refCnt(), "close must not drop the native refcount")
-        assertFailsWith<IllegalStateException> { buf.retain() } // refCount=0
-        nativeRef.release() // manual cleanup
+        assertEquals(0, nativeRef.refCnt(), "close must drop the native refcount via byteBuf.release()")
+        // Idempotent: a second close on an already-released byteBuf is a
+        // no-op. The IllegalReferenceCountException is swallowed per the
+        // documented IoBuf.close() contract.
+        buf.close()
+        assertEquals(0, nativeRef.refCnt())
+        // retain / release after close hit the underlying released byteBuf
+        // and are translated to IllegalStateException.
+        assertFailsWith<IllegalStateException> { buf.retain() }
+        assertFailsWith<IllegalStateException> { buf.release() }
     }
 
     @Test

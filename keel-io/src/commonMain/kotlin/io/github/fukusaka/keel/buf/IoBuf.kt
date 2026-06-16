@@ -220,16 +220,32 @@ interface IoBuf : Releasable {
     override fun release(): Boolean
 
     /**
-     * Teardown escape hatch: forces the reference count to zero without
-     * invoking the buffer's normal [IoBufOwner] release path.
+     * Teardown escape hatch.
+     *
+     * **Standard implementations (`AbstractIoBuf` family):** forces the
+     * reference count to zero (atomic CAS) without invoking the buffer's
+     * normal [IoBufOwner] release path; pool returns and external unpins
+     * intentionally do not happen, and for heap-backed buffers the
+     * platform-native free routine is invoked directly. This shape (the
+     * PR #351 intentional-leak contract) exists because the pool tied to
+     * an `AbstractIoBuf` may itself be tearing down — returning the
+     * reserve to a dying pool is undefined behaviour, so leaking the
+     * pool slot is the safer option.
+     *
+     * **Wrapper implementations over an externally-managed persistent
+     * pool (e.g. `NettyByteBufIoBuf` over Netty's
+     * `PooledByteBufAllocator`):** `close()` delegates to the
+     * wrapper-equivalent of [release] — the underlying pool is
+     * process-lifetime (Netty's `PooledByteBufAllocator` has no `close()`
+     * API), so returning the reserve at close-time is always safe and is
+     * the right cleanup. Honours the same idempotency / "subsequent
+     * retain / release throw `IllegalStateException`" surface as the
+     * intentional-leak shape; the only observable difference is that the
+     * underlying pool sees the slot returned instead of leaked.
      *
      * **Prefer [release] for normal lifecycle management.** [close] is
      * an escape for engine shutdown / emergency teardown scenarios where
-     * holding a pool slot or kernel-registered index is acceptable to
-     * leak (the whole allocator or engine is going away anyway). It
-     * intentionally bypasses the owner so pool returns and external
-     * unpins do not happen; for heap-backed buffers, the platform-native
-     * free routine is invoked directly.
+     * the buffer's owning context is going away.
      *
      * Safe to call multiple times (idempotent).
      */
