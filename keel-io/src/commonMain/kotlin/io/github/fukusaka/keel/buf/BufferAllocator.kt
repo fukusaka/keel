@@ -115,6 +115,23 @@ interface BufferAllocator {
     fun createChild(): BufferAllocator = this
 
     /**
+     * Pull-shape snapshot view of the allocator's state for telemetry
+     * adapters (OpenTelemetry `ObservableUpDownCounter` callbacks,
+     * Micrometer gauges, Prometheus scrape endpoints). Complements the
+     * push hook [BufferAllocatorStatsCounter] — push for hot-path
+     * cumulative counters, pull for current state at collection time.
+     *
+     * Default returns [NoOpAllocatorStats] (all counters zero, class
+     * count zero) so stateless allocators ([DefaultAllocator] etc.)
+     * inherit a working no-op. Pool-based allocators override to expose
+     * real counters and per-class detail.
+     *
+     * Snapshot cadence is collection cycle (~15s in OT default); not a
+     * hot-path call.
+     */
+    fun stats(): AllocatorStats = NoOpAllocatorStats
+
+    /**
      * Releases the allocator's pooled buffers and any platform resources
      * (`pthread_mutex_t`, file descriptors, etc.) it holds. Engines call
      * this on teardown after they have stopped their EventLoop threads,
