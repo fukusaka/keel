@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.SlabAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
@@ -12,6 +13,7 @@ import platform.posix.close
 import platform.posix.write
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngineResourceTest {
@@ -43,6 +45,50 @@ class IoUringEngineResourceTest {
         engine.close()
 
         assertEquals(0, tracking.outstandingCount, "IoBuf leak detected")
+    }
+
+    @Test
+    fun `engine-direct RingBufferIoBuf fires lifecycleListener on CQE delivery + release`() = runBlocking {
+        // SlabAllocator is the Native-side PooledAllocator subclass; its
+        // lifecycleListener parameter is the channel through which
+        // BufferAllocator.lifecycleListener delivers the listener to the
+        // engine's per-engine allocator via createChild propagation, then
+        // IoUringIoTransport reads it when pre-allocating the RingBufferIoBuf
+        // wrappers (item 12 B2.5 step 4).
+        val tracker = TrackingAllocator()
+        val userAllocator = SlabAllocator(lifecycleListener = tracker)
+        val engine = IoUringEngine(IoEngineConfig(allocator = userAllocator))
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
+
+        // Drive an echo so the recv path picks a ring buffer slot,
+        // reset() fires onAllocated through the listener, the consumer
+        // releases the slot, and release() at refcount=0 fires onReleased.
+        rawWrite(clientFd, "listener-mode")
+        val buf = ch.allocator.allocate(64)
+        withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
+        ch.write(buf)
+        ch.flush()
+
+        rawRead(clientFd, 13)
+
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+        userAllocator.close()
+
+        assertTrue(
+            tracker.allocateCount > 0,
+            "lifecycle listener must observe at least one engine-direct allocate",
+        )
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Listener-mode leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
     }
 
     @Test

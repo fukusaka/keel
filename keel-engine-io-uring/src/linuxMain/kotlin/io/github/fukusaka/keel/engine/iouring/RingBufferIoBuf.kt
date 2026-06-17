@@ -2,8 +2,10 @@
 
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.buf.BufferAllocatorLifecycleListener
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.NativePointerAccess
+import io.github.fukusaka.keel.buf.NoOpLifecycleListener
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
@@ -34,11 +36,21 @@ import platform.posix.memcpy
  *
  * @param bufId      The buffer slot index in the provided buffer ring.
  * @param bufferRing The [ProvidedBufferRing] that owns the underlying memory.
+ * @param lifecycleListener [BufferAllocatorLifecycleListener] notified from
+ *                   [reset] (each CQE delivers a slot to user code — fired as
+ *                   `onAllocated(this)`) and from [release] / [close] at the
+ *                   refcount-zero transition (the slot has just been returned
+ *                   to the ring or abandoned — fired as `onReleased(this)`).
+ *                   Defaults to [NoOpLifecycleListener] for tests / paths that
+ *                   do not configure a listener; the engine-direct lifecycle
+ *                   wiring (item 12 B2.5 step 4) flows the user-passed
+ *                   `config.allocator.lifecycleListener` through here.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class RingBufferIoBuf(
     private val bufId: Int,
     private val bufferRing: ProvidedBufferRing,
+    private val lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
 ) : IoBuf, NativePointerAccess {
 
     // Cached pointer to the buffer slot. Pointer arithmetic (basePtr + bufId * bufferSize)
@@ -111,12 +123,17 @@ internal class RingBufferIoBuf(
 
     /**
      * Resets this buffer for reuse on the next CQE callback.
-     * Restores indices and refCount without any allocation.
+     * Restores indices and refCount without any allocation, then fires
+     * [BufferAllocatorLifecycleListener.onAllocated] on
+     * [lifecycleListener] so the listener observes one event per
+     * CQE-delivered buffer (paired with the [release] / [close]
+     * `onReleased` at the refcount-zero transition).
      */
     fun reset() {
         readerIndex = 0
         writerIndex = 0
         refCount = 1
+        lifecycleListener.onAllocated(this)
     }
 
     /** @throws IllegalStateException if the buffer has already been released. */
@@ -128,7 +145,9 @@ internal class RingBufferIoBuf(
 
     /**
      * Decrements the reference count. When it reaches 0, the slot is
-     * returned to the [ProvidedBufferRing].
+     * returned to the [ProvidedBufferRing] and
+     * [BufferAllocatorLifecycleListener.onReleased] fires on
+     * [lifecycleListener].
      *
      * @throws IllegalStateException if the buffer has already been released.
      */
@@ -138,6 +157,7 @@ internal class RingBufferIoBuf(
             // Engine-direct: no IoBufOwner dispatch. Return the kernel-managed slot
             // to the provided buffer ring directly.
             bufferRing.returnBuffer(bufId)
+            lifecycleListener.onReleased(this)
             return true
         }
         return false
@@ -148,9 +168,18 @@ internal class RingBufferIoBuf(
      * [ProvidedBufferRing]. Unlike [release] this does not return the
      * slot, so the buffer slot is permanently lost until the
      * [ProvidedBufferRing] is closed. Teardown escape hatch only; the
-     * normal lifecycle is [release]. Idempotent.
+     * normal lifecycle is [release]. Idempotent. When this call observes
+     * a positive prior refcount being driven to zero, fires
+     * [BufferAllocatorLifecycleListener.onReleased] on
+     * [lifecycleListener] for parity with the [release] terminal path
+     * (the listener sees one `onReleased` per `reset`/`onAllocated`
+     * regardless of whether the slot was returned to the ring or
+     * abandoned).
      */
     override fun close() {
-        refCount = 0
+        if (refCount > 0) {
+            refCount = 0
+            lifecycleListener.onReleased(this)
+        }
     }
 }
