@@ -42,6 +42,22 @@ internal class ChunkArena(
     /** Number of resident chunks (test/diagnostic observability). */
     internal val chunkCount: Int get() = chunks.size
 
+    // Cumulative chunk-arena counters backing AllocatorStats.snapshot. ChunkArena
+    // is EL-pinned (only carve / reclaim / close run, and only from the owning
+    // allocator's EventLoop thread), so plain `++` would be racy only against the
+    // OT collection-cycle reader on the snapshot thread; @Volatile gives that
+    // reader eventual consistency at the same convention used by PooledAllocator
+    // for its own cumulative counters. Read-side is via the snapshot — the
+    // public surface lives on [AllocatorStats.cumulativeChunksAllocated] /
+    // [AllocatorStats.cumulativeChunksFreed], wired by [PooledAllocator.buildSnapshot].
+    @kotlin.concurrent.Volatile
+    internal var cumulativeChunksAllocated: Long = 0L
+        private set
+
+    @kotlin.concurrent.Volatile
+    internal var cumulativeChunksFreed: Long = 0L
+        private set
+
     /**
      * Carves a buffer of size class [sizeIdx] from a chunk and returns it as a
      * view. Small classes (`sizeIdx <= smallMaxSizeIdx`) come from a subpage
@@ -57,6 +73,7 @@ internal class ChunkArena(
         }
         val fresh = PooledChunk(newChunkBacking(), PoolChunk(sizeClasses))
         chunks.add(fresh)
+        cumulativeChunksAllocated++
         val handle = if (subpage) fresh.carveSubpage(sizeIdx) else fresh.carveRun(classSize)
         check(handle != PoolChunk.NO_HANDLE) { "fresh chunk failed to carve size class $sizeIdx ($classSize bytes)" }
         return makeView(fresh, handle, classSize)
@@ -95,6 +112,7 @@ internal class ChunkArena(
                     // releases the chunk's memory. Safe because no view references it.
                     pc.backing.release()
                     chunks.removeAt(i)
+                    cumulativeChunksFreed++
                 }
             } else {
                 i++
@@ -113,6 +131,7 @@ internal class ChunkArena(
      */
     fun close() {
         for (i in chunks.indices) chunks[i].backing.release()
+        cumulativeChunksFreed += chunks.size.toLong()
         chunks.clear()
     }
 }
