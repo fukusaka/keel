@@ -54,7 +54,7 @@ import kotlinx.coroutines.withTimeout
  * `TrackingAllocator` listener mode is documented as not-thread-safe
  * (plain `++` on its counters). io_uring's EventLoop pthread model
  * pins per-connection callbacks to one OS thread, so single-connection
- * tests are safe, but `IoUringEngineGroup` worker pools across
+ * tests are safe, but `IoUringEventLoopGroup` worker pools across
  * connections can race on the same counters. Two `AtomicLong`s keep
  * the counts correct without needing a synchronisation layer in
  * `keel-io`. (Same shape as the Netty and NWConnection samples.)
