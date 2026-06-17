@@ -76,6 +76,18 @@ import java.nio.ByteBuffer
  * @param initialWriterIndex Initial value for [writerIndex]. Zero for
  *                   the allocator path; `byteBuf.readableBytes()` for
  *                   the inbound path.
+ * @param lifecycleListener [BufferAllocatorLifecycleListener] notified
+ *                   from [release] / [close] when the final reserve
+ *                   on this wrapper drops `byteBuf.refCnt` to zero. The
+ *                   matching [BufferAllocatorLifecycleListener.onAllocated]
+ *                   call is fired by the factory ([NettyByteBufAllocator]
+ *                   for the write-side path, [wrapInbound] for the
+ *                   inbound zero-copy path) so the listener observes
+ *                   fully-constructed buffers only. Defaults to
+ *                   [NoOpLifecycleListener] for tests / paths that do
+ *                   not configure a listener; engine-direct lifecycle
+ *                   wiring (item 12 B2.5) flows the user-passed
+ *                   `config.allocator.lifecycleListener` through here.
  */
 internal class NettyByteBufIoBuf(
     internal val byteBuf: ByteBuf,
@@ -219,6 +231,13 @@ internal class NettyByteBufIoBuf(
          * Ownership of the [ByteBuf] is transferred to the returned
          * wrapper — the pooled buffer is returned to Netty's arena
          * when the wrapper's keel refcount reaches zero.
+         *
+         * Fires [BufferAllocatorLifecycleListener.onAllocated] on the
+         * supplied [lifecycleListener] for the returned wrapper so
+         * engine-direct inbound buffers are observable through the
+         * same channel as write-side allocations from
+         * [NettyByteBufAllocator]. Defaults to [NoOpLifecycleListener]
+         * for paths that do not configure a listener.
          */
         fun wrapInbound(
             byteBuf: ByteBuf,
