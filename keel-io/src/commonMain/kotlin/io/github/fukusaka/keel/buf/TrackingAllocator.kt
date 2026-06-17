@@ -1,33 +1,61 @@
 package io.github.fukusaka.keel.buf
 
 /**
- * Delegating [BufferAllocator] that counts allocate/release calls.
+ * Delegating [BufferAllocator] **and** [BufferAllocatorLifecycleListener] that
+ * counts allocate / release calls. Two complementary modes:
  *
- * Wraps the delegate's [PoolableIoBuf.owner] with a decorator that
- * intercepts release events, so `buf.release()` is correctly counted
- * regardless of where it is called.
+ * - **Decorator mode** (`TrackingAllocator(delegate)`): wraps the delegate's
+ *   allocate path and decorates the [PoolableIoBuf.owner] returned by it so
+ *   `buf.release()` runs through a counting owner. Works for every
+ *   [AbstractIoBuf]-derived buffer (every standard keel `IoBuf`), and is the
+ *   classic test-side wiring. Engine-direct buffers that do not implement
+ *   [PoolableIoBuf] (such as `NettyByteBufIoBuf` or `RingBufferIoBuf`) skip
+ *   the owner decoration — their release events are not visible to the
+ *   decorator mode.
+ * - **Listener mode** (`tracker` installed as the
+ *   `lifecycleListener` parameter on a [PooledAllocator] or one of its
+ *   subclasses): the allocator drives [onAllocated] / [onReleased] for every
+ *   buffer it produces, including engine-direct types if a future
+ *   engine-allocator gains its own listener wiring. Pluggability item 12 B2
+ *   introduced this mode; previously the decorator mode was the only path
+ *   and engine-direct buffers slipped through unnoticed.
  *
- * Used for testing (asserting allocate/release symmetry) and profiling
+ * **Do not mix modes for the same tree** — wrapping a delegate **and**
+ * installing the same tracker as that delegate's listener double-counts
+ * every event. Pick one mode per delegate.
+ *
+ * Used for testing (asserting allocate / release symmetry) and profiling
  * (measuring allocation frequency during benchmarks).
  *
- * Can be combined with [LeakDetectingAllocator] in either order.
+ * Can be composed with [LeakDetectingAllocator] in either order.
  *
  * **Thread safety**: not thread-safe. Intended for single-threaded test
- * execution where allocate/release are called from the same thread.
+ * execution where allocate / release are called from the same thread.
  *
  * ```
+ * // Decorator mode (works for AbstractIoBuf-derived delegates):
  * val tracker = TrackingAllocator(DefaultAllocator)
  * val engine = IoEngine(IoEngineConfig(allocator = tracker))
  * // ... run test or benchmark ...
  * tracker.assertNoLeaks()  // throws if outstandingCount != 0
+ *
+ * // Listener mode (works for any allocator that wires
+ * // BufferAllocatorLifecycleListener):
+ * val tracker = TrackingAllocator()
+ * val allocator = PooledDirectAllocator(lifecycleListener = tracker)
+ * val engine = IoEngine(IoEngineConfig(allocator = allocator))
+ * // ... run test or benchmark ...
+ * tracker.assertNoLeaks()
  * ```
  *
- * @param delegate The underlying allocator to delegate to.
+ * @param delegate The underlying allocator to delegate to in decorator mode.
+ *   Pass [DefaultAllocator] (the constructor default) when only listener
+ *   mode is in use — the delegate then sees no traffic.
  */
 class TrackingAllocator private constructor(
     private val delegate: BufferAllocator,
     private val stats: Stats,
-) : BufferAllocator {
+) : BufferAllocator, BufferAllocatorLifecycleListener {
 
     constructor(delegate: BufferAllocator = DefaultAllocator) : this(delegate, Stats())
 
@@ -44,11 +72,11 @@ class TrackingAllocator private constructor(
             internal set
     }
 
-    /** Total number of [allocate] calls since creation or last [reset]. */
+    /** Total number of allocate calls observed across both modes. */
     var allocateCount: Int = 0
         private set
 
-    /** Total number of release calls since creation or last [reset]. */
+    /** Total number of release calls observed across both modes. */
     var releaseCount: Int = 0
         private set
 
@@ -60,13 +88,15 @@ class TrackingAllocator private constructor(
     val outstandingCount: Int get() = allocateCount - releaseCount
 
     override fun allocate(capacity: Int): IoBuf {
-        allocateCount++
         val buf = delegate.allocate(capacity)
-        val poolable = buf as? PoolableIoBuf
-            ?: throw IllegalStateException(
-                "TrackingAllocator requires a PoolableIoBuf-compatible allocator, " +
-                    "but delegate returned ${buf::class.simpleName}",
-            )
+        // Decorator mode: count and decorate owner for AbstractIoBuf-derived
+        // buffers. Engine-direct buffers that do not implement PoolableIoBuf
+        // (NettyByteBufIoBuf, RingBufferIoBuf, …) skip the decoration — their
+        // release events are not visible to the decorator mode. Use listener
+        // mode (install this tracker as the lifecycleListener on the
+        // underlying allocator) for engine-direct coverage.
+        val poolable = buf as? PoolableIoBuf ?: return buf
+        allocateCount++
         poolable.owner = TrackingOwner(poolable.owner)
         return buf
     }
@@ -80,6 +110,22 @@ class TrackingAllocator private constructor(
                 "Double release detected: releaseCount ($releaseCount) > allocateCount ($allocateCount)"
             }
             delegate.release(buf)
+        }
+    }
+
+    override fun onAllocated(buf: IoBuf) {
+        // Listener mode: count without decorating the owner. The underlying
+        // allocator drives this event for every IoBuf it produces — including
+        // engine-direct buffers — so engine-direct lifecycle coverage flows
+        // through here.
+        allocateCount++
+    }
+
+    override fun onReleased(buf: IoBuf) {
+        // Listener mode counterpart to [onAllocated]. Fires once per release.
+        releaseCount++
+        check(releaseCount <= allocateCount) {
+            "Double release detected: releaseCount ($releaseCount) > allocateCount ($allocateCount)"
         }
     }
 
