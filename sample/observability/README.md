@@ -29,6 +29,29 @@ allocate memory" guidance).
 The sample uses the OpenTelemetry SDK's autoconfigure extension; everything is
 driven by environment variables.
 
+### Three layers of observation
+
+Even before any backend is connected, the sample's own stdout shows the
+allocator's state every 3 seconds, in the same shape the
+`AllocatorStats.snapshot()` pull API surfaces to OT:
+
+```
+[iter=104000] alloc=104000 (hit=93380 miss=274 empty=0 huge=10346) rel=103985 (pooled=93394 discarded=249 freed=10342) cached[tiny=8 page=6 large=0 huge=0] chunks=1
+```
+
+So you have three ways to verify the metric flow, in order of setup cost:
+
+1. **Sample stdout (no Docker)** — periodic `AllocatorStats` snapshot lines
+   confirm the loop is running and the allocator is producing events. Always
+   available.
+2. **OT Collector debug exporter (Docker)** — the `otel-collector/` docker
+   compose below prints every `keel.buffer.*` metric the SDK emits to the
+   Collector's stdout, with full attribute / value detail. Confirms the OTLP
+   wire-up end to end.
+3. **Real backend UI** — SigNoz / Grafana / Honeycomb / Datadog rendering the
+   same metrics as charts. Confirms the dashboard-shaped view that
+   production consumers will see.
+
 Minimum config (the sample assumes these defaults when nothing is set):
 
 ```sh

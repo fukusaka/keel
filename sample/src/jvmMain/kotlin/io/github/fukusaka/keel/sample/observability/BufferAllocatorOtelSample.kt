@@ -1,6 +1,8 @@
 package io.github.fukusaka.keel.sample.observability
 
+import io.github.fukusaka.keel.buf.AllocatorStats
 import io.github.fukusaka.keel.buf.PooledDirectAllocator
+import io.github.fukusaka.keel.buf.SizeTier
 import io.github.fukusaka.keel.observability.opentelemetry.OtelAllocatorBinder
 import io.github.fukusaka.keel.observability.opentelemetry.OtelStatsCounter
 import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk
@@ -39,6 +41,13 @@ import kotlin.random.Random
  * Half of every released buffer is held one extra iteration so the pool
  * has a non-zero outstanding count for the pool gauges to chart.
  *
+ * **Self-observable output**: the sample also periodically prints the
+ * pull-side [AllocatorStats] snapshot to stdout — the same numbers that
+ * the OT adapter forwards to `keel.buffer.*` metrics — so the run is
+ * visibly working even without a Docker / SigNoz / Grafana backend
+ * attached. The OTLP push side stays useful for production-shaped
+ * verification through a real backend (Collector logs, SigNoz UI, …).
+ *
  * Stop the sample with Ctrl-C; the SDK is closed in the shutdown hook so
  * the OT Collector receives a final flush.
  */
@@ -58,6 +67,7 @@ fun main(args: Array<String>) {
     OtelAllocatorBinder(allocator = allocator, meter = meter, poolName = poolName)
 
     println("keel observability sample — emitting to OTLP. Stop with Ctrl-C.")
+    println("Pool '$poolName' wired; printing the AllocatorStats snapshot every $SNAPSHOT_INTERVAL_MILLIS ms.")
     sustainedAllocateReleaseLoop(allocator, iters)
 }
 
@@ -68,6 +78,7 @@ private fun sustainedAllocateReleaseLoop(
     val random = Random.Default
     val held = ArrayDeque<io.github.fukusaka.keel.buf.IoBuf>(MAX_HELD)
     var i = 0
+    var lastSnapshotAt = System.currentTimeMillis()
     while (i < iters) {
         val roll = random.nextInt(WORKLOAD_BUCKET_TOTAL)
         val size = when {
@@ -86,9 +97,44 @@ private fun sustainedAllocateReleaseLoop(
         }
         if (++i % ITERS_PER_TICK == 0) {
             Thread.sleep(TICK_PAUSE_MILLIS)
+            val now = System.currentTimeMillis()
+            if (now - lastSnapshotAt >= SNAPSHOT_INTERVAL_MILLIS) {
+                printSnapshot(allocator.stats(), iter = i)
+                lastSnapshotAt = now
+            }
         }
     }
     while (held.isNotEmpty()) held.removeFirst().release()
+    printSnapshot(allocator.stats(), iter = i, finalLine = true)
+}
+
+private fun printSnapshot(stats: AllocatorStats, iter: Int, finalLine: Boolean = false) {
+    val snap = stats.snapshot()
+    val tierCached = LongArray(SizeTier.entries.size)
+    for (idx in 0 until snap.classCount) {
+        tierCached[snap.sizeTier(idx).ordinal] += snap.classCachedCount(idx).toLong()
+    }
+    val prefix = if (finalLine) "[final]" else "[iter=$iter]"
+    println(
+        buildString {
+            append(prefix).append(' ')
+            append("alloc=").append(snap.cumulativeAllocations)
+            append(" (hit=").append(snap.cumulativeHits)
+            append(" miss=").append(snap.cumulativeMisses)
+            append(" empty=").append(snap.cumulativeEmpty)
+            append(" huge=").append(snap.cumulativeHuge).append(')')
+            append(" rel=").append(snap.cumulativeReleases)
+            append(" (pooled=").append(snap.cumulativePooled)
+            append(" discarded=").append(snap.cumulativeDiscarded)
+            append(" freed=").append(snap.cumulativeFreed).append(')')
+            append(" cached[")
+            for (ordinal in tierCached.indices) {
+                if (ordinal > 0) append(' ')
+                append(SizeTier.entries[ordinal].name.lowercase()).append('=').append(tierCached[ordinal])
+            }
+            append("] chunks=").append(snap.residentChunks)
+        },
+    )
 }
 
 private const val PAGE_SIZE_BYTES = 8192
@@ -104,3 +150,4 @@ private const val WORKLOAD_TINY_BUCKET = 20
 private const val MAX_HELD = 16
 private const val ITERS_PER_TICK = 2_000
 private const val TICK_PAUSE_MILLIS = 50L
+private const val SNAPSHOT_INTERVAL_MILLIS = 3_000L
