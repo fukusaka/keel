@@ -149,6 +149,47 @@ class PooledAllocatorStatsTest {
     }
 
     @Test
+    fun `cumulativeChunksAllocated increments on first allocation`() {
+        if (!isPoolAllocator()) return
+        val allocator = createPoolAllocator()
+        try {
+            val before = allocator.stats().snapshot()
+            assertEquals(0L, before.cumulativeChunksAllocated, "fresh allocator: no chunks yet")
+            assertEquals(0L, before.cumulativeChunksFreed)
+            val buf = allocator.allocate(SizeTier.PAGE_MAX_BYTES)
+            try {
+                val after = allocator.stats().snapshot()
+                // Cold cache: the MISS that satisfies the first allocate runs
+                // through ChunkArena.carve() and allocates a fresh chunk.
+                assertEquals(before.cumulativeChunksAllocated + 1, after.cumulativeChunksAllocated)
+                // Chunks are retained through release in this allocator's lifetime
+                // (no idle-chunk reclaim is triggered by a single allocate / release).
+                assertEquals(before.cumulativeChunksFreed, after.cumulativeChunksFreed)
+                assertEquals(1, after.residentChunks)
+            } finally {
+                buf.release()
+            }
+        } finally {
+            (allocator as? AutoCloseableLike)?.close()
+        }
+    }
+
+    @Test
+    fun `cumulativeChunksFreed increments on allocator close`() {
+        if (!isPoolAllocator()) return
+        val allocator = createPoolAllocator()
+        // Allocate + release to force one chunk into existence.
+        allocator.allocate(SizeTier.PAGE_MAX_BYTES).release()
+        val beforeClose = allocator.stats().snapshot()
+        assertTrue(beforeClose.cumulativeChunksAllocated >= 1, "expected at least one chunk to be allocated")
+        assertEquals(0L, beforeClose.cumulativeChunksFreed)
+        allocator.close()
+        val afterClose = allocator.stats().snapshot()
+        assertEquals(beforeClose.cumulativeChunksAllocated, afterClose.cumulativeChunksFreed)
+        assertEquals(0, afterClose.residentChunks)
+    }
+
+    @Test
     fun `stats view returns the same instance across calls`() {
         if (!isPoolAllocator()) return
         val allocator = createPoolAllocator()
