@@ -1,4 +1,4 @@
 package io.github.fukusaka.keel.buf
 
-actual fun defaultAllocator(missProfile: PoolMissProfile?): BufferAllocator =
-    SlabAllocator(missProfile = missProfile)
+actual fun defaultAllocator(statsCounter: BufferAllocatorStatsCounter): BufferAllocator =
+    SlabAllocator(statsCounter = statsCounter)

@@ -64,19 +64,30 @@ abstract class PooledAllocator(
      */
     protected val freelistFactory: FreelistFactory? = null,
     /**
-     * Optional opt-in instrumentation: when non-`null`, every [allocate] dispatch
-     * records the path it took (pool hit / miss / empty / huge) into this profile
-     * — see [PoolMissProfile] for the taxonomy. Off by default; only wire when
-     * profiling (e.g. a benchmark `--profile-alloc` flag). The shared profile is
-     * thread-safe and forwarded to per-EventLoop children produced by [createChild]
-     * so all EventLoops aggregate into one histogram. Each recorded path adds a
-     * single atomic increment to the otherwise hot allocate path.
+     * Optional observer that receives every [allocate] / [returnToPool] event as a
+     * primitive-arg + enum-arg [BufferAllocatorStatsCounter.onAllocate] /
+     * [BufferAllocatorStatsCounter.onRelease] call. Defaults to [NoOpStatsCounter]
+     * so the hot path stays branch-free (monomorphic dispatch on the singleton
+     * inlines / elides). The same counter instance is forwarded to per-EventLoop
+     * children produced by [createChild] so all EventLoops aggregate into one
+     * counter — pass a thread-safe implementation when multi-EL aggregation is
+     * required. [PoolMissProfile] satisfies this interface, so existing
+     * `--profile-alloc` wiring continues to work.
      */
-    val missProfile: PoolMissProfile? = null,
+    val statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter,
 ) : BufferAllocator {
 
     /** The size-class table driving round-up. Built once with keel's pooling parameters. */
     private val sizeClasses: SizeClasses = SizeClasses(PAGE_SIZE, PAGE_SHIFTS, CHUNK_SIZE, NO_ALIGNMENT)
+
+    /**
+     * Pre-computed [SizeTier] for each size-class index. Resolved once at init so the
+     * hot-path [allocate] / [returnToPool] emit paths read the tier via an indexed
+     * lookup instead of recomputing `SizeTier.fromBytes(classSize)` on every event.
+     */
+    private val tierByClassIdx: Array<SizeTier> = Array(sizeClasses.nSizes) { idx ->
+        SizeTier.fromBytes(sizeClasses.sizeIdx2size(idx))
+    }
 
     /**
      * Immutable ladder snapshot, replaced wholesale on [hintSizeClass] /
@@ -238,7 +249,7 @@ abstract class PooledAllocator(
         // Preserve the empty-buffer marker semantics: allocate(0) yields a true
         // zero-capacity buffer rather than rounding up to the smallest class.
         if (capacity == 0) {
-            missProfile?.recordEmpty()
+            statsCounter.onAllocate(0, EMPTY_CLASS_IDX, SizeTier.TINY, AllocPath.EMPTY, weight = 1)
             val empty = newBuffer(0)
             (empty as AbstractIoBuf).owner = poolOwner
             return empty
@@ -251,7 +262,7 @@ abstract class PooledAllocator(
                 val pool = l.pools[idx]
                 val recycled = pool?.pop()
                 if (recycled != null) {
-                    missProfile?.recordHit(idx)
+                    statsCounter.onAllocate(capacity, idx, tierByClassIdx[idx], AllocPath.HIT, weight = 1)
                     allocsSinceTrim[idx]++ // working-set signal: this class served from cache
                     cachedCount[idx]--
                     (recycled as AbstractIoBuf).resetForReuse()
@@ -263,7 +274,7 @@ abstract class PooledAllocator(
                 // system allocation). The view's capacity is the class size, so it
                 // pools on release like any cached buffer; its freeBacking returns
                 // the run to the chunk when the pool is full.
-                missProfile?.recordMiss(idx)
+                statsCounter.onAllocate(capacity, idx, tierByClassIdx[idx], AllocPath.MISS, weight = 1)
                 val fresh = chunkArena.carve(idx)
                 (fresh as AbstractIoBuf).owner = poolOwner
                 maybeTrim()
@@ -271,41 +282,48 @@ abstract class PooledAllocator(
             }
         }
         // Above the cache cap or above the whole ladder (huge): exact, unpooled.
-        missProfile?.recordHuge()
+        statsCounter.onAllocate(capacity, HUGE_CLASS_IDX, SizeTier.HUGE, AllocPath.HUGE, weight = 1)
         val fresh = newBuffer(capacity)
         (fresh as AbstractIoBuf).owner = poolOwner
         return fresh
     }
 
     private fun returnToPool(buf: IoBuf) {
-        if (closed) {
-            // Allocator was closed while this buffer was in use; the freelist
-            // is already drained and any Freelist OS resources are released,
-            // so go straight to freeBacking instead of pushing into a closed
-            // pool. Chunk-backed views return their run to the chunk; the
-            // chunk's own refCount drops once all its views are released and
-            // frees its backing.
-            (buf as AbstractIoBuf).freeBacking()
-            return
-        }
         val cap = buf.capacity
-        if (cap in 1..MAX_CACHED_CAPACITY) {
-            val l = ladder
-            val idx = sizeClasses.size2SizeIdx(cap)
-            // Only pool buffers whose capacity is exactly a class size (cache-path
-            // buffers are); arbitrary-sized buffers from the unpooled path fall
-            // through to freeBacking.
-            if (idx < sizeClasses.nSizes && sizeClasses.sizeIdx2size(idx) == cap) {
-                val pool = l.pools[idx]
-                if (pool != null && pool.push(buf)) {
+        val idx = resolveClassIdx(cap)
+        if (!closed && idx >= 0) {
+            val pool = ladder.pools[idx]
+            if (pool != null) {
+                if (pool.push(buf)) {
                     cachedCount[idx]++
+                    statsCounter.onRelease(idx, tierByClassIdx[idx], ReleaseOutcome.POOLED, weight = 1)
                     return
                 }
+                // Pool slot cap reached: drop the buffer's backing instead of pushing.
+                statsCounter.onRelease(idx, tierByClassIdx[idx], ReleaseOutcome.DISCARDED, weight = 1)
+                (buf as AbstractIoBuf).freeBacking()
+                return
             }
         }
-        // No class for this size, pool full, or above the cache cap: free the
-        // backing directly. refCount is already zero (we are inside PoolOwner.release).
+        // No class for this size, allocator closed, or no pool installed for this
+        // class: free the backing directly. refCount is already zero (we are inside
+        // PoolOwner.release). Chunk-backed views return their run to the chunk; the
+        // chunk's own refCount drops once all its views are released and frees its
+        // backing.
+        val tier = if (idx >= 0) tierByClassIdx[idx] else SizeTier.fromBytes(cap)
+        statsCounter.onRelease(idx, tier, ReleaseOutcome.FREED, weight = 1)
         (buf as AbstractIoBuf).freeBacking()
+    }
+
+    /**
+     * Maps a buffer capacity back to its size-class index, or returns [HUGE_CLASS_IDX]
+     * when the capacity falls outside the cache range. Used by [returnToPool] to tag
+     * release events with the correct `classIdx`.
+     */
+    private fun resolveClassIdx(cap: Int): Int {
+        if (cap !in 1..MAX_CACHED_CAPACITY) return HUGE_CLASS_IDX
+        val idx = sizeClasses.size2SizeIdx(cap)
+        return if (idx < sizeClasses.nSizes && sizeClasses.sizeIdx2size(idx) == cap) idx else HUGE_CLASS_IDX
     }
 
     /** Runs a [trim] pass once every [TRIM_INTERVAL] allocations of a cached class. */
@@ -474,5 +492,18 @@ abstract class PooledAllocator(
 
         /** Idle chunks kept resident after a trim to avoid alloc/free thrashing. */
         internal const val WARM_RESERVE = 1
+
+        /**
+         * Sentinel `classIdx` reported to [BufferAllocatorStatsCounter] for an
+         * `allocate(0)` empty-marker path that does not belong to any size class.
+         */
+        private const val EMPTY_CLASS_IDX = -1
+
+        /**
+         * Sentinel `classIdx` reported to [BufferAllocatorStatsCounter] for the
+         * huge-allocation path (above [MAX_CACHED_CAPACITY]) or any release whose
+         * capacity does not match a registered size class.
+         */
+        private const val HUGE_CLASS_IDX = -1
     }
 }
