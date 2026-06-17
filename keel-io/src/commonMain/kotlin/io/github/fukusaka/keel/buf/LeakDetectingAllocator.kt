@@ -92,14 +92,11 @@ package io.github.fukusaka.keel.buf
  * TrackingAllocator(LeakDetectingAllocator(delegate))
  * ```
  *
- * For engine-direct buffer coverage, use listener mode on both:
- * ```
- * val leakDetector = LeakDetectingAllocator(DefaultAllocator) { fail(it) }
- * val tracker = TrackingAllocator()
- * val allocator = PooledDirectAllocator(
- *     lifecycleListener = CompositeLifecycleListener(leakDetector, tracker),
- * )
- * ```
+ * For engine-direct buffer coverage, pick the listener that matters most
+ * for the test: counting (`TrackingAllocator`) or stack-trace reporting
+ * (`LeakDetectingAllocator`). [PooledAllocator]'s `lifecycleListener`
+ * parameter accepts a single instance; multiplexing two listeners on the
+ * same allocator is out of scope for this PR.
  *
  * **Thread safety**: not thread-safe in listener mode. Intended for
  * single-threaded test execution where allocate / release are driven from
