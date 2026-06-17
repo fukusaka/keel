@@ -51,10 +51,11 @@ fun main(args: Array<String>) {
     Runtime.getRuntime().addShutdownHook(Thread { sdk.close() })
 
     val meter = sdk.meterProvider.get(OtelStatsCounter.METER_SCOPE)
-    val statsCounter = OtelStatsCounter(poolName = "sample", meter = meter)
+    val poolName = "sample"
+    val statsCounter = OtelStatsCounter(poolName = poolName, meter = meter)
 
     val allocator = PooledDirectAllocator(statsCounter = statsCounter)
-    OtelAllocatorBinder(allocator, meter)
+    OtelAllocatorBinder(allocator = allocator, meter = meter, poolName = poolName)
 
     println("keel observability sample — emitting to OTLP. Stop with Ctrl-C.")
     sustainedAllocateReleaseLoop(allocator, iters)

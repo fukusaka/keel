@@ -41,10 +41,19 @@ import io.opentelemetry.api.metrics.Meter
 class OtelAllocatorBinder(
     private val allocator: BufferAllocator,
     meter: Meter,
+    /**
+     * Override for the `pool.name` attribute. Defaults to
+     * `allocator.stats().poolName` (the concrete allocator class's simple
+     * name) so the binder still produces a meaningful series without
+     * configuration; pass an explicit value when wiring the binder
+     * alongside an [OtelStatsCounter] whose `poolName` constructor argument
+     * was overridden — both adapters must report the same `pool.name` for
+     * the dashboard to join push counters and pull gauges into one series.
+     */
+    poolName: String = allocator.stats().poolName,
 ) {
 
     private val stats: AllocatorStats = allocator.stats()
-    private val poolName: String = stats.poolName
 
     private val tierAttrs: Array<Attributes> =
         Array(SizeTier.entries.size) { tierOrdinal ->
