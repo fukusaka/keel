@@ -33,6 +33,43 @@ interface BufferAllocator {
     fun allocate(capacity: Int): IoBuf
 
     /**
+     * The [BufferAllocatorLifecycleListener] this allocator chain reports
+     * allocate / release events through, for consumers that need per-buffer
+     * identity (`TrackingAllocator`, `LeakDetectingAllocator`, leak audits,
+     * per-buffer profilers).
+     *
+     * Default [NoOpLifecycleListener] — implementations that do not record
+     * lifecycle events return this so the hot path stays branch-free and
+     * monomorphic dispatch on the singleton inlines / elides.
+     *
+     * **Engine-direct buffer coverage.** Wrapper allocators (e.g.
+     * `NettyByteBufAllocator`) that produce `IoBuf` types without a
+     * `PoolableIoBuf.owner` seam read this getter from the user-passed
+     * `config.allocator` and forward it to their per-engine internal
+     * allocator (and to engine-internal `wrapInbound` / equivalent factory
+     * paths). This is how a single listener installed on the user's
+     * `PooledDirectAllocator(lifecycleListener = …)` reaches the engine's
+     * own `NettyByteBufIoBuf` / `RingBufferIoBuf` / `DispatchDataIoBuf`
+     * lifecycle events even when those types are not produced by the
+     * user's allocator. (Pluggability item 12 stage B2.5.)
+     *
+     * **Wrapper / decorator convention.** Wrapper allocators
+     * (`LeakDetectingAllocator`, `TrackingAllocator`, etc.) typically
+     * override this getter to forward their delegate's listener so the
+     * chain stays transparent. Wrap with an explicit
+     * `PooledDirectAllocator(lifecycleListener = wrapperInstance)` if you
+     * want the wrapper itself to be the listener — wrappers are
+     * `BufferAllocator` first, listener second.
+     *
+     * **`createChild` propagation.** Implementations should propagate
+     * this listener to the children they produce via
+     * [createChild] so a multi-EventLoop engine aggregates into one
+     * listener; consequently the listener must be thread-safe when used
+     * across EventLoops.
+     */
+    val lifecycleListener: BufferAllocatorLifecycleListener get() = NoOpLifecycleListener
+
+    /**
      * Wraps a [ByteArray] region as a read-only [IoBuf] view without
      * copying bytes. The returned buffer uses platform-native backing
      * (e.g. pinned pointer on Native, heap ByteBuffer on JVM) so it is

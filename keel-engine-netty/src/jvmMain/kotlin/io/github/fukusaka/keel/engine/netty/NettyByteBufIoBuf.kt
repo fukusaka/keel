@@ -1,7 +1,9 @@
 package io.github.fukusaka.keel.engine.netty
 
+import io.github.fukusaka.keel.buf.BufferAllocatorLifecycleListener
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.NioByteBufferBacking
+import io.github.fukusaka.keel.buf.NoOpLifecycleListener
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.netty.buffer.ByteBuf
 import io.netty.util.IllegalReferenceCountException
@@ -74,11 +76,24 @@ import java.nio.ByteBuffer
  * @param initialWriterIndex Initial value for [writerIndex]. Zero for
  *                   the allocator path; `byteBuf.readableBytes()` for
  *                   the inbound path.
+ * @param lifecycleListener [BufferAllocatorLifecycleListener] notified
+ *                   from [release] / [close] when the final reserve
+ *                   on this wrapper drops `byteBuf.refCnt` to zero. The
+ *                   matching [BufferAllocatorLifecycleListener.onAllocated]
+ *                   call is fired by the factory ([NettyByteBufAllocator]
+ *                   for the write-side path, [wrapInbound] for the
+ *                   inbound zero-copy path) so the listener observes
+ *                   fully-constructed buffers only. Defaults to
+ *                   [NoOpLifecycleListener] for tests / paths that do
+ *                   not configure a listener; engine-direct lifecycle
+ *                   wiring (item 12 B2.5) flows the user-passed
+ *                   `config.allocator.lifecycleListener` through here.
  */
 internal class NettyByteBufIoBuf(
     internal val byteBuf: ByteBuf,
     private val baseOffset: Int = 0,
     initialWriterIndex: Int = 0,
+    private val lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
 ) : IoBuf, NioByteBufferBacking {
 
     override val capacity: Int = byteBuf.capacity() - baseOffset
@@ -174,13 +189,15 @@ internal class NettyByteBufIoBuf(
     }
 
     override fun release(): Boolean {
-        return try {
+        val freed = try {
             // Delegate directly to the atomic refCnt. Returns true when the
             // underlying ByteBuf went back to the Netty pool (refCnt 1 → 0).
             byteBuf.release()
         } catch (e: IllegalReferenceCountException) {
             throw IllegalStateException("Buffer already released", e)
         }
+        if (freed) lifecycleListener.onReleased(this)
+        return freed
     }
 
     override fun close() {
@@ -192,13 +209,15 @@ internal class NettyByteBufIoBuf(
         // would carry). Idempotent: a second call lands on an
         // already-released ByteBuf and the resulting
         // IllegalReferenceCountException is swallowed.
-        try {
+        val freed = try {
             byteBuf.release()
         } catch (e: IllegalReferenceCountException) {
             // Already released — IoBuf.close() is documented as idempotent.
             @Suppress("SwallowedException", "UnusedPrivateMember")
             val ignored = e
+            false
         }
+        if (freed) lifecycleListener.onReleased(this)
     }
 
     companion object {
@@ -212,11 +231,26 @@ internal class NettyByteBufIoBuf(
          * Ownership of the [ByteBuf] is transferred to the returned
          * wrapper — the pooled buffer is returned to Netty's arena
          * when the wrapper's keel refcount reaches zero.
+         *
+         * Fires [BufferAllocatorLifecycleListener.onAllocated] on the
+         * supplied [lifecycleListener] for the returned wrapper so
+         * engine-direct inbound buffers are observable through the
+         * same channel as write-side allocations from
+         * [NettyByteBufAllocator]. Defaults to [NoOpLifecycleListener]
+         * for paths that do not configure a listener.
          */
-        fun wrapInbound(byteBuf: ByteBuf): NettyByteBufIoBuf = NettyByteBufIoBuf(
-            byteBuf,
-            baseOffset = byteBuf.readerIndex(),
-            initialWriterIndex = byteBuf.readableBytes(),
-        )
+        fun wrapInbound(
+            byteBuf: ByteBuf,
+            lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
+        ): NettyByteBufIoBuf {
+            val buf = NettyByteBufIoBuf(
+                byteBuf,
+                baseOffset = byteBuf.readerIndex(),
+                initialWriterIndex = byteBuf.readableBytes(),
+                lifecycleListener = lifecycleListener,
+            )
+            lifecycleListener.onAllocated(buf)
+            return buf
+        }
     }
 }

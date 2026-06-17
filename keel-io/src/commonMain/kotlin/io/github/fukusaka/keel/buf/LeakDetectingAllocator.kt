@@ -194,6 +194,17 @@ class LeakDetectingAllocator(
     override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         delegate.slice(source, offset, length)
 
+    /**
+     * Forwards to the delegate's listener for the same reason
+     * [TrackingAllocator.lifecycleListener] does — the surrounding chain
+     * sees the delegate's listener through this getter, not this
+     * detector. To install this detector as the lifecycle listener
+     * (listener mode), pass it explicitly to a [PooledAllocator]'s
+     * `lifecycleListener` constructor parameter.
+     */
+    override val lifecycleListener: BufferAllocatorLifecycleListener
+        get() = delegate.lifecycleListener
+
     override fun createChild(): BufferAllocator =
         LeakDetectingAllocator(delegate.createChild(), onLeak)
 }

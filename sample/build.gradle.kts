@@ -24,6 +24,14 @@ kotlin {
                 implementation(libs.opentelemetry.sdk)
                 implementation(libs.opentelemetry.exporter.otlp)
                 implementation(libs.opentelemetry.sdk.extension.autoconfigure)
+                // Netty engine + kotlinx.coroutines for the Netty-side
+                // BufferAllocator.lifecycleListener visual-verification
+                // sample (item 12 B2.5 step 2). Drives an echo workload
+                // through NettyEngine and prints the TrackingAllocator
+                // listener counters proving engine-direct NettyByteBufIoBuf
+                // events are observable.
+                implementation(project(":keel-engine-netty"))
+                implementation(libs.kotlinx.coroutines.core)
             }
         }
     }
@@ -42,6 +50,16 @@ tasks.register<JavaExec>("runObservabilitySample") {
         "Set OTEL_EXPORTER_OTLP_ENDPOINT (default http://localhost:4317) to point at SigNoz / OT Collector / etc."
     group = "application"
     mainClass.set("io.github.fukusaka.keel.sample.observability.BufferAllocatorOtelSampleKt")
+    classpath = kotlin.jvm().compilations["main"].runtimeDependencyFiles +
+        kotlin.jvm().compilations["main"].output.allOutputs
+    standardInput = System.`in`
+}
+
+tasks.register<JavaExec>("runNettyListenerSample") {
+    description = "Run the NettyEngine BufferAllocator.lifecycleListener visual-verification sample. " +
+        "Drives an echo workload through NettyEngine + TrackingAllocator listener and prints the live counters."
+    group = "application"
+    mainClass.set("io.github.fukusaka.keel.sample.observability.NettyEngineListenerSampleKt")
     classpath = kotlin.jvm().compilations["main"].runtimeDependencyFiles +
         kotlin.jvm().compilations["main"].output.allOutputs
     standardInput = System.`in`

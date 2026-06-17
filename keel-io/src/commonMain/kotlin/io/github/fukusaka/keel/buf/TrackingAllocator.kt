@@ -135,6 +135,19 @@ class TrackingAllocator private constructor(
     override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         delegate.slice(source, offset, length)
 
+    /**
+     * Forwards to the delegate's listener. `TrackingAllocator` is a
+     * `BufferAllocator` first and a `BufferAllocatorLifecycleListener`
+     * second — the listener instance the surrounding allocator chain
+     * exposes through [BufferAllocator.lifecycleListener] is the
+     * delegate's, not this tracker. To wire this tracker as the
+     * lifecycle listener, install it explicitly on a [PooledAllocator]
+     * via its `lifecycleListener` constructor parameter (listener mode);
+     * decorator mode uses the owner decoration in [allocate].
+     */
+    override val lifecycleListener: BufferAllocatorLifecycleListener
+        get() = delegate.lifecycleListener
+
     override fun createChild(): BufferAllocator =
         TrackingAllocator(delegate.createChild(), stats)
 
