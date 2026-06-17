@@ -27,6 +27,21 @@ package io.github.fukusaka.keel.buf
  * own threading model (per EventLoop thread for `epoll` / `kqueue` /
  * `nio` / `io_uring`, once per engine for `NwEngine` / `NodeEngine`
  * where the engine has no per-thread split).
+ *
+ * **Kotlin/JS member stability**: the Kotlin/JS IR backend mangles each
+ * interface member to a hash derived from that member's own signature
+ * (name + parameter types + return type), not from the interface's
+ * total surface. Adding a new default-implemented member to this
+ * interface (e.g. the `lifecycleListener` getter added by pluggability
+ * item 12 stage B2.5 step 2) therefore does not change the dispatch
+ * name of any existing member, so codec APIs that pass a
+ * `BufferAllocator` through (notably `Encoder.newSession(allocator,
+ * options)` / `Decoder.newSession(allocator, options)`) stay
+ * binary-stable across keel versions on Kotlin/JS as long as the
+ * caller and the implementation are compiled with the same Kotlin
+ * compiler version. Removing or changing the signature of an existing
+ * member is a BREAKING change on every target, JS included; the per-
+ * member hash convention does not make removals any safer.
  */
 interface BufferAllocator {
     /** Allocates a buffer with at least [capacity] bytes. */
