@@ -1,7 +1,9 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.BufferAllocatorLifecycleListener
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.NoOpLifecycleListener
 import io.netty.buffer.ByteBufAllocator
 
 /**
@@ -21,14 +23,28 @@ import io.netty.buffer.ByteBufAllocator
  *
  * **`wrapBytes` / `slice`**: not required by the Netty engine's write
  * path; implemented as thin forwards.
+ *
+ * **Lifecycle listener wiring** (pluggability item 12 B2.5 step 2):
+ * [lifecycleListener] is propagated to every [NettyByteBufIoBuf] this
+ * allocator produces, including buffers wrapped through
+ * [NettyByteBufIoBuf.wrapInbound] from the engine's inbound zero-copy
+ * read path. `NettyEngine` reads the listener from the user-passed
+ * `config.allocator.lifecycleListener` when constructing per-EventLoop
+ * allocators, so a single listener installed on the user's
+ * `PooledDirectAllocator(lifecycleListener = …)` observes every
+ * engine-direct `NettyByteBufIoBuf` lifecycle event without any further
+ * configuration.
  */
 internal class NettyByteBufAllocator(
     private val byteBufAllocator: ByteBufAllocator,
+    override val lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
 ) : BufferAllocator {
 
     override fun allocate(capacity: Int): IoBuf {
         val byteBuf = byteBufAllocator.directBuffer(capacity, capacity)
-        return NettyByteBufIoBuf(byteBuf)
+        val buf = NettyByteBufIoBuf(byteBuf, lifecycleListener = lifecycleListener)
+        lifecycleListener.onAllocated(buf)
+        return buf
     }
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? = null

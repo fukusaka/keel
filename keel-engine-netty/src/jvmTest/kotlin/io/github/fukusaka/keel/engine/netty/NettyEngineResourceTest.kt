@@ -3,13 +3,18 @@ package io.github.fukusaka.keel.engine.netty
 import io.github.fukusaka.keel.core.InetSocketAddress
 
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.BufferAllocatorLifecycleListener
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.PooledDirectAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
 import java.net.Socket
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class NettyEngineResourceTest {
 
@@ -86,6 +91,76 @@ class NettyEngineResourceTest {
             0, tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
+    }
+
+    @Test
+    fun `engine-direct NettyByteBufIoBuf fires lifecycleListener on alloc + release`() = runTest {
+        // PooledDirectAllocator is the surface user-passed config.allocator;
+        // its lifecycleListener parameter is the channel through which
+        // BufferAllocator.lifecycleListener delivers the listener to the
+        // engine's internal NettyByteBufAllocator (item 12 B2.5 step 2).
+        val tracker = TrackingAllocator()
+        val userAllocator = PooledDirectAllocator(lifecycleListener = tracker)
+        val engine = NettyEngine(IoEngineConfig(allocator = userAllocator))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val client = Socket(InetAddress.getLoopbackAddress(), port)
+        val serverCh = server.accept()
+
+        // Drive an echo so both write-side allocate() and inbound
+        // zero-copy wrapInbound paths fire onAllocated.
+        client.getOutputStream().write("listener-mode".toByteArray())
+        client.getOutputStream().flush()
+
+        val buf = DefaultAllocator.allocate(64)
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.read(buf) }
+        serverCh.write(buf)
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { serverCh.flush() }
+
+        val echo = ByteArray(13)
+        client.getInputStream().read(echo)
+        assertEquals("listener-mode", String(echo))
+
+        serverCh.close()
+        client.close()
+        server.close()
+        engine.close()
+        userAllocator.close()
+
+        assertTrue(
+            tracker.allocateCount > 0,
+            "lifecycle listener must observe at least one engine-direct allocate",
+        )
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Listener-mode leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
+    }
+
+    @Test
+    fun `BufferAllocator-lifecycleListener default is NoOp`() {
+        // Implementations that do not override the new interface getter
+        // (B2.5 step 2 surface) report the singleton NoOp listener so the
+        // hot path stays branch-free for the common case.
+        assertEquals(
+            io.github.fukusaka.keel.buf.NoOpLifecycleListener,
+            DefaultAllocator.lifecycleListener,
+        )
+    }
+
+    @Test
+    fun `wrapper allocators forward lifecycleListener to delegate`() {
+        // Convention from the BufferAllocator.lifecycleListener KDoc:
+        // wrapper allocators forward to the delegate so the chain stays
+        // transparent for downstream engine wiring.
+        val customListener = object : BufferAllocatorLifecycleListener {
+            override fun onAllocated(buf: IoBuf) = Unit
+            override fun onReleased(buf: IoBuf) = Unit
+        }
+        val pooled: BufferAllocator = PooledDirectAllocator(lifecycleListener = customListener)
+        val tracking: BufferAllocator = TrackingAllocator(pooled)
+        assertEquals(customListener, tracking.lifecycleListener, "TrackingAllocator forwards to delegate")
     }
 
     @Test

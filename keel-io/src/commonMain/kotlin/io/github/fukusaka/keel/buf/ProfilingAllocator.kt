@@ -130,6 +130,10 @@ class ProfilingAllocator(
         delegate.hintSizeClass(byteSize, maxCount)
     }
 
+    /** Forwards to the delegate's listener — wrapper transparency convention. */
+    override val lifecycleListener: BufferAllocatorLifecycleListener
+        get() = delegate.lifecycleListener
+
     override fun createChild(): BufferAllocator =
         ProfilingAllocator(delegate.createChild(), profile)
 }

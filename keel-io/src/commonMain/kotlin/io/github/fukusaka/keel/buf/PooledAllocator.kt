@@ -86,7 +86,7 @@ abstract class PooledAllocator(
      * produced by [createChild] so all EventLoops feed one listener — pass a
      * thread-safe implementation when multi-EL aggregation is required.
      */
-    val lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
+    override val lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
 ) : BufferAllocator {
 
     /** The size-class table driving round-up. Built once with keel's pooling parameters. */

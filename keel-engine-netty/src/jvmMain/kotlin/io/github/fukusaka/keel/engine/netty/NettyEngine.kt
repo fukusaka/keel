@@ -165,7 +165,12 @@ class NettyEngine(
             // Route write-path buffers through Netty's pooled ByteBuf arena
             // so flush can hand the underlying ByteBuf directly to
             // writeAndFlush (no Unpooled.wrappedBuffer alloc / duplicate()).
-            NettyByteBufAllocator(ch.alloc())
+            // Propagate the user-passed allocator's BufferAllocatorLifecycleListener
+            // into the engine-direct NettyByteBufAllocator (pluggability item 12 B2.5
+            // step 2) so a single listener installed on config.allocator observes
+            // every NettyByteBufIoBuf lifecycle event — both write-side from
+            // allocate() and inbound zero-copy from NettyByteBufIoBuf.wrapInbound.
+            NettyByteBufAllocator(ch.alloc(), lifecycleListener = config.allocator.lifecycleListener)
         }
 
     override suspend fun bind(address: SocketAddress, bindConfig: BindConfig): StreamServer = when (address) {

@@ -236,8 +236,12 @@ internal class NettyIoTransport(
             if (byteBuf.nioBufferCount() == 1) {
                 // Engine-direct zero-copy wrap: ownership of byteBuf
                 // transfers to the wrapper; refcount-zero release frees
-                // the pooled ByteBuf inline.
-                val buf = NettyByteBufIoBuf.wrapInbound(byteBuf)
+                // the pooled ByteBuf inline. Forward the allocator's
+                // BufferAllocatorLifecycleListener so this inbound
+                // engine-direct IoBuf fires the same onAllocated /
+                // onReleased channel as the write-side allocate() path
+                // (pluggability item 12 B2.5 step 2).
+                val buf = NettyByteBufIoBuf.wrapInbound(byteBuf, allocator.lifecycleListener)
                 try {
                     onRead?.invoke(buf)
                 } catch (t: Throwable) {
