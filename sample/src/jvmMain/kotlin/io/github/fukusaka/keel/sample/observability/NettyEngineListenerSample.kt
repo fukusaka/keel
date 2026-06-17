@@ -1,8 +1,9 @@
 package io.github.fukusaka.keel.sample.observability
 
+import io.github.fukusaka.keel.buf.BufferAllocatorLifecycleListener
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.PooledDirectAllocator
-import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
@@ -15,23 +16,36 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Visual-verification sample for pluggability item 12 B2.5 step 2:
  * `BufferAllocator.lifecycleListener` propagation into NettyEngine.
  *
- * Wires a [TrackingAllocator] (running in listener mode) into a
- * [PooledDirectAllocator]'s `lifecycleListener` parameter, then passes
- * that allocator into a [NettyEngine] via [IoEngineConfig]. Drives a
- * sustained echo workload through the engine: the server-side handler
- * reads inbound bytes (engine-direct `NettyByteBufIoBuf.wrapInbound`)
- * and writes them back (engine-direct
- * `NettyByteBufAllocator.allocate()`). Both paths fire the listener
- * through the new `BufferAllocator.lifecycleListener` getter the
- * engine reads from `config.allocator.lifecycleListener`, so the
- * sample prints `allocateCount` / `releaseCount` / `outstandingCount`
- * climbing as the workload progresses — concrete evidence the listener
- * observes every engine-direct buffer lifecycle event.
+ * Wires an [AtomicTracker] (a minimal thread-safe
+ * [BufferAllocatorLifecycleListener]) into a [PooledDirectAllocator]'s
+ * `lifecycleListener` parameter, then passes that allocator into a
+ * [NettyEngine] via [IoEngineConfig]. Drives a sustained echo workload
+ * through the engine: the server-side handler reads inbound bytes
+ * (engine-direct `NettyByteBufIoBuf.wrapInbound`) and writes them back
+ * (engine-direct `NettyByteBufAllocator.allocate()`). Both paths fire
+ * the listener through the new `BufferAllocator.lifecycleListener`
+ * getter the engine reads from `config.allocator.lifecycleListener`,
+ * so the sample prints `allocateCount` / `releaseCount` /
+ * `outstandingCount` climbing as the workload progresses — concrete
+ * evidence the listener observes every engine-direct buffer lifecycle
+ * event.
+ *
+ * **Why a hand-rolled [AtomicTracker] rather than [io.github.fukusaka.keel.buf.TrackingAllocator]
+ * in listener mode.** `TrackingAllocator` listener mode uses plain
+ * `++` on its counters and is documented as not-thread-safe (intended
+ * for single-threaded test execution). `NettyEngine` defaults to
+ * Netty's worker count (`Runtime.availableProcessors() * 2`) so
+ * `onAllocated` / `onReleased` callbacks run on whichever worker
+ * EventLoop owns the connection — and many short-lived connections
+ * spread across EventLoops during this sample, racing on the same
+ * counters. Two `AtomicLong`s keep the counts correct without needing
+ * a synchronisation layer in `keel-io`.
  *
  * Stop with Ctrl-C; the engine and the server are closed in the
  * shutdown hook so the listener counters end balanced
@@ -51,7 +65,7 @@ fun main(args: Array<String>) {
         ?.substringAfter("=")?.toIntOrNull()
         ?: Int.MAX_VALUE
 
-    val tracker = TrackingAllocator()
+    val tracker = AtomicTracker()
     val userAllocator = PooledDirectAllocator(lifecycleListener = tracker)
     val engine = NettyEngine(IoEngineConfig(allocator = userAllocator))
     Runtime.getRuntime().addShutdownHook(
@@ -65,7 +79,7 @@ fun main(args: Array<String>) {
     )
 
     println("keel NettyEngine listener-wiring sample (item 12 B2.5 step 2).")
-    println("Echoing loopback traffic through NettyEngine; printing TrackingAllocator counters every $SNAPSHOT_INTERVAL_MILLIS ms.")
+    println("Echoing loopback traffic through NettyEngine; printing AtomicTracker counters every $SNAPSHOT_INTERVAL_MILLIS ms.")
     runBlocking {
         val server = engine.bind("127.0.0.1", 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -130,11 +144,30 @@ private suspend fun echo(ch: Channel) {
     }
 }
 
-private fun printSnapshot(tracker: TrackingAllocator, iter: Int, finalLine: Boolean = false) {
+private fun printSnapshot(tracker: AtomicTracker, iter: Int, finalLine: Boolean = false) {
     val prefix = if (finalLine) "[final]" else "[iter=$iter]"
     println(
         "$prefix alloc=${tracker.allocateCount} rel=${tracker.releaseCount} outstanding=${tracker.outstandingCount}",
     )
+}
+
+/**
+ * Minimal thread-safe [BufferAllocatorLifecycleListener] using two
+ * [AtomicLong]s. See the class-level KDoc for why `TrackingAllocator`
+ * listener mode is not used directly.
+ */
+private class AtomicTracker : BufferAllocatorLifecycleListener {
+    private val allocated = AtomicLong(0)
+    private val released = AtomicLong(0)
+    val allocateCount: Long get() = allocated.get()
+    val releaseCount: Long get() = released.get()
+    val outstandingCount: Long get() = allocateCount - releaseCount
+    override fun onAllocated(buf: IoBuf) {
+        allocated.incrementAndGet()
+    }
+    override fun onReleased(buf: IoBuf) {
+        released.incrementAndGet()
+    }
 }
 
 private const val SNAPSHOT_INTERVAL_MILLIS = 3_000L
