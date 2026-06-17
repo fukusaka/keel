@@ -59,7 +59,7 @@ import kotlinx.coroutines.withTimeout
  * Run with:
  *
  * ```
- * ./gradlew -Pbenchmark :sample:linkReleaseExecutableNwListenerSampleMacosArm64
+ * ./gradlew -Pbenchmark :sample:linkNwListenerSampleReleaseExecutableMacosArm64
  * ./sample/build/bin/macosArm64/NwListenerSampleReleaseExecutable/NwListenerSample.kexe --iters=2000
  * ```
  *
