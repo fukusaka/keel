@@ -349,7 +349,19 @@ internal class NwIoTransport(
                 // a pool allocate+release pair.
                 fallbackBuf.clear()
                 spareFallbackBuf = fallbackBuf
-                val zcBuf = DispatchDataIoBuf(outcome.ptr, outcome.bytesRead, outcome.handle)
+                // Forward the per-engine allocator's lifecycle listener so
+                // this engine-direct inbound IoBuf fires onAllocated /
+                // onReleased through the same channel as the allocator-
+                // produced fallback path (pluggability item 12 B2.5 step
+                // 3). The listener flows from the user-passed
+                // config.allocator.lifecycleListener through createChild
+                // into the per-engine allocator the transport holds.
+                val zcBuf = DispatchDataIoBuf.wrapInbound(
+                    outcome.ptr,
+                    outcome.bytesRead,
+                    outcome.handle,
+                    allocator.lifecycleListener,
+                )
                 // Same delivery semantics as the copy path. See the
                 // KDoc above on idle-read policies for how this
                 // interacts with `readEnabled`.
