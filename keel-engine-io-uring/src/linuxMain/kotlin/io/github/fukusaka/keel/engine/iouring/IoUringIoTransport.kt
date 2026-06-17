@@ -193,9 +193,16 @@ internal class IoUringIoTransport(
 
     // Pre-allocated IoBuf wrappers: one per buffer slot.
     // Reused on each CQE callback via reset() — zero allocation on hot path.
+    // Forward the per-engine allocator's BufferAllocatorLifecycleListener so
+    // each ring-buffer wrapper fires onAllocated / onReleased through the
+    // same channel as the allocator-produced fallback path (pluggability
+    // item 12 B2.5 step 4). The listener flows from the user-passed
+    // config.allocator.lifecycleListener through createChild into the
+    // per-engine allocator the transport holds.
     private val wrappers = bufferRing?.let { ring ->
+        val listener = allocator.lifecycleListener
         Array(ring.bufferCount) { bufId ->
-            RingBufferIoBuf(bufId, ring)
+            RingBufferIoBuf(bufId, ring, listener)
         }
     }
 

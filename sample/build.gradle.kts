@@ -4,6 +4,7 @@ plugins {
 
 val hostOs: String = System.getProperty("os.name").lowercase()
 val isMacHost: Boolean = hostOs.contains("mac")
+val isLinuxHost: Boolean = hostOs.contains("linux")
 
 kotlin {
     applyDefaultHierarchyTemplate()
@@ -22,6 +23,18 @@ kotlin {
         }
     }
 
+    // Native Linux sample for the io_uring engine BufferAllocator.lifecycleListener
+    // wiring (item 12 B2.5 step 4). Host-gated because io_uring cinterop is Linux-only.
+    if (isLinuxHost) {
+        linuxX64 {
+            binaries {
+                executable("IoUringListenerSample") {
+                    entryPoint = "io.github.fukusaka.keel.sample.observability.main"
+                }
+            }
+        }
+    }
+
     sourceSets {
         if (isMacHost) {
             macosArm64Main {
@@ -29,6 +42,16 @@ kotlin {
                     implementation(project(":keel-io"))
                     implementation(project(":keel-core"))
                     implementation(project(":keel-engine-nwconnection"))
+                    implementation(libs.kotlinx.coroutines.core)
+                }
+            }
+        }
+        if (isLinuxHost) {
+            linuxX64Main {
+                dependencies {
+                    implementation(project(":keel-io"))
+                    implementation(project(":keel-core"))
+                    implementation(project(":keel-engine-io-uring"))
                     implementation(libs.kotlinx.coroutines.core)
                 }
             }
