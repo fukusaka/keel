@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.SlabAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +79,53 @@ class NwEngineResourceTest {
         assertEquals(
             0, tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
+    }
+
+    @Test
+    fun `engine-direct DispatchDataIoBuf fires lifecycleListener on inbound zero-copy + release`() = runBlocking {
+        // SlabAllocator is the Native-side PooledAllocator subclass; its
+        // lifecycleListener parameter is the channel through which
+        // BufferAllocator.lifecycleListener delivers the listener to the
+        // engine's per-engine allocator via createChild propagation, then
+        // NwIoTransport reads it for the engine-direct
+        // DispatchDataIoBuf.wrapInbound factory (item 12 B2.5 step 3).
+        val tracker = TrackingAllocator()
+        val userAllocator = SlabAllocator(lifecycleListener = tracker)
+        val engine = NwEngine(IoEngineConfig(allocator = userAllocator))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+
+        // Drive an echo so the inbound zero-copy path produces a
+        // DispatchDataIoBuf wrapped through wrapInbound, then a write that
+        // exercises the allocator-allocated send buffer.
+        rawWrite(clientFd, "listener-mode")
+        val buf = DefaultAllocator.allocate(64)
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.read(buf) }
+        assertEquals(13, n)
+        ch.write(buf)
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.flush() }
+
+        val echo = rawRead(clientFd, 13)
+        assertEquals("listener-mode", echo)
+
+        ch.close()
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.awaitClosed() }
+        close(clientFd)
+        server.close()
+        engine.close()
+        userAllocator.close()
+
+        assertTrue(
+            tracker.allocateCount > 0,
+            "lifecycle listener must observe at least one engine-direct allocate",
+        )
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Listener-mode leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
 

@@ -2,8 +2,10 @@
 
 package io.github.fukusaka.keel.engine.nwconnection
 
+import io.github.fukusaka.keel.buf.BufferAllocatorLifecycleListener
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.NativePointerAccess
+import io.github.fukusaka.keel.buf.NoOpLifecycleListener
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import kotlin.concurrent.atomics.AtomicInt
 import kotlinx.cinterop.ByteVar
@@ -70,12 +72,24 @@ import platform.posix.memcpy
  * @property zcHandle Retained `dispatch_data_t` handle (opaque,
  *                    released by [keel_nw_dispatch_data_release] at
  *                    refcount zero).
+ * @property lifecycleListener [BufferAllocatorLifecycleListener] notified
+ *                    from [release] / [close] when the final reserve drops
+ *                    the refcount to zero (so the `dispatch_data_t` handle
+ *                    has just been released back to the framework). The
+ *                    matching [BufferAllocatorLifecycleListener.onAllocated]
+ *                    is fired by the [wrapInbound] factory after the buffer
+ *                    is fully constructed. Defaults to
+ *                    [NoOpLifecycleListener] for tests / paths that do not
+ *                    configure a listener; the engine-direct lifecycle
+ *                    wiring (item 12 B2.5 step 3) flows the user-passed
+ *                    `config.allocator.lifecycleListener` through here.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class DispatchDataIoBuf(
     private val ptr: CPointer<ByteVar>,
     override val capacity: Int,
     private val zcHandle: COpaquePointer,
+    private val lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
 ) : IoBuf, NativePointerAccess {
 
     private val refCount = AtomicInt(1)
@@ -151,7 +165,9 @@ internal class DispatchDataIoBuf(
 
     /**
      * Decrements the reference count. At zero, releases the retained
-     * `dispatch_data_t` handle via [keel_nw_dispatch_data_release].
+     * `dispatch_data_t` handle via [keel_nw_dispatch_data_release] and
+     * fires [BufferAllocatorLifecycleListener.onReleased] on
+     * [lifecycleListener].
      *
      * @throws IllegalStateException if the buffer has already been released.
      */
@@ -160,6 +176,7 @@ internal class DispatchDataIoBuf(
         check(before > 0) { "DispatchDataIoBuf already released" }
         if (before == 1) {
             keel_nw_dispatch_data_release(zcHandle)
+            lifecycleListener.onReleased(this)
             return true
         }
         return false
@@ -170,12 +187,39 @@ internal class DispatchDataIoBuf(
      * directly. Idempotent — repeated calls are safe because the
      * underlying ARC bridge transfer is one-shot. Used only by
      * teardown / close paths that need to free the handle without
-     * going through the normal refcount lifecycle.
+     * going through the normal refcount lifecycle. When this call is
+     * the one that observes a positive refcount being forced to zero,
+     * fires [BufferAllocatorLifecycleListener.onReleased] on
+     * [lifecycleListener] for parity with the [release] terminal path.
      */
     override fun close() {
         val prior = refCount.exchange(0)
         if (prior > 0) {
             keel_nw_dispatch_data_release(zcHandle)
+            lifecycleListener.onReleased(this)
+        }
+    }
+
+    companion object {
+        /**
+         * Factory for the engine's inbound zero-copy receive path that
+         * fires [BufferAllocatorLifecycleListener.onAllocated] on
+         * [lifecycleListener] for the returned wrapper. The matching
+         * [BufferAllocatorLifecycleListener.onReleased] fires from
+         * [release] / [close] at refcount zero. Pluggability item 12
+         * B2.5 step 3 wires the user-passed
+         * `config.allocator.lifecycleListener` here from
+         * [NwIoTransport].
+         */
+        internal fun wrapInbound(
+            ptr: CPointer<ByteVar>,
+            capacity: Int,
+            zcHandle: COpaquePointer,
+            lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
+        ): DispatchDataIoBuf {
+            val buf = DispatchDataIoBuf(ptr, capacity, zcHandle, lifecycleListener)
+            lifecycleListener.onAllocated(buf)
+            return buf
         }
     }
 }

@@ -2,10 +2,37 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
 }
 
+val hostOs: String = System.getProperty("os.name").lowercase()
+val isMacHost: Boolean = hostOs.contains("mac")
+
 kotlin {
+    applyDefaultHierarchyTemplate()
+
     jvm()
 
+    // Native macOS sample for the NWConnection engine BufferAllocator.lifecycleListener
+    // wiring (item 12 B2.5 step 3). Host-gated because NWConnection cinterop is macOS-only.
+    if (isMacHost) {
+        macosArm64 {
+            binaries {
+                executable("NwListenerSample") {
+                    entryPoint = "io.github.fukusaka.keel.sample.observability.main"
+                }
+            }
+        }
+    }
+
     sourceSets {
+        if (isMacHost) {
+            macosArm64Main {
+                dependencies {
+                    implementation(project(":keel-io"))
+                    implementation(project(":keel-core"))
+                    implementation(project(":keel-engine-nwconnection"))
+                    implementation(libs.kotlinx.coroutines.core)
+                }
+            }
+        }
         jvmMain {
             dependencies {
                 implementation(project(":keel-core"))
