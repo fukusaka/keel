@@ -195,10 +195,12 @@ object DefaultAllocator : BufferAllocator {
  * - **JVM**: [PooledDirectAllocator] — per-EventLoop DirectByteBuffer pool
  * - **JS**: [DefaultAllocator] — V8 GC manages Int8Array; pooling is unnecessary
  *
- * The optional [missProfile] is wired into platforms whose default allocator is
- * a [PooledAllocator] (Native + JVM); other platforms ignore it. Pass `null`
- * (default) for normal runs; pass a profile for `--profile-alloc`-style
- * instrumentation so every dispatch records its path (hit / miss / empty /
- * huge).
+ * The optional [statsCounter] is wired into platforms whose default allocator
+ * is a [PooledAllocator] (Native + JVM); other platforms ignore it. Pass
+ * [NoOpStatsCounter] (default) for normal runs; pass a real implementation —
+ * for example a [PoolMissProfile] (which implements
+ * [BufferAllocatorStatsCounter]) for `--profile-alloc` instrumentation, or an
+ * OpenTelemetry adapter — so every dispatch records its path
+ * (hit / miss / empty / huge) and its size tier.
  */
-expect fun defaultAllocator(missProfile: PoolMissProfile? = null): BufferAllocator
+expect fun defaultAllocator(statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter): BufferAllocator

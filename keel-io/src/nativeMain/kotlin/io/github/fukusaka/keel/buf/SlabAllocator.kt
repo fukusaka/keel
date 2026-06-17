@@ -37,8 +37,8 @@ import kotlin.concurrent.AtomicReference
 class SlabAllocator(
     maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
     freelistFactory: FreelistFactory? = null,
-    missProfile: PoolMissProfile? = null,
-) : PooledAllocator(maxTotalBytes, freelistFactory, missProfile) {
+    statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter,
+) : PooledAllocator(maxTotalBytes, freelistFactory, statsCounter) {
 
     init {
         installDefaultLadder()
@@ -59,7 +59,7 @@ class SlabAllocator(
     override fun defaultFreelist(maxSlots: Int): Freelist = SpinLockFreelist(maxSlots)
 
     override fun newChildInstance(maxTotalBytes: Long): PooledAllocator =
-        SlabAllocator(maxTotalBytes, freelistFactory, missProfile)
+        SlabAllocator(maxTotalBytes, freelistFactory, statsCounter)
 
     @OptIn(ExperimentalForeignApi::class)
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {

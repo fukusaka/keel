@@ -64,19 +64,85 @@ abstract class PooledAllocator(
      */
     protected val freelistFactory: FreelistFactory? = null,
     /**
-     * Optional opt-in instrumentation: when non-`null`, every [allocate] dispatch
-     * records the path it took (pool hit / miss / empty / huge) into this profile
-     * — see [PoolMissProfile] for the taxonomy. Off by default; only wire when
-     * profiling (e.g. a benchmark `--profile-alloc` flag). The shared profile is
-     * thread-safe and forwarded to per-EventLoop children produced by [createChild]
-     * so all EventLoops aggregate into one histogram. Each recorded path adds a
-     * single atomic increment to the otherwise hot allocate path.
+     * Optional observer that receives every [allocate] / [returnToPool] event as a
+     * primitive-arg + enum-arg [BufferAllocatorStatsCounter.onAllocate] /
+     * [BufferAllocatorStatsCounter.onRelease] call. Defaults to [NoOpStatsCounter]
+     * so the hot path stays branch-free (monomorphic dispatch on the singleton
+     * inlines / elides). The same counter instance is forwarded to per-EventLoop
+     * children produced by [createChild] so all EventLoops aggregate into one
+     * counter — pass a thread-safe implementation when multi-EL aggregation is
+     * required. [PoolMissProfile] satisfies this interface, so existing
+     * `--profile-alloc` wiring continues to work.
      */
-    val missProfile: PoolMissProfile? = null,
+    val statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter,
 ) : BufferAllocator {
 
     /** The size-class table driving round-up. Built once with keel's pooling parameters. */
     private val sizeClasses: SizeClasses = SizeClasses(PAGE_SIZE, PAGE_SHIFTS, CHUNK_SIZE, NO_ALIGNMENT)
+
+    /**
+     * Pre-computed [SizeTier] for each size-class index. Resolved once at init so the
+     * hot-path [allocate] / [returnToPool] emit paths read the tier via an indexed
+     * lookup instead of recomputing `SizeTier.fromBytes(classSize)` on every event.
+     */
+    private val tierByClassIdx: Array<SizeTier> = Array(sizeClasses.nSizes) { idx ->
+        SizeTier.fromBytes(sizeClasses.sizeIdx2size(idx))
+    }
+
+    /**
+     * Snapshot of the constant size-class capacities, materialised once so
+     * [stats] adapters can hold the same array reference for the allocator's
+     * lifetime instead of rebuilding it per call.
+     */
+    private val sizeClassesArray: IntArray = IntArray(sizeClasses.nSizes) { idx ->
+        sizeClasses.sizeIdx2size(idx)
+    }
+
+    // Internal cumulative counters backing [AllocatorStats.snapshot]. PooledAllocator
+    // is EL-pinned for writes (the hot path runs on the owning EventLoop thread);
+    // @Volatile ensures the collection-cycle reader on the OT thread sees eventual
+    // consistency. Plain `++` on a Volatile Long is non-atomic and races with the
+    // off-EL release path (cross-thread `IoBuf.release()` → `returnToPool`), matching
+    // the existing per-class `cachedCount` / `allocsSinceTrim` IntArray convention —
+    // a lost increment surfaces as a tiny discrepancy at the next snapshot, not as
+    // state corruption.
+    @kotlin.concurrent.Volatile
+    private var cumulativeAllocations: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cumulativeReleases: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cumulativeAllocBytes: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cumulativeReleaseBytes: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cumulativeHits: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cumulativeMisses: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cumulativeEmpty: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cumulativeHuge: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cumulativePooled: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cumulativeDiscarded: Long = 0L
+
+    @kotlin.concurrent.Volatile
+    private var cumulativeFreed: Long = 0L
+
+    private val perClassAllocations: LongArray = LongArray(sizeClasses.nSizes)
+    private val perClassReleases: LongArray = LongArray(sizeClasses.nSizes)
+    private val perClassHits: LongArray = LongArray(sizeClasses.nSizes)
+    private val perClassMisses: LongArray = LongArray(sizeClasses.nSizes)
 
     /**
      * Immutable ladder snapshot, replaced wholesale on [hintSizeClass] /
@@ -238,7 +304,12 @@ abstract class PooledAllocator(
         // Preserve the empty-buffer marker semantics: allocate(0) yields a true
         // zero-capacity buffer rather than rounding up to the smallest class.
         if (capacity == 0) {
-            missProfile?.recordEmpty()
+            recordAllocate(
+                byteSize = 0,
+                classIdx = EMPTY_CLASS_IDX,
+                tier = SizeTier.TINY,
+                path = AllocPath.EMPTY,
+            )
             val empty = newBuffer(0)
             (empty as AbstractIoBuf).owner = poolOwner
             return empty
@@ -251,7 +322,12 @@ abstract class PooledAllocator(
                 val pool = l.pools[idx]
                 val recycled = pool?.pop()
                 if (recycled != null) {
-                    missProfile?.recordHit(idx)
+                    recordAllocate(
+                        byteSize = capacity,
+                        classIdx = idx,
+                        tier = tierByClassIdx[idx],
+                        path = AllocPath.HIT,
+                    )
                     allocsSinceTrim[idx]++ // working-set signal: this class served from cache
                     cachedCount[idx]--
                     (recycled as AbstractIoBuf).resetForReuse()
@@ -263,7 +339,12 @@ abstract class PooledAllocator(
                 // system allocation). The view's capacity is the class size, so it
                 // pools on release like any cached buffer; its freeBacking returns
                 // the run to the chunk when the pool is full.
-                missProfile?.recordMiss(idx)
+                recordAllocate(
+                    byteSize = capacity,
+                    classIdx = idx,
+                    tier = tierByClassIdx[idx],
+                    path = AllocPath.MISS,
+                )
                 val fresh = chunkArena.carve(idx)
                 (fresh as AbstractIoBuf).owner = poolOwner
                 maybeTrim()
@@ -271,41 +352,163 @@ abstract class PooledAllocator(
             }
         }
         // Above the cache cap or above the whole ladder (huge): exact, unpooled.
-        missProfile?.recordHuge()
+        recordAllocate(
+            byteSize = capacity,
+            classIdx = HUGE_CLASS_IDX,
+            tier = SizeTier.HUGE,
+            path = AllocPath.HUGE,
+        )
         val fresh = newBuffer(capacity)
         (fresh as AbstractIoBuf).owner = poolOwner
         return fresh
     }
 
     private fun returnToPool(buf: IoBuf) {
-        if (closed) {
-            // Allocator was closed while this buffer was in use; the freelist
-            // is already drained and any Freelist OS resources are released,
-            // so go straight to freeBacking instead of pushing into a closed
-            // pool. Chunk-backed views return their run to the chunk; the
-            // chunk's own refCount drops once all its views are released and
-            // frees its backing.
-            (buf as AbstractIoBuf).freeBacking()
-            return
-        }
         val cap = buf.capacity
-        if (cap in 1..MAX_CACHED_CAPACITY) {
-            val l = ladder
-            val idx = sizeClasses.size2SizeIdx(cap)
-            // Only pool buffers whose capacity is exactly a class size (cache-path
-            // buffers are); arbitrary-sized buffers from the unpooled path fall
-            // through to freeBacking.
-            if (idx < sizeClasses.nSizes && sizeClasses.sizeIdx2size(idx) == cap) {
-                val pool = l.pools[idx]
-                if (pool != null && pool.push(buf)) {
+        val idx = resolveClassIdx(cap)
+        if (!closed && idx >= 0) {
+            val pool = ladder.pools[idx]
+            if (pool != null) {
+                if (pool.push(buf)) {
                     cachedCount[idx]++
+                    recordRelease(
+                        byteSize = cap,
+                        classIdx = idx,
+                        tier = tierByClassIdx[idx],
+                        outcome = ReleaseOutcome.POOLED,
+                    )
                     return
                 }
+                // Pool slot cap reached: drop the buffer's backing instead of pushing.
+                recordRelease(
+                    byteSize = cap,
+                    classIdx = idx,
+                    tier = tierByClassIdx[idx],
+                    outcome = ReleaseOutcome.DISCARDED,
+                )
+                (buf as AbstractIoBuf).freeBacking()
+                return
             }
         }
-        // No class for this size, pool full, or above the cache cap: free the
-        // backing directly. refCount is already zero (we are inside PoolOwner.release).
+        // No class for this size, allocator closed, or no pool installed for this
+        // class: free the backing directly. refCount is already zero (we are inside
+        // PoolOwner.release). Chunk-backed views return their run to the chunk; the
+        // chunk's own refCount drops once all its views are released and frees its
+        // backing.
+        val tier = if (idx >= 0) tierByClassIdx[idx] else SizeTier.fromBytes(cap)
+        recordRelease(
+            byteSize = cap,
+            classIdx = idx,
+            tier = tier,
+            outcome = ReleaseOutcome.FREED,
+        )
         (buf as AbstractIoBuf).freeBacking()
+    }
+
+    /**
+     * Updates the internal counters backing [AllocatorStats.snapshot] and forwards
+     * the event to the user-supplied [statsCounter]. Single emit point so
+     * `onAllocate` callers and the per-class accumulation stay in step; the user
+     * callback fires after the internal counters move so a callback that itself
+     * calls back into `stats()` observes the same number it just saw.
+     */
+    private fun recordAllocate(byteSize: Int, classIdx: Int, tier: SizeTier, path: AllocPath) {
+        cumulativeAllocations++
+        cumulativeAllocBytes += byteSize.toLong()
+        when (path) {
+            AllocPath.HIT -> {
+                cumulativeHits++
+                if (classIdx >= 0) {
+                    perClassHits[classIdx]++
+                    perClassAllocations[classIdx]++
+                }
+            }
+            AllocPath.MISS -> {
+                cumulativeMisses++
+                if (classIdx >= 0) {
+                    perClassMisses[classIdx]++
+                    perClassAllocations[classIdx]++
+                }
+            }
+            AllocPath.EMPTY -> cumulativeEmpty++
+            AllocPath.HUGE -> cumulativeHuge++
+        }
+        statsCounter.onAllocate(byteSize, classIdx, tier, path, weight = 1)
+    }
+
+    /** See [recordAllocate]. Counters for the release side. */
+    private fun recordRelease(byteSize: Int, classIdx: Int, tier: SizeTier, outcome: ReleaseOutcome) {
+        cumulativeReleases++
+        cumulativeReleaseBytes += byteSize.toLong()
+        when (outcome) {
+            ReleaseOutcome.POOLED -> cumulativePooled++
+            ReleaseOutcome.DISCARDED -> cumulativeDiscarded++
+            ReleaseOutcome.FREED -> cumulativeFreed++
+        }
+        if (classIdx >= 0) perClassReleases[classIdx]++
+        statsCounter.onRelease(classIdx, tier, outcome, weight = 1)
+    }
+
+    /**
+     * Captures all counter and pool-state fields into an immutable
+     * [AllocatorStatsSnapshot]. Non-atomic reads — the OT collection cycle
+     * tolerates the small per-field skew that may appear if a concurrent release
+     * runs between the snapshot's `cumulativeAllocations` and `cumulativeReleases`
+     * reads.
+     */
+    private fun buildSnapshot(): AllocatorStatsSnapshot {
+        val nSizes = sizeClasses.nSizes
+        return AllocatorStatsSnapshot(
+            cumulativeAllocations = cumulativeAllocations,
+            cumulativeReleases = cumulativeReleases,
+            cumulativeAllocBytes = cumulativeAllocBytes,
+            cumulativeReleaseBytes = cumulativeReleaseBytes,
+            cumulativeHits = cumulativeHits,
+            cumulativeMisses = cumulativeMisses,
+            cumulativeEmpty = cumulativeEmpty,
+            cumulativeHuge = cumulativeHuge,
+            cumulativePooled = cumulativePooled,
+            cumulativeDiscarded = cumulativeDiscarded,
+            cumulativeFreed = cumulativeFreed,
+            cumulativeChunksAllocated = 0L,
+            cumulativeChunksFreed = 0L,
+            residentChunks = chunkArena.chunkCount,
+            isClosed = closed,
+            classCount = nSizes,
+            perClassHits = perClassHits.copyOf(),
+            perClassMisses = perClassMisses.copyOf(),
+            perClassAllocations = perClassAllocations.copyOf(),
+            perClassReleases = perClassReleases.copyOf(),
+            perClassCachedCount = cachedCount.copyOf(),
+            perClassSizes = sizeClassesArray.copyOf(),
+            perClassTiers = tierByClassIdx.copyOf(),
+        )
+    }
+
+    /**
+     * View object wrapping this allocator as an [AllocatorStats] handle. The
+     * constant-config fields are pre-allocated; [snapshot] captures the dynamic
+     * counters on every call.
+     */
+    private val statsView: AllocatorStats = object : AllocatorStats {
+        override val poolName: String = this@PooledAllocator::class.simpleName ?: "PooledAllocator"
+        override val sizeClasses: IntArray get() = this@PooledAllocator.sizeClassesArray.copyOf()
+        override val slotCaps: IntArray get() = this@PooledAllocator.ladder.slotCap.copyOf()
+        override val chunkSize: Int = CHUNK_SIZE
+        override fun snapshot(): AllocatorStatsSnapshot = buildSnapshot()
+    }
+
+    final override fun stats(): AllocatorStats = statsView
+
+    /**
+     * Maps a buffer capacity back to its size-class index, or returns [HUGE_CLASS_IDX]
+     * when the capacity falls outside the cache range. Used by [returnToPool] to tag
+     * release events with the correct `classIdx`.
+     */
+    private fun resolveClassIdx(cap: Int): Int {
+        if (cap !in 1..MAX_CACHED_CAPACITY) return HUGE_CLASS_IDX
+        val idx = sizeClasses.size2SizeIdx(cap)
+        return if (idx < sizeClasses.nSizes && sizeClasses.sizeIdx2size(idx) == cap) idx else HUGE_CLASS_IDX
     }
 
     /** Runs a [trim] pass once every [TRIM_INTERVAL] allocations of a cached class. */
@@ -474,5 +677,18 @@ abstract class PooledAllocator(
 
         /** Idle chunks kept resident after a trim to avoid alloc/free thrashing. */
         internal const val WARM_RESERVE = 1
+
+        /**
+         * Sentinel `classIdx` reported to [BufferAllocatorStatsCounter] for an
+         * `allocate(0)` empty-marker path that does not belong to any size class.
+         */
+        private const val EMPTY_CLASS_IDX = -1
+
+        /**
+         * Sentinel `classIdx` reported to [BufferAllocatorStatsCounter] for the
+         * huge-allocation path (above [MAX_CACHED_CAPACITY]) or any release whose
+         * capacity does not match a registered size class.
+         */
+        private const val HUGE_CLASS_IDX = -1
     }
 }
