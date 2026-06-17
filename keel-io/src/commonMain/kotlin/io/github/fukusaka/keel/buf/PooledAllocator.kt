@@ -75,6 +75,18 @@ abstract class PooledAllocator(
      * `--profile-alloc` wiring continues to work.
      */
     val statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter,
+    /**
+     * Optional identity-bearing listener that receives every [allocate] /
+     * release event with the produced [IoBuf] reference. Defaults to
+     * [NoOpLifecycleListener] so the hot path stays branch-free. Used for
+     * per-buffer leak detection and lifecycle audits — the metric channel is
+     * the cheaper [statsCounter]; install a listener here only when the
+     * caller needs identity (e.g. [TrackingAllocator] / [LeakDetectingAllocator]
+     * for engine-direct `IoBuf` coverage). Forwarded to per-EventLoop children
+     * produced by [createChild] so all EventLoops feed one listener — pass a
+     * thread-safe implementation when multi-EL aggregation is required.
+     */
+    val lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
 ) : BufferAllocator {
 
     /** The size-class table driving round-up. Built once with keel's pooling parameters. */
@@ -304,14 +316,15 @@ abstract class PooledAllocator(
         // Preserve the empty-buffer marker semantics: allocate(0) yields a true
         // zero-capacity buffer rather than rounding up to the smallest class.
         if (capacity == 0) {
+            val empty = newBuffer(0)
+            (empty as AbstractIoBuf).owner = poolOwner
             recordAllocate(
+                buf = empty,
                 byteSize = 0,
                 classIdx = EMPTY_CLASS_IDX,
                 tier = SizeTier.TINY,
                 path = AllocPath.EMPTY,
             )
-            val empty = newBuffer(0)
-            (empty as AbstractIoBuf).owner = poolOwner
             return empty
         }
         val l = ladder
@@ -322,16 +335,17 @@ abstract class PooledAllocator(
                 val pool = l.pools[idx]
                 val recycled = pool?.pop()
                 if (recycled != null) {
+                    allocsSinceTrim[idx]++ // working-set signal: this class served from cache
+                    cachedCount[idx]--
+                    (recycled as AbstractIoBuf).resetForReuse()
+                    recycled.owner = poolOwner
                     recordAllocate(
+                        buf = recycled,
                         byteSize = capacity,
                         classIdx = idx,
                         tier = tierByClassIdx[idx],
                         path = AllocPath.HIT,
                     )
-                    allocsSinceTrim[idx]++ // working-set signal: this class served from cache
-                    cachedCount[idx]--
-                    (recycled as AbstractIoBuf).resetForReuse()
-                    recycled.owner = poolOwner
                     maybeTrim()
                     return recycled
                 }
@@ -339,27 +353,29 @@ abstract class PooledAllocator(
                 // system allocation). The view's capacity is the class size, so it
                 // pools on release like any cached buffer; its freeBacking returns
                 // the run to the chunk when the pool is full.
+                val fresh = chunkArena.carve(idx)
+                (fresh as AbstractIoBuf).owner = poolOwner
                 recordAllocate(
+                    buf = fresh,
                     byteSize = capacity,
                     classIdx = idx,
                     tier = tierByClassIdx[idx],
                     path = AllocPath.MISS,
                 )
-                val fresh = chunkArena.carve(idx)
-                (fresh as AbstractIoBuf).owner = poolOwner
                 maybeTrim()
                 return fresh
             }
         }
         // Above the cache cap or above the whole ladder (huge): exact, unpooled.
+        val fresh = newBuffer(capacity)
+        (fresh as AbstractIoBuf).owner = poolOwner
         recordAllocate(
+            buf = fresh,
             byteSize = capacity,
             classIdx = HUGE_CLASS_IDX,
             tier = SizeTier.HUGE,
             path = AllocPath.HUGE,
         )
-        val fresh = newBuffer(capacity)
-        (fresh as AbstractIoBuf).owner = poolOwner
         return fresh
     }
 
@@ -372,6 +388,7 @@ abstract class PooledAllocator(
                 if (pool.push(buf)) {
                     cachedCount[idx]++
                     recordRelease(
+                        buf = buf,
                         byteSize = cap,
                         classIdx = idx,
                         tier = tierByClassIdx[idx],
@@ -381,6 +398,7 @@ abstract class PooledAllocator(
                 }
                 // Pool slot cap reached: drop the buffer's backing instead of pushing.
                 recordRelease(
+                    buf = buf,
                     byteSize = cap,
                     classIdx = idx,
                     tier = tierByClassIdx[idx],
@@ -397,6 +415,7 @@ abstract class PooledAllocator(
         // backing.
         val tier = if (idx >= 0) tierByClassIdx[idx] else SizeTier.fromBytes(cap)
         recordRelease(
+            buf = buf,
             byteSize = cap,
             classIdx = idx,
             tier = tier,
@@ -410,9 +429,11 @@ abstract class PooledAllocator(
      * the event to the user-supplied [statsCounter]. Single emit point so
      * `onAllocate` callers and the per-class accumulation stay in step; the user
      * callback fires after the internal counters move so a callback that itself
-     * calls back into `stats()` observes the same number it just saw.
+     * calls back into `stats()` observes the same number it just saw. The
+     * identity-bearing [lifecycleListener] also fires here so per-buffer
+     * tracking shares the same emit point as the metric channel.
      */
-    private fun recordAllocate(byteSize: Int, classIdx: Int, tier: SizeTier, path: AllocPath) {
+    private fun recordAllocate(buf: IoBuf, byteSize: Int, classIdx: Int, tier: SizeTier, path: AllocPath) {
         cumulativeAllocations++
         cumulativeAllocBytes += byteSize.toLong()
         when (path) {
@@ -434,10 +455,11 @@ abstract class PooledAllocator(
             AllocPath.HUGE -> cumulativeHuge++
         }
         statsCounter.onAllocate(byteSize, classIdx, tier, path, weight = 1)
+        lifecycleListener.onAllocated(buf)
     }
 
     /** See [recordAllocate]. Counters for the release side. */
-    private fun recordRelease(byteSize: Int, classIdx: Int, tier: SizeTier, outcome: ReleaseOutcome) {
+    private fun recordRelease(buf: IoBuf, byteSize: Int, classIdx: Int, tier: SizeTier, outcome: ReleaseOutcome) {
         cumulativeReleases++
         cumulativeReleaseBytes += byteSize.toLong()
         when (outcome) {
@@ -447,6 +469,7 @@ abstract class PooledAllocator(
         }
         if (classIdx >= 0) perClassReleases[classIdx]++
         statsCounter.onRelease(classIdx, tier, outcome, weight = 1)
+        lifecycleListener.onReleased(buf)
     }
 
     /**

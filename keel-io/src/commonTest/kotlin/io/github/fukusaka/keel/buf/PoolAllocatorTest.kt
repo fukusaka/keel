@@ -171,5 +171,13 @@ expect fun createPoolAllocator(): BufferAllocator
  */
 expect fun createPoolAllocatorWithProfile(profile: PoolMissProfile): BufferAllocator
 
+/**
+ * Creates a [PooledAllocator] wired with the given
+ * [BufferAllocatorLifecycleListener]. Same concrete allocator as
+ * [createPoolAllocator]; this overload exists so the common lifecycle test
+ * can drive the listener wiring without per-target imports.
+ */
+expect fun createPoolAllocatorWithListener(listener: BufferAllocatorLifecycleListener): BufferAllocator
+
 /** Returns true if the platform has a real pool allocator (Native/JVM). */
 expect fun isPoolAllocator(): Boolean

@@ -10,4 +10,8 @@ actual fun createPoolAllocator(): BufferAllocator = DefaultAllocator
 @Suppress("UNUSED_PARAMETER")
 actual fun createPoolAllocatorWithProfile(profile: PoolMissProfile): BufferAllocator = DefaultAllocator
 
+@Suppress("UNUSED_PARAMETER")
+actual fun createPoolAllocatorWithListener(listener: BufferAllocatorLifecycleListener): BufferAllocator =
+    DefaultAllocator
+
 actual fun isPoolAllocator(): Boolean = false

@@ -37,7 +37,8 @@ class PooledDirectAllocator(
     maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
     freelistFactory: FreelistFactory? = null,
     statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter,
-) : PooledAllocator(maxTotalBytes, freelistFactory, statsCounter) {
+    lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
+) : PooledAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener) {
 
     init {
         installDefaultLadder()
@@ -58,7 +59,7 @@ class PooledDirectAllocator(
     override fun defaultFreelist(maxSlots: Int): Freelist = TreiberStackFreelist(maxSlots)
 
     override fun newChildInstance(maxTotalBytes: Long): PooledAllocator =
-        PooledDirectAllocator(maxTotalBytes, freelistFactory, statsCounter)
+        PooledDirectAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener)
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
         if (length == 0) return null
