@@ -1,0 +1,27 @@
+# Minimal OpenTelemetry Collector for sanity-checking the keel
+# BufferAllocator observer hook sample.
+#
+# The Collector runs a single OTLP receiver (gRPC on 4317, HTTP on 4318) and
+# a `debug` exporter that prints every metric to its stdout, so a fresh
+# `docker compose logs -f otel-collector` after running the sample shows
+# whether the metrics flow end-to-end without bringing up a heavier
+# backend (SigNoz, Grafana, Prometheus, …).
+#
+# Usage:
+#   docker compose -f sample/observability/otel-collector/docker-compose.yml up -d
+#   ./gradlew -Pbenchmark :sample:runObservabilitySample
+#   docker compose -f sample/observability/otel-collector/docker-compose.yml logs -f otel-collector
+#
+# Stop:
+#   docker compose -f sample/observability/otel-collector/docker-compose.yml down
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.106.1
+    container_name: keel-sample-otel-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./config.yaml:/etc/otelcol-contrib/config.yaml:ro

@@ -39,6 +39,7 @@ include(
     ":keel-testing-internal",
     ":keel-testing-engine",
     ":keel-testing-server-http",
+    ":keel-observability-opentelemetry",
     ":detekt-rules",
 )
 
