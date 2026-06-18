@@ -10,12 +10,21 @@ package io.github.fukusaka.keel.buf
  * [release] method encodes that strategy; all other state (pool
  * reference, parent ref, …) is held on the concrete implementation.
  *
- * keel-io provides the common set of owners:
+ * keel-io provides the common set of owners as internal implementations:
  *
  * - [HeapOwner] — frees the buffer's backing directly.
  * - [PoolOwner] — returns the buffer to its allocator pool.
  * - [SliceOwner] — releases the parent buffer a slice borrows from.
  * - [ExternalWrapOwner] — unpins an externally-wrapped resource.
+ *
+ * The four named implementations are `internal` because they encode
+ * keel-io–specific concepts (pool, slice, GC-managed heap, external
+ * wrap with `() -> Unit` cleanup) that out-of-tree callers do not need
+ * to reach by name; the interface stays `public` so external code can
+ * still implement a custom strategy and pass it where the API accepts
+ * an `IoBufOwner` — currently only [DirectIoBuf.wrapExternal] on JVM
+ * (Native's [wrapExternalNativePtr] takes a `() -> Unit` lambda and
+ * wraps it as [ExternalWrapOwner] internally).
  *
  * Owners are installed on the buffer at construction and never change
  * for a given buffer (pool reuse keeps the same instance, hence the
@@ -24,6 +33,19 @@ package io.github.fukusaka.keel.buf
  * **Thread safety**: owner instances themselves need not be thread-safe
  * because [release] is always invoked from the EventLoop that owns the
  * buffer (see the thread-safety contract in [IoBuf]).
+ *
+ * **Relationship to [BufferAllocatorLifecycleListener]** (pluggability
+ * item 5 / item 10 audit, 2026-06-18). The listener channel introduced
+ * by item 12 stage B2.5 covers per-buffer observability — counting,
+ * leak detection, and engine-direct buffer coverage — without needing
+ * to wrap the owner. It does not replace `IoBufOwner` because the two
+ * serve different concerns: an `IoBufOwner` decides what physically
+ * happens to the backing at refcount zero (free / pool return / unpin),
+ * while a listener only observes that the event occurred. Custom
+ * cleanup strategies — for example, wrapping an externally-pinned
+ * `ByteBuffer` with bespoke teardown — still need an `IoBufOwner`
+ * implementation, so the interface remains a valid public extension
+ * point even after item 5 closure.
  */
 interface IoBufOwner {
     /**
