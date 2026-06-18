@@ -258,6 +258,27 @@ interface IoBuf : Releasable {
  * to intercept the release path, plus the [freeBacking] hook
  * [HeapOwner] dispatches through. Implemented by every standard
  * platform [IoBuf].
+ *
+ * **Visibility audit** (pluggability item 11, 2026-06-18). An earlier
+ * framing in the pluggability refinement series considered promoting
+ * `PoolableIoBuf` from `internal` to `public` so the decorator pattern
+ * could wrap an external `IoBuf` implementation's owner. Item 5 closure
+ * — `BufferAllocatorLifecycleListener` channel reaching every
+ * engine-direct buffer type via item 12 stage B2.5 — makes that
+ * unnecessary: engine-direct types intentionally do not implement
+ * `PoolableIoBuf` (they manage refcount + foreign release directly),
+ * and listener mode on `TrackingAllocator` / `LeakDetectingAllocator`
+ * observes their lifecycle without the owner seam. The decorator-mode
+ * `as? PoolableIoBuf ?: return buf` silent skip pattern (introduced for
+ * `TrackingAllocator` in the B2 PR and for `LeakDetectingAllocator` in
+ * B2.5/1) is the documented path. Combined with `AbstractIoBuf`'s
+ * "public class + internal constructor" shape — which already prevents
+ * out-of-tree code from subclassing the only `PoolableIoBuf`
+ * implementation — there is no concrete benefit to publishing this
+ * interface and a real downside (an implicit promise that future
+ * `IoBuf` implementations should plug into the `owner` mechanism, which
+ * the engine-direct types deliberately bypass). The interface stays
+ * `internal`; no code change is required to close pluggability item 11.
  */
 internal interface PoolableIoBuf : IoBuf {
 
