@@ -7,6 +7,31 @@ package io.github.fukusaka.keel.codec.http
  *
  * The reason phrase is informational only; clients MUST ignore it (RFC 7230 §3.1.2).
  * [body] is null when no message body is present.
+ *
+ * **Atomic refcount audit (pluggability item 8, 2026-06-18)**: the
+ * pluggability series originally framed shared [HttpResponse] constants
+ * built through [of] / [ok] / [notFound] (e.g. the `NOT_FOUND_RESPONSE`
+ * / `INTERNAL_ERROR_RESPONSE` / `BAD_REQUEST_RESPONSE` singletons in
+ * `HttpServerHandler`) as a possible source of atomic CAS contention
+ * after the unified atomic refcount in `AbstractIoBuf`. Re-examining
+ * the emit path shows no such seam exists: [body] is `ByteArray?`,
+ * which has no refcount, and `HttpResponseEncoder.encode` allocates a
+ * fresh `IoBuf` per request via `allocator.allocate(size)` and copies
+ * the shared body bytes through `buf.writeByteArray`. Each emission
+ * therefore starts with `refCount = 1` owned by the encoder, transfers
+ * ownership to the transport, and releases after the write — no shared
+ * `IoBuf` is ever produced. The large-body fast path
+ * (`tryWrapBytes`, threshold 8 KiB) only fires for bodies above the
+ * threshold; the shared error constants ("Not Found" / "Internal
+ * Server Error" / "Bad Request") are well below it and never reach
+ * that branch. Even if they did, `tryWrapBytes` returns a fresh
+ * `IoBuf` wrapper around the shared `ByteArray` rather than handing
+ * out a shared `IoBuf`. Conclusion: shared [HttpResponse] constants do
+ * not trigger contended atomic CAS on the refcount, and the originally
+ * scoped microbenchmark is not needed at the current API shape. A
+ * future shift to `body: IoBuf` or a pooled / shared `IoBuf` body
+ * representation would change this calculus and warrant a fresh
+ * audit at that point.
  */
 data class HttpResponse(
     val status: HttpStatus,
