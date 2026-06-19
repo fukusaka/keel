@@ -366,12 +366,23 @@ build_engine_list() {
         PROFILE_ARGS="--profile=${PROFILE}"
     fi
 
-    # Cross-language reference servers
-    for pair in \
-        "rust-bench:benchmark/rust-bench/target/release/rust-bench" \
-        "go-bench:benchmark/go-bench/go-bench" \
-        "swift-bench:benchmark/swift-bench/.build/release/swift-bench" \
-        "zig-bench:benchmark/zig-bench/zig-out/bin/zig-bench"; do
+    # Cross-language reference servers.
+    #
+    # swift-bench is macOS-only — the Sources/main.swift uses Network.framework
+    # which has no Linux counterpart. Including it on Linux would surface as a
+    # READY_TIMEOUT_7 row because the binary refuses to start, so gate the
+    # entry on the host OS instead of leaving the empty-file check do it (a
+    # stale macOS-cross-built binary on Linux would otherwise still be picked
+    # up and fail at run time).
+    local cross_pairs=(
+        "rust-bench:benchmark/rust-bench/target/release/rust-bench"
+        "go-bench:benchmark/go-bench/go-bench"
+        "zig-bench:benchmark/zig-bench/zig-out/bin/zig-bench"
+    )
+    if [ "$(uname)" = "Darwin" ]; then
+        cross_pairs+=("swift-bench:benchmark/swift-bench/.build/release/swift-bench")
+    fi
+    for pair in "${cross_pairs[@]}"; do
         local ename="${pair%%:*}"
         local ebin="${pair#*:}"
         if [ -f "$ebin" ]; then
@@ -410,10 +421,24 @@ build_engine_list() {
         done
     fi
 
-    # JS (Node.js) server
+    # JS (Node.js) servers. The pre-2026-06-19 shape only ran
+    # `pipeline-http-nodejs`, which left `server-http-nodejs` measured by ad-hoc
+    # bench-one.sh sweeps and tentative in baseline summaries (e.g. `~17K` /
+    # `?`). Both are first-class keel engines, so include the same pair as the
+    # Native / JVM sections.
+    #
+    # Warn — instead of silent-skipping — when the JS bin is missing, since a
+    # `:benchmark:compileProductionExecutableKotlinJs` build omission was the
+    # exact reason the 2026-06-19 fresh baseline sweep produced zero JS
+    # engine rows.
     JS_BIN="benchmark/build/compileSync/js/main/productionExecutable/kotlin/keel-benchmark.js"
     if [ -f "$JS_BIN" ]; then
-        engines+=("js-engine:js:pipeline-http-nodejs:${JS_BIN}")
+        for engine in pipeline-http-nodejs server-http-nodejs; do
+            engines+=("js-engine:js:${engine}:${JS_BIN}")
+        done
+    else
+        echo "WARN: JS engine binary not found at ${JS_BIN}; pipeline-http-nodejs / server-http-nodejs will be skipped." >&2
+        echo "      Run: ./gradlew -Pbenchmark :benchmark:compileProductionExecutableKotlinJs" >&2
     fi
 
     # Shuffle if requested

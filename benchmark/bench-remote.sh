@@ -260,14 +260,35 @@ wait_for_ready() {
 
 # Find the server JVM PID on the remote host. Returns empty string if no
 # Java process is bound to PORT (Native server).
+#
+# Linux uses `ss -lntp` for the port -> PID lookup; macOS has no `ss` so we
+# fall back to `lsof -i :PORT -sTCP:LISTEN -t`. The OS is detected via the
+# same `REMOTE_OS` probe the rest of the script already uses.
 find_server_pid() {
-    ssh -n "$REMOTE_HOST" "ss -lntp | awk -v p=':${PORT}\$' '\$4 ~ p {print \$NF}' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2" 2>/dev/null || true
+    case "$REMOTE_OS" in
+        Darwin)
+            ssh -n "$REMOTE_HOST" "lsof -nP -iTCP:${PORT} -sTCP:LISTEN -t 2>/dev/null | head -1" 2>/dev/null || true
+            ;;
+        *)
+            ssh -n "$REMOTE_HOST" "ss -lntp | awk -v p=':${PORT}\$' '\$4 ~ p {print \$NF}' | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2" 2>/dev/null || true
+            ;;
+    esac
 }
 
+# Detect whether the remote PID is a JVM. Linux reads `/proc/<pid>/exe`;
+# macOS has no `/proc` and uses `ps -p <pid> -o comm=` (the executable's basename;
+# `=` suppresses the header).
 is_jvm_pid() {
     local pid="$1"
     [ -n "$pid" ] || return 1
-    ssh -n "$REMOTE_HOST" "test -e /proc/${pid}/exe && readlink /proc/${pid}/exe 2>/dev/null | grep -qE '/java\$'" 2>/dev/null
+    case "$REMOTE_OS" in
+        Darwin)
+            ssh -n "$REMOTE_HOST" "ps -p ${pid} -o comm= 2>/dev/null | grep -qE '(^|/)java\$'" 2>/dev/null
+            ;;
+        *)
+            ssh -n "$REMOTE_HOST" "test -e /proc/${pid}/exe && readlink /proc/${pid}/exe 2>/dev/null | grep -qE '/java\$'" 2>/dev/null
+            ;;
+    esac
 }
 
 # `jstat -gc <pid>` once; output: tab-separated header on stdout line 1,

@@ -70,6 +70,13 @@ build_engine_list() {
     if [ -f "$JS_BIN" ]; then
         engines+=("js:pipeline-http-nodejs|node ${JS_BIN} --engine=pipeline-http-nodejs --port=${PORT}")
         engines+=("js:server-http-nodejs|node ${JS_BIN} --engine=server-http-nodejs --port=${PORT}")
+    else
+        # Warn — instead of silent-skipping — when the JS bin is missing, since
+        # a `:benchmark:compileProductionExecutableKotlinJs` build omission was
+        # the exact reason the 2026-06-19 fresh baseline sweep produced zero JS
+        # engine rows.
+        echo "WARN: JS engine binary not found at ${JS_BIN}; pipeline-http-nodejs / server-http-nodejs will be skipped." >&2
+        echo "      Run: ./gradlew -Pbenchmark :benchmark:compileProductionExecutableKotlinJs" >&2
     fi
 
     # Cross-language reference servers
@@ -77,11 +84,20 @@ build_engine_list() {
         multipart|method-mix|path-param)
             ;;
         *)
-            for pair in \
-                "rust-bench|benchmark/rust-bench/target/release/rust-bench --port=${PORT}" \
-                "go-bench|benchmark/go-bench/go-bench --port=${PORT}" \
-                "swift-bench|benchmark/swift-bench/.build/release/swift-bench --port=${PORT}" \
-                "zig-bench|benchmark/zig-bench/zig-out/bin/zig-bench --port=${PORT}"; do
+            # swift-bench is macOS-only — Sources/main.swift uses
+            # Network.framework which has no Linux counterpart. Gate the entry
+            # on the host OS rather than letting an empty-file check sort it
+            # out (a stale macOS-cross-built binary on Linux would otherwise
+            # be picked up and READY_TIMEOUT_7 at run time).
+            local cross_pairs=(
+                "rust-bench|benchmark/rust-bench/target/release/rust-bench --port=${PORT}"
+                "go-bench|benchmark/go-bench/go-bench --port=${PORT}"
+                "zig-bench|benchmark/zig-bench/zig-out/bin/zig-bench --port=${PORT}"
+            )
+            if [ "$(uname)" = "Darwin" ]; then
+                cross_pairs+=("swift-bench|benchmark/swift-bench/.build/release/swift-bench --port=${PORT}")
+            fi
+            for pair in "${cross_pairs[@]}"; do
                 local display="${pair%%|*}"
                 local cmd="${pair#*|}"
                 local binary="${cmd%% *}"
