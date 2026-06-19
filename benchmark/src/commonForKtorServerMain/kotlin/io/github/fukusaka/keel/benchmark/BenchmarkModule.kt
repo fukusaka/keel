@@ -66,15 +66,25 @@ fun Application.benchmarkModule(connectionClose: Boolean = false, compression: B
         }
     }
     installBenchmarkCompression(compression)
-    // WebSockets plugin install: required for `webSocket("/ws-echo") { ... }`.
-    // Engines that support `respondUpgrade` (Ktor CIO, Ktor Netty, the
-    // `:keel-server-ktor-cio` adapter) handle the upgrade. Engines that
-    // throw `UnsupportedOperationException` from `respondUpgrade` (the
-    // current `:keel-server-ktor` adapter) reject the upgrade at handshake
-    // time — k6 ws-echo scenario reports those as connection errors and the
+    // WebSockets plugin install: required for `webSocket("/ws-echo") { ... }` and
+    // `webSocket("/ws-deflate") { ... }`. Engines that support
+    // `respondUpgrade` (Ktor CIO, Ktor Netty, the `:keel-server-ktor-cio`
+    // adapter) handle the upgrade. Engines that throw
+    // `UnsupportedOperationException` from `respondUpgrade` (the current
+    // `:keel-server-ktor` adapter) reject the upgrade at handshake time —
+    // k6 ws-echo scenario reports those as connection errors and the
     // benchmark just shows zero throughput for that engine, which is the
     // expected behaviour until `respondUpgrade` lands in `:keel-server-ktor`.
-    install(WebSockets)
+    //
+    // The `permessage-deflate` (RFC 7692) extension is installed at the
+    // plugin level — Ktor's `WebSocketDeflateExtension` opts in per
+    // connection during the handshake when the client offers it. With the
+    // extension installed at the plugin level, the `/ws-deflate` route
+    // negotiates compression with clients that ask for it (`bench-remote-ws.sh`
+    // wsbench scenario) and degrades to plain echo for clients that do not.
+    install(WebSockets) {
+        installPermessageDeflate()
+    }
     routing {
         get("/hello") {
             call.respondBytes(helloPayloadBytes, ContentType.Text.Plain)
@@ -200,6 +210,23 @@ fun Application.benchmarkModule(connectionClose: Boolean = false, compression: B
             // Echo every binary / text frame the client sends back to it. k6's
             // ws-echo scenario opens a connection, sends a fixed-size message,
             // waits for the echo, and counts round-trips per second.
+            for (frame in incoming) {
+                when (frame) {
+                    is Frame.Text -> send(Frame.Text(frame.readText()))
+                    is Frame.Binary -> send(Frame.Binary(true, frame.readBytes()))
+                    else -> Unit
+                }
+            }
+        }
+        webSocket("/ws-deflate") {
+            // Echo route exercised by the `bench-remote-ws.sh` deflate
+            // scenario. The handler itself is identical to `/ws-echo`;
+            // the `permessage-deflate` extension installed on the
+            // `WebSockets` plugin transparently compresses / decompresses
+            // frames when the client negotiates the extension during
+            // handshake. wsbench drives this path with
+            // `-compression=true` (negotiates `permessage-deflate`) and
+            // `-compression=false` (plain echo, A/B leg).
             for (frame in incoming) {
                 when (frame) {
                     is Frame.Text -> send(Frame.Text(frame.readText()))
