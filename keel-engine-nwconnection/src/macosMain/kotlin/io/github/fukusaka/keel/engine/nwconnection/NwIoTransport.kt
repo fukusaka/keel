@@ -120,16 +120,39 @@ import platform.darwin.dispatch_queue_t
  * race. Callback entry points fail fast via [assertOnConnQueue] if
  * they are ever invoked off-queue, mirroring `assertInEventLoop` on
  * the POSIX engines.
+ *
+ * **Per-connection allocator confinement**: each transport owns a
+ * private `BufferAllocator.createChild()` instance off the engine's
+ * shared allocator, rather than sharing the engine's child directly.
+ * `PooledAllocator` is EL-pinned-for-writes by contract — the hot
+ * path (`allocate` / `returnToPool` / `ChunkArena.carve`) assumes a
+ * single writer and a plain `@Volatile Long` `++` for cumulative
+ * counters. NWConnection serial dispatch queues are confined per
+ * connection but run on a *shared* GCD worker thread pool, so two
+ * connections that happen to land on different workers race on the
+ * shared allocator's chunk arena under concurrent TLS / large-payload
+ * workloads — manifesting as `IllegalStateException: no subpage at
+ * run offset N` on the libdispatch thread once subpage tracking is
+ * corrupted. Carrying a per-transport child means every
+ * allocate/release for one connection lands on one connQueue (and
+ * therefore one underlying GCD worker at a time), recovering the
+ * EL-pinned-writes invariant. This mirrors the existing
+ * `HttpHeadersPool` per-connection-queue scoping installed in
+ * [init] for the same family of cross-worker aliasing bugs.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class NwIoTransport(
     private val conn: nw_connection_t,
     private val connQueue: dispatch_queue_t,
-    allocator: BufferAllocator,
+    parentAllocator: BufferAllocator,
     private val idleReadPolicy: IdleReadPolicy,
     private val logger: Logger,
     idleTimeoutMillis: Long = 0,
-) : AbstractIoTransport(allocator) {
+    // Per-connection allocator child — see KDoc paragraph "Per-connection
+    // allocator confinement" below. The createChild() call must run before
+    // the AbstractIoTransport super constructor so allocator is set up
+    // before any callback can fire.
+) : AbstractIoTransport(parentAllocator.createChild()) {
 
     /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
     override val idleTimeoutMillis: Long = idleTimeoutMillis
@@ -527,6 +550,11 @@ internal class NwIoTransport(
         spareFallbackBuf?.release()
         spareFallbackBuf = null
         nw_connection_cancel(conn)
+        // Drain the per-connection allocator child's pool. The child is no
+        // longer reachable from the engine's children list after this point,
+        // so its chunks return to the parent (or to the OS) immediately
+        // instead of waiting for the engine-level close.
+        allocator.close()
     }
 
     /**
