@@ -22,6 +22,14 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
+# Refuse to sweep when a primary engine binary (host-appropriate native /
+# JVM classpath / JS production bin) is missing — silent-skipping is the
+# pattern that left Node.js streaming cells stale through 2026-06-19.
+# Opt-out: BENCH_SKIP_MISSING_BINARIES=true. See bench-preflight.sh.
+# shellcheck disable=SC1091
+. "$(dirname "$0")/bench-preflight.sh"
+preflight_check_primary_binaries
+
 SHUFFLE=${BENCH_SHUFFLE:-false}
 PORT=${BENCH_PORT:-18090}
 COOLDOWN=${BENCH_COOLDOWN:-2}
