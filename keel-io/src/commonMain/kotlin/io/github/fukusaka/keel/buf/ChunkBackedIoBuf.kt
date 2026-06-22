@@ -31,10 +31,17 @@ internal interface ChunkBackedIoBuf {
      * Returns this view's run to its chunk and drops the chunk reference.
      * Idempotent: clears [chunkPool] first so a second call (e.g. a repeated
      * `freeBacking`) is a no-op and the run is never double-freed.
+     *
+     * Routes through [ChunkArena.returnRun] (under the arena lock) when the chunk
+     * has an owning arena, so a cross-thread free — the freeing thread is not
+     * necessarily the one that carved the view — serialises against concurrent
+     * carve / return on the same arena. A chunk created outside an arena (test
+     * fixtures, `arena == null`) falls back to a direct [PooledChunk.freeRun].
      */
     fun returnChunkRun() {
         val pool = chunkPool ?: return
         chunkPool = null
-        pool.freeRun(chunkHandle)
+        val arena = pool.arena
+        if (arena != null) arena.returnRun(pool, chunkHandle) else pool.freeRun(chunkHandle)
     }
 }
