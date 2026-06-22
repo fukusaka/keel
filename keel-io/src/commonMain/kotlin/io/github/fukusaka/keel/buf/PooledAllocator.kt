@@ -56,7 +56,7 @@ package io.github.fukusaka.keel.buf
  *   factory is invoked once per pooled size class with that class's slot cap, and
  *   is forwarded to every per-EventLoop child produced by [createChild].
  */
-abstract class PooledAllocator(
+abstract class PooledAllocator internal constructor(
     private val maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
     /**
      * Exposed `protected` so subclasses can forward the same factory to
@@ -87,6 +87,17 @@ abstract class PooledAllocator(
      * thread-safe implementation when multi-EL aggregation is required.
      */
     override val lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
+    /**
+     * The chunk back-end this allocator carves pool-miss buffers from. `null`
+     * (the default, for a root allocator) makes this instance create and **own**
+     * a fresh [ChunkArena]; a non-null value (passed by [createChild] to a
+     * per-EventLoop child) makes the child **share** the parent's arena. A shared
+     * arena is the off-EventLoop-safe central back-end: every child carves from
+     * and returns runs to one [ChunkArena], whose [ArenaLock] serialises the
+     * cross-thread access. Only the owner closes the arena (see [close]); a child
+     * closing a shared arena while siblings still use it would be a use-after-free.
+     */
+    sharedChunkArena: ChunkArena? = null,
 ) : BufferAllocator {
 
     /** The size-class table driving round-up. Built once with keel's pooling parameters. */
@@ -213,17 +224,26 @@ abstract class PooledAllocator(
     private val poolOwner: IoBufOwner = PoolOwner { buf -> returnToPool(buf) }
 
     /**
-     * Per-EventLoop chunk back-end. A cache miss for a pooled class carves a
-     * run/subpage view out of a large chunk instead of a per-buffer system
-     * allocation. The size-class freelist sits in front, so [ChunkArena.carve]
-     * only runs on misses (off the hot path). Each allocator instance — and each
-     * per-EventLoop child from [newChildInstance] — owns its own arena.
+     * Chunk back-end. A cache miss for a pooled class carves a run/subpage view
+     * out of a large chunk instead of a per-buffer system allocation. The
+     * size-class freelist sits in front, so [ChunkArena.carve] only runs on
+     * misses (off the hot path).
+     *
+     * A root allocator (`sharedChunkArena == null`) creates and owns a fresh
+     * arena; per-EventLoop children created by [createChild] **share** the root's
+     * arena, so all EventLoops carve from and return runs to one thread-safe
+     * central back-end. This is what makes the pool off-EventLoop-safe: a buffer
+     * carved on EventLoop A and released on EventLoop B returns its run through
+     * the shared arena's [ArenaLock]. Only the owner closes it ([ownsChunkArena]).
      */
-    private val chunkArena: ChunkArena = ChunkArena(
+    private val chunkArena: ChunkArena = sharedChunkArena ?: ChunkArena(
         sizeClasses = sizeClasses,
         newChunkBacking = { newBuffer(CHUNK_SIZE) },
         newChunkView = ::newChunkView,
     )
+
+    /** True when this instance created its own [chunkArena] and must close it. */
+    private val ownsChunkArena: Boolean = sharedChunkArena == null
 
     /** Constructs a fresh backing buffer of exactly [capacity] bytes (platform seam). */
     protected abstract fun newBuffer(capacity: Int): IoBuf
@@ -256,10 +276,13 @@ abstract class PooledAllocator(
 
     /**
      * Constructs a sibling instance for a single EventLoop (platform seam).
-     * Subclasses must propagate the same [freelistFactory] so per-EL children
-     * inherit the user-selected strategy.
+     * Subclasses must propagate the same [freelistFactory] / [statsCounter] /
+     * [lifecycleListener] so per-EL children inherit the user-selected strategy and
+     * feed one aggregate observer, and must pass [sharedChunkArena] straight to
+     * `super(... sharedChunkArena = sharedChunkArena)` so the child shares the
+     * root's thread-safe central arena instead of creating its own.
      */
-    protected abstract fun newChildInstance(maxTotalBytes: Long): PooledAllocator
+    internal abstract fun newChildInstance(maxTotalBytes: Long, sharedChunkArena: ChunkArena): PooledAllocator
 
     /**
      * Installs the default Netty-style size-class ladder: every cached class
@@ -587,7 +610,11 @@ abstract class PooledAllocator(
 
     final override fun createChild(): BufferAllocator {
         check(!closed) { "allocator is closed" }
-        val child = newChildInstance(maxTotalBytes)
+        // Share this allocator's chunk arena with the child so all per-EventLoop
+        // children carve from and return runs to one thread-safe central back-end
+        // (off-EventLoop safety). The child owns its own size-class freelist cache
+        // (per-EL, lock-free hot path) but borrows the shared arena for misses.
+        val child = newChildInstance(maxTotalBytes, chunkArena)
         children.add(child)
         return child
     }
@@ -627,7 +654,13 @@ abstract class PooledAllocator(
             }
             pool.close()
         }
-        chunkArena.close()
+        // Only the root allocator closes the shared arena — a child closing it
+        // while sibling EventLoops still carve from it would be a use-after-free.
+        // The root's close() runs after every child's close() (children are closed
+        // first, above), so by the time the owner tears the arena down, no child
+        // freelist will issue a fresh carve; in-flight releases held across close
+        // take the arena's closed-flag direct path (see ChunkArena.returnRun).
+        if (ownsChunkArena) chunkArena.close()
     }
 
     /**
