@@ -5,12 +5,12 @@
 # Why this exists: the 2026-06-19 fresh baseline sweep produced zero Node.js
 # rows because the JS production binary was never built; both sweep scripts
 # silent-skipped the JS engines and the result was eight HTTP /hello+/large
-# Node.js cells left as `要再計測` in `status.md`. The 2026-06-19 stage 10
-# streaming sweep then repeated the same gap for the streaming scenarios
-# (`upload` / `sse` / `multipart` / `method-mix` / `path-param` /
-# `slow-upload`) because `bench-stream-all.sh` followed the same silent-skip
-# shape. PR #816 added per-script `WARN:` lines but did not stop the sweep
-# from running, so stale cells persisted across subsequent passes.
+# Node.js cells left unmeasured. The streaming sweep then repeated the same
+# gap for the streaming scenarios (`upload` / `sse` / `multipart` /
+# `method-mix` / `path-param` / `slow-upload`) because `bench-stream-all.sh`
+# followed the same silent-skip shape. PR #816 added per-script `WARN:`
+# lines but did not stop the sweep from running, so the gaps persisted
+# across subsequent passes.
 #
 # This pre-flight check turns the WARN into a hard failure by default: a
 # sweep cannot start unless all *primary* engine binaries (native kexe for
@@ -59,9 +59,9 @@ preflight_check_primary_binaries() {
 
     # JVM classpath file must resolve on this host (the file uses
     # ${REPO_ROOT} / ${GRADLE_USER_HOME} placeholders that `bench-jvm-cp.sh
-    # resolve` expands locally — see benchmarking.md). A missing or
-    # un-resolvable classpath silently drops all JVM engines, matching the
-    # Node.js pattern this preflight is here to prevent.
+    # resolve` expands locally). A missing or un-resolvable classpath
+    # silently drops all JVM engines, matching the Node.js pattern this
+    # preflight is here to prevent.
     if ! ./benchmark/bench-jvm-cp.sh resolve >/dev/null 2>&1; then
         missing+=("jvm classpath — ./gradlew -Pbenchmark :benchmark:writeClasspath")
     fi
