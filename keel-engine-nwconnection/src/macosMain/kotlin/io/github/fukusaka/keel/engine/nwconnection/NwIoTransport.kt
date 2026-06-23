@@ -124,21 +124,26 @@ import platform.darwin.dispatch_queue_t
  * **Per-connection allocator confinement**: each transport owns a
  * private `BufferAllocator.createChild()` instance off the engine's
  * shared allocator, rather than sharing the engine's child directly.
- * `PooledAllocator` is EL-pinned-for-writes by contract — the hot
- * path (`allocate` / `returnToPool` / `ChunkArena.carve`) assumes a
- * single writer and a plain `@Volatile Long` `++` for cumulative
- * counters. NWConnection serial dispatch queues are confined per
- * connection but run on a *shared* GCD worker thread pool, so two
- * connections that happen to land on different workers race on the
- * shared allocator's chunk arena under concurrent TLS / large-payload
- * workloads — manifesting as `IllegalStateException: no subpage at
- * run offset N` on the libdispatch thread once subpage tracking is
- * corrupted. Carrying a per-transport child means every
- * allocate/release for one connection lands on one connQueue (and
- * therefore one underlying GCD worker at a time), recovering the
- * EL-pinned-writes invariant. This mirrors the existing
- * `HttpHeadersPool` per-connection-queue scoping installed in
- * [init] for the same family of cross-worker aliasing bugs.
+ * `PooledAllocator`'s per-child cache bookkeeping is EL-pinned-for-writes
+ * by contract — the hot path (`allocate` / `returnToPool`) mutates plain
+ * `cachedCount[idx]++` and plain `@Volatile Long` `++` cumulative counters
+ * assuming a single writer. NWConnection serial dispatch queues are confined
+ * per connection but run on a *shared* GCD worker thread pool, so two
+ * connections that happen to land on different workers would mutate one
+ * shared child's per-class counters concurrently under TLS / large-payload
+ * workloads. Carrying a per-transport child means every allocate/release for
+ * one connection lands on one connQueue (and therefore one underlying GCD
+ * worker at a time), recovering the single-writer invariant. This mirrors the
+ * existing `HttpHeadersPool` per-connection-queue scoping installed in [init]
+ * for the same family of cross-worker aliasing bugs.
+ *
+ * The chunk back-end (`ChunkArena` carve / run-return / reclaim) is now
+ * thread-safe in its own right (guarded by an `ArenaLock`), so the earlier
+ * `IllegalStateException: no subpage at run offset N` subpage-corruption mode
+ * no longer depends on this confinement. The per-transport child is retained
+ * for the per-child *cache counter* invariant above, which is not yet
+ * thread-safe; once that bookkeeping is hardened (or moved behind a per-thread
+ * cache front), this confinement can be revisited.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class NwIoTransport(
