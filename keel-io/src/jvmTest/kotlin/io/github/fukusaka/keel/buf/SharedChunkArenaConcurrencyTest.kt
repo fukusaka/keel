@@ -5,8 +5,10 @@ package io.github.fukusaka.keel.buf
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Cross-thread seam test for the shared [ChunkArena] (Stage 2-1: thread-safe arena
@@ -39,12 +41,17 @@ class SharedChunkArenaConcurrencyTest {
         // Per-EventLoop children that all share the root's chunk arena (Stage 2-1 b).
         val children = Array(CHILDREN) { root.createChild() }
         val errors = AtomicInteger(0)
+        val firstError = AtomicReference<Throwable?>(null)
         val allocated = AtomicInteger(0)
         val released = AtomicInteger(0)
         // A capacity-0 sentinel signalling "no more work" through the handoff queue;
         // never released or counted (it carries no chunk run).
         val sentinel: IoBuf = DirectIoBuf(0)
-        val queue = LinkedBlockingQueue<IoBuf>()
+        // Bounded so producers block when consumers fall behind, capping in-flight
+        // buffers. An unbounded queue let fast producers pile up enough live carves
+        // to exhaust the JVM's 512 MiB direct-buffer limit (a flaky OOM under a full
+        // build that shares that limit across tests) — not an ArenaLock fault.
+        val queue = LinkedBlockingQueue<IoBuf>(QUEUE_CAPACITY)
         try {
             val start = CountDownLatch(1)
 
@@ -60,6 +67,7 @@ class SharedChunkArenaConcurrencyTest {
                             allocated.incrementAndGet()
                         }
                     } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+                        firstError.compareAndSet(null, t)
                         errors.incrementAndGet()
                     }
                 }
@@ -74,6 +82,7 @@ class SharedChunkArenaConcurrencyTest {
                             released.incrementAndGet()
                         }
                     } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+                        firstError.compareAndSet(null, t)
                         errors.incrementAndGet()
                     }
                 }
@@ -82,12 +91,21 @@ class SharedChunkArenaConcurrencyTest {
             producers.forEach { it.start() }
             consumers.forEach { it.start() }
             start.countDown()
-            producers.forEach { it.join() }
+            // Bounded joins: a deadlock in the shared ArenaLock (the failure class
+            // under test) would otherwise block these joins forever. Cap the wait
+            // and fail on any surviving thread instead of hanging the suite.
+            producers.forEach { it.join(JOIN_BUDGET_MS) }
+            assertTrue(producers.none { it.isAlive }, "all producers completed within budget (ArenaLock deadlock guard)")
             // All work enqueued: stop each consumer with one sentinel.
             repeat(CONSUMERS) { queue.put(sentinel) }
-            consumers.forEach { it.join() }
+            consumers.forEach { it.join(JOIN_BUDGET_MS) }
+            assertTrue(consumers.none { it.isAlive }, "all consumers completed within budget (ArenaLock deadlock guard)")
 
-            assertEquals(0, errors.get(), "no producer/consumer observed an exception")
+            assertEquals(
+                0,
+                errors.get(),
+                "no producer/consumer observed an exception; first: ${firstError.get()?.stackTraceToString()}",
+            )
             assertEquals(
                 allocated.get(),
                 released.get(),
@@ -105,6 +123,14 @@ class SharedChunkArenaConcurrencyTest {
         const val PRODUCERS = 8
         const val CONSUMERS = 8
         const val OPS_PER_PRODUCER = 20_000
+
+        // Wall-clock cap per join. The whole run is ~8×20k carves on a shared lock,
+        // well under a second uncontended; 30 s is a generous deadlock guard.
+        const val JOIN_BUDGET_MS = 30_000L
+
+        // Backpressure bound on in-flight buffers (×CLASS_SIZE ≈ 2 MiB), keeping the
+        // test well within the JVM direct-buffer limit regardless of producer speed.
+        const val QUEUE_CAPACITY = 256
 
         // A pooled class size: a cache miss carves it from a chunk (the path the
         // shared arena guards). Kept well under the chunk size so it pools normally.
