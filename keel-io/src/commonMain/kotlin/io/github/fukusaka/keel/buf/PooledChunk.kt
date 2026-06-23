@@ -27,6 +27,16 @@ class PooledChunk internal constructor(
     private val subpageHeads = arrayOfNulls<PoolSubpage>(poolChunk.sizeClasses.nSubpages)
 
     /**
+     * Back-reference to the owning [ChunkArena], set by [ChunkArena.carve] when the
+     * arena creates this chunk. [ChunkBackedIoBuf.returnChunkRun] uses it to route a
+     * view's run return through [ChunkArena.returnRun] (under the arena lock) instead
+     * of calling [freeRun] directly, so a cross-thread free serialises against
+     * concurrent carve / return on the same arena. `null` only for a chunk created
+     * outside an arena (test fixtures), where [freeRun] is called directly.
+     */
+    internal var arena: ChunkArena? = null
+
+    /**
      * Outstanding carves (live + cached views) referencing this chunk. Mirrors the
      * extra references on [backing] beyond the arena's own hold, so `liveCarves == 0`
      * means the chunk is fully idle and reclaimable. Maintained on the single

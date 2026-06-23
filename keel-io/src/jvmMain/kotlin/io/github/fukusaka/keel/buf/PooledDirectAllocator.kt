@@ -33,12 +33,21 @@ import java.util.concurrent.atomic.AtomicReference
  *   or any other `FreelistFactory` to swap the strategy — see [PooledAllocator]
  *   for the selection trade-offs.
  */
-class PooledDirectAllocator(
-    maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
-    freelistFactory: FreelistFactory? = null,
-    statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter,
-    lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
-) : PooledAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener) {
+class PooledDirectAllocator private constructor(
+    maxTotalBytes: Long,
+    freelistFactory: FreelistFactory?,
+    statsCounter: BufferAllocatorStatsCounter,
+    lifecycleListener: BufferAllocatorLifecycleListener,
+    sharedChunkArena: ChunkArena?,
+) : PooledAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedChunkArena) {
+
+    /** Public root constructor: creates and owns a fresh chunk arena. */
+    constructor(
+        maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
+        freelistFactory: FreelistFactory? = null,
+        statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter,
+        lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
+    ) : this(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, null)
 
     init {
         installDefaultLadder()
@@ -58,8 +67,8 @@ class PooledDirectAllocator(
 
     override fun defaultFreelist(maxSlots: Int): Freelist = TreiberStackFreelist(maxSlots)
 
-    override fun newChildInstance(maxTotalBytes: Long): PooledAllocator =
-        PooledDirectAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener)
+    override fun newChildInstance(maxTotalBytes: Long, sharedChunkArena: ChunkArena): PooledAllocator =
+        PooledDirectAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedChunkArena)
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
         if (length == 0) return null
