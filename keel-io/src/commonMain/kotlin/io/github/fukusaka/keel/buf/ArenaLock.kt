@@ -43,12 +43,32 @@ internal expect class ArenaLock() {
  * Runs [block] while holding [this] lock, releasing it on every exit path
  * (normal return or exception). The unlock runs in `finally` so an exception
  * thrown by [block] does not leak the lock.
+ *
+ * If both [block] and the [unlock] fail (the Native actual's `unlock` checks the
+ * `pthread_mutex_unlock` return code and can throw), the unlock failure is
+ * attached to the in-flight exception via `addSuppressed` so the original cause
+ * is not masked; if only the unlock fails, it propagates directly. This is the
+ * same exception-handling contract the Native primitive uses in
+ * `NativeMutex.withLock` (which `MutexFreelist` calls); kept consistent by hand
+ * because the JVM / JS actuals do not go through `NativeMutex`.
  */
+// Intentional: an unlock-only failure is rethrown; if block() also threw, the
+// unlock error is attached via addSuppressed (above) rather than rethrown, so the
+// original cause is never masked. This is the same contract as NativeMutex.withLock.
+@Suppress("ThrowingExceptionFromFinally")
 internal inline fun <T> ArenaLock.withLock(block: () -> T): T {
     lock()
+    var primary: Throwable? = null
     try {
         return block()
+    } catch (t: Throwable) {
+        primary = t
+        throw t
     } finally {
-        unlock()
+        try {
+            unlock()
+        } catch (unlockError: Throwable) {
+            if (primary != null) primary.addSuppressed(unlockError) else throw unlockError
+        }
     }
 }
