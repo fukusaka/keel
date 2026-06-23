@@ -516,9 +516,13 @@ abstract class PooledAllocator internal constructor(
             cumulativePooled = cumulativePooled,
             cumulativeDiscarded = cumulativeDiscarded,
             cumulativeFreed = cumulativeFreed,
-            cumulativeChunksAllocated = chunkArena.cumulativeChunksAllocated,
-            cumulativeChunksFreed = chunkArena.cumulativeChunksFreed,
-            residentChunks = chunkArena.chunkCount,
+            // Chunk metrics are arena-scoped. Only the arena owner (the root
+            // allocator) reports them; per-EventLoop children share that one arena,
+            // so reporting from every child would multiply the chunk counts by the
+            // child count for any observer that sums per-child snapshots.
+            cumulativeChunksAllocated = if (ownsChunkArena) chunkArena.cumulativeChunksAllocated else 0L,
+            cumulativeChunksFreed = if (ownsChunkArena) chunkArena.cumulativeChunksFreed else 0L,
+            residentChunks = if (ownsChunkArena) chunkArena.chunkCount else 0,
             isClosed = closed,
             classCount = nSizes,
             perClassHits = perClassHits.copyOf(),
@@ -586,6 +590,13 @@ abstract class PooledAllocator internal constructor(
      *
      * Without this, cached views pin their chunks forever and the footprint only
      * grows.
+     *
+     * **Shared arena**: [WARM_RESERVE] is a single arena-wide idle-chunk reserve,
+     * not a per-EventLoop one. When [createChild] shares one [ChunkArena] across
+     * children, every child's trim pass reclaims that same shared arena down to the
+     * one global reserve, so the resident idle-chunk floor is [WARM_RESERVE] total
+     * (not × the child count). Reclaim is idempotent and runs under the arena lock,
+     * so concurrent per-child trims are serialised rather than racing.
      */
     private fun trim() {
         trimCountdown = TRIM_INTERVAL
