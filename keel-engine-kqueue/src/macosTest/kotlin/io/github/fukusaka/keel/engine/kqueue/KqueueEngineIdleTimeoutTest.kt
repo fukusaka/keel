@@ -7,13 +7,13 @@ import io.github.fukusaka.keel.native.posix.ReadResult
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
 import platform.posix.usleep
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -41,12 +41,19 @@ class KqueueEngineIdleTimeoutTest {
      * which stops reading fills its receive window and stalls the server's write
      * (arming the write-idle timer). Content is irrelevant for the timing test.
      */
-    private class BigChunkWriter : InboundHandler {
+    private class BigChunkWriter(private val onClose: CompletableDeferred<Unit>) : InboundHandler {
         override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
             if (msg is IoBuf) msg.release()
             val out = ctx.allocator.allocate(CHUNK_BYTES)
             out.writerIndex = CHUNK_BYTES // expose CHUNK_BYTES readable bytes (content unset)
             ctx.propagateWriteAndFlush(out)
+        }
+
+        // The write-idle timeout force-closes the channel, which surfaces here as
+        // onInactive. Observing the close server-side avoids a client read that would
+        // advance the pending write and refresh/cancel the write-idle timer.
+        override fun onInactive(ctx: PipelineHandlerContext) {
+            onClose.complete(Unit)
         }
     }
 
@@ -96,36 +103,31 @@ class KqueueEngineIdleTimeoutTest {
     @Test
     fun `a slow-read client is closed by the write idle timeout while reads stay active`() = runBlocking {
         withTimeout(15.seconds) {
+            val serverClosed = CompletableDeferred<Unit>()
             val engine = KqueueEngine(IoEngineConfig(threads = 1, idleTimeoutMillis = IDLE_MS))
             val server = engine.bindPipeline("127.0.0.1", SLOW_READ_PORT) { channel ->
-                channel.pipeline.addLast("big", BigChunkWriter())
+                channel.pipeline.addLast("big", BigChunkWriter(serverClosed))
             }
             usleep(SERVER_START_US)
             val clientFd = connectRawClient(SLOW_READ_PORT)
-            // Trigger a large response, then never read it: the server's write stalls
-            // and arms the write-idle timer. Trickle a byte every TRICKLE_US (< IDLE_MS)
-            // to keep the *read* side refreshed, so only the write-idle timer can fire.
-            // The trickle tolerates the server closing mid-loop (a loaded runner may fire
-            // write-idle before the loop ends).
+            // Trigger a large response, then never read it: the server's write stalls and
+            // arms the write-idle timer at the first stalled write. Trickle a byte every
+            // TRICKLE_US (< IDLE_MS) so the read side stays refreshed and the write-idle
+            // timer — armed earlier than read-idle — is the one that fires.
+            //
+            // Observe the close on the SERVER side (BigChunkWriter.onInactive → the
+            // deferred), never by reading on the client. A client read would advance the
+            // server's stalled response, and on flush progress `updatePendingBytes`
+            // touches (or cancels) the write-idle timer — so any read before the timer
+            // fires keeps refreshing it and the close is never observed (the flaky
+            // `closed == false` on a loaded CI runner).
             repeat(4) {
                 runCatching { rawWrite(clientFd, "x") }
                 usleep(TRICKLE_US)
             }
-            // write-idle must reclaim the connection: draining observes a close — either
-            // EOF or a reset (force-closing with buffered data sends RST). Had write-idle
-            // not fired, the server would keep producing data as we drain and we would
-            // never reach a close within the bounded window.
-            var closed = false
-            var reads = 0
-            while (!closed && reads < MAX_DRAIN_READS) {
-                reads++
-                when (PosixRawClient.rawReadOnce(clientFd, DRAIN_CHUNK, 2.seconds)) {
-                    ReadResult.Eof, is ReadResult.Failed -> closed = true
-                    is ReadResult.Bytes -> Unit // buffered partial — keep draining
-                    ReadResult.WouldBlock -> break
-                }
-            }
-            assertTrue(closed, "write-idle should close (EOF/RST) a non-reading peer while reads stay active")
+            // write-idle must force-close the connection; onInactive completes the
+            // deferred. The withTimeout envelope fails the test if it never fires.
+            serverClosed.await()
             close(clientFd)
             server.close()
             engine.close()
@@ -133,13 +135,14 @@ class KqueueEngineIdleTimeoutTest {
     }
 
     private companion object {
-        const val IDLE_MS = 500L
+        // Generous idle window: a loaded CI macOS runner can delay a usleep / timer
+        // dispatch by a few hundred ms, so the gaps and trickles that must stay under
+        // IDLE_MS keep a comfortable margin (was 500 ms, which left only ~200 ms).
+        const val IDLE_MS = 1000L
         const val SERVER_START_US: UInt = 100_000u
-        const val GAP_US: UInt = 300_000u // 300 ms < IDLE_MS (500 ms)
-        const val TRICKLE_US: UInt = 160_000u // 160 ms < IDLE_MS keeps read-idle alive
+        const val GAP_US: UInt = 300_000u // 300 ms < IDLE_MS keeps the active client alive across the gap
+        const val TRICKLE_US: UInt = 160_000u // 160 ms < IDLE_MS keeps read-idle refreshed
         const val CHUNK_BYTES = 1 shl 20 // 1 MiB per response — exceeds the socket buffer
-        const val DRAIN_CHUNK = 1 shl 16 // 64 KiB per drain read
-        const val MAX_DRAIN_READS = 200 // bounded drain so a non-closing bug fails, not hangs
         const val SILENT_PORT = 19891
         const val ACTIVE_PORT = 19892
         const val SLOW_READ_PORT = 19895
