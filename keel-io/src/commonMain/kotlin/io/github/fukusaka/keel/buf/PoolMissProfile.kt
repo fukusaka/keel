@@ -254,5 +254,26 @@ class PoolMissProfile(private val nSizes: Int) : BufferAllocatorStatsCounter {
             )
             return { sc.sizeIdx2size(it) }
         }
+
+        /**
+         * Translates a byte-size capacity to its size-class index using the
+         * standard [PooledAllocator] ladder — the inverse of
+         * [defaultPoolSizeIdx2size]. Returns `nSizes` (the sentinel one past the
+         * last valid index) for capacities above the chunk size, so a caller can
+         * size a `nSizes + 1` array and bucket huge buffers into the final slot.
+         *
+         * Pass this to a listener that observes only [IoBuf.capacity] and must
+         * bucket releases by class without reaching the internal [SizeClasses]
+         * table (e.g. [CrossThreadReleaseProfile]).
+         */
+        fun defaultPoolSize2Idx(): (Int) -> Int {
+            val sc = SizeClasses(
+                PooledAllocator.PAGE_SIZE,
+                PooledAllocator.PAGE_SHIFTS,
+                PooledAllocator.CHUNK_SIZE,
+                directMemoryCacheAlignment = 0,
+            )
+            return { sc.size2SizeIdx(it) }
+        }
     }
 }
