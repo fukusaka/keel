@@ -121,12 +121,17 @@ fun main(args: Array<String>) {
     // dispatch did with those requests) every few seconds so the accumulated
     // profiles are visible in the bench log before the signal handler
     // _exit(0)s (there is no clean-shutdown dump point).
-    if (config.profileAlloc) {
+    if (config.profileAlloc || config.profileXthread) {
         val sizeIdx2size = io.github.fukusaka.keel.buf.PoolMissProfile.defaultPoolSizeIdx2size()
         while (true) {
             platform.posix.sleep(PROFILE_DUMP_INTERVAL_SECONDS)
-            println(benchmarkAllocationProfile.format())
-            println(benchmarkPoolMissProfile.format(sizeIdx2size))
+            if (config.profileAlloc) {
+                println(benchmarkAllocationProfile.format())
+                println(benchmarkPoolMissProfile.format(sizeIdx2size))
+            }
+            if (config.profileXthread) {
+                println(benchmarkCrossThreadProfile.format())
+            }
         }
     }
     while (true) {

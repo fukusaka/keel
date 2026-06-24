@@ -127,10 +127,19 @@ data class BenchmarkConfig(
     /**
      * When true (`--profile-alloc`), the engine allocator is wrapped with a
      * shared profiling decorator that records the allocation-size histogram,
-     * and the entry point dumps it periodically. Phase 0 measurement only;
-     * off (and zero-overhead) for normal runs.
+     * and the entry point dumps it periodically. Allocation-profiling
+     * measurement only; off (and zero-overhead) for normal runs.
      */
     val profileAlloc: Boolean = false,
+    /**
+     * When true (`--profile-xthread`), the engine allocator is built with a
+     * shared [io.github.fukusaka.keel.buf.CrossThreadReleaseProfile] lifecycle
+     * listener that records, per size class, the fraction of buffers released on
+     * a different thread than they were allocated on. The entry point dumps it
+     * periodically. A cross-thread-rate measurement only; off (and
+     * zero-overhead) for normal runs.
+     */
+    val profileXthread: Boolean = false,
     val socket: SocketConfig = SocketConfig(),
     val engineConfig: EngineConfig = EngineConfig.None,
 ) {
@@ -143,6 +152,7 @@ data class BenchmarkConfig(
             for (arg in args) {
                 if (arg == "--show-config") { config = config.copy(showConfig = true); continue }
                 if (arg == "--profile-alloc") { config = config.copy(profileAlloc = true); continue }
+                if (arg == "--profile-xthread") { config = config.copy(profileXthread = true); continue }
                 val (key, value) = if ("=" in arg) {
                     arg.substringBefore("=").removePrefix("--") to arg.substringAfter("=")
                 } else continue
