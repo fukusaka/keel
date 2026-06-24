@@ -1,0 +1,243 @@
+@file:OptIn(UnsafeIoBufApi::class)
+
+package io.github.fukusaka.keel.buf
+
+import io.github.fukusaka.keel.scope.ScopeLocal
+import io.github.fukusaka.keel.scope.ThreadLocalScopeLocal
+import io.github.fukusaka.keel.scope.scopeLocal
+import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
+import kotlin.native.concurrent.ThreadLocal
+import kotlin.test.Ignore
+import kotlin.test.Test
+import kotlin.time.TimeSource
+import platform.posix.pthread_equal
+import platform.posix.pthread_self
+
+/**
+ * Stage 2c-α go/no-go micro-bench: per-op cost of three freelist front-end
+ * strategies on a single EL-pinned thread, plus a decomposition of why the
+ * `scopeLocal` path is heavy on macosArm64.
+ *
+ * **Why.** The Stage 2c-α proposal (design.md §56.5) adds a per-thread cache
+ * front to recover the HTTPS Native regression. A first-principles read shows
+ * the recovery mechanism is weak on EL-pinned engines: HTTPS hot buffers (read
+ * 8 KiB / TLS plaintext 16 KiB / ciphertext ~17 KiB) are all ≤
+ * `MAX_CACHED_CAPACITY` (32 KiB), so they already hit the per-EL [Freelist] on
+ * the same EL thread and never reach `ChunkArena.carve`. A per-thread cache
+ * front adds **zero** extra carve-bypass; its only effect is replacing the
+ * freelist's thread-safe synchronisation (the Native default
+ * `SpinLockFreelist`'s CAS acquire/release) with a same-thread plain LIFO.
+ *
+ * Front strategies (A/B/C):
+ * - **A** `SpinLockFreelist`-equivalent push/pop — the current EL-pinned hot
+ *   path (re-implemented; the production class is `private`).
+ * - **B** plain `ArrayDeque` push/pop — the per-EL-child *plain field* path.
+ * - **C** `scopeLocal { ArrayDeque }.current()` + push/pop — the off-EL path,
+ *   which pays a `ThreadLocalScopeLocal.current()` per op.
+ *
+ * Decomposition of C's `current()` cost (D/E/F/G), because the first run showed
+ * C−B ≈ 19 ns on M1 vs ≈ 5 ns on luna — far above the `ThreadLocalScopeLocal`
+ * KDoc's HashMap ~6.7 ns (a luna figure). `current()` is
+ * `perThreadStore.getOrPut(key)` where `perThreadStore` is a `@ThreadLocal
+ * HashMap`, so the cost splits into TLS resolution + HashMap + interface
+ * dispatch:
+ * - **D** `ThreadLocalScopeLocal` concrete `current()` (no interface) — isolates
+ *   interface virtual dispatch (C−D).
+ * - **E** `@ThreadLocal HashMap.getOrPut(key)` inline — the `current()` body
+ *   (TLS + HashMap), no virtual dispatch.
+ * - **F** `@ThreadLocal Int` increment — TLS resolution cost alone.
+ * - **G** plain (non-`@ThreadLocal`) `HashMap.getOrPut(key)` — HashMap cost
+ *   alone. E−G isolates the TLS surcharge on the map; E−F isolates the map cost
+ *   inside TLS.
+ * - **H** plain LIFO behind a `pthread_self()` owner-thread guard — the
+ *   cross-thread safety check a plain-field cache would need (it is only safe to
+ *   touch from the owning EL thread; a cross-thread release must skip it).
+ *
+ * **Verdict (2026-06-24): Stage 2c-α per-thread cache front is no-go.** The guard
+ * is net-negative — H ≈ 30 ns > A ≈ 26 ns on M1 (`pthread_self` + `pthread_equal`
+ * ≈ 17 ns), so a plain-field cache cannot cheaply guard cross-thread release. The
+ * concrete-`ThreadLocalScopeLocal` alternative is race-free but dead-ends a
+ * cross-thread-released buffer in the freeing thread's slot (leak). Cross-thread
+ * free needs the Stage 2d sharded central + MPSC return queue (design.md §56.5).
+ * This bench + its decomposition is the decision record; kept `@Ignore`.
+ */
+// Re-run: remove @Ignore, then
+//   ./gradlew :keel-io:macosArm64Test --tests "*PerThreadCacheFrontMicroBenchmark"
+//   ./gradlew :keel-io:linuxX64Test   --tests "*PerThreadCacheFrontMicroBenchmark"
+@Ignore
+class PerThreadCacheFrontMicroBenchmark {
+
+    @Test
+    @Suppress("IoBufLeak") // single buffer reused for push/pop roundtrips, released at the end
+    fun compareFrontEnds() {
+        val buf: IoBuf = NativeIoBuf(CLASS_SIZE)
+        println("=== Stage 2c-α per-op cost (Native, $CLASS_SIZE-byte class, single EL-pinned thread) ===")
+        println("variant|ns/op")
+        println("A spin-lock-freelist|${fmt(spinLockTrial(buf))}")
+        println("B plain-lifo|${fmt(plainLifoTrial(buf))}")
+        println("C scopelocal+lifo|${fmt(scopeLocalTrial(buf))}")
+        println("D tlscope-concrete+lifo|${fmt(concreteScopeTrial(buf))}")
+        println("E tls-hashmap-getorput|${fmt(tlsHashMapTrial())}")
+        println("F tls-int-incr|${fmt(tlsIntTrial())}")
+        println("G plain-hashmap-getorput|${fmt(plainHashMapTrial())}")
+        println("H plain-lifo+pthread-self-guard|${fmt(guardedLifoTrial(buf))}")
+        println("blackhole=${blackhole.value}")
+        buf.release()
+    }
+
+    /** A: spin-lock freelist (mirrors the production private `SpinLockFreelist`). */
+    private fun spinLockTrial(buf: IoBuf): Double {
+        val fl = MicroSpinLockFreelist(CAP)
+        return measure {
+            fl.push(buf)
+            if (fl.pop() != null) blackhole.value++
+        }
+    }
+
+    /** B: plain LIFO (per-EL-child plain field, no synchronisation). */
+    private fun plainLifoTrial(buf: IoBuf): Double {
+        val list = ArrayDeque<IoBuf>(CAP)
+        return measure {
+            list.addLast(buf)
+            if (list.removeLastOrNull() != null) blackhole.value++
+        }
+    }
+
+    /**
+     * H: plain LIFO behind a `pthread_self()` owner-thread guard — the Stage 2c-α
+     * cross-thread safety check. The per-thread cache (plain field) is only safe
+     * to touch from the owning EL thread; a cross-thread release must skip it and
+     * fall to the thread-safe freelist. This measures the per-op cost of the guard
+     * (pthread_self + pthread_equal) added to the plain-LIFO push/pop.
+     */
+    private fun guardedLifoTrial(buf: IoBuf): Double {
+        val list = ArrayDeque<IoBuf>(CAP)
+        val owner = pthread_self()
+        return measure {
+            if (pthread_equal(pthread_self(), owner) != 0) {
+                list.addLast(buf)
+                if (list.removeLastOrNull() != null) blackhole.value++
+            }
+        }
+    }
+
+    /** C: scopeLocal-resolved LIFO through the [ScopeLocal] interface (off-EL path). */
+    private fun scopeLocalTrial(buf: IoBuf): Double {
+        val slot: ScopeLocal<ArrayDeque<IoBuf>> = scopeLocal { ArrayDeque(CAP) }
+        return measure {
+            val list = slot.current()
+            list.addLast(buf)
+            if (list.removeLastOrNull() != null) blackhole.value++
+        }
+    }
+
+    /** D: same as C but through the concrete [ThreadLocalScopeLocal] (no interface dispatch). */
+    private fun concreteScopeTrial(buf: IoBuf): Double {
+        val slot = ThreadLocalScopeLocal { ArrayDeque<IoBuf>(CAP) }
+        return measure {
+            val list = slot.current()
+            list.addLast(buf)
+            if (list.removeLastOrNull() != null) blackhole.value++
+        }
+    }
+
+    /** E: the `current()` body — a `@ThreadLocal HashMap.getOrPut(key)`, no dispatch, no LIFO. */
+    private fun tlsHashMapTrial(): Double = measure {
+        @Suppress("UNCHECKED_CAST")
+        val v = tlsStore.getOrPut(mapKey) { SENTINEL } as Int
+        blackhole.value += v
+    }
+
+    /** F: TLS resolution alone — a `@ThreadLocal Int` increment. */
+    private fun tlsIntTrial(): Double = measure {
+        tlsCounter++
+        blackhole.value += tlsCounter and 1
+    }
+
+    /** G: HashMap cost alone — a plain (non-`@ThreadLocal`) `HashMap.getOrPut(key)`. */
+    private fun plainHashMapTrial(): Double {
+        val map = HashMap<Any, Any>()
+        return measure {
+            @Suppress("UNCHECKED_CAST")
+            val v = map.getOrPut(mapKey) { SENTINEL } as Int
+            blackhole.value += v
+        }
+    }
+
+    private inline fun measure(op: () -> Unit): Double {
+        var w = 0
+        while (w < WARMUP_ITERS) {
+            op()
+            w++
+        }
+        val samples = DoubleArray(SAMPLES)
+        for (t in 0 until SAMPLES) {
+            val mark = TimeSource.Monotonic.markNow()
+            var i = 0
+            while (i < TRIAL_ITERS) {
+                op()
+                i++
+            }
+            samples[t] = mark.elapsedNow().inWholeNanoseconds.toDouble() / TRIAL_ITERS
+        }
+        samples.sort()
+        return samples[SAMPLES / 2]
+    }
+
+    /**
+     * Copy of the production [Freelist] spin lock (which is `private` in
+     * `SlabAllocator.kt`), kept here so the bench measures the same CAS
+     * acquire/release shape without exposing the production class.
+     */
+    private class MicroSpinLockFreelist(private val maxSlots: Int) {
+        private val list = ArrayDeque<IoBuf>(maxSlots)
+        private val lock = AtomicReference(false)
+
+        private inline fun <T> withSpinLock(block: () -> T): T {
+            while (!lock.compareAndSet(false, true)) { /* spin */ }
+            try {
+                return block()
+            } finally {
+                lock.value = false
+            }
+        }
+
+        fun push(buf: IoBuf): Boolean = withSpinLock {
+            if (list.size < maxSlots) {
+                list.addLast(buf)
+                true
+            } else {
+                false
+            }
+        }
+
+        fun pop(): IoBuf? = withSpinLock { if (list.isEmpty()) null else list.removeLast() }
+    }
+
+    private companion object {
+        // AtomicInt defeats dead-code elimination of the pop / map result on Native.
+        val blackhole = AtomicInt(0)
+
+        /** Stable key reused across getOrPut calls (matches ThreadLocalScopeLocal's per-instance key). */
+        val mapKey = Any()
+        const val SENTINEL = 1
+
+        /** 8 KiB = the page-tier read-buffer class, the dominant HTTPS hot class. */
+        const val CLASS_SIZE = 8192
+        const val CAP = 64
+        const val WARMUP_ITERS = 200_000
+        const val TRIAL_ITERS = 2_000_000
+        const val SAMPLES = 5
+
+        fun fmt(v: Double): String = (kotlin.math.round(v * 100.0) / 100.0).toString()
+    }
+}
+
+// Top-level @ThreadLocal state for the decomposition variants E and F, mirroring
+// how ThreadLocalScopeLocal declares its single @ThreadLocal store at top level.
+@ThreadLocal
+private val tlsStore: HashMap<Any, Any> = HashMap()
+
+@ThreadLocal
+private var tlsCounter: Int = 0
