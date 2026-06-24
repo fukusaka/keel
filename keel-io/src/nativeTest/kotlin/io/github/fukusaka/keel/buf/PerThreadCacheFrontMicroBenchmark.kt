@@ -15,11 +15,11 @@ import platform.posix.pthread_equal
 import platform.posix.pthread_self
 
 /**
- * Stage 2c-α go/no-go micro-bench: per-op cost of three freelist front-end
- * strategies on a single EL-pinned thread, plus a decomposition of why the
- * `scopeLocal` path is heavy on macosArm64.
+ * Pooled-allocator per-thread cache front go/no-go micro-bench: per-op cost of
+ * three freelist front-end strategies on a single EL-pinned thread, plus a
+ * decomposition of why the `scopeLocal` path is heavy on macosArm64.
  *
- * **Why.** The Stage 2c-α proposal (design.md §56.5) adds a per-thread cache
+ * **Why.** A proposed allocator change adds a per-thread cache
  * front to recover the HTTPS Native regression. A first-principles read shows
  * the recovery mechanism is weak on EL-pinned engines: HTTPS hot buffers (read
  * 8 KiB / TLS plaintext 16 KiB / ciphertext ~17 KiB) are all ≤
@@ -37,8 +37,8 @@ import platform.posix.pthread_self
  *   which pays a `ThreadLocalScopeLocal.current()` per op.
  *
  * Decomposition of C's `current()` cost (D/E/F/G), because the first run showed
- * C−B ≈ 19 ns on M1 vs ≈ 5 ns on luna — far above the `ThreadLocalScopeLocal`
- * KDoc's HashMap ~6.7 ns (a luna figure). `current()` is
+ * C−B ≈ 19 ns on M1 vs ≈ 5 ns on the x86_64 host — far above the
+ * `ThreadLocalScopeLocal` KDoc's HashMap ~6.7 ns (an x86_64 figure). `current()` is
  * `perThreadStore.getOrPut(key)` where `perThreadStore` is a `@ThreadLocal
  * HashMap`, so the cost splits into TLS resolution + HashMap + interface
  * dispatch:
@@ -54,13 +54,14 @@ import platform.posix.pthread_self
  *   cross-thread safety check a plain-field cache would need (it is only safe to
  *   touch from the owning EL thread; a cross-thread release must skip it).
  *
- * **Verdict (2026-06-24): Stage 2c-α per-thread cache front is no-go.** The guard
+ * **Verdict (2026-06-24): the per-thread cache front is no-go.** The guard
  * is net-negative — H ≈ 30 ns > A ≈ 26 ns on M1 (`pthread_self` + `pthread_equal`
  * ≈ 17 ns), so a plain-field cache cannot cheaply guard cross-thread release. The
  * concrete-`ThreadLocalScopeLocal` alternative is race-free but dead-ends a
  * cross-thread-released buffer in the freeing thread's slot (leak). Cross-thread
- * free needs the Stage 2d sharded central + MPSC return queue (design.md §56.5).
- * This bench + its decomposition is the decision record; kept `@Ignore`.
+ * free needs a sharded central allocator with an MPSC return queue (the next
+ * allocator design step). This bench + its decomposition is the decision record;
+ * kept `@Ignore`.
  */
 // Re-run: remove @Ignore, then
 //   ./gradlew :keel-io:macosArm64Test --tests "*PerThreadCacheFrontMicroBenchmark"
@@ -72,7 +73,7 @@ class PerThreadCacheFrontMicroBenchmark {
     @Suppress("IoBufLeak") // single buffer reused for push/pop roundtrips, released at the end
     fun compareFrontEnds() {
         val buf: IoBuf = NativeIoBuf(CLASS_SIZE)
-        println("=== Stage 2c-α per-op cost (Native, $CLASS_SIZE-byte class, single EL-pinned thread) ===")
+        println("=== per-thread cache front per-op cost (Native, $CLASS_SIZE-byte class, single EL-pinned thread) ===")
         println("variant|ns/op")
         println("A spin-lock-freelist|${fmt(spinLockTrial(buf))}")
         println("B plain-lifo|${fmt(plainLifoTrial(buf))}")
@@ -105,7 +106,7 @@ class PerThreadCacheFrontMicroBenchmark {
     }
 
     /**
-     * H: plain LIFO behind a `pthread_self()` owner-thread guard — the Stage 2c-α
+     * H: plain LIFO behind a `pthread_self()` owner-thread guard — the
      * cross-thread safety check. The per-thread cache (plain field) is only safe
      * to touch from the owning EL thread; a cross-thread release must skip it and
      * fall to the thread-safe freelist. This measures the per-op cost of the guard
