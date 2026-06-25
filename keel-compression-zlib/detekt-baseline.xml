@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ArgumentListWrapping:ZlibSession.native.kt$NativeZlibDecoderSession$("inflate data error (rc=$rc): ${zlibMessage(keel_zlib_msg(z)?.toKString())}")</ID>
+    <ID>ArgumentListWrapping:ZlibSession.native.kt$NativeZlibDecoderSession$(keel_zlib_msg(z)?.toKString())</ID>
+    <ID>ArgumentListWrapping:ZlibSession.native.kt$NativeZlibDecoderSession$(z)</ID>
+    <ID>CyclomaticComplexMethod:ZlibSession.native.kt$NativeZlibDecoderSession$private fun drive(input: IoBuf?, output: IoBuf): CodecStatus</ID>
+    <ID>CyclomaticComplexMethod:ZlibSession.native.kt$NativeZlibEncoderSession$private fun drive(input: IoBuf?, output: IoBuf, flag: Int, isFinish: Boolean): CodecStatus</ID>
+  </CurrentIssues>
+</SmellBaseline>

@@ -71,6 +71,8 @@ jobs:
         run: |
           ./gradlew -Ptls -Pbenchmark \
             detektMetadataCommonMain \
+            detektMetadataNativeMain \
+            detektMetadataLinuxMain \
             detektJvmMain \
             detektLinuxX64Main \
             detektJsMain
@@ -154,6 +156,9 @@ jobs:
         run: |
           ./gradlew -Ptls -Pbenchmark \
             detektMetadataCommonMain \
+            detektMetadataNativeMain \
+            detektMetadataAppleMain \
+            detektMetadataMacosMain \
             detektJvmMain \
             detektMacosArm64Main \
             detektJsMain
