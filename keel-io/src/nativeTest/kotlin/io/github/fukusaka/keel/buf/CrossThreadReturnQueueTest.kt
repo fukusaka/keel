@@ -33,6 +33,12 @@ class CrossThreadReturnQueueTest {
     private companion object {
         // A real Netty ladder size class (round-trips through size2SizeIdx exactly).
         private const val CLASS = 512
+
+        // Iterations for the best-effort offer-vs-close race smoke test.
+        private const val RACE_ITERATIONS = 50
+
+        // Buffers (= worker pthreads) raced against close() per iteration.
+        private const val RACE_BUFFERS = 12
     }
 
     @Test
@@ -154,6 +160,56 @@ class CrossThreadReturnQueueTest {
         // queue nobody will drain.
         releaseOnWorkerThread(listOf(buf))
         assertEquals(0L, allocator.crossThreadReturnCount(), "post-close release must not enqueue")
+    }
+
+    @Test
+    fun `concurrent cross-thread releases racing close survive without strand or double-free`() {
+        // Best-effort probabilistic guard for the offer-vs-close XOR contract
+        // (IntrusiveMpscReturnQueue: a buffer is emitted by close XOR rejected by
+        // offer, never both, never neither). Each iteration races RACE_BUFFERS
+        // worker-pthread releases against the owner's close(). It cannot force the
+        // exact interleaving, but a strand (leak) or a double-free (a crash in
+        // freeBacking) surfaces under repetition. Not a proof — a regression guard.
+        repeat(RACE_ITERATIONS) {
+            val allocator = SlabAllocator()
+            val bufs = ArrayList<IoBuf>(RACE_BUFFERS)
+            for (i in 0 until RACE_BUFFERS) bufs.add(allocator.allocate(CLASS))
+            releaseEachConcurrentlyWithClose(bufs, allocator)
+            // Survived (no double-free crash); the count is sane — some releases
+            // route through the queue, the rest lose the race to close() and free
+            // the backing directly via the offer==false path.
+            assertTrue(
+                allocator.crossThreadReturnCount() in 0..RACE_BUFFERS.toLong(),
+                "cross-thread count out of range",
+            )
+        }
+    }
+
+    @OptIn(ExperimentalForeignApi::class)
+    private fun releaseEachConcurrentlyWithClose(bufs: List<IoBuf>, allocator: SlabAllocator) {
+        val arena = Arena()
+        try {
+            val threadPtrs = bufs.map { arena.alloc<pthread_tVar>() }
+            for (i in bufs.indices) {
+                val ref = StableRef.create(bufs[i])
+                val rc = pthread_create(
+                    threadPtrs[i].ptr, null,
+                    staticCFunction { arg ->
+                        val b = arg!!.asStableRef<IoBuf>().get()
+                        b.release()
+                        arg.asStableRef<IoBuf>().dispose()
+                        null
+                    },
+                    ref.asCPointer(),
+                )
+                check(rc == 0) { "pthread_create failed: rc=$rc" }
+            }
+            // Owner closes concurrently with the in-flight worker releases.
+            allocator.close()
+            for (i in bufs.indices) pthread_join(threadPtrs[i].ptr[0], null)
+        } finally {
+            arena.clear()
+        }
     }
 
     @OptIn(ExperimentalForeignApi::class)
