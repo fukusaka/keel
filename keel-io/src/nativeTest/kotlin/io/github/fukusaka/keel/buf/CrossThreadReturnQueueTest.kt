@@ -63,6 +63,50 @@ class CrossThreadReturnQueueTest {
     }
 
     @Test
+    fun `closed queue rejects offers and frees on the false path`() {
+        val q = IntrusiveMpscReturnQueue()
+        val a = NativeIoBuf(CLASS)
+        val b = NativeIoBuf(CLASS)
+        assertTrue(q.offer(a), "open queue accepts the offer")
+
+        // close() emits what was queued (FIFO) and switches to the closed state.
+        val drained = ArrayList<IoBuf>()
+        q.close(drained)
+        assertEquals(listOf<IoBuf>(a), drained, "close emits the queued buffer in FIFO order")
+        assertTrue(a.nextLink == null, "link cleared on close-drain")
+
+        // An offer after close returns false — the caller must free the buffer
+        // itself — and does not enqueue.
+        assertTrue(!q.offer(b), "closed queue rejects the offer (caller frees)")
+        assertTrue(!q.isNotEmpty(), "closed queue reports empty")
+
+        // A drain after close is a no-op and keeps the queue closed.
+        val out = ArrayList<IoBuf>()
+        q.drain(out)
+        assertTrue(out.isEmpty(), "drain after close yields nothing")
+        assertTrue(!q.offer(b), "queue stays closed after a drain")
+
+        a.close()
+        b.close()
+    }
+
+    @Test
+    fun `serial-confined allocator routes every release to the freelist fast path`() {
+        val allocator = SlabAllocator()
+        allocator.disableCrossThreadRouting()
+        try {
+            val buf = allocator.allocate(CLASS) // binds ownerTid (unread while disabled)
+            // Release on a worker pthread: a thread-id router would see cross-thread,
+            // but with routing disabled it takes the freelist path immediately.
+            releaseOnWorkerThread(listOf(buf))
+            assertEquals(0L, allocator.crossThreadReturnCount(), "disabled routing must not enqueue")
+            assertEquals(1, allocator.cachedCountOf(CLASS), "release pooled directly on the freelist")
+        } finally {
+            allocator.close()
+        }
+    }
+
+    @Test
     fun `cross-thread release routes through the queue and the owner drains on the next miss`() {
         val allocator = SlabAllocator()
         try {

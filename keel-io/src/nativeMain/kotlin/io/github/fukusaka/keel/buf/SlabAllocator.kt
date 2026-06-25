@@ -65,6 +65,17 @@ class SlabAllocator private constructor(
     @kotlin.concurrent.Volatile
     private var ownerTid: Long = UNSET
 
+    /**
+     * Set by a serial-confined engine (NWConnection on GCD) via
+     * [disableCrossThreadRouting] to opt out of thread-id-based cross-thread
+     * routing. Such an engine serialises every allocate / release on one queue but
+     * is not pinned to one pthread, so thread-id routing would false-positive on GCD
+     * worker-pthread migration. Set once at child creation, before the first
+     * allocate. When set, [returnToPool] always takes the freelist fast path.
+     */
+    @kotlin.concurrent.Volatile
+    private var crossThreadRoutingDisabled: Boolean = false
+
     /** Lock-free queue cross-thread releases land in; drained by the owner thread. */
     private val mpscReturnQueue = IntrusiveMpscReturnQueue()
 
@@ -121,18 +132,29 @@ class SlabAllocator private constructor(
     }
 
     override fun returnToPool(buf: IoBuf) {
-        val owner = ownerTid
-        // Same-thread (or not-yet-bound, or closed): take the common path directly.
-        // Closed must not enqueue — the stopped owner never drains, so
-        // returnToPoolLocal's closed-flag branch frees the backing instead.
-        if (owner == UNSET || isClosed || currentThreadId() == owner) {
+        // Serial-confined engine (e.g. NWConnection on GCD): allocate / release are
+        // serialised on one queue but not pinned to one pthread, so thread-id
+        // routing would misclassify same-queue releases as cross-thread. Opt out to
+        // the freelist fast path — the serial queue keeps it uncontended.
+        if (crossThreadRoutingDisabled) {
             returnToPoolLocal(buf)
             return
         }
-        // Cross-thread: hand the buffer to the owner via the lock-free queue rather
-        // than contend on its freelist spin lock.
-        xthreadReturnCount.fetchAndAdd(1L)
-        mpscReturnQueue.offer(buf as NativeIoBuf)
+        val owner = ownerTid
+        // Same-thread or not-yet-bound: freelist fast path.
+        if (owner == UNSET || currentThreadId() == owner) {
+            returnToPoolLocal(buf)
+            return
+        }
+        // Cross-thread: hand the buffer to the owner via the lock-free queue. If the
+        // queue is closed (owner gone), offer returns false and we free the backing
+        // here — returnToPoolLocal's closed-flag branch calls freeBacking. A buffer
+        // is thus emitted by onClose's drain XOR freed by this false-path, never both.
+        if (mpscReturnQueue.offer(buf as NativeIoBuf)) {
+            xthreadReturnCount.fetchAndAdd(1L)
+        } else {
+            returnToPoolLocal(buf)
+        }
     }
 
     override fun beforePoolMiss(idx: Int): Boolean {
@@ -146,9 +168,15 @@ class SlabAllocator private constructor(
     }
 
     override fun onClose() {
-        // The closed flag is already set; drain queued cross-thread returns so their
-        // backing is freed (returnToPoolLocal takes the closed-flag direct-free path).
-        if (mpscReturnQueue.isNotEmpty()) drainReturns()
+        // The closed flag is already set (PooledAllocator.close set it before this).
+        // Atomically swap the queue to its closed sentinel and free everything still
+        // enqueued: any release that loses the race to the sentinel frees its own
+        // backing via the offer == false path in returnToPool, so each buffer is
+        // emitted here XOR freed there — never both, never stranded.
+        drainScratch.clear()
+        mpscReturnQueue.close(drainScratch)
+        for (i in drainScratch.indices) returnToPoolLocal(drainScratch[i])
+        drainScratch.clear()
     }
 
     /**
@@ -165,6 +193,21 @@ class SlabAllocator private constructor(
 
     /** Cumulative count of cross-thread releases routed through the MPSC queue. */
     internal fun crossThreadReturnCount(): Long = xthreadReturnCount.load()
+
+    /**
+     * Opts this allocator out of thread-id-based cross-thread routing, so every
+     * release takes the freelist fast path. Intended for a serial-confined engine
+     * (e.g. NWConnection on GCD) to call right after [createChild], before the
+     * first allocate: such an engine serialises allocate / release on one queue but
+     * migrates across pthreads, which would false-positive thread-id routing.
+     * Public (like [nativePooledBuffers]) so the macOS-only NWConnection engine,
+     * which lives in a separate module, can opt its children out. Idempotent; must
+     * be called on the engine child and each per-connection child (the opt-out is
+     * per-instance, not inherited through [createChild]).
+     */
+    fun disableCrossThreadRouting() {
+        crossThreadRoutingDisabled = true
+    }
 
     private companion object {
         private const val UNSET = -1L

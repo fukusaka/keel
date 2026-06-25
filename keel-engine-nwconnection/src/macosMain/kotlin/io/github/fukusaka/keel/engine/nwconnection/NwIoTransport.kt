@@ -4,6 +4,7 @@ package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.SlabAllocator
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.codec.http.installScopedHeadersPool
@@ -157,7 +158,9 @@ internal class NwIoTransport(
     // allocator confinement" below. The createChild() call must run before
     // the AbstractIoTransport super constructor so allocator is set up
     // before any callback can fire.
-) : AbstractIoTransport(parentAllocator.createChild()) {
+) : AbstractIoTransport(
+    parentAllocator.createChild().also { (it as? SlabAllocator)?.disableCrossThreadRouting() },
+) {
 
     /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
     override val idleTimeoutMillis: Long = idleTimeoutMillis

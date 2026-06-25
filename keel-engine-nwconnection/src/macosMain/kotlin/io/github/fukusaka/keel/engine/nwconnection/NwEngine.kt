@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.SlabAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ConnectConfig
@@ -123,7 +124,8 @@ class NwEngine(
      * goes through this child so [close] can release the child's pool
      * resources without touching the parent.
      */
-    private val allocator: BufferAllocator = config.allocator.createChild()
+    private val allocator: BufferAllocator =
+        config.allocator.createChild().also { (it as? SlabAllocator)?.disableCrossThreadRouting() }
 
     /**
      * Binds a TCP listener on the given host and port.
