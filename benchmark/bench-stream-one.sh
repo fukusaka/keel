@@ -79,6 +79,8 @@
 #   BENCH_UPLOAD_BYTES      upload.js payload size bytes (overrides
 #                            BENCH_PAYLOAD_KB if set; accepts MB-scale,
 #                            e.g. 10485760 = 10 MB)
+#   BENCH_UPLOAD_PATH       upload.js target route (default: /upload-stream;
+#                            the `xthread` scenario sets it to /xthread)
 #   BENCH_SSE_COUNT         sse.js frame count        (default: 100)
 #   BENCH_SSE_SIZE          sse.js per-frame bytes    (default: 1024)
 #   BENCH_WS_PAYLOAD        ws-echo.js msg size bytes (default: 256)
