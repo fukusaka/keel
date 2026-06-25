@@ -19,6 +19,14 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
+// getaddrinfo() is a blocking, non-cancellable syscall, so withTimeout cannot
+// interrupt it — the budget must exceed the system resolver's worst-case failure
+// latency. A compliant resolver fails an RFC 6761 `.invalid` name instantly, but
+// a CI runner that forwards it upstream can retry for ~30s (observed on a
+// macos-latest runner: a 5s budget fired at 29.948s). Allow generous headroom;
+// the CI job timeout is the real backstop for a true hang.
+private val DNS_FAILURE_RESOLVE_TIMEOUT = 60.seconds
+
 @OptIn(ExperimentalForeignApi::class)
 class KqueueEngineLifecycleTest {
 
@@ -335,7 +343,7 @@ class KqueueEngineLifecycleTest {
 
     @Test
     fun `connect to unresolvable hostname throws`() = runBlocking {
-        withTimeout(5.seconds) {
+        withTimeout(DNS_FAILURE_RESOLVE_TIMEOUT) {
             val engine = KqueueEngine()
             assertFailsWith<RuntimeException> {
                 engine.connect("keel-test-host.invalid", 80)
