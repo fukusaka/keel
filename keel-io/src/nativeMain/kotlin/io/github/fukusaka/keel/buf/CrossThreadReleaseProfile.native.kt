@@ -1,3 +1,10 @@
+// MatchingDeclarationName / Filename: the file follows the KMP actual-file naming
+// convention ({expect-file}.{platform}.kt) for the `expect class XthreadMap` in
+// CrossThreadReleaseProfile.kt. The `currentThreadId` actual is split to the
+// apple/linux source sets, leaving XthreadMap as the only declaration here, which
+// these rules would otherwise want the file renamed after.
+@file:Suppress("MatchingDeclarationName", "Filename")
+
 package io.github.fukusaka.keel.buf
 
 /**

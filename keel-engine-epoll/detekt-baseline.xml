@@ -1,0 +1,22 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ArgumentListWrapping:EpollEngine.kt$EpollEngine$(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket, nativeSocketOps)</ID>
+    <ID>ArgumentListWrapping:EpollEngine.kt$EpollEngine$(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger, nativeSocket, nativeSocketOps)</ID>
+    <ID>ArgumentListWrapping:EpollEventLoop.kt$EpollEventLoop$( threadPtr.ptr, null, staticCFunction { arg -> val el = arg!!.asStableRef&lt;EpollEventLoop>().get() el.loop() arg.asStableRef&lt;EpollEventLoop>().dispose() null }, ref.asCPointer(), )</ID>
+    <ID>ArgumentListWrapping:EpollStreamServer.kt$EpollStreamServer$( transport, logger, remoteAddr, localAddr, )</ID>
+    <ID>ImportOrdering:EpollEventLoop.kt$import io.github.fukusaka.keel.buf.BufferAllocator import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.MpscQueue import io.github.fukusaka.keel.collections.LongObjectMap import io.github.fukusaka.keel.logging.Logger import io.github.fukusaka.keel.logging.debug import io.github.fukusaka.keel.logging.error import io.github.fukusaka.keel.logging.warn import io.github.fukusaka.keel.native.posix.closeFdSafely import io.github.fukusaka.keel.native.posix.errnoMessage import io.github.fukusaka.keel.pipeline.DeadlineScheduler import io.github.fukusaka.keel.pipeline.IoTransport import kotlin.time.TimeSource import kotlinx.cinterop.Arena import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.cinterop.StableRef import kotlinx.cinterop.alloc import kotlinx.cinterop.asStableRef import kotlinx.cinterop.get import kotlinx.cinterop.ptr import kotlinx.cinterop.staticCFunction import kotlinx.coroutines.CancellableContinuation import kotlinx.coroutines.CoroutineDispatcher import kotlinx.coroutines.Runnable import kotlinx.coroutines.suspendCancellableCoroutine import platform.linux.EPOLLERR import platform.linux.EPOLLHUP import platform.linux.EPOLLIN import platform.linux.EPOLLOUT import platform.linux.EPOLLRDHUP import platform.posix.EAGAIN import platform.posix.EEXIST import platform.posix.EINTR import platform.posix.pthread_create import platform.posix.pthread_equal import platform.posix.pthread_join import platform.posix.pthread_mutex_destroy import platform.posix.pthread_mutex_init import platform.posix.pthread_mutex_lock import platform.posix.pthread_mutex_t import platform.posix.pthread_mutex_unlock import platform.posix.pthread_self import platform.posix.pthread_t import platform.posix.pthread_tVar import kotlin.concurrent.AtomicInt import kotlin.coroutines.CoroutineContext import kotlin.coroutines.EmptyCoroutineContext import kotlin.coroutines.resume import kotlin.coroutines.resumeWithException</ID>
+    <ID>MultiLineIfElse:EpollEngine.kt$EpollEngine.Companion$config.threads</ID>
+    <ID>MultiLineIfElse:EpollEngine.kt$EpollEngine.Companion$kotlin.native.Platform.getAvailableProcessors()</ID>
+    <ID>MultiLineIfElse:EpollIoTransport.kt$EpollIoTransport$eventLoop.dispatch(EmptyCoroutineContext, register)</ID>
+    <ID>MultiLineIfElse:EpollIoTransport.kt$EpollIoTransport$register.run()</ID>
+    <ID>NoUnusedImports:EpollStreamServer.kt$io.github.fukusaka.keel.engine.epoll.EpollStreamServer.kt</ID>
+    <ID>NoUnusedImports:PosixEpollSyscallOps.kt$io.github.fukusaka.keel.engine.epoll.PosixEpollSyscallOps.kt</ID>
+    <ID>SpacingBetweenDeclarationsWithAnnotations:EpollEventLoop.kt$EpollEventLoop$@kotlin.concurrent.Volatile private var eventLoopThread: pthread_t? = null</ID>
+    <ID>SpacingBetweenDeclarationsWithComments:EpollEventLoop.kt$EpollEventLoop$// Callback registrations for pipeline (non-suspend) I/O.</ID>
+    <ID>SpacingBetweenDeclarationsWithComments:EpollEventLoop.kt$EpollEventLoop$// Tracks the current epoll events per fd. epoll manages fds (not fd+interest</ID>
+    <ID>Wrapping:EpollPipelinedStreamServer.kt$EpollPipelinedStreamServer$(</ID>
+    <ID>Wrapping:EpollPipelinedStreamServer.kt$EpollPipelinedStreamServer$(kotlin.coroutines.EmptyCoroutineContext, kotlinx.coroutines.Runnable { onWorkerAccept(clientFd, workerLoop) })</ID>
+  </CurrentIssues>
+</SmellBaseline>

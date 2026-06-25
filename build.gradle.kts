@@ -193,6 +193,13 @@ subprojects {
         configure<io.gitlab.arturbosch.detekt.extensions.DetektExtension> {
             config.setFrom(rootProject.file("detekt.yml"))
             buildUponDefaultConfig = true
+            // Per-module baseline grandfathering pre-existing intermediate-source-set
+            // (nativeMain / appleMain / macosMain / linuxMain) findings that the CI
+            // gate did not previously run. detekt treats a missing baseline file as
+            // "no baseline" (analyse everything), so modules without one are unaffected.
+            // The gate enforces zero NEW findings; the grandfathered set is cleared
+            // incrementally per module and the baseline file is removed once empty.
+            baseline = file("detekt-baseline.xml")
         }
         // engine-netty: lint-only (no type resolution, no custom rules).
         // detekt type resolution crashes on Netty's external API with NPE

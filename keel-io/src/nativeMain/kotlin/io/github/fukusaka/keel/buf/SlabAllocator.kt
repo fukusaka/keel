@@ -107,7 +107,12 @@ class SlabAllocator private constructor(
         if (length == 0) return null
         val pinned = bytes.pin()
         val ptr = pinned.addressOf(offset)
-        return NativeIoBuf.wrapExternal(ptr, length, bytesWritten = length, owner = ExternalWrapOwner { pinned.unpin() })
+        return NativeIoBuf.wrapExternal(
+            ptr,
+            length,
+            bytesWritten = length,
+            owner = ExternalWrapOwner { pinned.unpin() },
+        )
     }
 
     /**

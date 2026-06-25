@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.codec.http
 
-import kotlin.experimental.ExperimentalNativeApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
 import platform.posix.getenv
+import kotlin.experimental.ExperimentalNativeApi
 
 @OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
 internal actual fun readBypassEnvVar(): Boolean =

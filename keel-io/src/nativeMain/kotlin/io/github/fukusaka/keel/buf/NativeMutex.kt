@@ -66,6 +66,10 @@ internal class NativeMutex {
      * a unlock failure is attached via `addSuppressed` so the original cause is
      * not masked; otherwise the unlock failure propagates directly.
      */
+    // ThrowingExceptionFromFinally: intentional — when block() did not throw, an
+    // unlock failure must surface (it is the only error); when it did, it is
+    // attached via addSuppressed above so nothing is masked (see KDoc).
+    @Suppress("ThrowingExceptionFromFinally")
     inline fun <T> withLock(block: () -> T): T {
         val lockRc = pthread_mutex_lock(handle.ptr)
         check(lockRc == 0) { "pthread_mutex_lock() failed with errno=$lockRc" }
