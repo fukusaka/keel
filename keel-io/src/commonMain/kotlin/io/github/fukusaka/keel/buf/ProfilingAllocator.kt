@@ -14,7 +14,7 @@ import kotlin.concurrent.atomics.AtomicLong
  * buffer lands in bucket 13 (`(4096, 8192]`); TLS records (~16 KiB) in
  * bucket 14; a 100 KiB `/large` response body in bucket 17 (`(64K, 128K]`).
  *
- * **Purpose (Phase 0 of the chunk allocator roadmap)**: validate how much
+ * **Purpose** (chunk-allocator size-class profiling): validate how much
  * allocation traffic falls outside the registered exact pool size(s) — i.e.
  * how much currently bypasses pooling into fresh `malloc`/`free`. Combined
  * with the registered size set, the histogram answers "does variable-size
