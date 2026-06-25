@@ -336,6 +336,10 @@ abstract class PooledAllocator internal constructor(
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     final override fun allocate(capacity: Int): IoBuf {
         check(!closed) { "allocator is closed" }
+        // Record the owning (allocating) thread on the first allocation so a later
+        // release can tell same-thread from cross-thread. A no-op past the first
+        // touch and on allocators that do not implement cross-thread routing.
+        captureOwnerThread()
         // Preserve the empty-buffer marker semantics: allocate(0) yields a true
         // zero-capacity buffer rather than rounding up to the smallest class.
         if (capacity == 0) {
@@ -356,7 +360,15 @@ abstract class PooledAllocator internal constructor(
             val classSize = sizeClasses.sizeIdx2size(idx)
             if (classSize <= MAX_CACHED_CAPACITY) {
                 val pool = l.pools[idx]
-                val recycled = pool?.pop()
+                var recycled = pool?.pop()
+                if (recycled == null && beforePoolMiss(idx)) {
+                    // The Native sharded allocator drained its cross-thread return
+                    // queue into this class's pool; retry the pop so a returned
+                    // buffer is reused instead of carving a fresh run (re-carve
+                    // avoidance). On the same-thread fast path the hook is a no-op
+                    // that returns false, so this branch is never entered there.
+                    recycled = pool?.pop()
+                }
                 if (recycled != null) {
                     allocsSinceTrim[idx]++ // working-set signal: this class served from cache
                     cachedCount[idx]--
@@ -402,7 +414,25 @@ abstract class PooledAllocator internal constructor(
         return fresh
     }
 
-    private fun returnToPool(buf: IoBuf) {
+    /**
+     * Returns [buf] to its size-class pool (or frees its backing). Open so the
+     * Native sharded-return allocator can intercept a *cross-thread* release and
+     * route it through a lock-free MPSC queue instead of contending on this
+     * EventLoop's freelist; the default forwards straight to [returnToPoolLocal]
+     * (the same-thread fast path). This is the seam `PoolOwner` invokes.
+     */
+    protected open fun returnToPool(buf: IoBuf) {
+        returnToPoolLocal(buf)
+    }
+
+    /**
+     * The same-thread return body: push to the class freelist, or free the backing
+     * on slot-cap / no-pool / closed. **Single-writer** — only the owning EventLoop
+     * thread reaches here (directly on the fast path, or via the MPSC drain which
+     * runs on the owner thread), so the freelist and its `cachedCount` counters
+     * stay race-free.
+     */
+    protected fun returnToPoolLocal(buf: IoBuf) {
         val cap = buf.capacity
         val idx = resolveClassIdx(cap)
         if (!closed && idx >= 0) {
@@ -446,6 +476,44 @@ abstract class PooledAllocator internal constructor(
         )
         (buf as AbstractIoBuf).freeBacking()
     }
+
+    /**
+     * Records the allocating thread's identity. Called on every [allocate] but
+     * meant to capture once on first touch (the Native sharded allocator
+     * implements this; the default does nothing). Must stay cheap — it runs on the
+     * allocate hot path.
+     */
+    protected open fun captureOwnerThread() {}
+
+    /**
+     * Pool-miss hook: gives the Native sharded allocator a chance to drain its
+     * cross-thread return queue back into the per-class pools before [allocate]
+     * carves a fresh run. Returns `true` if a drain ran (so [allocate] retries the
+     * pop, avoiding a needless carve); the default does nothing and returns
+     * `false`, so the fast path skips the retry entirely.
+     */
+    protected open fun beforePoolMiss(idx: Int): Boolean = false
+
+    /**
+     * Trim hook: lets the Native sharded allocator drain its cross-thread return
+     * queue so the [trim] pass evaluates every cached buffer. The default does
+     * nothing.
+     */
+    protected open fun beforeTrim() {}
+
+    /**
+     * Close hook: lets the Native sharded allocator drain its cross-thread return
+     * queue and free those buffers' backing during [close]. Runs after the closed
+     * flag is set. The default does nothing.
+     */
+    protected open fun onClose() {}
+
+    /**
+     * Whether [close] has run. The Native sharded allocator reads this so a
+     * cross-thread release arriving after close frees the backing directly instead
+     * of enqueuing into a return queue the stopped owner will never drain.
+     */
+    protected val isClosed: Boolean get() = closed
 
     /**
      * Updates the internal counters backing [AllocatorStats.snapshot] and forwards
@@ -599,6 +667,9 @@ abstract class PooledAllocator internal constructor(
      * so concurrent per-child trims are serialised rather than racing.
      */
     private fun trim() {
+        // Drain any cross-thread returns first (Native sharded allocator) so this
+        // pass evaluates the full cached set before deciding what to evict.
+        beforeTrim()
         trimCountdown = TRIM_INTERVAL
         val l = ladder
         for (idx in 0 until sizeClasses.nSizes) {
@@ -653,6 +724,12 @@ abstract class PooledAllocator internal constructor(
     final override fun close() {
         if (closed) return
         closed = true
+        // Let a sharded allocator drain its cross-thread return queue and free those
+        // buffers' backing now: the owner EventLoop is stopped and will never drain
+        // them otherwise. Runs after the closed flag is set, so any later
+        // cross-thread release observes `closed` and frees directly in returnToPool
+        // instead of enqueuing into a queue nobody drains.
+        onClose()
         for (i in children.indices) children[i].close()
         children.clear()
         val l = ladder
