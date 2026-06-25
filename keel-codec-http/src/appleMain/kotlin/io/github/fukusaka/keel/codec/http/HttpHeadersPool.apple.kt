@@ -1,11 +1,11 @@
 package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.apple.DispatchQueueLocal
-import kotlin.experimental.ExperimentalNativeApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.toKString
 import platform.darwin.dispatch_queue_t
 import platform.posix.getenv
+import kotlin.experimental.ExperimentalNativeApi
 
 /**
  * Installs a per-queue scoped [HttpHeaders] pool stack on [queue].
