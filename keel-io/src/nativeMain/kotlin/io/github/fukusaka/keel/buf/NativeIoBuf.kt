@@ -40,11 +40,13 @@ class NativeIoBuf private constructor(
     override val unsafePointer: CPointer<ByteVar> get() = base
 
     /**
-     * Intrusive freelist link reserved for an intrusive [Freelist] implementation
-     * (e.g. a versioned-index Treiber escalation). Unused by the default Native
-     * [SpinLockFreelist] (whose `ArrayDeque` backing array links nodes itself);
-     * kept here so a swap-in lock-free freelist can avoid wrapper-node alloc.
-     * Always cleared on [resetForReuse].
+     * Intrusive single-link, reused by the cross-thread return path: the Native
+     * sharded allocator's [IntrusiveMpscReturnQueue] threads its chain through this
+     * field, so enqueuing a cross-thread release allocates no wrapper node. Also
+     * available to a swap-in intrusive [Freelist] (e.g. a versioned-index Treiber
+     * escalation); the default [SpinLockFreelist] leaves it unused (its `ArrayDeque`
+     * backing array links nodes itself). Cleared on [resetForReuse] and again as
+     * each buffer leaves the return-queue drain.
      */
     internal var nextLink: NativeIoBuf? = null
 
