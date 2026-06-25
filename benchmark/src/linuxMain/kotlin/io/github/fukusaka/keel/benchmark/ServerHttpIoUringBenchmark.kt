@@ -24,6 +24,7 @@ object ServerHttpIoUringBenchmark : EngineBenchmark {
             config = IoEngineConfig(
                 threads = threads,
                 loggerFactory = benchmarkLoggerFactory(),
+                allocator = benchmarkAllocator(config),
             ),
         )
         val (connectorConfigure, tlsCloseable) = serverHttpConnectorConfig(config)

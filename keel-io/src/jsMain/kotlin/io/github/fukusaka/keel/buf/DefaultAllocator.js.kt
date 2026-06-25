@@ -6,3 +6,12 @@ package io.github.fukusaka.keel.buf
 // with the commonMain expect so callers can pass a counter uniformly.
 @Suppress("UNUSED_PARAMETER")
 actual fun defaultAllocator(statsCounter: BufferAllocatorStatsCounter): BufferAllocator = DefaultAllocator
+
+// The lifecycle listener also has nothing to observe on the unpooled JS allocator
+// (allocate/release fire no pooled-buffer events), so it is ignored too; the
+// overload exists only to satisfy the commonMain expect.
+@Suppress("UNUSED_PARAMETER")
+actual fun defaultAllocator(
+    statsCounter: BufferAllocatorStatsCounter,
+    lifecycleListener: BufferAllocatorLifecycleListener,
+): BufferAllocator = DefaultAllocator

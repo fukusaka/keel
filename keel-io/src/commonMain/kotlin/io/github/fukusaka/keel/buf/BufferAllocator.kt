@@ -256,3 +256,18 @@ object DefaultAllocator : BufferAllocator {
  * (hit / miss / empty / huge) and its size tier.
  */
 expect fun defaultAllocator(statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter): BufferAllocator
+
+/**
+ * Returns the default [BufferAllocator] with both a hot-path [statsCounter] and
+ * an identity-bearing [lifecycleListener] wired.
+ *
+ * Use this overload when a measurement needs the [IoBuf] reference on
+ * allocate / release — for example a [CrossThreadReleaseProfile] for
+ * `--profile-xthread`. The listener channel is wired only on platforms whose
+ * default is a [PooledAllocator] (Native + JVM); JS ignores it. Pass
+ * [NoOpStatsCounter] for [statsCounter] if only the lifecycle listener is needed.
+ */
+expect fun defaultAllocator(
+    statsCounter: BufferAllocatorStatsCounter,
+    lifecycleListener: BufferAllocatorLifecycleListener,
+): BufferAllocator

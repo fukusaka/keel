@@ -2,6 +2,8 @@ package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.buf.AllocationProfile
 import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.CrossThreadReleaseProfile
+import io.github.fukusaka.keel.buf.NoOpStatsCounter
 import io.github.fukusaka.keel.buf.PoolMissProfile
 import io.github.fukusaka.keel.buf.defaultAllocator
 import io.github.fukusaka.keel.buf.withProfiling
@@ -40,19 +42,42 @@ val benchmarkAllocationProfile = AllocationProfile()
 val benchmarkPoolMissProfile: PoolMissProfile by lazy { PoolMissProfile.forDefaultPool() }
 
 /**
- * The engine allocator. When [BenchmarkConfig.profileAlloc] is set
- * (`--profile-alloc`):
- * 1. The underlying [defaultAllocator] is constructed with
- *    [benchmarkPoolMissProfile] so the pool dispatch records its path on every
- *    `allocate()` call.
- * 2. The result is then wrapped with a [io.github.fukusaka.keel.buf.ProfilingAllocator]
- *    so the request-size histogram is captured at the public boundary.
+ * Shared cross-thread release-rate profile for `--profile-xthread` benchmark
+ * runs. Wired as the allocator's lifecycle listener so it sees every pooled
+ * allocate / release, and records — per size class — the fraction of buffers
+ * released on a different thread than they were allocated on. The entry point
+ * dumps it periodically. Answers "which size classes actually fall to
+ * cross-thread release?" so a sharded-central + MPSC-return allocator can be
+ * scoped to exactly those classes.
  *
- * Off-path for normal benchmark runs (no decorator, no profile field reads).
+ * Allocated lazily so a benchmark.kexe binary that never sets `--profile-xthread`
+ * pays no cost at startup.
  */
-fun benchmarkAllocator(config: BenchmarkConfig): BufferAllocator =
-    if (config.profileAlloc) {
-        defaultAllocator(benchmarkPoolMissProfile).withProfiling(benchmarkAllocationProfile)
-    } else {
-        defaultAllocator()
+val benchmarkCrossThreadProfile: CrossThreadReleaseProfile by lazy { CrossThreadReleaseProfile.forDefaultPool() }
+
+/**
+ * The engine allocator. The two profiling flags wire independent channels:
+ * - [BenchmarkConfig.profileAlloc] (`--profile-alloc`): the [benchmarkPoolMissProfile]
+ *   stats counter records the pool dispatch path, and a
+ *   [io.github.fukusaka.keel.buf.ProfilingAllocator] decorator captures the
+ *   request-size histogram at the public boundary.
+ * - [BenchmarkConfig.profileXthread] (`--profile-xthread`): the
+ *   [benchmarkCrossThreadProfile] lifecycle listener records per-class
+ *   cross-thread release rates.
+ *
+ * The flags compose (both may be set). Off-path for normal benchmark runs (no
+ * decorator, no profile field reads).
+ */
+fun benchmarkAllocator(config: BenchmarkConfig): BufferAllocator {
+    val base = when {
+        config.profileAlloc && config.profileXthread ->
+            defaultAllocator(benchmarkPoolMissProfile, benchmarkCrossThreadProfile)
+        config.profileXthread ->
+            defaultAllocator(NoOpStatsCounter, benchmarkCrossThreadProfile)
+        config.profileAlloc ->
+            defaultAllocator(benchmarkPoolMissProfile)
+        else ->
+            defaultAllocator()
     }
+    return if (config.profileAlloc) base.withProfiling(benchmarkAllocationProfile) else base
+}

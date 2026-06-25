@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io`, `benchmark`: `CrossThreadReleaseProfile` — an opt-in `BufferAllocatorLifecycleListener` measuring the per-size-class fraction of pooled buffers released on a different thread than they were allocated on (the owner-capture release path runs on whichever thread drives the refcount to zero). A new `defaultAllocator(statsCounter, lifecycleListener)` overload wires it, and the `--profile-xthread` benchmark flag attaches a shared instance and dumps per-class cross-thread rates. Measurement-only tooling for scoping a future sharded allocator to the classes that actually fall to cross-thread release. (#824)
+
 - `io`: make the pooled allocator's chunk back-end off-EventLoop-safe — a new `ArenaLock` seam guards the shared `ChunkArena` that `createChild()` now hands to every per-EventLoop child, so a buffer carved on one EventLoop and released on another no longer races the chunk bookkeeping (the crash class #815 worked around for `engine-nwconnection`). (#819)
 
 - `benchmark`: `benchmark/bench-preflight.sh` sourced helper. `bench-all.sh` and `bench-stream-all.sh` now invoke `preflight_check_primary_binaries` at startup and refuse to run when the host-appropriate native kexe, JVM classpath file, or JS production binary is missing — the previous WARN-and-continue shape silently produced result tables with structural holes (the Node.js streaming cells went unmeasured through the 2026-06-19 baseline). The check reports each missing binary with the exact rebuild command and exits 1. `BENCH_SKIP_MISSING_BINARIES=true` opt-out for explicit partial sweeps. (#818)
