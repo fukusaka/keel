@@ -77,12 +77,20 @@ internal class IntrusiveMpscReturnQueue {
      * head is the sentinel); the owner never drains after close anyway.
      */
     fun drain(out: MutableList<IoBuf>) {
-        val h = head.getAndSet(null)
-        if (h == null || h === closed) {
-            if (h === closed) head.value = closed // do not resurrect a closed queue
-            return
+        while (true) {
+            val h = head.value
+            // Empty, or closed: leave the head untouched. A plain getAndSet(null)
+            // would momentarily clear the sentinel, opening a window where a
+            // producer's offer could land on a transiently-null head and then be
+            // overwritten when the sentinel is restored. CAS the observed chain to
+            // null instead, so a closed head is never disturbed and a racing offer
+            // simply makes this CAS retry.
+            if (h == null || h === closed) return
+            if (head.compareAndSet(h, null)) {
+                emitReversed(h as NativeIoBuf, out)
+                return
+            }
         }
-        emitReversed(h as NativeIoBuf, out)
     }
 
     /**
