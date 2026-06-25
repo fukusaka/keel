@@ -1,4 +1,4 @@
-@file:OptIn(UnsafeIoBufApi::class)
+@file:OptIn(UnsafeIoBufApi::class, kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
 
 package io.github.fukusaka.keel.buf
 
@@ -8,6 +8,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.pin
 import kotlin.concurrent.AtomicReference
+import kotlin.concurrent.atomics.AtomicLong
 
 /**
  * Native [BufferAllocator] backed by [PooledAllocator] with a spin-lock
@@ -54,6 +55,25 @@ class SlabAllocator private constructor(
         installDefaultLadder()
     }
 
+    /**
+     * Thread id of the owning EventLoop, captured lazily on the first allocation.
+     * The EventLoop's loop pthread does not exist when [createChild] runs (that
+     * happens on the bootstrap thread), so a constructor-time capture is
+     * impossible; [UNSET] until the first [allocate]. Read on every release to
+     * classify same- vs cross-thread.
+     */
+    @kotlin.concurrent.Volatile
+    private var ownerTid: Long = UNSET
+
+    /** Lock-free queue cross-thread releases land in; drained by the owner thread. */
+    private val mpscReturnQueue = IntrusiveMpscReturnQueue()
+
+    /** Count of releases routed through [mpscReturnQueue] (the true cross-thread rate). */
+    private val xthreadReturnCount = AtomicLong(0)
+
+    /** Reused scratch list for [drainReturns]; only ever touched by the owner thread. */
+    private val drainScratch = ArrayList<IoBuf>(DRAIN_SCRATCH_INITIAL)
+
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun newBuffer(capacity: Int): IoBuf = NativeIoBuf(capacity)
 
@@ -95,6 +115,61 @@ class SlabAllocator private constructor(
     @OptIn(ExperimentalForeignApi::class)
     fun nativePooledBuffers(): List<Pair<CPointer<ByteVar>, Int>> =
         enumerateNativePooledBuffers(this)
+
+    override fun captureOwnerThread() {
+        if (ownerTid == UNSET) ownerTid = currentThreadId()
+    }
+
+    override fun returnToPool(buf: IoBuf) {
+        val owner = ownerTid
+        // Same-thread (or not-yet-bound, or closed): take the common path directly.
+        // Closed must not enqueue — the stopped owner never drains, so
+        // returnToPoolLocal's closed-flag branch frees the backing instead.
+        if (owner == UNSET || isClosed || currentThreadId() == owner) {
+            returnToPoolLocal(buf)
+            return
+        }
+        // Cross-thread: hand the buffer to the owner via the lock-free queue rather
+        // than contend on its freelist spin lock.
+        xthreadReturnCount.fetchAndAdd(1L)
+        mpscReturnQueue.offer(buf as NativeIoBuf)
+    }
+
+    override fun beforePoolMiss(idx: Int): Boolean {
+        if (!mpscReturnQueue.isNotEmpty()) return false
+        drainReturns()
+        return true
+    }
+
+    override fun beforeTrim() {
+        if (mpscReturnQueue.isNotEmpty()) drainReturns()
+    }
+
+    override fun onClose() {
+        // The closed flag is already set; drain queued cross-thread returns so their
+        // backing is freed (returnToPoolLocal takes the closed-flag direct-free path).
+        if (mpscReturnQueue.isNotEmpty()) drainReturns()
+    }
+
+    /**
+     * Drains the cross-thread return queue back through [returnToPoolLocal] on the
+     * owner thread. Reuses [drainScratch] so the drain allocates nothing; the list
+     * is cleared afterwards so it retains no buffer references.
+     */
+    private fun drainReturns() {
+        drainScratch.clear()
+        mpscReturnQueue.drain(drainScratch)
+        for (i in drainScratch.indices) returnToPoolLocal(drainScratch[i])
+        drainScratch.clear()
+    }
+
+    /** Cumulative count of cross-thread releases routed through the MPSC queue. */
+    internal fun crossThreadReturnCount(): Long = xthreadReturnCount.load()
+
+    private companion object {
+        private const val UNSET = -1L
+        private const val DRAIN_SCRATCH_INITIAL = 32
+    }
 }
 
 /**
