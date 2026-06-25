@@ -123,7 +123,8 @@ class NwEngine(
      * goes through this child so [close] can release the child's pool
      * resources without touching the parent.
      */
-    private val allocator: BufferAllocator = config.allocator.createChild()
+    private val allocator: BufferAllocator =
+        config.allocator.createChild().also { it.disableCrossThreadRouting() }
 
     /**
      * Binds a TCP listener on the given host and port.

@@ -157,7 +157,9 @@ internal class NwIoTransport(
     // allocator confinement" below. The createChild() call must run before
     // the AbstractIoTransport super constructor so allocator is set up
     // before any callback can fire.
-) : AbstractIoTransport(parentAllocator.createChild()) {
+) : AbstractIoTransport(
+    parentAllocator.createChild().also { it.disableCrossThreadRouting() },
+) {
 
     /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
     override val idleTimeoutMillis: Long = idleTimeoutMillis

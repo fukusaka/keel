@@ -167,6 +167,18 @@ interface BufferAllocator {
     fun createChild(): BufferAllocator = this
 
     /**
+     * Opts this allocator out of any internal cross-thread routing it performs,
+     * so every release takes the simplest direct path. Default: no-op — allocators
+     * with no cross-thread routing ignore it. A serial-confined engine (e.g.
+     * NWConnection on GCD, which serialises allocate / release on one queue but
+     * migrates across worker pthreads) calls this on each [createChild] so a pooled
+     * Native allocator does not misclassify same-queue releases as cross-thread.
+     * Wrapper allocators forward to their delegate so the opt-out survives wrapping.
+     * Call it before the first allocate on the returned child.
+     */
+    fun disableCrossThreadRouting() {}
+
+    /**
      * Pull-shape snapshot view of the allocator's state for telemetry
      * adapters (OpenTelemetry `ObservableUpDownCounter` callbacks,
      * Micrometer gauges, Prometheus scrape endpoints). Complements the
