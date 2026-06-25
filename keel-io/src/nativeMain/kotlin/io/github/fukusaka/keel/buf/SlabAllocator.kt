@@ -195,17 +195,12 @@ class SlabAllocator private constructor(
     internal fun crossThreadReturnCount(): Long = xthreadReturnCount.load()
 
     /**
-     * Opts this allocator out of thread-id-based cross-thread routing, so every
-     * release takes the freelist fast path. Intended for a serial-confined engine
-     * (e.g. NWConnection on GCD) to call right after [createChild], before the
-     * first allocate: such an engine serialises allocate / release on one queue but
-     * migrates across pthreads, which would false-positive thread-id routing.
-     * Public (like [nativePooledBuffers]) so the macOS-only NWConnection engine,
-     * which lives in a separate module, can opt its children out. Idempotent; must
-     * be called on the engine child and each per-connection child (the opt-out is
-     * per-instance, not inherited through [createChild]).
+     * Sets [crossThreadRoutingDisabled] so [returnToPool] always takes the freelist
+     * fast path. See [BufferAllocator.disableCrossThreadRouting]. The opt-out is
+     * per-instance, not inherited through [createChild], so it must be called on the
+     * engine child and each per-connection child.
      */
-    fun disableCrossThreadRouting() {
+    override fun disableCrossThreadRouting() {
         crossThreadRoutingDisabled = true
     }
 

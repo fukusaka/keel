@@ -207,6 +207,8 @@ class LeakDetectingAllocator(
 
     override fun createChild(): BufferAllocator =
         LeakDetectingAllocator(delegate.createChild(), onLeak)
+
+    override fun disableCrossThreadRouting() = delegate.disableCrossThreadRouting()
 }
 
 /**
