@@ -16,12 +16,25 @@ import io.github.fukusaka.keel.server.http.Middleware
 import io.github.fukusaka.keel.server.http.dsl.KeelHttpServerBuilder
 import io.github.fukusaka.keel.server.http.header
 import io.github.fukusaka.keel.server.websocket.dsl.webSockets
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.io.Buffer
 import kotlinx.io.RawSource
 import kotlin.time.Instant
 
 private val EMPTY_BODY = ByteArray(0)
+
+/**
+ * Background scope for the `/xthread` route's off-EventLoop chunk release.
+ * Releasing on [Dispatchers.Default] — not the EventLoop the buffer was
+ * allocated on — is what makes the pooled buffer's return cross-thread.
+ * [SupervisorJob] so one release failure does not cancel the rest.
+ * Process-lifetime; not closed (the benchmark binary exits via its signal handler).
+ */
+private val xthreadReleaseScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
 /**
  * Installs the bench's compression configuration on the
@@ -236,6 +249,35 @@ fun KeelHttpServerBuilder.installStreamingBenchRoutes() {
             val chunk = call.receiveChunk() ?: break
             total += chunk.readableBytes
             chunk.release()
+        }
+        call.respond(
+            HttpResponse(
+                status = HttpStatus.OK,
+                version = HttpVersion.HTTP_1_1,
+                headers = HttpHeaders.of(
+                    HttpHeaderName.CONTENT_LENGTH to "0",
+                    "X-Bytes-Received" to total.toString(),
+                ),
+                body = EMPTY_BODY,
+            ),
+        )
+    }
+
+    // POST /xthread — same body-drain as /upload-stream, but releases each
+    // chunk on a background Dispatchers.Default coroutine instead of the
+    // EventLoop. Releasing off the EventLoop is what makes the pooled buffer's
+    // return cross-thread, so this route deliberately exercises the
+    // owner-capture locked-push return path under a non-zero cross-thread rate.
+    // Pairs with /upload-stream (identical loop, EventLoop release) for an A/B
+    // measurement of whether that path's cost shows up in throughput / alloc.
+    // The handler does not await the background release (fire-and-forget); the
+    // buffer's atomic refcount keeps it safe.
+    post("/xthread") { call ->
+        var total = 0L
+        while (true) {
+            val chunk = call.receiveChunk() ?: break
+            total += chunk.readableBytes
+            xthreadReleaseScope.launch { chunk.release() }
         }
         call.respond(
             HttpResponse(
