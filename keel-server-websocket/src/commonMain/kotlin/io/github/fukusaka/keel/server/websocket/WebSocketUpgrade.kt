@@ -255,6 +255,12 @@ public suspend fun runWebSocketUpgrade(
                 // releasing native zlib state under an in-flight inflate is a
                 // use-after-free. See [drainPumpThenRelease].
                 drainPumpThenRelease(pump, channel.logger) { session.releaseDeflate() }
+                // The handler has returned and the pump has stopped, so nothing
+                // consumes [WsSession.incoming] any more; reclaim the pooled
+                // backing of any completed message it never drained (a handler
+                // that returned early leaving a WsMessage.BinaryChunks buffered).
+                // Safe here precisely because there is no consumer left to race.
+                session.reclaimUndeliveredMessages()
             }
         }
     } finally {

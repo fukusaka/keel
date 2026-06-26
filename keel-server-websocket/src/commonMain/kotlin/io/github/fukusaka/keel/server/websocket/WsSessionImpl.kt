@@ -183,15 +183,29 @@ internal class WsSessionImpl(
             // when the pump stopped (the decoder's zero-copy fast path hands
             // the aggregator pooled buffers it owns until completion).
             aggregator.release()
+            // Close the channel so the application handler's `for (m in incoming)`
+            // observes EOF after it has drained whatever is still buffered.
+            // Do NOT drain applicationFrames here: the handler runs on its own
+            // coroutine and is the legitimate consumer of buffered messages even
+            // after close, so draining here would race it and steal messages it
+            // still wants. Any message the handler never consumes is reclaimed by
+            // [reclaimUndeliveredMessages] once the handler has returned.
             applicationFrames.close()
-            // Drain any completed message the application never received and
-            // release a BinaryChunks' pooled backing: a delivered chunks is
-            // the consumer's to release, but these were produced after the
-            // handler stopped reading, so this side reclaims them.
-            while (true) {
-                val undelivered = applicationFrames.tryReceive().getOrNull() ?: break
-                (undelivered as? WsMessage.BinaryChunks)?.chunks?.release()
-            }
+        }
+    }
+
+    /**
+     * Reclaims the pooled backing of any completed message the application
+     * never received — e.g. a handler that returned (or threw) before draining
+     * [incoming], leaving a [WsMessage.BinaryChunks] buffered. Called by the
+     * upgrade flow **after** the handler has returned and the pump has stopped,
+     * so it never races the handler for a message the handler would still
+     * consume. ([runForward]'s own finally must not do this for that reason.)
+     */
+    fun reclaimUndeliveredMessages() {
+        while (true) {
+            val undelivered = applicationFrames.tryReceive().getOrNull() ?: break
+            (undelivered as? WsMessage.BinaryChunks)?.chunks?.release()
         }
     }
 

@@ -58,6 +58,11 @@ class WsSessionOnMessageTest {
             channel.pipeline.notifyRead(WsFrame(fin = true, opcode = WsOpcode.BINARY, inboundPayload = buf))
         }
 
+        /** Feed a CLOSE control frame so the pump breaks and runs its teardown. */
+        fun feedClose() {
+            channel.pipeline.notifyRead(WsFrame(fin = true, opcode = WsOpcode.CLOSE, payload = ByteArray(0)))
+        }
+
         fun bytesOf(message: WsMessage): ByteArray {
             val chunks = assertIs<WsMessage.BinaryChunks>(message).chunks
             val out = ByteArray(chunks.totalSize)
@@ -98,6 +103,29 @@ class WsSessionOnMessageTest {
             pump.cancelAndJoin()
 
             assertContentEquals(payload, received)
+            f.assertBalanced()
+        }
+    }
+
+    @Test
+    fun `pump teardown does not steal an application message not yet consumed`() = runBlocking {
+        withTimeout(5.seconds) {
+            val f = Fixture()
+            val pump = launch { f.session.runForward() }
+            // The pump processes the data frame (-> applicationFrames) and then
+            // CLOSE (-> break -> finally) before any consumer drains incoming.
+            // runForward's finally must NOT drain applicationFrames -- the
+            // handler is its legitimate consumer -- so the message stays
+            // receivable. (Regression: an earlier finally drained here and stole
+            // the buffered echo messages on slower runners.)
+            f.feedPooledBinary(byteArrayOf(1, 2, 3))
+            f.feedClose()
+            pump.join()
+
+            val received = f.session.incoming.tryReceive().getOrNull()
+            val message = assertIs<WsMessage.BinaryChunks>(received)
+            assertContentEquals(byteArrayOf(1, 2, 3), f.bytesOf(message))
+            message.chunks.release()
             f.assertBalanced()
         }
     }
