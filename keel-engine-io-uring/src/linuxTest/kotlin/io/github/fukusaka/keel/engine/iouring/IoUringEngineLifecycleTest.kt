@@ -17,6 +17,14 @@ import platform.posix.close
 import platform.posix.unlink
 import platform.posix.write
 
+// getaddrinfo() is a blocking, non-cancellable syscall, so withTimeout cannot
+// interrupt it — the budget must exceed the system resolver's worst-case failure
+// latency. A compliant resolver fails an RFC 6761 `.invalid` name instantly, but
+// a CI runner that forwards it upstream can retry for tens of seconds (the kqueue
+// sibling test was observed firing at 29.948s under a 5s budget). Allow generous
+// headroom; the CI job timeout is the real backstop for a true hang.
+private val DNS_FAILURE_RESOLVE_TIMEOUT = 60.seconds
+
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngineLifecycleTest {
 
@@ -132,7 +140,7 @@ class IoUringEngineLifecycleTest {
 
     @Test
     fun `connect to invalid host address throws`() = runBlocking {
-        withTimeout(15.seconds) {
+        withTimeout(DNS_FAILURE_RESOLVE_TIMEOUT) {
             val engine = IoUringEngine()
 
             // Native SystemDnsResolver wraps getaddrinfo; an unresolvable
