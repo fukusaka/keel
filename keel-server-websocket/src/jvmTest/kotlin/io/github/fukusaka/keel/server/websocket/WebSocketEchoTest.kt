@@ -15,6 +15,7 @@ import java.util.zip.Deflater
 import java.util.zip.Inflater
 import java.net.InetSocketAddress as JavaInetSocketAddress
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -94,6 +95,60 @@ class WebSocketEchoTest {
                     assertEquals("hi", echoed.decodeToString())
 
                     // Masked CLOSE frame ends the session.
+                    out.write(byteArrayOf(0x88.toByte(), 0x80.toByte()))
+                    out.write(mask)
+                    out.flush()
+                }
+            } finally {
+                server.stop(gracePeriodMillis = 0, timeoutMillis = 1_000)
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `webSocket route echoes a masked binary frame through the pooled receive path`() = runBlocking {
+        withTimeout(10.seconds) {
+            val engine = NioEngine()
+            val server = keelHttpServer(engine) {
+                connector { host = "127.0.0.1"; port = 0 }
+                webSockets {
+                    // A binary message arrives as WsMessage.BinaryChunks (the
+                    // decoder's pooled fast path + the aggregator's zero-copy
+                    // assembly). onMessage echoes it back via send(it), which
+                    // gather-writes and releases the pooled chunks — exercising
+                    // the scoped-receive auto-release-suppressed-on-send path.
+                    webSocket("/echo") {
+                        onMessage { send(it) }
+                    }
+                }
+            }
+            server.start()
+            val port = (server.localAddress as InetSocketAddress).port
+            try {
+                Socket().use { sock ->
+                    sock.connect(JavaInetSocketAddress("127.0.0.1", port))
+                    val out = sock.getOutputStream()
+                    val inp = sock.getInputStream()
+
+                    val key = "dGhlIHNhbXBsZSBub25jZQ=="
+                    out.write(handshakeRequest("/echo", key).encodeToByteArray())
+                    out.flush()
+                    assertTrue(readHttpResponse(inp).startsWith("HTTP/1.1 101"))
+
+                    // Masked client BINARY frame (opcode 0x2, FIN set → 0x82),
+                    // payload chosen to exercise every mask-byte phase plus the
+                    // high-bit bytes the XOR must preserve.
+                    val mask = byteArrayOf(0x21, 0x43, 0x65, 0x77)
+                    val payload = byteArrayOf(0x00, 0x10, 0x7F, 0x80.toByte(), 0xFF.toByte(), 0x42)
+                    writeMaskedFrame(out, opcodeByte = 0x82.toByte(), mask, payload)
+                    out.flush()
+
+                    // Server echoes an unmasked BINARY frame.
+                    assertEquals(0x82, inp.read(), "echoed frame must be FIN + BINARY")
+                    assertEquals(payload.size, inp.read(), "echoed frame must be unmasked, len = ${payload.size}")
+                    assertContentEquals(payload, readFully(inp, payload.size))
+
                     out.write(byteArrayOf(0x88.toByte(), 0x80.toByte()))
                     out.write(mask)
                     out.flush()

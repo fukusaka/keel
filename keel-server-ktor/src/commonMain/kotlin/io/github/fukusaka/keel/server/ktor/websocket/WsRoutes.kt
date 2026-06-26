@@ -64,7 +64,7 @@ internal fun Application.wsRoutes(): WsRoutes {
  *     connector { port = 8080 }
  * }.apply {
  *     application.keelWebSocket("/echo") {
- *         for (message in incoming) send(message)
+ *         onMessage { send(it) }
  *     }
  * }.start(wait = true)
  * ```
