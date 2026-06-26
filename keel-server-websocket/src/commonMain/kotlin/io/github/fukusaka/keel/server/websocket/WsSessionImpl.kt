@@ -177,7 +177,15 @@ internal class WsSessionImpl(
         // a raw-frame send racing a close() must not put a DATA frame
         // after CLOSE on the wire (RFC 6455 §5.5.1).
         sendLock.withLock {
-            if (closed) return
+            if (closed) {
+                // The frame is dropped on a closed session. A frame carrying
+                // pooled [WsFrame.payloadChunks] (e.g. from a WsMessage.BinaryChunks
+                // send) owns those chunks; release them here so a post-close send
+                // does not leak the pooled backing (the encoder, which would
+                // otherwise release them, is never reached).
+                frame.payloadChunks?.release()
+                return
+            }
             // RFC 6455 §5.3 forbids the server from masking outbound
             // frames. Echo handlers naturally feed received (masked)
             // client frames back into send(); strip the mask key here so
@@ -191,6 +199,16 @@ internal class WsSessionImpl(
         when (message) {
             is WsMessage.Text -> send(message.text)
             is WsMessage.Binary -> send(message.bytes)
+            // Pooled zero-copy payload: hand the chunks to the encoder via a
+            // single unfragmented BINARY frame, which gather-writes and releases
+            // them. Sent uncompressed (RSV1=0) even when permessage-deflate is
+            // negotiated — RFC 7692 allows per-message opt-out and the peer's
+            // inflate context is untouched by an uncompressed message. Compressing
+            // a chunked outbound payload is a later step (the inbound zero-copy
+            // receive path is this variant's primary purpose).
+            is WsMessage.BinaryChunks -> send(
+                WsFrame(fin = true, opcode = WsOpcode.BINARY, payloadChunks = message.chunks),
+            )
         }
     }
 
