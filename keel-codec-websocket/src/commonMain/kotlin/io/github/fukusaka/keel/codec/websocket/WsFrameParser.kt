@@ -100,8 +100,13 @@ fun parseFrame(source: Source, allowRsv1: Boolean = false): WsFrame {
  * hottest inbound payload allocation after the codec output itself: the
  * previous `ByteArray(data.size) { … }` doubled the per-frame payload
  * allocation on the receive path.
+ *
+ * `internal` so the decoder's pooled fast path reuses the exact same XOR for
+ * its control-frame / empty-payload `ByteArray` branch (the data-frame branch
+ * unmasks IoBuf→IoBuf), keeping unmasking byte-for-byte identical between the
+ * fast path and [parseFrame].
  */
-private fun unmask(data: ByteArray, maskKey: Int): ByteArray {
+internal fun unmask(data: ByteArray, maskKey: Int): ByteArray {
     val k0 = (maskKey shr 24) and 0xFF
     val k1 = (maskKey shr 16) and 0xFF
     val k2 = (maskKey shr 8) and 0xFF

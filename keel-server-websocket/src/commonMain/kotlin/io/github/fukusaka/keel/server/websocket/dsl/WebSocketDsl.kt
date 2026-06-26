@@ -160,11 +160,11 @@ public class WebSocketsBuilder internal constructor(
  * ```
  * keelHttpServer(engine) {
  *     webSockets {                                  // no compression
- *         webSocket("/echo") { for (m in incoming) send(m) }
+ *         webSocket("/echo") { onMessage { send(it) } }
  *     }
  *     webSockets(DeflateCodec) {                    // permessage-deflate
  *         deflate { contextTakeover = false; threshold = 1024; level = -1 }
- *         webSocket("/chat") { for (m in incoming) send(m) }
+ *         webSocket("/chat") { onMessage { send(it) } }
  *         webSocket("/raw", deflate = WsDeflateOverride.Disabled) { ... }
  *     }
  * }
@@ -203,7 +203,7 @@ public fun KeelHttpServerBuilder.webSockets(
  *     route("/api/v1") {
  *         install { call, next -> /* auth */ next() }
  *         webSockets(DeflateCodec) {
- *             webSocket("/chat") { for (m in incoming) send(m) }   // /api/v1/chat
+ *             webSocket("/chat") { onMessage { send(it) } }   // /api/v1/chat
  *         }
  *     }
  * }

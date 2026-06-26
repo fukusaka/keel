@@ -34,12 +34,29 @@ import kotlin.reflect.KClass
  * different threads. [trySend] never suspends and always succeeds with
  * unlimited capacity, avoiding message loss.
  *
+ * **Pooled-payload messages ([releaseUndelivered])**: a message type may
+ * own pooled buffers that must be released if the message is never
+ * consumed (e.g. a `WsFrame` carrying a pooled inbound payload). Pass
+ * [releaseUndelivered] so the bridge releases those buffers for messages
+ * that are buffered-but-undelivered when the channel closes, or that
+ * arrive after the channel has closed (the [trySend] failure path). The
+ * sole consumer drains the channel via [receiveCatching], so any message
+ * still buffered at close was genuinely never delivered; the release runs
+ * exactly once per message because the channel hands each element to at
+ * most one of {consumer, this drain, the trySend-failure path}. Defaults
+ * to null (the message type owns no pooled resources — HTTP), so existing
+ * bridges are unchanged.
+ *
  * @param type the [KClass] of messages to intercept and queue.
  * @param capacity the coroutine channel buffer capacity.
+ * @param releaseUndelivered optional release hook for undelivered pooled
+ *   messages (see above); null when the message type owns no pooled
+ *   resources.
  */
 class SuspendMessageBridge<T : Any>(
     private val type: KClass<T>,
     capacity: Int = Channel.UNLIMITED,
+    private val releaseUndelivered: ((T) -> Unit)? = null,
 ) : InboundHandler {
 
     override val acceptedType: KClass<*> get() = type
@@ -49,10 +66,15 @@ class SuspendMessageBridge<T : Any>(
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (type.isInstance(msg)) {
             @Suppress("UNCHECKED_CAST")
-            val result = messages.trySend(msg as T)
+            val typed = msg as T
+            val result = messages.trySend(typed)
             if (result.isFailure) {
-                // Channel full or closed — propagate downstream as fallback.
-                ctx.propagateRead(msg)
+                // Channel full or closed. For a pooled-payload message type,
+                // release its buffers here — propagating to a downstream that
+                // does not own the type (TAIL) would silently leak them.
+                // Otherwise propagate downstream as the original fallback.
+                val release = releaseUndelivered
+                if (release != null) release(typed) else ctx.propagateRead(msg)
             }
         } else {
             ctx.propagateRead(msg)
@@ -61,12 +83,53 @@ class SuspendMessageBridge<T : Any>(
 
     override fun onInactive(ctx: PipelineHandlerContext) {
         messages.close()
+        releaseBuffered()
         ctx.propagateInactive()
     }
 
     override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
         messages.close(cause)
+        releaseBuffered()
         ctx.propagateError(cause)
+    }
+
+    /**
+     * Closes the channel and releases any buffered-but-undelivered messages.
+     *
+     * For a **server-initiated** teardown the transport closes the fd without
+     * delivering a peer-FIN, so the pipeline never fires `inactive` and
+     * neither [onInactive] nor [onError] runs — the close hooks above would
+     * leave a pooled-payload message stranded in the buffer. The sole consumer
+     * calls this from its own teardown to reclaim them. Closing the channel
+     * here also makes any *later* [trySend] (a decoder frame the EventLoop
+     * delivers after this consumer stopped) fail and take the
+     * [releaseUndelivered] path in [onRead] instead of leaking — so this plus
+     * the [onRead] failure branch close the whole race window without
+     * coordinating with the EventLoop.
+     *
+     * Idempotent and safe alongside the close hooks: [Channel.close] is a
+     * no-op when already closed, and each buffered message is handed to
+     * exactly one drainer via the atomic [Channel.tryReceive]. No-op for the
+     * pooled-payload bookkeeping unless [releaseUndelivered] is set.
+     */
+    fun closeAndReleaseBuffered() {
+        messages.close()
+        releaseBuffered()
+    }
+
+    /**
+     * Drains and releases any buffered-but-undelivered messages after the
+     * channel is closed. No-op unless [releaseUndelivered] is set — without
+     * a pooled-payload type there is nothing to free, and the consumer
+     * receives the remaining buffered messages normally after close.
+     */
+    private fun releaseBuffered() {
+        val release = releaseUndelivered ?: return
+        while (true) {
+            val result = messages.tryReceive()
+            val msg = result.getOrNull() ?: break
+            release(msg)
+        }
     }
 
     /**

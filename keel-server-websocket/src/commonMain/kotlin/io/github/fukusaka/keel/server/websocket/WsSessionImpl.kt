@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.websocket
 
+import io.github.fukusaka.keel.buf.IoBufChunks
 import io.github.fukusaka.keel.codec.websocket.WsCloseCode
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
@@ -41,6 +42,42 @@ internal class WsSessionImpl(
 
     private val applicationFrames = Channel<WsMessage>(Channel.UNLIMITED)
     override val incoming: ReceiveChannel<WsMessage> get() = applicationFrames
+
+    /**
+     * The pooled chunks of the message currently delivered to an [onMessage]
+     * block, or null when no scoped delivery is in progress or the block
+     * already forwarded the message via [send] (which transfers the chunks to
+     * the transport and clears this). [onMessage]'s post-block auto-release
+     * reads this to decide whether the chunks are still its to free, so a
+     * `onMessage { send(it) }` echo neither leaks nor double-frees.
+     *
+     * `@Volatile` for cross-thread visibility: [onMessage] and a [send] called
+     * from its block run on the handler's coroutine (sequenced by the
+     * suspension between the write here and the read after the block), but a
+     * concurrent [send] of a *different* message from another coroutine reads
+     * this field — a benign racy read that simply compares unequal. Reference
+     * reads / writes are atomic, so no torn value is observed.
+     */
+    @Volatile
+    private var scopedChunks: IoBufChunks? = null
+
+    /**
+     * Leak-safe scoped receive: releases each [WsMessage.BinaryChunks]' pooled
+     * chunks after [block] returns, unless [block] forwarded the message via
+     * [send] (which clears [scopedChunks], transferring ownership to the
+     * transport). See [WsSession.onMessage].
+     */
+    override suspend fun onMessage(block: suspend (WsMessage) -> Unit) {
+        for (message in applicationFrames) {
+            scopedChunks = (message as? WsMessage.BinaryChunks)?.chunks
+            try {
+                block(message)
+            } finally {
+                scopedChunks?.release()
+                scopedChunks = null
+            }
+        }
+    }
 
     /**
      * Reassembles inbound data fragments into whole messages
@@ -133,7 +170,42 @@ internal class WsSessionImpl(
                 }
             }
         } finally {
+            // Close + drain the frame bridge: the pump is its sole consumer,
+            // so any pooled WsFrame still buffered there (e.g. a data frame
+            // the peer put after CLOSE, or frames queued when the pump was
+            // cancelled) is now unreachable. A server-initiated channel.close()
+            // does not fire the bridge's onInactive release hook, so reclaim
+            // them here; closing the bridge also makes a late decoder frame's
+            // trySend fail and take the bridge's release path instead of
+            // leaking. Synchronous, so it runs even when the pump is cancelled.
+            bridge.closeAndReleaseBuffered()
+            // Release the pooled fragments of any message left half-assembled
+            // when the pump stopped (the decoder's zero-copy fast path hands
+            // the aggregator pooled buffers it owns until completion).
+            aggregator.release()
+            // Close the channel so the application handler's `for (m in incoming)`
+            // observes EOF after it has drained whatever is still buffered.
+            // Do NOT drain applicationFrames here: the handler runs on its own
+            // coroutine and is the legitimate consumer of buffered messages even
+            // after close, so draining here would race it and steal messages it
+            // still wants. Any message the handler never consumes is reclaimed by
+            // [reclaimUndeliveredMessages] once the handler has returned.
             applicationFrames.close()
+        }
+    }
+
+    /**
+     * Reclaims the pooled backing of any completed message the application
+     * never received — e.g. a handler that returned (or threw) before draining
+     * [incoming], leaving a [WsMessage.BinaryChunks] buffered. Called by the
+     * upgrade flow **after** the handler has returned and the pump has stopped,
+     * so it never races the handler for a message the handler would still
+     * consume. ([runForward]'s own finally must not do this for that reason.)
+     */
+    fun reclaimUndeliveredMessages() {
+        while (true) {
+            val undelivered = applicationFrames.tryReceive().getOrNull() ?: break
+            (undelivered as? WsMessage.BinaryChunks)?.chunks?.release()
         }
     }
 
@@ -150,7 +222,18 @@ internal class WsSessionImpl(
         when (val outcome = aggregator.feed(frame)) {
             is WsAggregateResult.Incomplete -> true
             is WsAggregateResult.Completed -> {
-                applicationFrames.send(outcome.message)
+                try {
+                    applicationFrames.send(outcome.message)
+                } catch (t: Throwable) {
+                    // The aggregator already transferred ownership of a pooled
+                    // [WsMessage.BinaryChunks] out to this message. If the send
+                    // throws — the channel closed by a concurrent [close], or
+                    // the pump cancelled — the message is never enqueued, so the
+                    // finally drain cannot see it; release the pooled backing
+                    // here before the failure propagates.
+                    (outcome.message as? WsMessage.BinaryChunks)?.chunks?.release()
+                    throw t
+                }
                 true
             }
             is WsAggregateResult.ProtocolError -> {
@@ -173,17 +256,44 @@ internal class WsSessionImpl(
     }
 
     override suspend fun send(frame: WsFrame) {
+        // [WsFrame.inboundPayload] is the decoder's inbound-only pooled carrier:
+        // the encoder has no outbound encoding for it (it would emit an empty
+        // frame and leak the buffer), and the `copy(maskKey = null)` mask strip
+        // below would alias it across two frames. A real outbound frame never
+        // carries it, so defensively reclaim it and drop this malformed frame
+        // before any copy / encode.
+        frame.inboundPayload?.let {
+            it.release()
+            return
+        }
         // Serialised through [sendLock] for the same reason as sendData:
         // a raw-frame send racing a close() must not put a DATA frame
         // after CLOSE on the wire (RFC 6455 §5.5.1).
         sendLock.withLock {
-            if (closed) return
+            if (closed) {
+                // The frame is dropped on a closed session. A frame carrying
+                // outbound [WsFrame.payloadChunks] (e.g. from a
+                // WsMessage.BinaryChunks send) owns those chunks; release them
+                // so the drop does not leak (the encoder, which would otherwise
+                // release them, is never reached).
+                frame.payloadChunks?.release()
+                return
+            }
             // RFC 6455 §5.3 forbids the server from masking outbound
             // frames. Echo handlers naturally feed received (masked)
             // client frames back into send(); strip the mask key here so
             // such code does not need to know about the rule.
             val outgoing = if (frame.maskKey != null) frame.copy(maskKey = null) else frame
-            sendInternal(outgoing)
+            try {
+                sendInternal(outgoing)
+            } catch (t: Throwable) {
+                // sendInternal could not enqueue the frame; its payloadChunks
+                // never reached the encoder (the code that would release them),
+                // so we still own them — release before propagating, mirroring
+                // sendData's catch path.
+                outgoing.payloadChunks?.release()
+                throw t
+            }
         }
     }
 
@@ -191,6 +301,20 @@ internal class WsSessionImpl(
         when (message) {
             is WsMessage.Text -> send(message.text)
             is WsMessage.Binary -> send(message.bytes)
+            // Pooled zero-copy payload: hand the chunks to the encoder via a
+            // single unfragmented BINARY frame, which gather-writes and releases
+            // them. Sent uncompressed (RSV1=0) even when permessage-deflate is
+            // negotiated — RFC 7692 allows per-message opt-out and the peer's
+            // inflate context is untouched by an uncompressed message. Compressing
+            // a chunked outbound payload is a later step (the inbound zero-copy
+            // receive path is this variant's primary purpose).
+            is WsMessage.BinaryChunks -> {
+                // If the onMessage block borrowed this exact message, sending it
+                // transfers the chunks' ownership to the transport; clear the
+                // scoped marker so onMessage's auto-release does not double-free.
+                if (message.chunks === scopedChunks) scopedChunks = null
+                send(WsFrame(fin = true, opcode = WsOpcode.BINARY, payloadChunks = message.chunks))
+            }
         }
     }
 

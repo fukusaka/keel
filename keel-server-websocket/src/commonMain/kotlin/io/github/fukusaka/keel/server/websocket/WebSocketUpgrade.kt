@@ -193,7 +193,14 @@ public suspend fun runWebSocketUpgrade(
         version = HttpVersion.HTTP_1_1,
         headers = responseHeaders,
     )
-    val frameBridge = SuspendMessageBridge(WsFrame::class)
+    // The decoder runs its zero-copy fast path (poolDataPayloads), so a
+    // buffered WsFrame may own a pooled inbound payload. Release it if the
+    // frame is never consumed — buffered when the connection closes, or
+    // arriving after close — so teardown does not leak the pooled backing.
+    val frameBridge = SuspendMessageBridge(
+        WsFrame::class,
+        releaseUndelivered = { it.inboundPayload?.release() },
+    )
     // The deflate engine owns native zlib state (an encoder + decoder
     // session) from the moment it is constructed; the inner finally at
     // (5) releases it, but that finally only runs once WsSessionImpl is
@@ -211,10 +218,13 @@ public suspend fun runWebSocketUpgrade(
             // (3) Swap codec under the EventLoop so pipeline mutation is
             // single-threaded. allowRsv1 is on only when compression is
             // negotiated — RFC 7692 §7.2 compressed frames carry RSV1=1.
+            // poolDataPayloads enables the decoder's inbound zero-copy fast
+            // path; the aggregator (this session's frame consumer) owns the
+            // pooled payloads it hands the application as WsMessage.BinaryChunks.
             for (name in HTTP_CODEC_HANDLER_NAMES) {
                 runCatching { channel.pipeline.remove(name) }
             }
-            channel.addWsServerCodec(allowRsv1 = compressionActive)
+            channel.addWsServerCodec(allowRsv1 = compressionActive, poolDataPayloads = true)
             channel.pipeline.addLast(WS_BRIDGE_NAME, frameBridge)
         }
     } catch (t: Throwable) {
@@ -245,6 +255,12 @@ public suspend fun runWebSocketUpgrade(
                 // releasing native zlib state under an in-flight inflate is a
                 // use-after-free. See [drainPumpThenRelease].
                 drainPumpThenRelease(pump, channel.logger) { session.releaseDeflate() }
+                // The handler has returned and the pump has stopped, so nothing
+                // consumes [WsSession.incoming] any more; reclaim the pooled
+                // backing of any completed message it never drained (a handler
+                // that returned early leaving a WsMessage.BinaryChunks buffered).
+                // Safe here precisely because there is no consumer left to race.
+                session.reclaimUndeliveredMessages()
             }
         }
     } finally {
