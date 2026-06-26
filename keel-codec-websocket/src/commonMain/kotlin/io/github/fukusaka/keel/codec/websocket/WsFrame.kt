@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.codec.websocket
 
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.IoBufChunks
 
 /**
@@ -11,9 +12,10 @@ import io.github.fukusaka.keel.buf.IoBufChunks
  * @param rsv3 Reserved bit 3; must be false unless an extension is negotiated.
  * @param opcode Frame type.
  * @param maskKey 32-bit masking key; non-null for client-to-server frames.
- * @param payload Unmasked payload data. Ignored when [payloadChunks] is set;
- *   `init` rejects the inconsistent combination of a non-empty [payload] with
- *   a non-null [payloadChunks] so the silent discard cannot happen.
+ * @param payload Unmasked payload data. Ignored when [payloadChunks] or
+ *   [inboundPayload] is set; `init` rejects the inconsistent combination of a
+ *   non-empty [payload] with either pooled field so the silent discard cannot
+ *   happen.
  * @param payloadChunks Optional pre-built pooled-`IoBuf` payload (e.g. the
  *   raw-DEFLATE output of `permessage-deflate`). When non-null the encoder
  *   gather-writes these chunks instead of copying [payload], so the
@@ -26,6 +28,18 @@ import io.github.fukusaka.keel.buf.IoBufChunks
  *   [equals] / [hashCode] intentionally ignore this field — comparing pooled
  *   `IoBuf` identity would be misleading and a structural comparison would
  *   require iterating the chunks (a side-effect on a value type).
+ * @param inboundPayload Optional pooled-`IoBuf` payload produced by the
+ *   *inbound* fast path ([WsFrameDecoder] with `poolDataPayloads`), already
+ *   unmasked. It carries one data frame's payload as a pooled buffer instead
+ *   of a heap [payload], so the receive path can hand the app pooled
+ *   [IoBufChunks] (mirroring HTTP `receiveChunk`) without the
+ *   pooled-IoBuf→`ByteArray` copy. Set only for non-control data frames with a
+ *   non-empty payload; mutually exclusive with [payloadChunks]; [payload] must
+ *   be empty when it is set. The frame **owns** this buffer — whoever consumes
+ *   the frame (the `WsFrameAggregator`) must release it (or transfer it into an
+ *   [IoBufChunks] handed to the application). Like [payloadChunks], the
+ *   auto-generated [copy] is dangerous (both copies would share the one pooled
+ *   buffer), and [equals] / [hashCode] ignore it.
  */
 data class WsFrame(
     val fin: Boolean,
@@ -36,21 +50,32 @@ data class WsFrame(
     val maskKey: Int? = null,
     val payload: ByteArray = ByteArray(0),
     val payloadChunks: IoBufChunks? = null,
+    val inboundPayload: IoBuf? = null,
 ) {
     init {
         if (opcode.isControl) {
             require(fin) { "Control frames must not be fragmented (fin must be true)" }
             require(payload.size <= 125) { "Control frame payload must not exceed 125 bytes, got ${payload.size}" }
             require(payloadChunks == null) { "Control frames must not use payloadChunks" }
+            require(inboundPayload == null) { "Control frames must not use inboundPayload" }
         }
         require(payloadChunks == null || maskKey == null) {
             "payloadChunks is server-outbound only and cannot be masked"
         }
+        // The two pooled carriers are mutually exclusive: payloadChunks is the
+        // server-outbound gather payload, inboundPayload is the decoder's
+        // zero-copy receive payload. A frame is never both at once.
+        require(payloadChunks == null || inboundPayload == null) {
+            "payloadChunks (outbound) and inboundPayload (inbound) are mutually exclusive"
+        }
         // Defending against the silent-discard foot-gun the class KDoc warns
-        // about: `payload` is ignored when `payloadChunks` is set, so a caller
+        // about: `payload` is ignored when a pooled field is set, so a caller
         // who supplied both is at least confused. Reject the inconsistency.
         require(payloadChunks == null || payload.isEmpty()) {
             "When payloadChunks is set, payload must be empty (got payload.size=${payload.size})"
+        }
+        require(inboundPayload == null || payload.isEmpty()) {
+            "When inboundPayload is set, payload must be empty (got payload.size=${payload.size})"
         }
     }
 
