@@ -34,11 +34,19 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * @param allowRsv1 when true, the decoder accepts RSV1=1 frames — the
  *   `permessage-deflate` compressed-message marker (RFC 7692 §7.2).
  *   Pass true only when the handshake negotiated `permessage-deflate`.
+ * @param poolDataPayloads when true, the decoder decodes data-frame
+ *   payloads into pooled [WsFrame.inboundPayload] buffers via its
+ *   zero-copy fast path instead of heap [WsFrame.payload]. Defaults to
+ *   false; pass true only when the frame-handling stage installed after
+ *   this call knows the pooled-payload ownership contract (the
+ *   `WsFrameAggregator` does, and `runWebSocketUpgrade` enables it). A
+ *   consumer that reads [WsFrame.payload] directly must leave it false.
  */
 public fun PipelinedChannel.addWsServerCodec(
     maxFramePayloadSize: Long = WsFrameDecoder.DEFAULT_MAX_FRAME_PAYLOAD_SIZE,
     requireClientMasking: Boolean = true,
     allowRsv1: Boolean = false,
+    poolDataPayloads: Boolean = false,
 ) {
     pipeline.addLast("ws-encoder", WsFrameEncoder())
     pipeline.addLast(
@@ -47,6 +55,7 @@ public fun PipelinedChannel.addWsServerCodec(
             maxFramePayloadSize = maxFramePayloadSize,
             requireClientMasking = requireClientMasking,
             allowRsv1 = allowRsv1,
+            poolDataPayloads = poolDataPayloads,
         ),
     )
 }

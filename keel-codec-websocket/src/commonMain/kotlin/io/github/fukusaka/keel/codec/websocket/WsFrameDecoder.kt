@@ -40,6 +40,21 @@ import kotlinx.io.Buffer
  * per-connection handler installed alongside [WsFrameEncoder] via
  * `PipelinedChannel.addWsServerCodec()`.
  *
+ * **Inbound zero-copy fast path ([poolDataPayloads])**: when enabled, the
+ * common case — the internal kotlinx-io [Buffer] is empty *and* the input
+ * [IoBuf] already holds one or more complete frames — is parsed straight
+ * out of the input buffer. Each data frame's payload is copied (and
+ * unmasked) into a fresh pooled [IoBuf] obtained from the pipeline's
+ * allocator and emitted as [WsFrame.inboundPayload], skipping the
+ * pooled-IoBuf→kotlinx-io-`Buffer`→`ByteArray` round-trip the slow path
+ * makes. The trailing partial frame (and every subsequent chunk until it
+ * completes) falls back to the [Buffer] slow path, so straddling frames and
+ * correctness are unchanged. Control frames and empty data frames keep their
+ * `ByteArray` [WsFrame.payload] even on the fast path (their payload is tiny
+ * and the session pump reads it as bytes). When disabled (the default) every
+ * frame uses the `ByteArray` slow path, so consumers that read
+ * [WsFrame.payload] directly are unaffected.
+ *
  * @property maxFramePayloadSize maximum per-frame payload size in bytes
  *   (default 16 MiB). A frame whose advertised length exceeds this is
  *   rejected with [WsCodecException] before any payload is read.
@@ -50,11 +65,19 @@ import kotlinx.io.Buffer
  *   `permessage-deflate` compressed-message marker (RFC 7692 §7.2).
  *   Set true only when the handshake negotiated `permessage-deflate`;
  *   defaults to false so a server with no extension stays strict.
+ * @property poolDataPayloads when true, decode data-frame payloads into
+ *   pooled [WsFrame.inboundPayload] buffers via the zero-copy fast path
+ *   described above instead of always producing a heap [WsFrame.payload].
+ *   The downstream consumer then **owns** each emitted frame's
+ *   `inboundPayload` and must release it. Defaults to false; the server
+ *   codec installer enables it because its consumer (`WsFrameAggregator`)
+ *   knows the pooled ownership contract.
  */
 public class WsFrameDecoder(
     private val maxFramePayloadSize: Long = DEFAULT_MAX_FRAME_PAYLOAD_SIZE,
     private val requireClientMasking: Boolean = true,
     private val allowRsv1: Boolean = false,
+    private val poolDataPayloads: Boolean = false,
 ) : TypedInboundHandler<IoBuf>(IoBuf::class, autoRelease = true) {
 
     /**
@@ -66,6 +89,27 @@ public class WsFrameDecoder(
     private val buffer: Buffer = Buffer()
 
     override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
+        if (poolDataPayloads && buffer.size == 0L) {
+            // Fast path: parse complete frames straight out of the input
+            // IoBuf while the slow-path accumulator is empty. Each call to
+            // [tryFastEmit] consumes one complete frame from `msg` and emits
+            // it; it returns false once the remaining bytes are less than a
+            // full frame.
+            while (msg.readableBytes > 0 && tryFastEmit(ctx, msg)) {
+                // loop until a partial frame remains
+            }
+            // Stash the trailing partial frame in the slow-path Buffer so the
+            // next chunk continues parsing it. The IoBuf is auto-released
+            // after this method returns; the pooled payloads emitted above
+            // are independent copies that outlive it.
+            val remaining = msg.readableBytes
+            if (remaining > 0) {
+                val bytes = ByteArray(remaining)
+                msg.readByteArray(bytes, 0, remaining)
+                buffer.write(bytes)
+            }
+            return
+        }
         val n = msg.readableBytes
         if (n > 0) {
             // Copy IoBuf bytes into the internal Buffer. We can't share
@@ -84,13 +128,202 @@ public class WsFrameDecoder(
     private fun drainCompleteFrames(ctx: PipelineHandlerContext) {
         while (true) {
             val frame = tryParseFrame() ?: return
-            if (requireClientMasking && frame.maskKey == null && !frame.opcode.isControl) {
-                // Allow control frames either way (parser is permissive),
-                // but require a mask on the data frames a server expects
-                // from a client.
-                throw WsCodecException("Unmasked client frame received (RFC 6455 §5.1)")
+            emit(ctx, frame)
+        }
+    }
+
+    /**
+     * Validates client masking (server mode) and propagates [frame] to the
+     * next inbound handler. Shared by the slow path and the fast path so the
+     * RFC 6455 §5.1 masking check is applied identically; the fast path runs
+     * this check before allocating a pooled payload (see [tryFastEmit]), so
+     * here it only re-guards the slow-path frames.
+     */
+    private fun emit(ctx: PipelineHandlerContext, frame: WsFrame) {
+        if (requireClientMasking && frame.maskKey == null && !frame.opcode.isControl) {
+            // Allow control frames either way (parser is permissive),
+            // but require a mask on the data frames a server expects
+            // from a client.
+            throw WsCodecException("Unmasked client frame received (RFC 6455 §5.1)")
+        }
+        ctx.propagateRead(frame)
+    }
+
+    /**
+     * Attempts to consume one complete frame from [msg] (the pooled input
+     * buffer) and emit it. Returns true when a frame was consumed and
+     * propagated, false when the remaining bytes do not yet form a complete
+     * frame (the caller then stashes them in the slow-path [Buffer]).
+     *
+     * Header measurement mirrors [tryParseFrame]; [decodeFastFrame] then
+     * validates and builds the frame.
+     */
+    @Suppress("ReturnCount")
+    private fun tryFastEmit(ctx: PipelineHandlerContext, msg: IoBuf): Boolean {
+        val available = msg.readableBytes
+        if (available < 2) return false
+        val base = msg.readerIndex
+        val byte0 = msg.getByte(base).toInt() and 0xFF
+        val byte1 = msg.getByte(base + 1).toInt() and 0xFF
+        val masked = (byte1 and 0x80) != 0
+        val payloadLen7 = byte1 and 0x7F
+
+        var headerSize = 2
+        val payloadLength: Long = when (payloadLen7) {
+            EXTENDED_LENGTH_16 -> {
+                if (available < headerSize + 2) return false
+                headerSize = 4
+                val hi = msg.getByte(base + 2).toInt() and 0xFF
+                val lo = msg.getByte(base + 3).toInt() and 0xFF
+                ((hi shl 8) or lo).toLong()
             }
-            ctx.propagateRead(frame)
+            EXTENDED_LENGTH_64 -> {
+                if (available < headerSize + 8) return false
+                headerSize = 10
+                var len = 0L
+                repeat(8) { len = (len shl 8) or (msg.getByte(base + 2 + it).toInt() and 0xFF).toLong() }
+                len
+            }
+            else -> payloadLen7.toLong()
+        }
+
+        if (payloadLength < 0L || payloadLength > maxFramePayloadSize) {
+            throw WsCodecException(
+                "Frame payload length $payloadLength exceeds limit $maxFramePayloadSize " +
+                    "(byte0=0x${byte0.toString(16)}, payloadLen7=$payloadLen7)",
+            )
+        }
+        val maskSize = if (masked) MASK_KEY_SIZE else 0
+        if (available < headerSize.toLong() + maskSize + payloadLength) return false
+
+        ctx.propagateRead(decodeFastFrame(ctx, msg, base, headerSize, payloadLength.toInt()))
+        return true
+    }
+
+    /**
+     * Decodes the validated, fully-available frame at [base] in [msg] (header
+     * length already measured as [headerSize], payload length as [len]).
+     * Mirrors [parseFrame]: derives `fin` / RSV / opcode / mask bit from the
+     * two header bytes, enforces the RSV and control-frame rules and (server
+     * mode) client masking, then builds the frame — non-empty data into a
+     * fresh pooled [WsFrame.inboundPayload] via [copyToPooled], control /
+     * empty payloads into a heap `ByteArray`.
+     */
+    private fun decodeFastFrame(
+        ctx: PipelineHandlerContext,
+        msg: IoBuf,
+        base: Int,
+        headerSize: Int,
+        len: Int,
+    ): WsFrame {
+        val byte0 = msg.getByte(base).toInt() and 0xFF
+        val masked = (msg.getByte(base + 1).toInt() and 0x80) != 0
+        val fin = (byte0 and 0x80) != 0
+        val rsv1 = (byte0 and 0x40) != 0
+        val rsv2 = (byte0 and 0x20) != 0
+        val rsv3 = (byte0 and 0x10) != 0
+        require((allowRsv1 || !rsv1) && !rsv2 && !rsv3) {
+            "Reserved bits invalid (rsv1=$rsv1, rsv2=$rsv2, rsv3=$rsv3): " +
+                "RSV2/RSV3 must be 0; RSV1 is permitted only when permessage-deflate is negotiated"
+        }
+        val opcode = WsOpcode.fromCode(byte0 and 0x0F)
+        if (opcode.isControl) {
+            require(fin) { "Control frames must not be fragmented (fin must be true)" }
+            require(len <= CONTROL_FRAME_MAX_PAYLOAD_SIZE) {
+                "Control frame payload must not exceed $CONTROL_FRAME_MAX_PAYLOAD_SIZE bytes, got $len"
+            }
+        }
+
+        // Commit: advance past the header, read the mask key, then the payload.
+        msg.readerIndex = base + headerSize
+        val maskKey: Int? = if (masked) {
+            var key = 0
+            repeat(MASK_KEY_SIZE) { key = (key shl 8) or (msg.readByte().toInt() and 0xFF) }
+            key
+        } else {
+            null
+        }
+        // Validate masking before allocating the payload so an unmasked client
+        // data frame fails the connection without leaking a buffer.
+        if (requireClientMasking && maskKey == null && !opcode.isControl) {
+            throw WsCodecException("Unmasked client frame received (RFC 6455 §5.1)")
+        }
+
+        return if (!opcode.isControl && len > 0) {
+            // Data frame: copy + unmask straight into a fresh pooled IoBuf so
+            // the payload never round-trips through a kotlinx-io Buffer or a
+            // heap ByteArray. The frame owns this buffer; the consumer releases
+            // it (or transfers it to an IoBufChunks for the app).
+            WsFrame(
+                fin = fin,
+                rsv1 = rsv1,
+                rsv2 = rsv2,
+                rsv3 = rsv3,
+                opcode = opcode,
+                maskKey = maskKey,
+                inboundPayload = copyToPooled(ctx, msg, len, maskKey),
+            )
+        } else {
+            // Control frame or empty data frame: read into a heap ByteArray
+            // (same as the slow path) and unmask in place.
+            val bytes = ByteArray(len)
+            if (len > 0) {
+                msg.readByteArray(bytes, 0, len)
+                if (maskKey != null) unmask(bytes, maskKey)
+            }
+            WsFrame(
+                fin = fin,
+                rsv1 = rsv1,
+                rsv2 = rsv2,
+                rsv3 = rsv3,
+                opcode = opcode,
+                maskKey = maskKey,
+                payload = bytes,
+            )
+        }
+    }
+
+    /**
+     * Allocates a fresh pooled [IoBuf] of [len] bytes and copies + unmasks the
+     * payload into it from [msg]. Releases the buffer if the copy throws, so
+     * the fast path never leaks on a partial read; otherwise transfers
+     * ownership of the returned buffer to the caller's frame.
+     */
+    private fun copyToPooled(ctx: PipelineHandlerContext, msg: IoBuf, len: Int, maskKey: Int?): IoBuf {
+        val pooled = ctx.allocator.allocate(len)
+        try {
+            copyUnmasked(msg, pooled, len, maskKey)
+        } catch (t: Throwable) {
+            pooled.release()
+            throw t
+        }
+        return pooled
+    }
+
+    /**
+     * Copies [len] bytes from [src] (at its current reader index) into [dst],
+     * unmasking with [maskKey] (RFC 6455 §5.3) in the same pass. A null
+     * [maskKey] (client-mode unmasked frame) is a plain bulk copy. The XOR
+     * key derivation matches [unmask] so the fast path and [parseFrame]
+     * produce byte-identical payloads.
+     */
+    private fun copyUnmasked(src: IoBuf, dst: IoBuf, len: Int, maskKey: Int?) {
+        if (maskKey == null) {
+            src.copyTo(dst, len)
+            return
+        }
+        val k0 = (maskKey shr 24) and 0xFF
+        val k1 = (maskKey shr 16) and 0xFF
+        val k2 = (maskKey shr 8) and 0xFF
+        val k3 = maskKey and 0xFF
+        for (i in 0 until len) {
+            val k = when (i and 3) {
+                0 -> k0
+                1 -> k1
+                2 -> k2
+                else -> k3
+            }
+            dst.writeByte((src.readByte().toInt() xor k).toByte())
         }
     }
 
@@ -170,6 +403,12 @@ public class WsFrameDecoder(
 
         /** Mask key length in bytes when the mask bit is set (RFC 6455 §5.2). */
         private const val MASK_KEY_SIZE = 4
+
+        /**
+         * Maximum control-frame payload length (RFC 6455 §5.5): PING / PONG /
+         * CLOSE payloads must fit in the 7-bit length field's "small" range.
+         */
+        private const val CONTROL_FRAME_MAX_PAYLOAD_SIZE = 125
     }
 }
 
