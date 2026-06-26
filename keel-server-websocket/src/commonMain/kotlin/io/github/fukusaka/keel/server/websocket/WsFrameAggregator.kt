@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.server.websocket
 
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufChunks
 import io.github.fukusaka.keel.codec.websocket.WsFrame
 import io.github.fukusaka.keel.codec.websocket.WsOpcode
 import io.github.fukusaka.keel.compression.DecompressionLimitException
@@ -85,9 +87,25 @@ internal fun interface WsMessageInflater {
  * applies to the *decompressed* size as a zip-bomb defence — a message
  * inflating past the cap fails with CLOSE `1009`.
  *
+ * **Pooled-payload frames (inbound zero-copy)**: when the decoder runs its
+ * `poolDataPayloads` fast path, each data frame carries its payload as a
+ * pooled [WsFrame.inboundPayload] buffer the aggregator **owns**. The
+ * aggregator accumulates these (and any heap [WsFrame.payload] fragments
+ * from the slow-path fallback) and, for an **uncompressed `BINARY`** message
+ * whose every fragment is pooled, hands them to the application as
+ * zero-copy [WsMessage.BinaryChunks] — no pooled-IoBuf→`ByteArray` copy. Any
+ * other message (`TEXT`, compressed, or a binary message with a slow-path
+ * heap fragment) is flattened into one `ByteArray` (releasing the pooled
+ * fragments) and delivered as [WsMessage.Text] / [WsMessage.Binary] exactly
+ * as before. Because the aggregator owns pooled fragments, every exit —
+ * completion, protocol error, size-cap rejection, [reset], and teardown via
+ * [release] — frees them; an undelivered [WsMessage.BinaryChunks] transfers
+ * ownership to the consumer, which must release it.
+ *
  * The instance holds the partially-collected payload of the message in
  * progress. It is **not** thread-safe — the session pump drives it from
- * a single coroutine. Being a pure object with no I/O, it is exhaustively
+ * a single coroutine. Being a pure object with no I/O (other than the
+ * pooled-buffer release bookkeeping above), it is exhaustively
  * unit-testable by feeding [WsFrame]s directly.
  *
  * @param inflater decompressor for `permessage-deflate` messages, or
@@ -117,15 +135,17 @@ internal class WsFrameAggregator(
 
     /**
      * Fragments of the message in progress, kept as separate chunks and
-     * joined once on the final frame ([joinChunks]). Appending a reference
-     * here is O(1); the previous `accumulated += payload` per frame was
-     * O(n²) — a 1 MiB message split into 256 × 4 KiB frames copied ~131 MiB
-     * and dominated large-message CPU. The single join at completion copies
-     * each byte exactly once.
+     * joined once on the final frame. Each is either a pooled [IoBuf]
+     * (decoder fast path) or a heap [ByteArray] (slow-path fallback).
+     * Appending a reference here is O(1); the previous `accumulated +=
+     * payload` per frame was O(n²) — a 1 MiB message split into 256 × 4 KiB
+     * frames copied ~131 MiB and dominated large-message CPU. The single
+     * join at completion (or zero-copy hand-off as [IoBufChunks]) touches
+     * each byte at most once.
      */
-    private val chunks = ArrayList<ByteArray>()
+    private val fragments = ArrayList<WsFragment>()
 
-    /** Running total of [chunks] sizes, for the [checkSize] cap. */
+    /** Running total of [fragments] sizes, for the [checkSize] cap. */
     private var bufferedSize = 0
 
     /**
@@ -157,64 +177,115 @@ internal class WsFrameAggregator(
         if (messageOpcode != null) {
             // RFC 6455 §5.4: a new TEXT/BINARY before the current
             // message's fin is an interleaved data message — forbidden.
-            return protocolError("Interleaved ${frame.opcode} frame while a message is unfinished")
+            return fail(
+                frame,
+                WsAggregateResult.ProtocolError(
+                    closeCode = PROTOCOL_ERROR_CODE,
+                    reason = "Interleaved ${frame.opcode} frame while a message is unfinished",
+                ),
+            )
         }
         // RFC 7692 §7.2: RSV1 on the opening frame marks the message as
         // compressed. RSV1 set with no negotiated extension is a §5.2
         // protocol error.
         if (frame.rsv1 && inflater == null) {
-            return protocolError("RSV1 set on ${frame.opcode} frame but permessage-deflate was not negotiated")
+            return fail(
+                frame,
+                WsAggregateResult.ProtocolError(
+                    closeCode = PROTOCOL_ERROR_CODE,
+                    reason = "RSV1 set on ${frame.opcode} frame but permessage-deflate was not negotiated",
+                ),
+            )
         }
         // The size cap applies to every message, fragmented or not — a
         // single oversized frame must fail just as a long fragment chain
         // does. For a compressed message this caps the *compressed*
         // accumulation; the decompressed size is re-checked on completion.
-        val sizeError = checkSize(frame.payload.size.toLong())
-        if (sizeError != null) return sizeError
+        checkSize(frameSize(frame).toLong())?.let { return fail(frame, it) }
         return if (frame.fin) {
-            completeMessage(frame.opcode, frame.payload, frame.rsv1)
+            completeSingleFrame(frame)
         } else {
             messageOpcode = frame.opcode
             messageCompressed = frame.rsv1
-            // The decoder hands each frame a freshly-allocated payload, so
-            // retaining the reference (no copy) is safe — the join at
-            // completion is the only copy.
-            chunks.add(frame.payload)
-            bufferedSize = frame.payload.size
+            // The frame owns its payload (pooled IoBuf or heap ByteArray);
+            // accumulate the reference — the join (or zero-copy hand-off) at
+            // completion is the only further touch.
+            fragments.add(fragmentOf(frame))
+            bufferedSize = frameSize(frame)
             WsAggregateResult.Incomplete
         }
     }
 
     private fun feedContinuation(frame: WsFrame): WsAggregateResult {
         val opcode = messageOpcode
-            ?: return protocolError("CONTINUATION frame with no message in progress")
-        val sizeError = checkSize(bufferedSize.toLong() + frame.payload.size)
-        if (sizeError != null) {
-            reset()
-            return sizeError
-        }
-        chunks.add(frame.payload)
-        bufferedSize += frame.payload.size
+            ?: return fail(
+                frame,
+                WsAggregateResult.ProtocolError(
+                    closeCode = PROTOCOL_ERROR_CODE,
+                    reason = "CONTINUATION frame with no message in progress",
+                ),
+            )
+        checkSize(bufferedSize.toLong() + frameSize(frame))?.let { return fail(frame, it) }
+        fragments.add(fragmentOf(frame))
+        bufferedSize += frameSize(frame)
         return if (frame.fin) {
-            val payload = joinChunks()
-            val compressed = messageCompressed
-            reset()
-            completeMessage(opcode, payload, compressed)
+            completeFragments(opcode, messageCompressed)
         } else {
             WsAggregateResult.Incomplete
         }
     }
 
     /**
-     * Builds the final [WsMessage]. When [compressed] is true the
-     * assembled [payload] is inflated first (RFC 7692 §7.2.2) and the
-     * decompressed size re-checked against [MAX_WS_MESSAGE_SIZE] (a
-     * zip-bomb defence). A TEXT payload is decoded with strict UTF-8 on
-     * the decompressed bytes — invalid input yields a `1007` protocol
-     * error (RFC 6455 §8.1) rather than a lossy decode.
+     * Completes one data frame that carries a whole message (`fin` on the
+     * opening frame). An uncompressed `BINARY` frame with a pooled
+     * [WsFrame.inboundPayload] is delivered as zero-copy
+     * [WsMessage.BinaryChunks]; every other case materialises the payload as
+     * a `ByteArray` (releasing the pooled buffer, if any) and runs
+     * [finishBytes].
      */
-    private fun completeMessage(opcode: WsOpcode, payload: ByteArray, compressed: Boolean): WsAggregateResult {
+    private fun completeSingleFrame(frame: WsFrame): WsAggregateResult {
         messageOrdinal++
+        val pooled = frame.inboundPayload
+        if (!frame.rsv1 && frame.opcode == WsOpcode.BINARY && pooled != null) {
+            return WsAggregateResult.Completed(
+                WsMessage.BinaryChunks(IoBufChunks.takeOwnership(arrayListOf(pooled))),
+            )
+        }
+        return finishBytes(frame.opcode, frameBytes(frame), frame.rsv1)
+    }
+
+    /**
+     * Completes a fragmented message from [fragments]. An uncompressed
+     * `BINARY` message whose every fragment is pooled is handed off as
+     * zero-copy [WsMessage.BinaryChunks]; otherwise the fragments are
+     * flattened into one `ByteArray` (releasing the pooled ones) and run
+     * through [finishBytes]. Resets the in-progress state either way.
+     */
+    private fun completeFragments(opcode: WsOpcode, compressed: Boolean): WsAggregateResult {
+        messageOrdinal++
+        if (!compressed && opcode == WsOpcode.BINARY && fragments.all { it is WsFragment.Pooled }) {
+            val list = ArrayList<IoBuf>(fragments.size)
+            for (f in fragments) list.add((f as WsFragment.Pooled).buf)
+            // Ownership of every chunk transfers to the IoBufChunks; clear
+            // before reset() so reset() does not double-release them.
+            fragments.clear()
+            reset()
+            return WsAggregateResult.Completed(WsMessage.BinaryChunks(IoBufChunks.takeOwnership(list)))
+        }
+        val bytes = flattenFragments()
+        reset()
+        return finishBytes(opcode, bytes, compressed)
+    }
+
+    /**
+     * Builds the final [WsMessage] from a materialised [payload]. When
+     * [compressed] is true the [payload] is inflated first (RFC 7692
+     * §7.2.2) and the decompressed size re-checked against
+     * [MAX_WS_MESSAGE_SIZE] (a zip-bomb defence). A TEXT payload is decoded
+     * with strict UTF-8 on the decompressed bytes — invalid input yields a
+     * `1007` protocol error (RFC 6455 §8.1) rather than a lossy decode.
+     */
+    private fun finishBytes(opcode: WsOpcode, payload: ByteArray, compressed: Boolean): WsAggregateResult {
         val bytes = if (compressed) {
             when (val r = inflate(payload)) {
                 is InflateResult.Ok -> {
@@ -309,32 +380,99 @@ internal class WsFrameAggregator(
             null
         }
 
-    /** Drops the in-progress state and returns a `1002` protocol error. */
-    private fun protocolError(reason: String): WsAggregateResult {
+    /**
+     * Releases the incoming [frame]'s pooled payload and drops the
+     * in-progress state (releasing any accumulated pooled fragments via
+     * [reset]), then returns [error] — the single exit for every
+     * frame-triggered protocol error / size rejection, so neither the
+     * rejected frame's buffer nor a half-assembled message leaks.
+     */
+    private fun fail(frame: WsFrame, error: WsAggregateResult): WsAggregateResult {
+        frame.inboundPayload?.release()
         reset()
-        return WsAggregateResult.ProtocolError(closeCode = PROTOCOL_ERROR_CODE, reason = reason)
+        return error
     }
 
+    /**
+     * Releases any pooled fragments of the message in progress and clears
+     * the accumulator. Called on completion (fragments already drained, so a
+     * no-op for the buffers), on a protocol error (frees the half-assembled
+     * message), and on teardown via [release].
+     */
     private fun reset() {
         messageOpcode = null
         messageCompressed = false
-        chunks.clear()
+        for (f in fragments) if (f is WsFragment.Pooled) f.buf.release()
+        fragments.clear()
         bufferedSize = 0
     }
 
     /**
-     * Concatenates [chunks] into one contiguous payload, copying each byte
-     * exactly once. Called once per completed fragmented message.
+     * Releases the pooled buffers of any message still in progress. Called by
+     * the session pump on teardown so a connection that drops mid-message
+     * does not leak the partially-accumulated pooled fragments.
      */
-    private fun joinChunks(): ByteArray {
-        if (chunks.size == 1) return chunks[0]
+    fun release() {
+        reset()
+    }
+
+    /** The byte size of [frame]'s payload, whether pooled or heap. */
+    private fun frameSize(frame: WsFrame): Int = frame.inboundPayload?.readableBytes ?: frame.payload.size
+
+    /** Wraps [frame]'s payload as a [WsFragment], taking ownership of a pooled buffer. */
+    private fun fragmentOf(frame: WsFrame): WsFragment {
+        val pooled = frame.inboundPayload
+        return if (pooled != null) WsFragment.Pooled(pooled) else WsFragment.Bytes(frame.payload)
+    }
+
+    /**
+     * Materialises [frame]'s payload as a `ByteArray`, releasing a pooled
+     * [WsFrame.inboundPayload] after the copy.
+     */
+    private fun frameBytes(frame: WsFrame): ByteArray {
+        val pooled = frame.inboundPayload ?: return frame.payload
+        val out = ByteArray(pooled.readableBytes)
+        pooled.readByteArray(out, 0, out.size)
+        pooled.release()
+        return out
+    }
+
+    /**
+     * Concatenates [fragments] into one contiguous `ByteArray`, copying each
+     * byte exactly once and releasing every pooled fragment. Clears the
+     * fragment list. Called when a message cannot be delivered as zero-copy
+     * chunks (TEXT, compressed, or a binary message with a heap fragment).
+     */
+    private fun flattenFragments(): ByteArray {
         val joined = ByteArray(bufferedSize)
         var offset = 0
-        for (chunk in chunks) {
-            chunk.copyInto(joined, offset)
-            offset += chunk.size
+        for (f in fragments) {
+            when (f) {
+                is WsFragment.Pooled -> {
+                    val n = f.buf.readableBytes
+                    f.buf.readByteArray(joined, offset, n)
+                    f.buf.release()
+                    offset += n
+                }
+                is WsFragment.Bytes -> {
+                    f.bytes.copyInto(joined, offset)
+                    offset += f.bytes.size
+                }
+            }
         }
+        fragments.clear()
         return joined
+    }
+
+    /**
+     * One accumulated message fragment: either a pooled [IoBuf] (the
+     * decoder's zero-copy fast path) or a heap [ByteArray] (the slow-path
+     * fallback). The aggregator owns a [Pooled] fragment until it is released
+     * or transferred into the delivered [IoBufChunks].
+     */
+    private sealed interface WsFragment {
+        class Pooled(val buf: IoBuf) : WsFragment
+        class Bytes(val bytes: ByteArray) : WsFragment
     }
 
     companion object {
