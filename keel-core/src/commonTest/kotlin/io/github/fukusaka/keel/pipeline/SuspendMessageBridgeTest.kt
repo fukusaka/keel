@@ -85,6 +85,76 @@ class SuspendMessageBridgeTest {
     }
 
     @Test
+    fun `closeAndReleaseBuffered releases only the undelivered messages`() {
+        runTest {
+            val released = mutableListOf<String>()
+            val bridge = SuspendMessageBridge(TestMessage::class, releaseUndelivered = { released.add(it.value) })
+            val pipeline = createPipeline(bridge)
+
+            pipeline.notifyRead(TestMessage("a"))
+            pipeline.notifyRead(TestMessage("b"))
+            // The consumer takes one; the other is left buffered-and-undelivered.
+            assertEquals("a", bridge.receiveCatching().getOrThrow().value)
+
+            bridge.closeAndReleaseBuffered()
+
+            // Only the message the consumer never received is released.
+            assertEquals(listOf("b"), released)
+            assertTrue(bridge.receiveCatching().isClosed)
+        }
+    }
+
+    @Test
+    fun `onInactive releases every buffered undelivered message`() {
+        runTest {
+            val released = mutableListOf<String>()
+            val bridge = SuspendMessageBridge(TestMessage::class, releaseUndelivered = { released.add(it.value) })
+            val pipeline = createPipeline(bridge)
+
+            pipeline.notifyRead(TestMessage("x"))
+            pipeline.notifyRead(TestMessage("y"))
+            // Peer-FIN path: onInactive must drain + release the buffered frames.
+            pipeline.notifyInactive()
+
+            assertEquals(listOf("x", "y"), released)
+        }
+    }
+
+    @Test
+    fun `a message arriving after close is released not propagated`() {
+        runTest {
+            val released = mutableListOf<String>()
+            val bridge = SuspendMessageBridge(TestMessage::class, releaseUndelivered = { released.add(it.value) })
+            val pipeline = createPipeline(bridge)
+
+            bridge.closeAndReleaseBuffered()
+            // A late frame (e.g. the decoder delivering after the consumer
+            // stopped) hits the closed channel: trySend fails and the release
+            // hook reclaims it instead of leaking it downstream.
+            pipeline.notifyRead(TestMessage("late"))
+
+            assertEquals(listOf("late"), released)
+        }
+    }
+
+    @Test
+    fun `closeAndReleaseBuffered without a release hook keeps buffered messages receivable`() {
+        runTest {
+            // Default (no releaseUndelivered, e.g. the HTTP bridge): buffered
+            // messages are not drained — the consumer can still receive them.
+            val bridge = SuspendMessageBridge(TestMessage::class)
+            val pipeline = createPipeline(bridge)
+
+            pipeline.notifyRead(TestMessage("kept"))
+            bridge.closeAndReleaseBuffered()
+
+            val result = bridge.receiveCatching()
+            assertTrue(result.isSuccess)
+            assertEquals("kept", result.getOrThrow().value)
+        }
+    }
+
+    @Test
     fun `non-matching messages are propagated downstream`() {
         val bridge = SuspendMessageBridge(TestMessage::class)
         val pipeline = createPipeline(bridge)
