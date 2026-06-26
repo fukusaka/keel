@@ -27,6 +27,10 @@
 //                   without an env-var name collision.
 //   PAYLOAD_KB      payload size in KB (default: 64; preserved for back-compat
 //                   with existing summary tables)
+//   UPLOAD_PATH     target route (default: /upload-stream). Set to /xthread to
+//                   drive the cross-thread chunk-release route (same drain loop,
+//                   but the server releases each pooled chunk off the EventLoop)
+//                   for an A/B of the allocator's cross-thread return path.
 //   VUS             concurrent virtual users (default: 50)
 //   DURATION        bench duration (default: 15s)
 //   CONNECTION_CLOSE  when "true", every request carries `Connection: close`
@@ -61,7 +65,7 @@ export const options = {
 };
 
 export default function () {
-    const url = `${__ENV.SCHEME || 'http'}://${__ENV.HOST}:${__ENV.PORT}/upload-stream`;
+    const url = `${__ENV.SCHEME || 'http'}://${__ENV.HOST}:${__ENV.PORT}${__ENV.UPLOAD_PATH || '/upload-stream'}`;
     const res = http.post(url, PAYLOAD, { headers: HEADERS });
     check(res, {
         'status 200': (r) => r.status === 200,

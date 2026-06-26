@@ -9,6 +9,7 @@
 #
 # scenario:
 #   upload        POST /upload-stream  (request-body streaming throughput)
+#   xthread       POST /xthread        (cross-thread chunk-release A/B vs upload)
 #   sse           GET  /sse-stream     (response-body streaming throughput)
 #   ws-echo       GET  /ws-echo        (WebSocket echo throughput, small frames)
 #   ws-large      GET  /ws-echo        (single-VU large-frame round-trip throughput
@@ -78,6 +79,8 @@
 #   BENCH_UPLOAD_BYTES      upload.js payload size bytes (overrides
 #                            BENCH_PAYLOAD_KB if set; accepts MB-scale,
 #                            e.g. 10485760 = 10 MB)
+#   BENCH_UPLOAD_PATH       upload.js target route (default: /upload-stream;
+#                            the `xthread` scenario sets it to /xthread)
 #   BENCH_SSE_COUNT         sse.js frame count        (default: 100)
 #   BENCH_SSE_SIZE          sse.js per-frame bytes    (default: 1024)
 #   BENCH_WS_PAYLOAD        ws-echo.js msg size bytes (default: 256)
@@ -209,6 +212,16 @@ case "$SCENARIO" in
         READY_ENDPOINT="/hello"
         PARSER="http"
         ;;
+    xthread)
+        # Same drain loop as `upload` but targets /xthread, where the server
+        # releases each pooled chunk off the EventLoop (cross-thread return).
+        # Pairs with `upload` (EventLoop release) for an A/B of the allocator's
+        # cross-thread return path. Reuses upload.js via UPLOAD_PATH.
+        SCRIPT="benchmark/k6/upload.js"
+        READY_ENDPOINT="/hello"
+        PARSER="http"
+        BENCH_UPLOAD_PATH="${BENCH_UPLOAD_PATH:-/xthread}"
+        ;;
     sse)
         SCRIPT="benchmark/k6/sse.js"
         READY_ENDPOINT="/hello"
@@ -301,7 +314,7 @@ case "$SCENARIO" in
         PARSER="wsbench"
         ;;
     *)
-        echo "Unknown scenario: $SCENARIO (expected: upload|sse|multipart|method-mix|path-param|compression|compression-upload|slow-upload|ws-slow-consumer|ws-echo|ws-large|ws-fragment|ws-deflate)" >&2
+        echo "Unknown scenario: $SCENARIO (expected: upload|xthread|sse|multipart|method-mix|path-param|compression|compression-upload|slow-upload|ws-slow-consumer|ws-echo|ws-large|ws-fragment|ws-deflate)" >&2
         exit 1
         ;;
 esac
@@ -726,6 +739,7 @@ $K6_OUT"
             VUS="$K6_VUS" DURATION="$K6_DURATION" \
             PAYLOAD_KB="${BENCH_PAYLOAD_KB:-64}" \
             UPLOAD_BYTES="${BENCH_UPLOAD_BYTES:-0}" \
+            UPLOAD_PATH="${BENCH_UPLOAD_PATH:-/upload-stream}" \
             COUNT="${BENCH_SSE_COUNT:-100}" SIZE="${BENCH_SSE_SIZE:-1024}" \
             PARTS="${BENCH_MULTIPART_PARTS:-5}" PART_BYTES="${BENCH_MULTIPART_PART_BYTES:-4096}" \
             METHODS="${BENCH_METHODS:-GET,POST,PUT,DELETE,PATCH,OPTIONS}" \
