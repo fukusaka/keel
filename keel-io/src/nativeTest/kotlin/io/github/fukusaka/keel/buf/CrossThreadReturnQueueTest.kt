@@ -163,54 +163,86 @@ class CrossThreadReturnQueueTest {
     }
 
     @Test
-    fun `concurrent cross-thread releases racing close survive without strand or double-free`() {
-        // Best-effort probabilistic guard for the offer-vs-close XOR contract
-        // (IntrusiveMpscReturnQueue: a buffer is emitted by close XOR rejected by
-        // offer, never both, never neither). Each iteration races RACE_BUFFERS
-        // worker-pthread releases against the owner's close(). It cannot force the
-        // exact interleaving, but a strand (leak) or a double-free (a crash in
-        // freeBacking) surfaces under repetition. Not a proof — a regression guard.
+    fun `concurrent offers racing close are each emitted xor rejected exactly once`() {
+        // The offer-vs-close XOR contract of IntrusiveMpscReturnQueue: under a race
+        // between RACE_BUFFERS worker-pthread offer()s and the owner's close(), every
+        // buffer is either emitted by close() (its offer won the race to the CLOSED
+        // sentinel) XOR rejected by offer() (returned false, caller frees) — never
+        // both, never neither. The queue is lock-free (a CAS head + one atomic CLOSED
+        // swap), so this races only the queue, not the allocator's ChunkArena
+        // teardown — that has its own single-threaded-teardown contract (every
+        // release-capable thread is joined before close), which the engines honor and
+        // a unit test must not violate. Probabilistic interleaving, not a proof — a
+        // regression guard run over many iterations.
         repeat(RACE_ITERATIONS) {
-            val allocator = SlabAllocator()
-            val bufs = ArrayList<IoBuf>(RACE_BUFFERS)
-            for (i in 0 until RACE_BUFFERS) bufs.add(allocator.allocate(CLASS))
-            releaseEachConcurrentlyWithClose(bufs, allocator)
-            // Survived (no double-free crash); the count is sane — some releases
-            // route through the queue, the rest lose the race to close() and free
-            // the backing directly via the offer==false path.
-            assertTrue(
-                allocator.crossThreadReturnCount() in 0..RACE_BUFFERS.toLong(),
-                "cross-thread count out of range",
-            )
+            val q = IntrusiveMpscReturnQueue()
+            val bufs = Array(RACE_BUFFERS) { NativeIoBuf(CLASS) }
+            val accepted = BooleanArray(RACE_BUFFERS)
+            offerEachConcurrentlyWithClose(q, bufs, accepted) { drained ->
+                // offer won (accepted[i]) iff bufs[i] was captured by close's drain —
+                // exactly the XOR. close() atomically swaps the head to CLOSED, so an
+                // offer is in `drained` iff its CAS landed before that swap, which is
+                // also iff it returned true. A rejected buffer was freed by its worker;
+                // an emitted one is freed here — every buffer accounted for once.
+                for (i in bufs.indices) {
+                    assertEquals(
+                        accepted[i], bufs[i] in drained,
+                        "buffer $i: emitted-by-close iff its offer was accepted",
+                    )
+                }
+                assertEquals(
+                    RACE_BUFFERS, drained.size + accepted.count { !it },
+                    "every buffer emitted xor rejected — no strand, no double-free",
+                )
+                for (b in drained) (b as NativeIoBuf).close()
+            }
         }
     }
 
     @OptIn(ExperimentalForeignApi::class)
-    private fun releaseEachConcurrentlyWithClose(bufs: List<IoBuf>, allocator: SlabAllocator) {
+    private fun offerEachConcurrentlyWithClose(
+        q: IntrusiveMpscReturnQueue,
+        bufs: Array<NativeIoBuf>,
+        accepted: BooleanArray,
+        verifyAndFree: (drained: List<IoBuf>) -> Unit,
+    ) {
         val arena = Arena()
         try {
-            val threadPtrs = bufs.map { arena.alloc<pthread_tVar>() }
+            val threadPtrs = Array(bufs.size) { arena.alloc<pthread_tVar>() }
             for (i in bufs.indices) {
-                val ref = StableRef.create(bufs[i])
+                val ref = StableRef.create(OfferArg(q, bufs[i], accepted, i))
                 val rc = pthread_create(
                     threadPtrs[i].ptr, null,
                     staticCFunction { arg ->
-                        val b = arg!!.asStableRef<IoBuf>().get()
-                        b.release()
-                        arg.asStableRef<IoBuf>().dispose()
+                        val a = arg!!.asStableRef<OfferArg>().get()
+                        val won = a.q.offer(a.buf)
+                        a.accepted[a.idx] = won
+                        if (!won) a.buf.close() // rejected by the closed queue: caller frees
+                        arg.asStableRef<OfferArg>().dispose()
                         null
                     },
                     ref.asCPointer(),
                 )
                 check(rc == 0) { "pthread_create failed: rc=$rc" }
             }
-            // Owner closes concurrently with the in-flight worker releases.
-            allocator.close()
+            // Owner closes concurrently with the in-flight worker offers, then joins so
+            // every accepted[] write and every reject-free has completed before the
+            // verification reads them.
+            val drained = ArrayList<IoBuf>()
+            q.close(drained)
             for (i in bufs.indices) pthread_join(threadPtrs[i].ptr[0], null)
+            verifyAndFree(drained)
         } finally {
             arena.clear()
         }
     }
+
+    private class OfferArg(
+        val q: IntrusiveMpscReturnQueue,
+        val buf: NativeIoBuf,
+        val accepted: BooleanArray,
+        val idx: Int,
+    )
 
     @OptIn(ExperimentalForeignApi::class)
     private fun releaseOnWorkerThread(bufs: List<IoBuf>) {
