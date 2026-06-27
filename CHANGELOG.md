@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: `/ws-held/:n/:mode` WebSocket route + `ws-held.js` windowed send-stream driver for the held-pooled allocator measurement. The route holds `n` pooled messages before echoing the evicted oldest (`mode=chunks` holds the pooled `WsMessage.BinaryChunks`; `mode=bytes` flattens each to a heap `ByteArray` as the A/B control), so a benchmark can drive a steady held working set and read the central-allocator carve under `--profile-alloc`. (#833)
 - `io`, `benchmark`: `CrossThreadReleaseProfile` — an opt-in `BufferAllocatorLifecycleListener` measuring the per-size-class fraction of pooled buffers released on a different thread than they were allocated on (the owner-capture release path runs on whichever thread drives the refcount to zero). A new `defaultAllocator(statsCounter, lifecycleListener)` overload wires it, and the `--profile-xthread` benchmark flag attaches a shared instance and dumps per-class cross-thread rates. Measurement-only tooling for scoping a future sharded allocator to the classes that actually fall to cross-thread release. (#824)
 
 - `io`: make the pooled allocator's chunk back-end off-EventLoop-safe — a new `ArenaLock` seam guards the shared `ChunkArena` that `createChild()` now hands to every per-EventLoop child, so a buffer carved on one EventLoop and released on another no longer races the chunk bookkeeping (the crash class #815 worked around for `engine-nwconnection`). (#819)

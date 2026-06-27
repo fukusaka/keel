@@ -15,6 +15,8 @@ import io.github.fukusaka.keel.server.http.AssetSource
 import io.github.fukusaka.keel.server.http.Middleware
 import io.github.fukusaka.keel.server.http.dsl.KeelHttpServerBuilder
 import io.github.fukusaka.keel.server.http.header
+import io.github.fukusaka.keel.server.websocket.WsMessage
+import io.github.fukusaka.keel.server.websocket.WsSession
 import io.github.fukusaka.keel.server.websocket.dsl.webSockets
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -447,10 +449,14 @@ fun KeelHttpServerBuilder.installStreamingBenchRoutes() {
  *   `ws-fragment` scenario (wsbench Go client).
  * - `/ws-deflate` — echo with `permessage-deflate` (DeflateCodec). Used
  *   by the `ws-deflate` scenario.
+ * - `/ws-held/:n/:mode` — held-pooled workload for the allocator
+ *   measurement (see [runHeldPooledEcho]). Holds `n` received messages
+ *   before echoing the evicted oldest, so `n` pooled payloads per
+ *   connection stay outstanding and stress the central allocator.
  *
  * Two `webSockets { … }` blocks are registered: one without compression
- * for `/ws-echo` + `/ws-fragment`, one with `DeflateCodec` for
- * `/ws-deflate`. Endpoints inside a `webSockets(codec)` group share
+ * for `/ws-echo` + `/ws-fragment` + `/ws-held`, one with `DeflateCodec`
+ * for `/ws-deflate`. Endpoints inside a `webSockets(codec)` group share
  * one upgrade pipeline so registering both routes together stays
  * cheap.
  */
@@ -458,8 +464,81 @@ fun KeelHttpServerBuilder.installWebSocketBenchRoutes() {
     webSockets {
         webSocket("/ws-echo") { for (m in incoming) send(m) }
         webSocket("/ws-fragment") { for (m in incoming) send(m) }
+        webSocket("/ws-held/:n/:mode") { runHeldPooledEcho() }
     }
     webSockets(DeflateCodec) {
         webSocket("/ws-deflate") { for (m in incoming) send(m) }
     }
 }
+
+/** Held-message ring size when `:n` is absent or unparseable. */
+private const val DEFAULT_HELD_MESSAGES = 64
+
+/** Lower bound on the held-message ring (`:n` is clamped to this minimum). */
+private const val MIN_HELD_MESSAGES = 1
+
+/** Upper bound on the held-message ring (guards against an OOM from a huge `:n`). */
+private const val MAX_HELD_MESSAGES = 8192
+
+/**
+ * Held-pooled WebSocket workload for the allocator-capability measurement.
+ *
+ * Keeps a steady-state ring of `n` received messages **held** before echoing
+ * the evicted oldest, so at any instant `n` pooled payloads per connection stay
+ * outstanding (not returned to the pool). Across many connections this depletes
+ * the per-EventLoop freelist reserve and forces `ChunkArena.carve` under the
+ * central `ArenaLock` — the cost a sharded central allocator
+ * would remove. Run the server with `--profile-alloc` to read the per-size-class
+ * carve / miss% under the held working set.
+ *
+ * `:mode` selects what is held (the A/B):
+ * - `chunks` (default) — hold the pooled [WsMessage.BinaryChunks] as delivered
+ *   (the zero-copy path; this is what keeps pooled payloads outstanding).
+ * - `bytes` — flatten each message to a heap [ByteArray] (releasing the pooled
+ *   payload immediately) and hold that. The control arm: identical workload
+ *   shape, but the held working set is GC heap rather than pooled, so the
+ *   central-carve delta between `chunks` and `bytes` isolates the held-pooled
+ *   cost from the workload itself.
+ *
+ * Iterates [incoming] directly (not [onMessage][WsSession.onMessage]) because a
+ * held message must outlive the per-message scope: this handler owns each
+ * delivered [WsMessage.BinaryChunks] and releases it via [send] on eviction
+ * (ownership transfers to the transport) or, for any payload still held when the
+ * connection drops, in the `finally`.
+ *
+ * `:n` is clamped to [[MIN_HELD_MESSAGES], [MAX_HELD_MESSAGES]].
+ */
+private suspend fun WsSession.runHeldPooledEcho() {
+    val n = (pathParameters["n"]?.toIntOrNull() ?: DEFAULT_HELD_MESSAGES)
+        .coerceIn(MIN_HELD_MESSAGES, MAX_HELD_MESSAGES)
+    val holdChunks = pathParameters["mode"] != "bytes"
+    val held = ArrayDeque<WsMessage>(n + 1)
+    try {
+        for (message in incoming) {
+            held.addLast(if (holdChunks) message else message.flattenedToHeap())
+            if (held.size > n) send(held.removeFirst())
+        }
+    } finally {
+        // Connection closed mid-stream: release any pooled payloads still held.
+        held.forEach { (it as? WsMessage.BinaryChunks)?.chunks?.release() }
+    }
+}
+
+/**
+ * Flattens a pooled [WsMessage.BinaryChunks] into a heap [WsMessage.Binary],
+ * releasing the pooled chunks. Non-pooled messages pass through unchanged.
+ */
+private fun WsMessage.flattenedToHeap(): WsMessage =
+    if (this is WsMessage.BinaryChunks) {
+        val out = ByteArray(chunks.totalSize)
+        var offset = 0
+        chunks.forEach { chunk ->
+            val readable = chunk.readableBytes
+            chunk.readByteArray(out, offset, readable)
+            offset += readable
+        }
+        chunks.release()
+        WsMessage.Binary(out)
+    } else {
+        this
+    }
