@@ -295,6 +295,19 @@ case "$SCENARIO" in
         READY_ENDPOINT="/hello"
         PARSER="ws"
         ;;
+    ws-held)
+        # Held-pooled workload for the allocator-capability measurement. The
+        # /ws-held/:n/:mode route holds n pooled payloads per connection before
+        # echoing the evicted oldest; run the server with --profile-alloc to
+        # capture the central carve under that held working set. Route ring size
+        # + mode come from BENCH_WS_PATH (default /ws-held/64/chunks).
+        SCRIPT="benchmark/k6/ws-held.js"
+        READY_ENDPOINT="/hello"
+        PARSER="ws"
+        # Binary frames are the ones delivered as pooled BinaryChunks (the path
+        # the measurement exercises); default to binary unless overridden.
+        BENCH_WS_TYPE="${BENCH_WS_TYPE:-binary}"
+        ;;
     ws-fragment)
         # The Go-based wsbench client constructs RFC 6455 fragmented
         # frames (k6's k6/ws cannot). It already emits the
@@ -314,7 +327,7 @@ case "$SCENARIO" in
         PARSER="wsbench"
         ;;
     *)
-        echo "Unknown scenario: $SCENARIO (expected: upload|xthread|sse|multipart|method-mix|path-param|compression|compression-upload|slow-upload|ws-slow-consumer|ws-echo|ws-large|ws-fragment|ws-deflate)" >&2
+        echo "Unknown scenario: $SCENARIO (expected: upload|xthread|sse|multipart|method-mix|path-param|compression|compression-upload|slow-upload|ws-slow-consumer|ws-echo|ws-large|ws-held|ws-fragment|ws-deflate)" >&2
         exit 1
         ;;
 esac
@@ -751,6 +764,8 @@ $K6_OUT"
             PAYLOAD_TYPE="${BENCH_WS_TYPE:-text}" \
             CLOSE_HANDSHAKE="${BENCH_WS_CLOSE_HANDSHAKE:-false}" \
             WS_LARGE_BYTES="${BENCH_WS_LARGE_BYTES:-1048576}" \
+            WS_PATH="${BENCH_WS_PATH:-/ws-held/64/chunks}" \
+            WS_WINDOW="${BENCH_WS_WINDOW:-}" \
             PING_PONGS="${BENCH_WS_PING_PONGS:-0}" \
             CONNECTION_CLOSE="${BENCH_HTTP_CONNECTION_CLOSE:-false}" \
             COMPRESSION_TYPE="${BENCH_COMPRESSION_TYPE:-gzip}" \
