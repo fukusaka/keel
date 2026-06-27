@@ -93,12 +93,12 @@ class PooledDirectAllocator private constructor(
  */
 private class TreiberStackFreelist(private val maxSlots: Int) : Freelist {
     private val head = AtomicReference<DirectIoBuf?>(null)
-    private val size = AtomicInteger(0)
+    private val count = AtomicInteger(0)
 
     override fun push(buf: IoBuf): Boolean {
-        val newSize = size.incrementAndGet()
+        val newSize = count.incrementAndGet()
         if (newSize > maxSlots) {
-            size.decrementAndGet()
+            count.decrementAndGet()
             return false
         }
         val dbuf = buf as DirectIoBuf
@@ -114,11 +114,13 @@ private class TreiberStackFreelist(private val maxSlots: Int) : Freelist {
             val cur = head.get() ?: return null
             if (head.compareAndSet(cur, cur.nextLink)) {
                 cur.nextLink = null
-                size.decrementAndGet()
+                count.decrementAndGet()
                 return cur
             }
         }
     }
+
+    override fun size(): Int = count.get()
 
     override fun snapshotInto(out: MutableList<IoBuf>) {
         var cur = head.get()

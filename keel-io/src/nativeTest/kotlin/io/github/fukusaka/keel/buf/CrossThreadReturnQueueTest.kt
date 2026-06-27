@@ -40,6 +40,14 @@ class CrossThreadReturnQueueTest {
 
         // Buffers (= worker pthreads) raced against close() per iteration.
         private const val RACE_BUFFERS = 12
+
+        // Non-owner worker threads churning allocate+release concurrently (all route
+        // releases to the MPSC and drain it on allocate-miss → concurrent drains).
+        private const val CHURN_WORKERS = 4
+
+        // Iterations per worker; enough to surface the concurrent-drain timing race
+        // while staying well under the slow-test budget.
+        private const val CHURN_ITERS = 50_000
     }
 
     @Test
@@ -197,6 +205,37 @@ class CrossThreadReturnQueueTest {
     }
 
     @Test
+    fun `concurrent allocate-release churn drains the return queue without losing buffers`() {
+        // Several worker threads churn allocate+release on one allocator whose owner is
+        // this (main) thread. Each worker is a non-owner, so its releases route to the
+        // MPSC queue and its allocate-misses drain that queue — meaning multiple workers
+        // can drain concurrently. Before per-call drain scratch this raced one shared
+        // ArrayList: a lost element silently dropped a buffer (leak) and a resize race
+        // threw out of bounds (crash). The leak-balance assertion catches a lost/double
+        // buffer (every allocated buffer must eventually fire onReleased); a crash fails
+        // the test outright. Stress over many iterations to surface the timing race.
+        val allocated = AtomicLong(0)
+        val released = AtomicLong(0)
+        val listener = object : BufferAllocatorLifecycleListener {
+            override fun onAllocated(buf: IoBuf) {
+                allocated.fetchAndAdd(1L)
+            }
+
+            override fun onReleased(buf: IoBuf) {
+                released.fetchAndAdd(1L)
+            }
+        }
+        val allocator = SlabAllocator(lifecycleListener = listener)
+        allocator.allocate(CLASS).release() // latch ownerTid = this (main) thread
+        churnAllocReleaseOnWorkers(allocator, CHURN_WORKERS, CHURN_ITERS)
+        allocator.close() // drains the MPSC + pool, settling every outstanding release
+        assertEquals(
+            allocated.load(), released.load(),
+            "every allocated buffer must fire onReleased exactly once — a lost or double buffer signals drain-scratch corruption",
+        )
+    }
+
+    @Test
     fun `concurrent offers racing close are each emitted xor rejected exactly once`() {
         // The offer-vs-close XOR contract of IntrusiveMpscReturnQueue: under a race
         // between RACE_BUFFERS worker-pthread offer()s and the owner's close(), every
@@ -285,6 +324,39 @@ class CrossThreadReturnQueueTest {
         val accepted: BooleanArray,
         val idx: Int,
     )
+
+    private class ChurnArg(val allocator: SlabAllocator, val iters: Int)
+
+    /**
+     * Spawns [workers] pthreads, each running [iters] `allocate(CLASS)` + `release`
+     * cycles on [allocator], and joins them. Each worker is a non-owner thread, so
+     * its releases route through the MPSC return queue and its allocate-misses drain
+     * it — driving concurrent drains across the workers.
+     */
+    @OptIn(ExperimentalForeignApi::class)
+    private fun churnAllocReleaseOnWorkers(allocator: SlabAllocator, workers: Int, iters: Int) {
+        val arena = Arena()
+        try {
+            val threadPtrs = Array(workers) { arena.alloc<pthread_tVar>() }
+            for (w in 0 until workers) {
+                val ref = StableRef.create(ChurnArg(allocator, iters))
+                val rc = pthread_create(
+                    threadPtrs[w].ptr, null,
+                    staticCFunction { arg ->
+                        val a = arg!!.asStableRef<ChurnArg>().get()
+                        repeat(a.iters) { a.allocator.allocate(CLASS).release() }
+                        arg.asStableRef<ChurnArg>().dispose()
+                        null
+                    },
+                    ref.asCPointer(),
+                )
+                check(rc == 0) { "pthread_create failed: rc=$rc" }
+            }
+            for (w in 0 until workers) pthread_join(threadPtrs[w].ptr[0], null)
+        } finally {
+            arena.clear()
+        }
+    }
 
     @OptIn(ExperimentalForeignApi::class)
     private fun releaseOnWorkerThread(bufs: List<IoBuf>) {

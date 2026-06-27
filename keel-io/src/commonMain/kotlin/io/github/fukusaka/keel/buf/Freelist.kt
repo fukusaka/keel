@@ -47,6 +47,16 @@ interface Freelist {
     fun pop(): IoBuf?
 
     /**
+     * The number of buffers currently pooled. Read consistently with [push] /
+     * [pop] — under the same lock for the locked implementations, or via the atomic
+     * count for the lock-free one — so it is correct even when [push] / [pop] run
+     * concurrently. This is the single source of truth for the per-class cached
+     * count: [PooledAllocator] derives its diagnostics and pool snapshots from it
+     * rather than maintaining a separate (race-prone) counter. Not a hot-path call.
+     */
+    fun size(): Int
+
+    /**
      * Appends all currently pooled buffers to [out] without removing them.
      *
      * Used at startup to enumerate pooled buffers (e.g. io_uring fixed-buffer

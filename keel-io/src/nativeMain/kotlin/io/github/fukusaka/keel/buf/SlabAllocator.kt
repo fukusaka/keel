@@ -71,9 +71,6 @@ class SlabAllocator private constructor(
     /** Count of releases routed through [mpscReturnQueue] (the true cross-thread rate). */
     private val xthreadReturnCount = AtomicLong(0)
 
-    /** Reused scratch list for [drainReturns]; only ever touched by the owner thread. */
-    private val drainScratch = ArrayList<IoBuf>(DRAIN_SCRATCH_INITIAL)
-
     @Suppress("IoBufLeak") // Allocator returns ownership to caller
     override fun newBuffer(capacity: Int): IoBuf = NativeIoBuf(capacity)
 
@@ -176,22 +173,28 @@ class SlabAllocator private constructor(
         // enqueued: any release that loses the race to the sentinel frees its own
         // backing via the offer == false path in returnToPool, so each buffer is
         // emitted here XOR freed there — never both, never stranded.
-        drainScratch.clear()
-        mpscReturnQueue.close(drainScratch)
-        for (i in drainScratch.indices) returnToPoolLocal(drainScratch[i])
-        drainScratch.clear()
+        val scratch = ArrayList<IoBuf>(DRAIN_SCRATCH_INITIAL)
+        mpscReturnQueue.close(scratch)
+        for (i in scratch.indices) returnToPoolLocal(scratch[i])
     }
 
     /**
-     * Drains the cross-thread return queue back through [returnToPoolLocal] on the
-     * owner thread. Reuses [drainScratch] so the drain allocates nothing; the list
-     * is cleared afterwards so it retains no buffer references.
+     * Drains the cross-thread return queue back through [returnToPoolLocal].
+     *
+     * Uses a per-call scratch list, not a shared field. [beforePoolMiss] /
+     * [beforeTrim] run on whichever thread is allocating, and a pooled channel
+     * consumed via `asSuspendSource` from a non-EventLoop coroutine has the engine
+     * push read path and the caller's pull refill both allocate-missing on this
+     * allocator — so two threads can reach [drainReturns] concurrently. The MPSC
+     * head CAS hands each caller a disjoint chain ([IntrusiveMpscReturnQueue.drain]),
+     * so a per-call list keeps concurrent drains from corrupting one shared
+     * ArrayList. The allocation is off the hot path — only on a pool miss (or trim)
+     * with a non-empty return queue.
      */
     private fun drainReturns() {
-        drainScratch.clear()
-        mpscReturnQueue.drain(drainScratch)
-        for (i in drainScratch.indices) returnToPoolLocal(drainScratch[i])
-        drainScratch.clear()
+        val scratch = ArrayList<IoBuf>(DRAIN_SCRATCH_INITIAL)
+        mpscReturnQueue.drain(scratch)
+        for (i in scratch.indices) returnToPoolLocal(scratch[i])
     }
 
     /** Cumulative count of cross-thread releases routed through the MPSC queue. */
@@ -268,6 +271,8 @@ private class SpinLockFreelist(private val maxSlots: Int) : Freelist {
     override fun pop(): IoBuf? = withSpinLock {
         if (list.isEmpty()) null else list.removeLast()
     }
+
+    override fun size(): Int = withSpinLock { list.size }
 
     override fun snapshotInto(out: MutableList<IoBuf>) {
         withSpinLock { out.addAll(list) }

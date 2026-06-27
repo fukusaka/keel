@@ -48,6 +48,8 @@ class MutexFreelist(private val maxSlots: Int) : Freelist {
         if (list.isEmpty()) null else list.removeLast()
     }
 
+    override fun size(): Int = lock.withLock { list.size }
+
     override fun snapshotInto(out: MutableList<IoBuf>) {
         lock.withLock { out.addAll(list) }
     }
