@@ -105,15 +105,20 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
     override fun deleteWriteFilter(kqFd: Int, fd: Int): Int =
         submitEventDelete(kqFd, fd, EVFILT_WRITE)
 
-    override fun waitEvents(kqFd: Int, eventsOut: Array<KqEvent>, timeoutNanos: Long): Int {
+    override fun waitEvents(kqFd: Int, eventsOut: Array<KqEvent>, timeoutMillis: Long): Int {
         memScoped {
             val eventList = allocArray<kevent>(eventsOut.size)
-            val timeoutPtr = if (timeoutNanos == KqueueSyscallOps.TIMEOUT_BLOCK) {
+            val timeoutPtr = if (timeoutMillis == KqueueSyscallOps.TIMEOUT_BLOCK) {
                 null
             } else {
+                // [timeoutMillis] is milliseconds (the DeadlineScheduler / computeWaitTimeout
+                // unit). Split into the timespec's seconds + nanoseconds fields. The earlier
+                // code divided by NS_PER_SEC, treating the millisecond value as nanoseconds —
+                // a 1e6x-too-short wait that busy-polled the EventLoop whenever a connection
+                // deadline (idle / read / write timeout) was scheduled.
                 val ts = alloc<timespec>()
-                ts.tv_sec = (timeoutNanos / NS_PER_SEC).convert()
-                ts.tv_nsec = (timeoutNanos % NS_PER_SEC).convert()
+                ts.tv_sec = (timeoutMillis / MILLIS_PER_SEC).convert()
+                ts.tv_nsec = (timeoutMillis % MILLIS_PER_SEC * NANOS_PER_MILLI).convert()
                 ts.ptr
             }
             val n = kevent(kqFd, null, 0, eventList, eventsOut.size, timeoutPtr)
@@ -175,5 +180,6 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
         }
     }
 
-    private const val NS_PER_SEC = 1_000_000_000L
+    private const val MILLIS_PER_SEC = 1_000L
+    private const val NANOS_PER_MILLI = 1_000_000L
 }
