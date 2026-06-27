@@ -126,7 +126,7 @@ abstract class PooledAllocator internal constructor(
     // @Volatile ensures the collection-cycle reader on the OT thread sees eventual
     // consistency. Plain `++` on a Volatile Long is non-atomic and races with the
     // off-EL release path (cross-thread `IoBuf.release()` → `returnToPool`), matching
-    // the existing per-class `cachedCount` / `allocsSinceTrim` IntArray convention —
+    // the per-class `allocsSinceTrim` / `trimCountdown` trim-heuristic convention —
     // a lost increment surfaces as a tiny discrepancy at the next snapshot, not as
     // state corruption.
     @kotlin.concurrent.Volatile
@@ -207,18 +207,34 @@ abstract class PooledAllocator internal constructor(
      */
     private val children: MutableList<PooledAllocator> = mutableListOf()
 
-    // Cache-trim bookkeeping (per-EventLoop, single-thread — same writer contract as
-    // hintSizeClass). Kept off the COW Ladder because they mutate on the hot path.
-    /** Cached entries per size class (push ++ / pop --); exposed for test/diagnostics. */
-    private val cachedCount = IntArray(sizeClasses.nSizes)
+    // Cache-trim bookkeeping (per-EventLoop, single-thread on the common path — same
+    // writer contract as hintSizeClass). Kept off the COW Ladder because they mutate
+    // on the hot path.
+    //
+    // Approximate under concurrent allocate: a pooled channel consumed via
+    // asSuspendSource from a non-EventLoop coroutine has the engine push read path
+    // and the caller's pull refill both allocating on this allocator, so these plain
+    // counters can race. The drift is benign — they only steer the *trim heuristic*
+    // (cadence + per-class evict budget), which is approximate by design (Netty's
+    // MemoryRegionCache.trim formula). The trim *operation* is fully safe: the
+    // freelist pop is lock-guarded, carve/reclaim is ArenaLock-guarded, and the
+    // cross-thread return queue is lock-free. Making them precise would cost an
+    // atomic on every allocate (measured ~+22%, rejected) for no user-visible gain,
+    // and trimCountdown is global so it cannot fold into a per-class freelist lock.
+    // The exact cached count is *not* among these — it is read from [Freelist.size]
+    // (consistent under the freelist's own lock), so diagnostics stay correct.
 
     /**
      * Cache hits per size class since the last trim — Netty's per-cache `allocations`
-     * counter. The trim budget keeps `slotCap - this` (see [trim]).
+     * counter. The trim budget keeps `slotCap - this` (see [trim]). Approximate under
+     * concurrent allocate (see the note above): benign trim-budget drift.
      */
     private val allocsSinceTrim = IntArray(sizeClasses.nSizes)
 
-    /** Allocations remaining until the next trim pass. */
+    /**
+     * Allocations remaining until the next trim pass. Approximate under concurrent
+     * allocate (see the note above): benign trim-cadence drift.
+     */
     private var trimCountdown = TRIM_INTERVAL
 
     private val poolOwner: IoBufOwner = PoolOwner { buf -> returnToPool(buf) }
@@ -371,7 +387,6 @@ abstract class PooledAllocator internal constructor(
                 }
                 if (recycled != null) {
                     allocsSinceTrim[idx]++ // working-set signal: this class served from cache
-                    cachedCount[idx]--
                     (recycled as AbstractIoBuf).resetForReuse()
                     recycled.owner = poolOwner
                     recordAllocate(
@@ -426,11 +441,18 @@ abstract class PooledAllocator internal constructor(
     }
 
     /**
-     * The same-thread return body: push to the class freelist, or free the backing
-     * on slot-cap / no-pool / closed. **Single-writer** — only the owning EventLoop
-     * thread reaches here (directly on the fast path, or via the MPSC drain which
-     * runs on the owner thread), so the freelist and its `cachedCount` counters
-     * stay race-free.
+     * The return body: push to the class freelist, or free the backing on
+     * slot-cap / no-pool / closed.
+     *
+     * Safe under concurrent callers. The common path is the owning EventLoop thread
+     * (directly, or via the MPSC drain), but a pooled channel consumed via
+     * `asSuspendSource` from a non-EventLoop coroutine can have the engine push path
+     * and the caller's pull refill both reach here at once. That is fine: the
+     * freelist [Freelist.push] is itself thread-safe, the backing free is per-buffer
+     * (and `ChunkArena.returnRun` is ArenaLock-guarded), and the only shared state it
+     * mutates is the cumulative stat counters whose plain `++` is the documented
+     * lossy-snapshot convention (see the counter note above). The exact cached count
+     * is read from [Freelist.size], not a counter here, so it stays consistent.
      */
     protected fun returnToPoolLocal(buf: IoBuf) {
         val cap = buf.capacity
@@ -439,7 +461,6 @@ abstract class PooledAllocator internal constructor(
             val pool = ladder.pools[idx]
             if (pool != null) {
                 if (pool.push(buf)) {
-                    cachedCount[idx]++
                     recordRelease(
                         buf = buf,
                         byteSize = cap,
@@ -597,7 +618,9 @@ abstract class PooledAllocator internal constructor(
             perClassMisses = perClassMisses.copyOf(),
             perClassAllocations = perClassAllocations.copyOf(),
             perClassReleases = perClassReleases.copyOf(),
-            perClassCachedCount = cachedCount.copyOf(),
+            // Derived from each freelist's own (lock-consistent) count rather than a
+            // separate counter, so it is correct even under concurrent allocate.
+            perClassCachedCount = IntArray(nSizes) { ladder.pools[it]?.size() ?: 0 },
             perClassSizes = sizeClassesArray.copyOf(),
             perClassTiers = tierByClassIdx.copyOf(),
         )
@@ -638,7 +661,8 @@ abstract class PooledAllocator internal constructor(
     internal val chunkCount: Int get() = chunkArena.chunkCount
 
     /** Cached entry count for [capacity]'s size class (test/diagnostic observability). */
-    internal fun cachedCountOf(capacity: Int): Int = cachedCount[sizeClasses.size2SizeIdx(capacity)]
+    internal fun cachedCountOf(capacity: Int): Int =
+        ladder.pools[sizeClasses.size2SizeIdx(capacity)]?.size() ?: 0
 
     /** Forces a [trim] pass immediately (test hook; production trims via [maybeTrim]). */
     internal fun trimNow() = trim()
@@ -679,7 +703,6 @@ abstract class PooledAllocator internal constructor(
             allocsSinceTrim[idx] = 0
             while (evict > 0) {
                 val buf = pool.pop() ?: break // freelist empty → stop, like Netty's free()
-                cachedCount[idx]--
                 (buf as AbstractIoBuf).freeBacking() // chunk-carved view → returns its run
                 evict--
             }
@@ -737,7 +760,6 @@ abstract class PooledAllocator internal constructor(
             val pool = l.pools[i] ?: continue
             while (true) {
                 val buf = pool.pop() ?: break
-                cachedCount[i]--
                 (buf as AbstractIoBuf).freeBacking()
             }
             pool.close()
