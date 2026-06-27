@@ -98,16 +98,38 @@ class CrossThreadReturnQueueTest {
     }
 
     @Test
-    fun `serial-confined allocator routes every release to the freelist fast path`() {
+    fun `an always-owner confinement routes every release to the freelist fast path`() {
         val allocator = SlabAllocator()
-        allocator.disableCrossThreadRouting()
+        // A serial-queue engine (e.g. NWConnection on GCD) installs a token whose
+        // on-context check holds for every same-queue release regardless of which
+        // worker pthread runs it; modelled here by a token that always reports owner.
+        allocator.installConfinement(AlwaysOwnerConfinement)
         try {
-            val buf = allocator.allocate(CLASS) // binds ownerTid (unread while disabled)
-            // Release on a worker pthread: a thread-id router would see cross-thread,
-            // but with routing disabled it takes the freelist path immediately.
+            val buf = allocator.allocate(CLASS)
+            // Release on a worker pthread: a thread-id token would see cross-thread,
+            // but the installed token reports same-context, so it pools directly.
             releaseOnWorkerThread(listOf(buf))
-            assertEquals(0L, allocator.crossThreadReturnCount(), "disabled routing must not enqueue")
+            assertEquals(0L, allocator.crossThreadReturnCount(), "always-owner token must not enqueue")
             assertEquals(1, allocator.cachedCountOf(CLASS), "release pooled directly on the freelist")
+        } finally {
+            allocator.close()
+        }
+    }
+
+    @Test
+    fun `an off-context confinement routes even a same-thread release through the queue`() {
+        val allocator = SlabAllocator()
+        // Routing follows the installed token, not a hardcoded thread id: a token
+        // reporting "not the owner" funnels even a same-thread release to the MPSC
+        // queue. This is the path a genuinely off-queue NWConnection release (e.g. an
+        // asSource refill on the caller's thread) now takes, instead of racing the
+        // queue's freelist as the old blanket opt-out allowed.
+        allocator.installConfinement(NeverOwnerConfinement)
+        try {
+            val buf = allocator.allocate(CLASS)
+            buf.release() // same thread, but the token reports off-context
+            assertEquals(1L, allocator.crossThreadReturnCount(), "off-context release routes through the queue")
+            assertEquals(0, allocator.cachedCountOf(CLASS), "not pooled on the freelist; queued for the owner")
         } finally {
             allocator.close()
         }
@@ -247,6 +269,14 @@ class CrossThreadReturnQueueTest {
         } finally {
             arena.clear()
         }
+    }
+
+    private object AlwaysOwnerConfinement : ConfinementToken {
+        override fun isCurrentContextOwner(): Boolean = true
+    }
+
+    private object NeverOwnerConfinement : ConfinementToken {
+        override fun isCurrentContextOwner(): Boolean = false
     }
 
     private class OfferArg(

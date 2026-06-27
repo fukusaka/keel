@@ -158,7 +158,7 @@ internal class NwIoTransport(
     // the AbstractIoTransport super constructor so allocator is set up
     // before any callback can fire.
 ) : AbstractIoTransport(
-    parentAllocator.createChild().also { it.disableCrossThreadRouting() },
+    parentAllocator.createChild().also { it.installConfinement(NwQueueConfinement(connQueue)) },
 ) {
 
     /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */

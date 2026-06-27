@@ -137,7 +137,7 @@ class ProfilingAllocator(
     override fun createChild(): BufferAllocator =
         ProfilingAllocator(delegate.createChild(), profile)
 
-    override fun disableCrossThreadRouting() = delegate.disableCrossThreadRouting()
+    override fun installConfinement(token: ConfinementToken) = delegate.installConfinement(token)
 }
 
 /**

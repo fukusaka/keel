@@ -151,7 +151,7 @@ class TrackingAllocator private constructor(
     override fun createChild(): BufferAllocator =
         TrackingAllocator(delegate.createChild(), stats)
 
-    override fun disableCrossThreadRouting() = delegate.disableCrossThreadRouting()
+    override fun installConfinement(token: ConfinementToken) = delegate.installConfinement(token)
 
     override fun close() {
         closeCount++

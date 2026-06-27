@@ -124,7 +124,13 @@ class NwEngine(
      * resources without touching the parent.
      */
     private val allocator: BufferAllocator =
-        config.allocator.createChild().also { it.disableCrossThreadRouting() }
+        // Pure parent: every per-connection transport takes its own createChild() off
+        // this (NwStreamServer / connect() pass it as parentAllocator only), so this
+        // allocator's own freelist is never directly allocated from or released to —
+        // its confinement is never exercised. The per-connection children install a
+        // queue-identity NwQueueConfinement (see NwIoTransport); this one is left on
+        // the default ThreadIdConfinement.
+        config.allocator.createChild()
 
     /**
      * Binds a TCP listener on the given host and port.
