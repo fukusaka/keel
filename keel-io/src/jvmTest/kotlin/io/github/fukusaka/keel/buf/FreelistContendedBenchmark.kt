@@ -14,12 +14,13 @@ import kotlin.test.Test
  * verifies node-set integrity (ABA detection).
  *
  * Purpose: confirm the freelist ABA result is algorithm-fundamental, not a
- * Native artifact — the plain intrusive Treiber stack (the current
- * `PooledDirectAllocator` shape) corrupts under genuine contention on the JVM
- * too, while the spin lock and the versioned-index variant stay correct. This
- * shows the production JVM Treiber is safe *only* because its engines are
- * EL-pinned and never truly contended (verified separately by code), not because
- * the algorithm is ABA-safe.
+ * Native artifact — the plain intrusive Treiber stack (formerly the
+ * `PooledDirectAllocator` shape) corrupts under genuine contention on the JVM too,
+ * while the spin lock and the versioned-index variant stay correct. This is why
+ * concurrent allocate via `asSource` (the engine push read path racing a caller's
+ * pull refill on one allocator) forced `PooledDirectAllocator` to switch to a
+ * lock-guarded `MutexFreelist`: the Treiber was safe only while every allocator was
+ * strictly EL-pinned, which that scenario violates.
  *
  * Not a unit test — runs as `@Test` for `jvmTest`; inspect stdout. Asserts only
  * that the harness ran (no functional assertion on timing).

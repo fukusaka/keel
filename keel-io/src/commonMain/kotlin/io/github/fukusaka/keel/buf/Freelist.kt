@@ -17,12 +17,14 @@ package io.github.fukusaka.keel.buf
  * **Selection** (measured trade-offs):
  * - **spin lock + array** (Native default): fast uncontended, ABA-immune;
  *   busy-waits under contention. Fits keel's EL-pinned engines.
- * - **intrusive Treiber** (JVM default): fast uncontended and lock-free, but
- *   ABA-unsafe for reused nodes under genuine MPMC — safe only because the JVM
- *   engines are EL-pinned and never truly contended.
- * - **mutex** (parks waiters): slower uncontended, far better contended, avoids
- *   the userspace-spinlock preemption pathology. Fits an arbitrary-concurrency
- *   allocator.
+ * - **intrusive Treiber** (lock-free): fast uncontended but **ABA-unsafe under
+ *   genuine MPMC**. Was the JVM default until concurrent allocate (an `asSource`
+ *   pull refill racing the engine's push read path on one allocator) made it
+ *   corrupt into a double-free; no longer a keel default.
+ * - **mutex** (JVM default; parks waiters): slightly slower uncontended (a
+ *   ReentrantLock CAS fast-path), far better contended, avoids the
+ *   userspace-spinlock preemption pathology, and safe under arbitrary concurrency —
+ *   which the JVM allocate path is not single-thread-confined against.
  * - **versioned-index** (lock-free, ABA-safe): a documented escalation.
  *
  * **Thread safety**: implementations declare their own guarantees. The
