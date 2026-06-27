@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalForeignApi::class)
+@file:OptIn(ExperimentalForeignApi::class, kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
 
 package io.github.fukusaka.keel.buf
 
@@ -10,6 +10,7 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
+import kotlin.concurrent.atomics.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -151,7 +152,17 @@ class CrossThreadReturnQueueTest {
 
     @Test
     fun `cross-thread release after close frees directly without enqueuing`() {
-        val allocator = SlabAllocator()
+        // A counting listener verifies the close-race free still fires onReleased
+        // (so leak detection stays balanced) even though returnToPool bypasses
+        // recordRelease on this path to avoid racing onClose's stat counters.
+        val released = AtomicLong(0)
+        val listener = object : BufferAllocatorLifecycleListener {
+            override fun onAllocated(buf: IoBuf) {}
+            override fun onReleased(buf: IoBuf) {
+                released.fetchAndAdd(1L)
+            }
+        }
+        val allocator = SlabAllocator(lifecycleListener = listener)
         val buf = allocator.allocate(CLASS) // binds ownerTid
         allocator.close() // closed = true; the owner EventLoop is gone
 
@@ -160,6 +171,7 @@ class CrossThreadReturnQueueTest {
         // queue nobody will drain.
         releaseOnWorkerThread(listOf(buf))
         assertEquals(0L, allocator.crossThreadReturnCount(), "post-close release must not enqueue")
+        assertEquals(1L, released.load(), "the close-race free fires onReleased exactly once (leak-balanced)")
     }
 
     @Test

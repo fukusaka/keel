@@ -153,12 +153,25 @@ class SlabAllocator private constructor(
         }
         // Cross-thread: hand the buffer to the owner via the lock-free queue. If the
         // queue is closed (owner gone), offer returns false and we free the backing
-        // here — returnToPoolLocal's closed-flag branch calls freeBacking. A buffer
-        // is thus emitted by onClose's drain XOR freed by this false-path, never both.
+        // here. A buffer is thus emitted by onClose's drain XOR freed by this
+        // false-path, never both.
         if (mpscReturnQueue.offer(buf as NativeIoBuf)) {
             xthreadReturnCount.fetchAndAdd(1L)
         } else {
-            returnToPoolLocal(buf)
+            // This closed-queue free runs on the freeing thread, possibly
+            // concurrently with onClose's drain on the owner thread. We deliberately
+            // bypass returnToPoolLocal here: its recordRelease bumps the cumulative
+            // stat counters with plain `++`, and onClose's drain bumps the same
+            // counters — two writers would race them. Instead free the backing
+            // directly and fire the lifecycle listener so leak detection stays
+            // balanced. The few buffers freed on this close-race path are not
+            // reflected in the cumulative stats: a deterministic, benign teardown
+            // undercount rather than a data race on the counters. Memory safety is
+            // unaffected — the backing free goes through ChunkArena.returnRun, which
+            // is ArenaLock-guarded during onClose's drain window and single-threaded
+            // once teardown has completed.
+            lifecycleListener.onReleased(buf)
+            (buf as AbstractIoBuf).freeBacking()
         }
     }
 
