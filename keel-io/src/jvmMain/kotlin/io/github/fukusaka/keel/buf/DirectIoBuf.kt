@@ -25,16 +25,10 @@ class DirectIoBuf private constructor(
     override val unsafeNioByteBuffer: ByteBuffer get() = base
 
     /**
-     * Intrusive freelist link used by [PooledDirectAllocator]'s Treiber
-     * stack. Non-null only while this buffer resides in the pool.
-     */
-    internal var nextLink: DirectIoBuf? = null
-
-    /**
-     * Chunk run-binding (pool-back-end state, alongside [nextLink]). Non-null
-     * when this buffer is a view carved from a [PooledChunk]; its [freeBacking]
-     * then returns the run instead of being a no-op. Fixed for the buffer's life
-     * and deliberately preserved across [resetForReuse].
+     * Chunk run-binding (pool-back-end state). Non-null when this buffer is a view
+     * carved from a [PooledChunk]; its [freeBacking] then returns the run instead of
+     * being a no-op. Fixed for the buffer's life and deliberately preserved across
+     * [resetForReuse].
      */
     override var chunkPool: PooledChunk? = null
     override var chunkHandle: Long = 0L
@@ -114,7 +108,6 @@ class DirectIoBuf private constructor(
 
     override fun resetForReuse() {
         super.resetForReuse()
-        nextLink = null
         base.position(0)
         base.limit(capacity)
     }
