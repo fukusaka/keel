@@ -56,25 +56,14 @@ class SlabAllocator private constructor(
     }
 
     /**
-     * Thread id of the owning EventLoop, captured lazily on the first allocation.
-     * The EventLoop's loop pthread does not exist when [createChild] runs (that
-     * happens on the bootstrap thread), so a constructor-time capture is
-     * impossible; [UNSET] until the first [allocate]. Read on every release to
-     * classify same- vs cross-thread.
+     * The confinement model used to classify a release as same-owner (freelist
+     * fast path) or cross-context (route through [mpscReturnQueue]). Defaults to
+     * [ThreadIdConfinement] for the pthread-pinned POSIX engines; a serial-queue
+     * engine (NWConnection on GCD) installs a queue-identity token via
+     * [installConfinement]. Set once at child creation, before the first allocate.
      */
     @kotlin.concurrent.Volatile
-    private var ownerTid: Long = UNSET
-
-    /**
-     * Set by a serial-confined engine (NWConnection on GCD) via
-     * [disableCrossThreadRouting] to opt out of thread-id-based cross-thread
-     * routing. Such an engine serialises every allocate / release on one queue but
-     * is not pinned to one pthread, so thread-id routing would false-positive on GCD
-     * worker-pthread migration. Set once at child creation, before the first
-     * allocate. When set, [returnToPool] always takes the freelist fast path.
-     */
-    @kotlin.concurrent.Volatile
-    private var crossThreadRoutingDisabled: Boolean = false
+    private var confinement: ConfinementToken = ThreadIdConfinement()
 
     /** Lock-free queue cross-thread releases land in; drained by the owner thread. */
     private val mpscReturnQueue = IntrusiveMpscReturnQueue()
@@ -133,25 +122,21 @@ class SlabAllocator private constructor(
         enumerateNativePooledBuffers(this)
 
     override fun captureOwnerThread() {
-        if (ownerTid == UNSET) ownerTid = currentThreadId()
+        confinement.captureOwner()
     }
 
     override fun returnToPool(buf: IoBuf) {
-        // Serial-confined engine (e.g. NWConnection on GCD): allocate / release are
-        // serialised on one queue but not pinned to one pthread, so thread-id
-        // routing would misclassify same-queue releases as cross-thread. Opt out to
-        // the freelist fast path — the serial queue keeps it uncontended.
-        if (crossThreadRoutingDisabled) {
+        // Same confinement context (same pthread for ThreadIdConfinement, same
+        // serial queue for a queue-identity token), or not yet bound: freelist
+        // fast path. A serial-queue engine (NWConnection on GCD) reports its
+        // on-queue releases as same-context here even across pthread migration,
+        // while a genuinely off-queue release (e.g. a pull-mode asSource refill on
+        // the caller's thread) falls through to the cross-context routing below.
+        if (confinement.isCurrentContextOwner()) {
             returnToPoolLocal(buf)
             return
         }
-        val owner = ownerTid
-        // Same-thread or not-yet-bound: freelist fast path.
-        if (owner == UNSET || currentThreadId() == owner) {
-            returnToPoolLocal(buf)
-            return
-        }
-        // Cross-thread: hand the buffer to the owner via the lock-free queue. If the
+        // Cross-context: hand the buffer to the owner via the lock-free queue. If the
         // queue is closed (owner gone), offer returns false and we free the backing
         // here. A buffer is thus emitted by onClose's drain XOR freed by this
         // false-path, never both.
@@ -213,17 +198,15 @@ class SlabAllocator private constructor(
     internal fun crossThreadReturnCount(): Long = xthreadReturnCount.load()
 
     /**
-     * Sets [crossThreadRoutingDisabled] so [returnToPool] always takes the freelist
-     * fast path. See [BufferAllocator.disableCrossThreadRouting]. The opt-out is
-     * per-instance, not inherited through [createChild], so it must be called on the
-     * engine child and each per-connection child.
+     * Installs the [ConfinementToken] this allocator routes releases against. See
+     * [BufferAllocator.installConfinement]. Per-instance, not inherited through
+     * [createChild], so it must be called on each child before its first allocate.
      */
-    override fun disableCrossThreadRouting() {
-        crossThreadRoutingDisabled = true
+    override fun installConfinement(token: ConfinementToken) {
+        confinement = token
     }
 
     private companion object {
-        private const val UNSET = -1L
         private const val DRAIN_SCRATCH_INITIAL = 32
     }
 }

@@ -208,7 +208,7 @@ class LeakDetectingAllocator(
     override fun createChild(): BufferAllocator =
         LeakDetectingAllocator(delegate.createChild(), onLeak)
 
-    override fun disableCrossThreadRouting() = delegate.disableCrossThreadRouting()
+    override fun installConfinement(token: ConfinementToken) = delegate.installConfinement(token)
 }
 
 /**
