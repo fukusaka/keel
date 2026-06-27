@@ -44,6 +44,10 @@ fun main(args: Array<String>) {
         runFreelistDispatchBench()
         return
     }
+    if (args.any { it == "--bench=cachedcount-cost" }) {
+        runCachedCountCostBench()
+        return
+    }
     if (args.any { it == "--bench=segment-access" }) {
         runSegmentAccessBench()
         return
