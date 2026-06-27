@@ -170,9 +170,16 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
             // Fall through to free the now-empty subpage's run.
         }
         freeBytes += runSize(pageShifts, handle)
-        var finalRun = collapseRuns(handle)
-        finalRun = finalRun and (1L shl IS_USED_SHIFT).inv()
-        finalRun = finalRun and (1L shl IS_SUBPAGE_SHIFT).inv()
+        // Coalesce with adjacent free runs, then normalise to a clean free-run
+        // handle. A subpage's run falls through here still carrying the subpage
+        // handle's isSubpage bit AND its bitmapIdx low bits; when the run does not
+        // coalesce, collapseRuns returns the input unchanged, so clearing only
+        // isUsed / isSubpage (the prior code) left the bitmapIdx set and leaked a
+        // subpage handle into runsAvail — a later allocateRun then trips the
+        // free-run validation with "non-zero bitmapIdx". Rebuilding via toRunHandle
+        // from the run's coordinates guarantees isUsed = isSubpage = bitmapIdx = 0.
+        val collapsed = collapseRuns(handle)
+        val finalRun = toRunHandle(runOffset(collapsed), runPages(collapsed), inUsed = 0)
         insertAvailRun(runOffset(finalRun), runPages(finalRun), finalRun)
     }
 
