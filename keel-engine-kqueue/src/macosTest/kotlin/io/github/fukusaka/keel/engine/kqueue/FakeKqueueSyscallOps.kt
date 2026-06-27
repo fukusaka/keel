@@ -195,7 +195,7 @@ internal class FakeKqueueSyscallOps(
         waitResults.addLast(ScriptedWait.Failed(errno))
     }
 
-    override fun waitEvents(kqFd: Int, eventsOut: Array<KqEvent>, timeoutNanos: Long): Int {
+    override fun waitEvents(kqFd: Int, eventsOut: Array<KqEvent>, timeoutMillis: Long): Int {
         waitCalls++
         if (waitResults.isEmpty()) {
             // Empty-default path. In live mode (funnel test), poll-sleep so

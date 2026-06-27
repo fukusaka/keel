@@ -97,14 +97,16 @@ internal interface KqueueSyscallOps {
      *
      * @param eventsOut pre-allocated array; on success, `eventsOut[0..count-1]`
      *   are mutated in place (no allocation).
-     * @param timeoutNanos wait behavior:
+     * @param timeoutMillis wait behavior (milliseconds, matching the
+     *   millisecond-based [io.github.fukusaka.keel.pipeline.DeadlineScheduler]
+     *   that feeds it and the epoll engine's `epoll_wait` timeout unit):
      *   - [TIMEOUT_BLOCK] — block indefinitely until at least one event fires
      *   - `0L` — non-blocking poll
-     *   - positive — wait at most this many nanoseconds
+     *   - positive — wait at most this many milliseconds
      * @return non-negative event count on success; negative `-errno` on
      *   failure. A return of `0` means the wait timed out with no events.
      */
-    fun waitEvents(kqFd: Int, eventsOut: Array<KqEvent>, timeoutNanos: Long): Int
+    fun waitEvents(kqFd: Int, eventsOut: Array<KqEvent>, timeoutMillis: Long): Int
 
     /**
      * Writes a single byte to the wakeup pipe's write end to interrupt
