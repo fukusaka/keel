@@ -1,11 +1,13 @@
 name: Engine stress (quick)
 
 # Runs the per-engine cross-thread funnel stress (KqueuePipelineEchoStress,
-# EpollPipelineEchoStress, ...) with KEEL_STRESS=quick on every PR that touches
-# an engine, keel-core, or keel-io. These tests skip unless KEEL_STRESS is set,
-# so the main CI (ci.yml) never runs them; this workflow is the auto PR gate
-# that guards the I/O ownership invariant (the funnel), multi-EventLoop accept
-# dispatch + per-EventLoop routing, and the concurrent-allocate path under load.
+# EpollPipelineEchoStress, ...) plus the pooled allocator's arena-saturation
+# stress (PooledAllocatorArenaSaturationStress) with KEEL_STRESS=quick on every
+# PR that touches an engine, keel-core, or keel-io. These tests skip unless
+# KEEL_STRESS is set, so the main CI (ci.yml) never runs them; this workflow is
+# the auto PR gate that guards the I/O ownership invariant (the funnel),
+# multi-EventLoop accept dispatch + per-EventLoop routing, the concurrent-allocate
+# path under load, and the shared ChunkArena under cross-thread saturation.
 #
 # Kept OUT of ci.yml deliberately: path-filtering here means a change to an
 # unrelated module does not pay for an engine stress run, and the quick scenario
@@ -73,19 +75,21 @@ jobs:
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: konan-${{ runner.os }}-
 
-      # epoll / io_uring run on linuxX64; nio / netty are JVM engines.
-      # One gradle invocation PER engine: --tests narrows to the stress only
+      # epoll / io_uring run on linuxX64; nio / netty are JVM engines; keel-io's
+      # allocator arena-saturation stress is JVM and runs here too.
+      # One gradle invocation PER suite: --tests narrows to the stress only
       # when a single Test task is on the command line — a multi-task
       # invocation leaves some suites unfiltered and runs the full module
-      # suite, pulling in unrelated (and sometimes flaky) tests. Each engine
-      # therefore runs its *PipelineEchoStress alone. The runner's default
-      # `bash -eo pipefail` fails the step on the first engine that stalls.
-      - name: Stress (linuxX64 + JVM engines, quick)
+      # suite, pulling in unrelated (and sometimes flaky) tests. Each one
+      # therefore runs its stress class alone. The runner's default
+      # `bash -eo pipefail` fails the step on the first one that stalls.
+      - name: Stress (linuxX64 + JVM engines + keel-io allocator, quick)
         run: |
           ./gradlew :keel-engine-epoll:linuxX64Test --tests '*PipelineEchoStress'
           ./gradlew :keel-engine-io-uring:linuxX64Test --tests '*PipelineEchoStress'
           ./gradlew :keel-engine-nio:jvmTest --tests '*PipelineEchoStress'
           ./gradlew :keel-engine-netty:jvmTest --tests '*PipelineEchoStress'
+          ./gradlew :keel-io:jvmTest --tests '*ArenaSaturationStress'
 
       - name: Upload stress reports (linux)
         if: always()
