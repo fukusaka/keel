@@ -28,6 +28,7 @@ daily/
 # Benchmark results (raw wrk output + summaries)
 benchmark/results/
 benchmark/results-summary/
+benchmark/stress/
 
 # Benchmark native server build artifacts
 benchmark/rust-bench/target/
