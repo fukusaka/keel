@@ -220,24 +220,35 @@ public class LongObjectMap<V : Any>(initialCapacity: Int = DEFAULT_CAPACITY) {
      * gap, then null-terminates the chain.
      */
     private fun backshift(removed: Int, mask: Int) {
-        var i = removed
         val arr = values
+        var i = removed // the current gap slot to fill
+        var j = removed // scans forward over the whole probe cluster
         while (true) {
-            val j = (i + 1) and mask
+            j = (j + 1) and mask
             val s = arr[j]
             if (s == null) {
+                // End of the probe cluster — close the gap and stop.
                 arr[i] = null
                 return
             }
             val home = hash(keys[j]) and mask
-            // Move entry from j to i if entry at j was displaced past i.
+            // An entry at [j] may be shifted back into the gap at [i] only if
+            // its home is NOT cyclically in `(i, j]` — i.e. it was displaced
+            // from at-or-before [i] and stays reachable when probed from its
+            // home through [i]. Displacement form: `(j - home) >= (j - i)`
+            // (mod capacity).
+            //
+            // When the entry at [j] is NOT movable it is already correctly
+            // placed relative to the gap, so the gap stays at [i] and [j]
+            // keeps scanning forward. Stopping the scan at the first
+            // non-movable entry (the previous behaviour) stranded later
+            // entries whose home is `<= i` behind the gap: a probe from their
+            // home hit the empty gap and returned `null`, so a still-present
+            // key became unreachable under put/remove churn.
             if (((j - home) and mask) >= ((j - i) and mask)) {
                 keys[i] = keys[j]
                 arr[i] = s
                 i = j
-            } else {
-                arr[i] = null
-                return
             }
         }
     }
