@@ -12,8 +12,8 @@ import kotlin.test.Test
  * against one shared [PooledAllocator] instance. The per-size-class [Freelist]
  * absorbs the steady-state path, so the chunk-arena layer is exercised mostly at
  * cold start and on cache eviction — this measures the **production hot path**,
- * including the cost of the planned thread-safety changes on the freelist-hit
- * fast path.
+ * including the cost of the per-class `MutexFreelist`'s lock on the
+ * freelist-hit fast path.
  *
  * Two workload scenarios capture the gap between cross-thread funnel stress
  * (one allocator pounded on a single size class) and production-shaped
@@ -24,8 +24,9 @@ import kotlin.test.Test
  * - **mixed**: every iteration rotates through six size classes spanning
  *   subpage and page tiers. Models production HTTP server traffic, where header
  *   / chunked-body / WS-frame allocations span many size classes simultaneously
- *   — the regime where the upcoming Netty-style per-size-class subpage lock
- *   (Option B) is expected to outperform a single arena-wide mutex (Option A).
+ *   — the regime where a future per-size-class arena lock could spread carve
+ *   work across classes, versus today's single shared arena lock (sharding is
+ *   currently deferred).
  *
  * **What this bench does not measure**: the chunk-arena cold path (carve /
  * freeRun) directly. The freelist absorbs the steady state, so once warmed up
@@ -34,9 +35,9 @@ import kotlin.test.Test
  *
  * **Correctness**: each iteration writes one byte to the returned buffer so the
  * JIT cannot elide the allocate / release pair. Exceptions in any thread are
- * counted; the **unsafe baseline** (current `main`) is expected to corrupt or
- * crash under contention — that is the data we want for the comparison
- * baseline, not a test failure.
+ * counted; with the default `MutexFreelist` front the count should stay zero, so
+ * a non-zero count signals a thread-safety regression rather than the unsafe
+ * corruption this bench was originally written to capture.
  *
  * Not a unit test — runs as `@Test` for jvmTest, no functional assertion. Inspect
  * stdout for ns/op + Mops/sec + exception count.
@@ -161,11 +162,11 @@ class PooledAllocatorContendedBenchmark {
                             i++
                         }
                     } catch (@Suppress("SwallowedException", "TooGenericExceptionCaught") t: Throwable) {
-                        // Intentionally swallowed: the unsafe-baseline measurement is
-                        // expected to corrupt state and throw under contention. The
-                        // counter is the diagnostic, not the throwable — failing the
-                        // worker thread would terminate the trial mid-measurement and
-                        // discard data the comparison needs.
+                        // Intentionally swallowed: with the default MutexFreelist this
+                        // count should stay zero, so a throw signals a thread-safety
+                        // regression. The counter is the diagnostic, not the throwable —
+                        // failing the worker thread would terminate the trial
+                        // mid-measurement and discard data the run needs.
                         exceptionCount.incrementAndGet()
                     }
                     perThreadOps[tid] = ops
@@ -180,9 +181,9 @@ class PooledAllocatorContendedBenchmark {
             return TrialResult(wallNs, totalOps, exceptionCount.get())
         } finally {
             // close() drains the freelists and releases chunk backings. Wrapping
-            // in runCatching mirrors the unsafe-baseline reality: a corrupt
-            // freelist may throw on close, but the bench's own measurement is
-            // already complete by then.
+            // in runCatching is defensive: a thread-safety regression could leave a
+            // freelist corrupt and throw on close, but the bench's own measurement
+            // is already complete by then.
             runCatching { allocator.close() }
         }
     }
