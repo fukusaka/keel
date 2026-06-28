@@ -1,0 +1,159 @@
+name: Engine stress (quick)
+
+# Runs the per-engine cross-thread funnel stress (KqueuePipelineEchoStress,
+# EpollPipelineEchoStress, ...) with KEEL_STRESS=quick on every PR that touches
+# an engine, keel-core, or keel-io. These tests skip unless KEEL_STRESS is set,
+# so the main CI (ci.yml) never runs them; this workflow is the auto PR gate
+# that guards the I/O ownership invariant (the funnel), multi-EventLoop accept
+# dispatch + per-EventLoop routing, and the concurrent-allocate path under load.
+#
+# Kept OUT of ci.yml deliberately: path-filtering here means a change to an
+# unrelated module does not pay for an engine stress run, and the quick scenario
+# (~5s per engine) keeps the gate to ~1-2 min of test time per host.
+#
+# The full scenario (KEEL_STRESS=full, ~5 min per engine) is not run here; it is
+# driven manually per engine via workflow_dispatch (e.g. iouring-stress.yml).
+#
+# Trigger gating mirrors ci.yml: pull_request runs require the `needs-pr-check`
+# label AND a sender in the CI_ALLOWED_USERS allowlist, so fork PRs cannot spend
+# CI minutes without maintainer opt-in.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'keel-engine-*/**'
+      - 'keel-core/**'
+      - 'keel-io/**'
+      - '.github/workflows/engine-stress-quick.yml'
+  pull_request:
+    types: [ labeled, synchronize ]
+    paths:
+      - 'keel-engine-*/**'
+      - 'keel-core/**'
+      - 'keel-io/**'
+      - '.github/workflows/engine-stress-quick.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  KEEL_STRESS: quick
+
+jobs:
+  linux:
+    name: Engine stress quick (linuxX64 + JVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'needs-pr-check') &&
+       contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Install native dependencies
+        # liburing is required by the io_uring engine's cinterop.
+        run: sudo apt-get install -y liburing-dev
+
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
+
+      # epoll / io_uring run on linuxX64; nio / netty are JVM engines.
+      # One gradle invocation PER engine: --tests narrows to the stress only
+      # when a single Test task is on the command line — a multi-task
+      # invocation leaves some suites unfiltered and runs the full module
+      # suite, pulling in unrelated (and sometimes flaky) tests. Each engine
+      # therefore runs its *PipelineEchoStress alone. The runner's default
+      # `bash -eo pipefail` fails the step on the first engine that stalls.
+      - name: Stress (linuxX64 + JVM engines, quick)
+        run: |
+          ./gradlew :keel-engine-epoll:linuxX64Test --tests '*PipelineEchoStress'
+          ./gradlew :keel-engine-io-uring:linuxX64Test --tests '*PipelineEchoStress'
+          ./gradlew :keel-engine-nio:jvmTest --tests '*PipelineEchoStress'
+          ./gradlew :keel-engine-netty:jvmTest --tests '*PipelineEchoStress'
+
+      - name: Upload stress reports (linux)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-stress-quick-reports-linux
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  macos:
+    name: Engine stress quick (macosArm64)
+    runs-on: macos-latest
+    timeout-minutes: 25
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'needs-pr-check') &&
+       contains(format(',{0},', vars.CI_ALLOWED_USERS), format(',{0},', github.event.sender.login)))
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v5
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: konan-${{ runner.os }}-
+
+      # kqueue / NWConnection run on macosArm64 (Darwin cinterop).
+      # One gradle invocation per engine — see the linux job for why a
+      # multi-task invocation does not narrow with --tests.
+      - name: Stress (macosArm64 engines, quick)
+        run: |
+          ./gradlew :keel-engine-kqueue:macosArm64Test --tests '*PipelineEchoStress'
+          ./gradlew :keel-engine-nwconnection:macosArm64Test --tests '*PipelineEchoStress'
+
+      - name: Upload stress reports (macos)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-stress-quick-reports-macos
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # A Kotlin/Native test binary that dies (SIGSEGV / SIGABRT) surfaces only
+      # as "Test running process exited unexpectedly" with empty XML; the crash
+      # report on the runner is the sole diagnostic. Upload it so a rare crash
+      # is root-causable from the run.
+      - name: Upload crash reports (macos)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-stress-quick-crash-reports-macos
+          path: |
+            ~/Library/Logs/DiagnosticReports/
+          if-no-files-found: ignore
+          retention-days: 14
