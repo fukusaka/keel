@@ -34,6 +34,15 @@ import kotlin.time.Duration.Companion.seconds
  * (`vu=<i>` payload tagged so any misrouting fails `assertEquals`
  * immediately).
  *
+ * **Multi-EL coverage (`threads = 4`)**: connections are distributed
+ * round-robin across four worker EventLoops, so this also exercises
+ * multi-EL accept dispatch and per-worker fd routing under concurrency —
+ * the dimension a single-EventLoop configuration cannot reach. This
+ * configuration previously stalled on a shared-collection defect (a
+ * `LongObjectMap` backward-shift bug that lost a connection's fd-readiness
+ * registration so its `connect` never resumed, fixed in #846); running at
+ * `threads = 4` keeps that fix guarded for kqueue specifically.
+ *
  * **Concurrent-allocate coverage**: each VU also allocates its `write` /
  * `read` buffers from `ch.allocator` on its [Dispatchers.Default]
  * coroutine while the engine allocates read buffers for the same channel
@@ -96,15 +105,12 @@ class KqueuePipelineEchoStress {
     }
 
     private suspend fun runEchoStress(rounds: Int) {
-        // NOTE: `threads = 1` is intentional for now. Multi-EL routing
-        // is a separate dimension — promoting to `threads = 4` is left
-        // for a follow-up that resolves the multi-EL hang observed
-        // during bring-up. The single-EL configuration already
-        // exercises the cross-thread funnel: client coroutines run on
-        // `Dispatchers.Default` workers, distinct from the engine EL
-        // thread, so every `Channel.write` / `Channel.read` round-trips
-        // through `runOnEventLoop`.
-        val engine = KqueueEngine(IoEngineConfig(threads = 1))
+        // threads = 4: four worker EventLoops so the stress covers multi-EL
+        // accept dispatch + per-worker fd routing on top of the cross-thread
+        // funnel. The multi-EL hang seen during bring-up was the shared
+        // LongObjectMap backward-shift bug (#846), not a kqueue limitation;
+        // with that fixed this runs reliably at threads = 4.
+        val engine = KqueueEngine(IoEngineConfig(threads = 4))
         try {
             val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
                 channel.pipeline.addLast("echo", EchoHandler())
