@@ -234,4 +234,66 @@ class LongObjectMapTest {
         assertEquals("neg-one", m[-1L])
         assertEquals(4, m.size)
     }
+
+    @Test
+    fun `multi-seed insert-update-remove churn matches a reference map on size get and containsKey`() {
+        // Stronger than the single-seed Red-Green churn above: several LCG
+        // seeds (distinct op trajectories / cluster shapes), a 3-way op mix
+        // that also exercises put-update (overwrite of a present key), and a
+        // full size + get(value) + containsKey reconciliation after EVERY op —
+        // so any divergence (lost key, size drift, stale value) is caught at
+        // the exact op that introduces it, on whichever engine-shaped key it hits.
+        val keys = ArrayList<Long>()
+        for (fd in 1..120) {
+            keys.add(fd.toLong())
+            keys.add(fd.toLong() or (1L shl 32))
+        }
+        val seeds = longArrayOf(1L, 1442695040888963407L, -0x61c8864680b583ebL, 0xDEADBEEFL)
+        for (seed in seeds) {
+            val m = LongObjectMap<Int>()
+            val ref = HashMap<Long, Int>()
+            var rng = seed
+            fun next(): Int {
+                rng = rng * 6364136223846793005L + 1442695040888963407L
+                return (rng ushr 33).toInt() and 0x7FFFFFFF
+            }
+            repeat(2_000) { iter ->
+                val key = keys[next() % keys.size]
+                when {
+                    !ref.containsKey(key) -> { m[key] = iter; ref[key] = iter } // insert
+                    next() % 2 == 0 -> { m.remove(key); ref.remove(key) }       // remove
+                    else -> { m[key] = iter; ref[key] = iter }                  // update (overwrite)
+                }
+                assertEquals(ref.size, m.size, "seed=$seed iter=$iter size drift")
+                for (k in keys) {
+                    assertEquals(ref[k], m[k], "seed=$seed iter=$iter key=$k get diverged")
+                    assertEquals(ref.containsKey(k), m.containsKey(k), "seed=$seed iter=$iter key=$k containsKey diverged")
+                }
+            }
+            assertEquals(ref.size, m.size)
+        }
+    }
+
+    @Test
+    fun `page-aligned keys with low bits zero round-trip through put get and remove`() {
+        // The Fibonacci hash uses top-bit extraction precisely so page-aligned
+        // pointer-like keys (low bits zero) do not all hash to one slot. This
+        // pins correctness for that key class (round-trip + backshift on the
+        // survivors after remove); the distribution property itself is a design
+        // invariant of LongObjectMap.hash and is not asserted here (slot layout
+        // is private).
+        val m = LongObjectMap<Int>()
+        val pageSize = 4096L
+        val n = 200
+        for (i in 1..n) m[pageSize * i] = i
+        assertEquals(n, m.size)
+        for (i in 1..n) assertEquals(i, m[pageSize * i], "page-aligned key ${pageSize * i} not retrievable")
+        // Remove every other page-aligned key; survivors must stay reachable.
+        for (i in 1..n step 2) m.remove(pageSize * i)
+        assertEquals(n / 2, m.size)
+        for (i in 1..n) {
+            if (i % 2 == 1) assertNull(m[pageSize * i])
+            else assertEquals(i, m[pageSize * i], "survivor ${pageSize * i} stranded after remove")
+        }
+    }
 }
