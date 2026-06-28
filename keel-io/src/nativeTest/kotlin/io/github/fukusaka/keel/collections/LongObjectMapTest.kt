@@ -19,6 +19,43 @@ class LongObjectMapTest {
     }
 
     @Test
+    fun `put-remove churn with engine-like keys keeps every live key reachable`() {
+        // Mirrors the EpollEventLoop / KqueueEventLoop registration key space
+        // (fd | interest.ordinal shl 32) under heavy put/remove churn, where
+        // backward-shift deletion of one key must never make another live key
+        // unreachable. Deterministic LCG so failures reproduce.
+        val m = LongObjectMap<Int>()
+        val ref = HashMap<Long, Int>()
+        val keys = ArrayList<Long>()
+        for (fd in 1..150) {
+            keys.add(fd.toLong())
+            keys.add(fd.toLong() or (1L shl 32))
+        }
+        var rng = 0x9E3779B97F4A7C15uL.toLong()
+        fun next(): Int {
+            rng = rng * 6364136223846793005L + 1442695040888963407L
+            return ((rng ushr 33).toInt() and 0x7FFFFFFF)
+        }
+        repeat(20_000) { iter ->
+            val key = keys[next() % keys.size]
+            if (ref.containsKey(key)) {
+                m.remove(key)
+                ref.remove(key)
+            } else {
+                m[key] = iter
+                ref[key] = iter
+            }
+            // After every op, every key the reference holds must still be
+            // reachable in the map (a backshift bug surfaces as a live key
+            // returning null) and absent keys must return null.
+            for (k in keys) {
+                assertEquals(ref[k], m[k], "iter=$iter key=$k diverged (size=${m.size}/${ref.size})")
+            }
+        }
+        assertEquals(ref.size, m.size)
+    }
+
+    @Test
     fun `put returns null for first insert`() {
         val m = LongObjectMap<String>()
         assertNull(m.put(1L, "a"))
