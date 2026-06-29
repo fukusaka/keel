@@ -35,5 +35,22 @@ internal fun normalizeShardCount(requested: Int): Int {
  */
 internal fun defaultShardCount(): Int = normalizeShardCount(availableProcessors())
 
+/**
+ * Spreads an off-EventLoop thread key across shards. [currentThreadId] is a pthread
+ * id — an address on Native — whose low bits are alignment-skewed, so masking it
+ * directly (`key and (shardCount - 1)`) can cluster off-EventLoop carves onto a few
+ * shards. Applies the SplitMix64 finalizer (Stafford's Mix13, a measured improvement
+ * on MurmurHash3's `fmix64`) so every input bit avalanches into the low bits the
+ * arena masks. The caller returns this as the shard index; [ShardedChunkArena] masks
+ * it down to the shard count.
+ */
+internal fun mixShardKey(key: Long): Int {
+    var z = key
+    z = (z xor (z ushr 30)) * 0xbf58476d1ce4e5b9uL.toLong()
+    z = (z xor (z ushr 27)) * 0x94d049bb133111ebuL.toLong()
+    z = z xor (z ushr 31)
+    return z.toInt()
+}
+
 /** Footprint cap on the shard count (each shard keeps a warm-reserve chunk). */
 private const val MAX_SHARD_COUNT = 64
