@@ -109,13 +109,16 @@ class SlabAllocator private constructor(
 
     /**
      * Routes a carve to the owner EventLoop's pinned shard ([shardIdx]) when the
-     * caller is the owning thread, else hashes the foreign thread's id across shards
-     * — so concurrent off-EL carves (or many threads sharing one allocator) spread
-     * over shard locks instead of serialising on one. The returned id is masked to
-     * the shard count by [ShardedChunkArena.carve].
+     * caller is the owning thread, else spreads the foreign thread across shards via
+     * [mixShardKey] — a raw [currentThreadId] is a pthread address that clusters in
+     * its low bits, landing every off-EL thread on one shard (measured: 256 threads
+     * all hit 1 of 32 shards on both Linux and macOS), so a SplitMix64 finalizer
+     * avalanches it first. This keeps concurrent off-EL carves (or many threads
+     * sharing one allocator) spread over shard locks instead of serialising on one.
+     * The returned id is masked to the shard count by [ShardedChunkArena.carve].
      */
     override fun shardIndexForCarve(): Int =
-        if (confinement.isCurrentContextOwner()) shardIdx else currentThreadId().toInt()
+        if (confinement.isCurrentContextOwner()) shardIdx else mixShardKey(currentThreadId())
 
     @OptIn(ExperimentalForeignApi::class)
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
