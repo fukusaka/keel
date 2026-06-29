@@ -107,6 +107,15 @@ abstract class PooledAllocator internal constructor(
      * it does not carve directly.
      */
     protected val shardIdx: Int = 0,
+    /**
+     * The number of central [ShardedChunkArena] shards this instance creates when
+     * it owns the arena (a root allocator). Defaults to [defaultShardCount] (the
+     * core count). Pass a custom value — e.g. to match a non-default
+     * `config.threads` EventLoop count — so each EventLoop still pins to its own
+     * shard; [normalizeShardCount] rounds it up to a power of two and caps it.
+     * Ignored when [sharedArena] is non-null (a child shares the root's arena).
+     */
+    shardCount: Int = defaultShardCount(),
 ) : BufferAllocator {
 
     /** The size-class table driving round-up. Built once with keel's pooling parameters. */
@@ -263,7 +272,7 @@ abstract class PooledAllocator internal constructor(
      * ([ownsChunkArena]).
      */
     private val shardedArena: ShardedChunkArena = sharedArena ?: ShardedChunkArena(
-        shardCount = DEFAULT_SHARD_COUNT,
+        shardCount = normalizeShardCount(shardCount),
         sizeClasses = sizeClasses,
         newChunkBacking = { newBuffer(CHUNK_SIZE) },
         newChunkView = ::newChunkView,
@@ -687,6 +696,9 @@ abstract class PooledAllocator internal constructor(
     /** Resident chunk count (test/diagnostic observability). */
     internal val chunkCount: Int get() = shardedArena.chunkCount
 
+    /** Central [ShardedChunkArena] shard count, post-normalisation (test/diagnostic observability). */
+    internal val centralShardCount: Int get() = shardedArena.shardCount
+
     /** Cached entry count for [capacity]'s size class (test/diagnostic observability). */
     internal fun cachedCountOf(capacity: Int): Int =
         ladder.pools[sizeClasses.size2SizeIdx(capacity)]?.size() ?: 0
@@ -871,15 +883,6 @@ abstract class PooledAllocator internal constructor(
 
         /** Idle chunks kept resident after a trim to avoid alloc/free thrashing. */
         internal const val WARM_RESERVE = 1
-
-        /**
-         * Number of central [ShardedChunkArena] shards (power-of-two so a thread id
-         * can be masked to a shard). Cuts the single-lock serialisation of the central
-         * back-end under concurrent carve (multiple EventLoops / off-EL threads missing
-         * their freelist front at once). Interim fixed value — tuning to the EventLoop
-         * count (`config.threads` / cores) is a later step.
-         */
-        internal const val DEFAULT_SHARD_COUNT = 8
 
         /**
          * Sentinel `classIdx` reported to [BufferAllocatorStatsCounter] for an
