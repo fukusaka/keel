@@ -28,7 +28,8 @@ import kotlin.test.assertTrue
  *    so the long-lived working set **scatters across N chunks** even though its
  *    bytes would fit into one chunk. Releasing the 8 KiB working set leaves each
  *    scattered chunk holding one 4-page run live and the rest in free runs — but
- *    the chunk's `liveCarves > 0`, so [ChunkArena.reclaim] cannot release it.
+ *    the chunk holds a live run so `freeBytes < chunkSize`, and [ChunkArena.reclaim]
+ *    (which frees only fully-free chunks) cannot release it.
  *    The result is intra-chunk fragmentation that no `trim` policy can resolve.
  *
  * The interleaved shape happens when allocation lifetimes are decoupled from
@@ -153,7 +154,7 @@ class MixedClassFootprintMeasure {
 
         // Drop the entire short-lived working set. Each chunk hosting a long-lived
         // carve now holds one 4-page run live + ~28 pages of coalesced free runs, but
-        // `liveCarves > 0` keeps `isIdle == false`, so reclaim cannot release it.
+        // the live run keeps `freeBytes < chunkSize` (not fully free), so reclaim cannot release it.
         // The headline number: residentChunks vs the long-lived minimum packing.
         shortLived.forEach { it.release() }
         a.trimNow()

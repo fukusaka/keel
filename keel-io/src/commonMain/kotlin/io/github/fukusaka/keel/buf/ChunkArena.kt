@@ -60,8 +60,19 @@ internal class ChunkArena(
         Array(sizeClasses.nSubpages) { PoolSubpage.newHead(sizeClasses.pageShifts) }
 
     /**
+     * Per-size-class spin locks guarding the matching [smallSubpagePools] head's pool
+     * list and the subpage bitmaps reachable from it. The subpage fast path takes only
+     * its class's head lock (no [lock]), so distinct size classes — and the run path —
+     * carve concurrently. CAS spin locks (not [ArenaLock]) keep this to one `AtomicInt`
+     * per class with no OS-resource lifecycle (Netty's per-class head lock without the
+     * ~30 `pthread_mutex` per arena).
+     */
+    private val headLocks: Array<SpinLock> = Array(sizeClasses.nSubpages) { SpinLock() }
+
+    /**
      * The cross-chunk subpage pool head for size class [sizeIdx]. The returned
-     * sentinel's pool list is mutated only under [lock] (or single-threaded teardown).
+     * sentinel's pool list is mutated only under `headLocks[sizeIdx]` (or
+     * single-threaded teardown).
      */
     internal fun subpageHead(sizeIdx: Int): PoolSubpage = smallSubpagePools[sizeIdx]
 
@@ -94,23 +105,62 @@ internal class ChunkArena(
 
     /**
      * Carves a buffer of size class [sizeIdx] from a chunk and returns it as a view.
-     * Small classes (`sizeIdx <= smallMaxSizeIdx`) come from a subpage bitmap (reusing
-     * a partially-free subpage from any chunk via [smallSubpagePools] before carving a
-     * fresh one), larger ones from a page run. Runs under [lock].
+     * Small classes (`sizeIdx <= smallMaxSizeIdx`) come from a subpage bitmap — the
+     * fast path takes only the per-class head lock ([headLocks]); larger ones, and a
+     * subpage miss, take the arena [lock]. See [carveSubpage] / [carveRun].
      */
-    fun carve(sizeIdx: Int): IoBuf = lock.withLock {
+    fun carve(sizeIdx: Int): IoBuf {
         val classSize = sizeClasses.sizeIdx2size(sizeIdx)
-        if (sizeIdx <= sizeClasses.smallMaxSizeIdx) carveSubpage(sizeIdx, classSize) else carveRun(classSize)
+        return if (sizeIdx <= sizeClasses.smallMaxSizeIdx) carveSubpage(sizeIdx, classSize) else carveRun(classSize)
     }
 
     /**
-     * Subpage carve under [lock]: reuse a partially-free subpage from the cross-chunk
-     * pool head if one exists, else carve a fresh subpage run from the first chunk with
-     * a free run (the new subpage links itself into [head] for reuse), else a fresh
-     * chunk.
+     * Subpage carve. Fast path: reuse a partially-free subpage under the per-class head
+     * lock only, so it never touches the arena [lock] and runs concurrently with other
+     * classes' carves and the run path. Miss: take the arena [lock] (to carve a fresh
+     * subpage run) then the head lock (to link + allocate). The head lock is released
+     * before the arena lock on the fast path, and re-acquired *inside* the arena lock on
+     * the miss path — arena -> head is the only nesting order, so no deadlock (the free
+     * path likewise never escalates a head lock to the arena lock).
      */
     private fun carveSubpage(sizeIdx: Int, classSize: Int): IoBuf {
         val head = smallSubpagePools[sizeIdx]
+        val headLock = headLocks[sizeIdx]
+        headLock.withLock {
+            val hit = tryPoolHit(head, classSize)
+            if (hit != null) return hit
+        }
+        return lock.withLock { carveSubpageMiss(sizeIdx, classSize, head, headLock) }
+    }
+
+    /**
+     * Subpage miss path: caller holds the arena [lock]. Re-checks the pool under the
+     * head lock (another EventLoop may have added a subpage of this class since the
+     * fast-path head-lock release), else carves a fresh subpage run from the first
+     * chunk with a free run, else a fresh chunk; the new subpage links itself into
+     * [head] for reuse.
+     */
+    private fun carveSubpageMiss(sizeIdx: Int, classSize: Int, head: PoolSubpage, headLock: SpinLock): IoBuf =
+        headLock.withLock {
+            val hit = tryPoolHit(head, classSize)
+            if (hit != null) return@withLock hit
+            for (i in chunks.indices) {
+                val handle = chunks[i].allocateNewSubpage(sizeIdx, head)
+                if (handle != PoolChunk.NO_HANDLE) return@withLock makeView(chunks[i], handle, classSize)
+            }
+            val fresh = newChunk()
+            val handle = fresh.allocateNewSubpage(sizeIdx, head)
+            check(handle != PoolChunk.NO_HANDLE) {
+                "fresh chunk failed to carve subpage class $sizeIdx ($classSize bytes)"
+            }
+            makeView(fresh, handle, classSize)
+        }
+
+    /**
+     * Reuses the first partially-free subpage in [head]'s pool, returning its view, or
+     * `null` when the pool is empty. Caller holds the head lock for [head]'s class.
+     */
+    private fun tryPoolHit(head: PoolSubpage, classSize: Int): IoBuf? {
         val first = head.next
         if (first != null && first !== head) {
             val handle = first.allocate()
@@ -119,26 +169,19 @@ internal class ChunkArena(
                 return makeView(owner, handle, classSize)
             }
         }
-        for (i in chunks.indices) {
-            val handle = chunks[i].allocateNewSubpage(sizeIdx, head)
-            if (handle != PoolChunk.NO_HANDLE) return makeView(chunks[i], handle, classSize)
-        }
-        val fresh = newChunk()
-        val handle = fresh.allocateNewSubpage(sizeIdx, head)
-        check(handle != PoolChunk.NO_HANDLE) { "fresh chunk failed to carve subpage class $sizeIdx ($classSize bytes)" }
-        return makeView(fresh, handle, classSize)
+        return null
     }
 
-    /** Run carve under [lock]: first chunk with a free run, else a fresh chunk. */
-    private fun carveRun(classSize: Int): IoBuf {
+    /** Run carve under the arena [lock]: first chunk with a free run, else a fresh chunk. */
+    private fun carveRun(classSize: Int): IoBuf = lock.withLock {
         for (i in chunks.indices) {
             val handle = chunks[i].carveRun(classSize)
-            if (handle != PoolChunk.NO_HANDLE) return makeView(chunks[i], handle, classSize)
+            if (handle != PoolChunk.NO_HANDLE) return@withLock makeView(chunks[i], handle, classSize)
         }
         val fresh = newChunk()
         val handle = fresh.carveRun(classSize)
         check(handle != PoolChunk.NO_HANDLE) { "fresh chunk failed to carve run class ($classSize bytes)" }
-        return makeView(fresh, handle, classSize)
+        makeView(fresh, handle, classSize)
     }
 
     /** Allocates a fresh chunk, tracks it, and counts it. Runs under [lock]. */
@@ -151,28 +194,67 @@ internal class ChunkArena(
     }
 
     /**
-     * Returns a view's run to its chunk under [lock]. Called from
-     * [ChunkBackedIoBuf.returnChunkRun] on the view's final release — which may
-     * run on a thread other than the one that carved it (cross-thread free), so
-     * the lock serialises it against concurrent [carve] / [returnRun] on the same
-     * arena. [PooledChunk.freeRun] also drops the carve's `backing` reference.
+     * Returns a view's run/subpage element to its chunk on the view's final release —
+     * possibly on a thread other than the one that carved it (cross-thread free).
+     *
+     * A subpage element frees under the per-class head lock; only if that empties the
+     * subpage does its run return to the chunk under the arena [lock]. The head lock is
+     * released before the arena lock is taken (strict alternation — never head ->
+     * arena). A whole run frees under the arena lock. The view's `backing` reference is
+     * dropped last (atomic, independent of either lock).
      */
     internal fun returnRun(pc: PooledChunk, handle: Long) {
         if (closed) {
             // Post-close teardown: the EventLoop threads are stopped (single-threaded
-            // teardown contract, see [close] / [PooledAllocator.close]) and the lock is
-            // already destroyed, so there is no concurrent carve/return to serialise
-            // against. Return the run directly — the same path the pre-lock code took.
+            // teardown contract, see [close] / [PooledAllocator.close]) and the locks are
+            // gone, so there is no concurrent carve/return to serialise against. Free
+            // directly — the combined single-threaded path.
             pc.freeRun(handle)
             return
         }
-        lock.withLock { pc.freeRun(handle) }
+        if (PoolChunk.isSubpage(handle)) {
+            val sizeIdx = pc.poolChunk.subpageSizeIdx(handle)
+            val runEmptied = headLocks[sizeIdx].withLock {
+                pc.poolChunk.freeSubpageElement(handle, smallSubpagePools[sizeIdx])
+            }
+            if (runEmptied) lock.withLock { pc.poolChunk.returnEmptiedSubpageRun(handle) }
+        } else {
+            lock.withLock { pc.poolChunk.freeRunHandle(handle) }
+        }
+        pc.backing.release()
     }
 
     private fun makeView(pc: PooledChunk, handle: Long, classSize: Int): IoBuf {
         val byteOffset = pc.poolChunk.byteOffset(handle)
         pc.retainForCarve()
         return newChunkView(pc.backing, byteOffset, classSize, pc, handle)
+    }
+
+    /**
+     * Detaches every preserved fully-free subpage from its per-class pool and returns
+     * its run to the owning chunk, so a chunk left resident only by a retained
+     * last-subpage becomes fully free and [reclaim]'s freeBytes scan can release it.
+     * Runs under the arena [lock]; each pool walk takes its class head lock
+     * (arena -> head, the consistent order). Called at the start of [reclaim] (the cold
+     * trim pass), so per-class fast-path warmth is rebuilt by the next allocate rather
+     * than pinned against reclaim.
+     */
+    private fun drainPreservedSubpages() {
+        for (sizeIdx in smallSubpagePools.indices) {
+            val head = smallSubpagePools[sizeIdx]
+            headLocks[sizeIdx].withLock {
+                var sp = head.next
+                while (sp != null && sp !== head) {
+                    val next = sp.next
+                    if (sp.isFullyFree) {
+                        val owner = checkNotNull(sp.ownerChunk) { "pooled subpage missing owner chunk" }
+                        sp.detachFromPool()
+                        owner.poolChunk.returnSubpageRun(sp.runOffset, sp.runSize ushr sp.pageShifts)
+                    }
+                    sp = next
+                }
+            }
+        }
     }
 
     /**
@@ -190,20 +272,23 @@ internal class ChunkArena(
      * phase.
      */
     fun reclaim(warmReserve: Int) = lock.withLock {
+        drainPreservedSubpages()
         var idleKept = 0
         var i = 0
         while (i < chunks.size) {
             val pc = chunks[i]
-            if (pc.isIdle) {
+            // `freeBytes == chunkSize` means every run is free, so the chunk holds no
+            // subpages (a subpage occupies a run) — no per-class head pool points into
+            // it, so freeing its backing cannot dangle a head. Stricter than a per-view
+            // live count: a preserved fully-free subpage keeps its run (and so its
+            // chunk) resident, matching Netty's subpage retention.
+            if (pc.isFullyFree) {
                 if (idleKept < warmReserve) {
                     idleKept++
                     i++
                 } else {
                     // Drop the arena's own reference: refCount 1 -> 0 -> freeBacking
                     // releases the chunk's memory. Safe because no view references it.
-                    // Detach any preserved fully-free subpage first so the per-arena
-                    // pool head does not dangle into this chunk's freed backing.
-                    pc.detachPooledSubpages()
                     pc.backing.release()
                     chunks.removeAt(i)
                     cumulativeChunksFreed++

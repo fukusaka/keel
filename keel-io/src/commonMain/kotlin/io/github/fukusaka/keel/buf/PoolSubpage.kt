@@ -91,8 +91,11 @@ internal class PoolSubpage private constructor(
         if (numAvail != maxNumElems) {
             return true
         }
-        // Fully free. Preserve it if it is the only subpage in the pool, else
-        // detach so the caller can return the run to the chunk.
+        // Fully free. Preserve it if it is the only subpage in the pool (#718, Netty's
+        // semantic): keep the class warm so the next allocate hits the subpage fast
+        // path. Else detach so the caller can return the run to the chunk. The arena's
+        // trim-time reclaim drains a preserved subpage's run before freeing its chunk
+        // (see [ChunkArena.reclaim]), so this retention does not pin a chunk forever.
         return if (prev === next) {
             true
         } else {
@@ -117,14 +120,11 @@ internal class PoolSubpage private constructor(
         prev = null
     }
 
-    /**
-     * Unlinks this subpage from its pool if it is currently linked (a preserved
-     * fully-free subpage that stayed pooled). Called when its owning chunk is being
-     * reclaimed, so the per-arena pool head does not dangle into freed backing.
-     */
-    fun unlinkIfPooled() {
-        if (prev != null) removeFromPool()
-    }
+    /** True when every element is free — a fully-free subpage the pool may have preserved. */
+    val isFullyFree: Boolean get() = numAvail == maxNumElems
+
+    /** Removes this subpage from its pool list (the arena's trim-time drain calls this). */
+    fun detachFromPool() = removeFromPool()
 
     private fun nextAvailBit(): Int {
         val cached = nextAvail
