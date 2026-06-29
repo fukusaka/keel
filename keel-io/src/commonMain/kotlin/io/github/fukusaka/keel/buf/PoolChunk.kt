@@ -153,31 +153,68 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
     }
 
     /**
-     * Frees [handle]. For a subpage element, [head] must be the element's
-     * size-class pool head; the run is returned to the chunk only once the
-     * subpage's last element is freed. Adjacent free runs are coalesced.
+     * Frees [handle] (combined form, for the single-threaded teardown path and tests).
+     * For a subpage element, [head] must be the element's size-class pool head; the run
+     * returns to the chunk only once the subpage's last element is freed. The two-lock
+     * allocator path instead calls [freeSubpageElement] (head lock) then, if it reports
+     * the run empty, [returnEmptiedSubpageRun] (arena lock); this combines them with no
+     * locking for single-threaded callers.
      */
     fun free(handle: Long, head: PoolSubpage?) {
         if (isSubpage(handle)) {
-            val runOffset = runOffset(handle)
-            val subpage = subpages[runOffset]
-            checkNotNull(subpage) { "no subpage at run offset $runOffset" }
             checkNotNull(head) { "subpage free requires the size-class pool head" }
-            if (subpage.free(head, bitmapIdx(handle))) {
-                return // subpage still has live elements; its run stays allocated
-            }
-            subpages[runOffset] = null
-            // Fall through to free the now-empty subpage's run.
+            if (!freeSubpageElement(handle, head)) return // subpage still has live elements
+            returnEmptiedSubpageRun(handle)
+        } else {
+            returnRun0(handle)
         }
+    }
+
+    /**
+     * Frees the subpage element at [handle] against its size-class pool [head] (head
+     * lock domain: subpage bitmap + pool list only). Returns `true` when this empties
+     * the subpage so its run must be returned via [returnEmptiedSubpageRun] (arena
+     * lock), `false` when the subpage stays usable (or is the preserved last of its
+     * class, which keeps its run).
+     */
+    fun freeSubpageElement(handle: Long, head: PoolSubpage): Boolean {
+        val subpage = checkNotNull(subpages[runOffset(handle)]) { "no subpage at run offset ${runOffset(handle)}" }
+        return !subpage.free(head, bitmapIdx(handle))
+    }
+
+    /**
+     * Returns the run of a subpage that [freeSubpageElement] reported empty (arena lock
+     * domain). Clears the subpage slot, then coalesces and re-indexes the run.
+     */
+    fun returnEmptiedSubpageRun(handle: Long) {
+        subpages[runOffset(handle)] = null
+        returnRun0(handle)
+    }
+
+    /**
+     * Returns the run a preserved fully-free subpage still occupies (the arena's
+     * trim-time drain, [ChunkArena.reclaim], calls this under the arena lock after
+     * detaching the subpage from its pool). Clears the slot and re-indexes the run.
+     */
+    fun returnSubpageRun(runOffset: Int, pages: Int) {
+        subpages[runOffset] = null
+        returnRun0(toRunHandle(runOffset, pages, inUsed = 1))
+    }
+
+    /** Returns a whole run [handle] to the chunk (arena lock domain). */
+    fun freeRunHandle(handle: Long) = returnRun0(handle)
+
+    /**
+     * Coalesces the run at [handle] with adjacent free runs and re-indexes it. A
+     * subpage's run arrives here still carrying the subpage handle's `isSubpage` bit
+     * and `bitmapIdx` low bits; when the run does not coalesce, [collapseRuns] returns
+     * the input unchanged, so we rebuild via [toRunHandle] from the run's coordinates to
+     * guarantee `isUsed = isSubpage = bitmapIdx = 0` — clearing only `isUsed` /
+     * `isSubpage` would leak a subpage handle into [runsAvail] that a later
+     * [allocateRun] free-run validation trips on.
+     */
+    private fun returnRun0(handle: Long) {
         freeBytes += runSize(pageShifts, handle)
-        // Coalesce with adjacent free runs, then normalise to a clean free-run
-        // handle. A subpage's run falls through here still carrying the subpage
-        // handle's isSubpage bit AND its bitmapIdx low bits; when the run does not
-        // coalesce, collapseRuns returns the input unchanged, so clearing only
-        // isUsed / isSubpage (the prior code) left the bitmapIdx set and leaked a
-        // subpage handle into runsAvail — a later allocateRun then trips the
-        // free-run validation with "non-zero bitmapIdx". Rebuilding via toRunHandle
-        // from the run's coordinates guarantees isUsed = isSubpage = bitmapIdx = 0.
         val collapsed = collapseRuns(handle)
         val finalRun = toRunHandle(runOffset(collapsed), runPages(collapsed), inUsed = 0)
         insertAvailRun(runOffset(finalRun), runPages(finalRun), finalRun)
@@ -203,15 +240,6 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
     /** The [PoolSubpage] backing [handle] (subpage handles only), for owner tagging. */
     fun subpageAt(handle: Long): PoolSubpage =
         checkNotNull(subpages[runOffset(handle)]) { "no subpage at run offset ${runOffset(handle)}" }
-
-    /**
-     * Unlinks every subpage of this chunk from its per-arena pool, so reclaiming the
-     * chunk does not leave a freed backing reachable through a pool head. Called just
-     * before the chunk's backing is released.
-     */
-    fun detachAllSubpages() {
-        for (i in subpages.indices) subpages[i]?.unlinkIfPooled()
-    }
 
     // --- run carving ---------------------------------------------------------
 
