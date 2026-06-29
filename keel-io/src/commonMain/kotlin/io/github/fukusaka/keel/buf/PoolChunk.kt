@@ -200,6 +200,19 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
     fun subpageSizeIdx(handle: Long): Int =
         checkNotNull(subpages[runOffset(handle)]) { "no subpage at run offset ${runOffset(handle)}" }.sizeIdx
 
+    /** The [PoolSubpage] backing [handle] (subpage handles only), for owner tagging. */
+    fun subpageAt(handle: Long): PoolSubpage =
+        checkNotNull(subpages[runOffset(handle)]) { "no subpage at run offset ${runOffset(handle)}" }
+
+    /**
+     * Unlinks every subpage of this chunk from its per-arena pool, so reclaiming the
+     * chunk does not leave a freed backing reachable through a pool head. Called just
+     * before the chunk's backing is released.
+     */
+    fun detachAllSubpages() {
+        for (i in subpages.indices) subpages[i]?.unlinkIfPooled()
+    }
+
     // --- run carving ---------------------------------------------------------
 
     private fun splitLargeRun(handle: Long, needPages: Int): Long {

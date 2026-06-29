@@ -49,6 +49,14 @@ internal class PoolSubpage private constructor(
     var prev: PoolSubpage? = null
     var next: PoolSubpage? = null
 
+    /**
+     * The wired chunk this subpage was carved from, set by the arena after creation.
+     * A cross-chunk pool (the per-arena `smallSubpagePools`) links subpages from
+     * different chunks under one head, so a pool hit must resolve the subpage back to
+     * its backing through this reference. `null` for the list-head sentinel.
+     */
+    var ownerChunk: PooledChunk? = null
+
     /** Allocates one element; returns its packed handle, or [NO_HANDLE] when full / destroyed. */
     fun allocate(): Long {
         if (numAvail == 0 || !doNotDestroy) return NO_HANDLE
@@ -107,6 +115,15 @@ internal class PoolSubpage private constructor(
         next!!.prev = prev
         next = null
         prev = null
+    }
+
+    /**
+     * Unlinks this subpage from its pool if it is currently linked (a preserved
+     * fully-free subpage that stayed pooled). Called when its owning chunk is being
+     * reclaimed, so the per-arena pool head does not dangle into freed backing.
+     */
+    fun unlinkIfPooled() {
+        if (prev != null) removeFromPool()
     }
 
     private fun nextAvailBit(): Int {

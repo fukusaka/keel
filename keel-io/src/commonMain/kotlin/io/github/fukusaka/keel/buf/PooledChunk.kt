@@ -2,16 +2,16 @@ package io.github.fukusaka.keel.buf
 
 /**
  * Pairs a [PoolChunk] (the pure run/subpage bookkeeper, #718) with the real
- * backing [IoBuf] it carves views from, and owns this chunk's per-size-class
- * subpage pool heads.
+ * backing [IoBuf] it carves views from.
  *
  * [PoolChunk] is intentionally backing-agnostic: it hands out integer handles
  * and computes byte offsets, but holds no memory. [PooledChunk] supplies the
- * backing (a `CHUNK_SIZE` owns-memory buffer) and the subpage [PoolSubpage.newHead]
- * sentinels, so a small allocation can reuse a partially-free subpage *within this
- * chunk* before carving a new run. (Cross-chunk subpage reuse — a single head per
- * size class shared across chunks — is a later optimisation; per-chunk heads keep
- * the view's run-binding minimal: just `(this, handle)`.)
+ * backing (a `CHUNK_SIZE` owns-memory buffer); the per-size-class subpage pool
+ * heads live on the owning [ChunkArena] and are shared across chunks, so a small
+ * allocation reuses a partially-free subpage from *any* chunk before carving a new
+ * run (Netty's `PoolArena.smallSubpagePools`). A carved subpage is tagged with its
+ * owning chunk ([PoolSubpage.ownerChunk]) so a cross-chunk pool hit resolves back to
+ * this backing.
  *
  * **Thread safety**: none of its own; the owning per-EventLoop allocator serialises.
  *
@@ -24,15 +24,14 @@ class PooledChunk internal constructor(
     internal val backing: IoBuf,
     internal val poolChunk: PoolChunk,
 ) {
-    private val subpageHeads = arrayOfNulls<PoolSubpage>(poolChunk.sizeClasses.nSubpages)
-
     /**
      * Back-reference to the owning [ChunkArena], set by [ChunkArena.carve] when the
      * arena creates this chunk. [ChunkBackedIoBuf.returnChunkRun] uses it to route a
      * view's run return through [ChunkArena.returnRun] (under the arena lock) instead
      * of calling [freeRun] directly, so a cross-thread free serialises against
-     * concurrent carve / return on the same arena. `null` only for a chunk created
-     * outside an arena (test fixtures), where [freeRun] is called directly.
+     * concurrent carve / return on the same arena; [freeRun] also reads it to resolve
+     * the per-arena subpage pool head. `null` only for a chunk created outside an
+     * arena (test fixtures), where [freeRun] is called directly and frees runs only.
      */
     internal var arena: ChunkArena? = null
 
@@ -58,35 +57,37 @@ class PooledChunk internal constructor(
     internal fun carveRun(classSize: Int): Long = poolChunk.allocateRun(classSize)
 
     /**
-     * Allocates one small element of size class [sizeIdx] — reusing a
-     * partially-free subpage in this chunk if one exists, else carving a fresh
-     * subpage run. Returns the handle or [PoolChunk.NO_HANDLE] when no run is free.
+     * Carves a fresh subpage run of size class [sizeIdx] from this chunk and links it
+     * into the arena's cross-chunk pool [head], tagging the new [PoolSubpage] with
+     * this chunk so a later pool hit resolves it back to this backing. Returns the
+     * first element's handle, or [PoolChunk.NO_HANDLE] when this chunk has no free
+     * run. Reuse of an existing partially-free subpage is the arena's job (it checks
+     * [head] before carving a new one here).
      */
-    internal fun carveSubpage(sizeIdx: Int): Long {
-        val head = subpageHead(sizeIdx)
-        val first = head.next
-        if (first != null && first !== head) {
-            val handle = first.allocate()
-            if (handle != PoolSubpage.NO_HANDLE) return handle
-        }
-        return poolChunk.allocateSubpage(sizeIdx, head)
+    internal fun allocateNewSubpage(sizeIdx: Int, head: PoolSubpage): Long {
+        val handle = poolChunk.allocateSubpage(sizeIdx, head)
+        if (handle != PoolChunk.NO_HANDLE) poolChunk.subpageAt(handle).ownerChunk = this
+        return handle
     }
 
     /**
      * Returns the run/subpage element at [handle] to this chunk and drops one
-     * reference on [backing]. For a subpage the run is reclaimed only once its
-     * last element is freed (handled by [PoolChunk.free]).
+     * reference on [backing]. For a subpage the run is reclaimed only once its last
+     * element is freed ([PoolChunk.free]); the size-class pool head comes from the
+     * owning [arena] so a freed subpage re-joins the cross-chunk pool. A run (or any
+     * free on an arena-less test chunk) frees with a `null` head.
      */
     internal fun freeRun(handle: Long) {
-        if (PoolChunk.isSubpage(handle)) {
-            poolChunk.free(handle, subpageHead(poolChunk.subpageSizeIdx(handle)))
-        } else {
-            poolChunk.free(handle, head = null)
-        }
+        val head = if (PoolChunk.isSubpage(handle)) arena?.subpageHead(poolChunk.subpageSizeIdx(handle)) else null
+        poolChunk.free(handle, head)
         backing.release()
         liveCarves--
     }
 
-    private fun subpageHead(sizeIdx: Int): PoolSubpage =
-        subpageHeads[sizeIdx] ?: PoolSubpage.newHead(poolChunk.pageShifts).also { subpageHeads[sizeIdx] = it }
+    /**
+     * Unlinks this chunk's pooled subpages from the arena heads, called just before
+     * the chunk is reclaimed so a preserved fully-free subpage does not leave the
+     * pool head pointing into this chunk's freed backing.
+     */
+    internal fun detachPooledSubpages() = poolChunk.detachAllSubpages()
 }
