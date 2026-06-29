@@ -42,7 +42,16 @@ class SlabAllocator private constructor(
     lifecycleListener: BufferAllocatorLifecycleListener,
     sharedArena: ShardedChunkArena?,
     shardIdx: Int,
-) : PooledAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedArena, shardIdx) {
+    shardCount: Int,
+) : PooledAllocator(
+    maxTotalBytes,
+    freelistFactory,
+    statsCounter,
+    lifecycleListener,
+    sharedArena,
+    shardIdx,
+    shardCount,
+) {
 
     /** Public root constructor: creates and owns a fresh sharded chunk arena. */
     constructor(
@@ -50,7 +59,8 @@ class SlabAllocator private constructor(
         freelistFactory: FreelistFactory? = null,
         statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter,
         lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
-    ) : this(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, null, 0)
+        shardCount: Int = defaultShardCount(),
+    ) : this(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, null, 0, shardCount)
 
     init {
         installDefaultLadder()
@@ -87,7 +97,15 @@ class SlabAllocator private constructor(
     override fun defaultFreelist(maxSlots: Int): Freelist = SpinLockFreelist(maxSlots)
 
     override fun newChildInstance(maxTotalBytes: Long, sharedArena: ShardedChunkArena, shardIdx: Int): PooledAllocator =
-        SlabAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedArena, shardIdx)
+        SlabAllocator(
+            maxTotalBytes,
+            freelistFactory,
+            statsCounter,
+            lifecycleListener,
+            sharedArena,
+            shardIdx,
+            sharedArena.shardCount,
+        )
 
     /**
      * Routes a carve to the owner EventLoop's pinned shard ([shardIdx]) when the
