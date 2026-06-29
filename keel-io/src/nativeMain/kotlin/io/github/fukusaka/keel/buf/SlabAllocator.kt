@@ -40,16 +40,17 @@ class SlabAllocator private constructor(
     freelistFactory: FreelistFactory?,
     statsCounter: BufferAllocatorStatsCounter,
     lifecycleListener: BufferAllocatorLifecycleListener,
-    sharedChunkArena: ChunkArena?,
-) : PooledAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedChunkArena) {
+    sharedArena: ShardedChunkArena?,
+    shardIdx: Int,
+) : PooledAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedArena, shardIdx) {
 
-    /** Public root constructor: creates and owns a fresh chunk arena. */
+    /** Public root constructor: creates and owns a fresh sharded chunk arena. */
     constructor(
         maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
         freelistFactory: FreelistFactory? = null,
         statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter,
         lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
-    ) : this(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, null)
+    ) : this(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, null, 0)
 
     init {
         installDefaultLadder()
@@ -85,8 +86,18 @@ class SlabAllocator private constructor(
 
     override fun defaultFreelist(maxSlots: Int): Freelist = SpinLockFreelist(maxSlots)
 
-    override fun newChildInstance(maxTotalBytes: Long, sharedChunkArena: ChunkArena): PooledAllocator =
-        SlabAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedChunkArena)
+    override fun newChildInstance(maxTotalBytes: Long, sharedArena: ShardedChunkArena, shardIdx: Int): PooledAllocator =
+        SlabAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedArena, shardIdx)
+
+    /**
+     * Routes a carve to the owner EventLoop's pinned shard ([shardIdx]) when the
+     * caller is the owning thread, else hashes the foreign thread's id across shards
+     * — so concurrent off-EL carves (or many threads sharing one allocator) spread
+     * over shard locks instead of serialising on one. The returned id is masked to
+     * the shard count by [ShardedChunkArena.carve].
+     */
+    override fun shardIndexForCarve(): Int =
+        if (confinement.isCurrentContextOwner()) shardIdx else currentThreadId().toInt()
 
     @OptIn(ExperimentalForeignApi::class)
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {

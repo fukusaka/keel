@@ -88,16 +88,25 @@ abstract class PooledAllocator internal constructor(
      */
     override val lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
     /**
-     * The chunk back-end this allocator carves pool-miss buffers from. `null`
-     * (the default, for a root allocator) makes this instance create and **own**
-     * a fresh [ChunkArena]; a non-null value (passed by [createChild] to a
-     * per-EventLoop child) makes the child **share** the parent's arena. A shared
-     * arena is the off-EventLoop-safe central back-end: every child carves from
-     * and returns runs to one [ChunkArena], whose [ArenaLock] serialises the
-     * cross-thread access. Only the owner closes the arena (see [close]); a child
-     * closing a shared arena while siblings still use it would be a use-after-free.
+     * The sharded chunk back-end this allocator carves pool-miss buffers from.
+     * `null` (the default, for a root allocator) makes this instance create and
+     * **own** a fresh [ShardedChunkArena]; a non-null value (passed by [createChild]
+     * to a per-EventLoop child) makes the child **share** the parent's sharded arena.
+     * The shared arena is the off-EventLoop-safe central back-end: every child carves
+     * from and returns runs to one [ShardedChunkArena], whose per-shard [ArenaLock]s
+     * serialise cross-thread access while spreading it across shards. Only the owner
+     * closes the arena (see [close]); a child closing a shared arena while siblings
+     * still use it would be a use-after-free.
      */
-    sharedChunkArena: ChunkArena? = null,
+    sharedArena: ShardedChunkArena? = null,
+    /**
+     * The shard this instance carves from by default (its pinned shard, Netty
+     * `leastUsedArena` style: ~one EventLoop per shard). Assigned by [createChild]
+     * (the child's index); [shardIndexForCarve] may override per-carve (the Native
+     * allocator hashes off-EL threads across shards). The root's value is unused —
+     * it does not carve directly.
+     */
+    protected val shardIdx: Int = 0,
 ) : BufferAllocator {
 
     /** The size-class table driving round-up. Built once with keel's pooling parameters. */
@@ -240,26 +249,28 @@ abstract class PooledAllocator internal constructor(
     private val poolOwner: IoBufOwner = PoolOwner { buf -> returnToPool(buf) }
 
     /**
-     * Chunk back-end. A cache miss for a pooled class carves a run/subpage view
-     * out of a large chunk instead of a per-buffer system allocation. The
-     * size-class freelist sits in front, so [ChunkArena.carve] only runs on
-     * misses (off the hot path).
+     * Sharded chunk back-end. A cache miss for a pooled class carves a run/subpage
+     * view out of a large chunk instead of a per-buffer system allocation. The
+     * size-class freelist sits in front, so a carve only runs on misses (off the hot
+     * path), and [shardIndexForCarve] picks which shard.
      *
-     * A root allocator (`sharedChunkArena == null`) creates and owns a fresh
-     * arena; per-EventLoop children created by [createChild] **share** the root's
-     * arena, so all EventLoops carve from and return runs to one thread-safe
-     * central back-end. This is what makes the pool off-EventLoop-safe: a buffer
-     * carved on EventLoop A and released on EventLoop B returns its run through
-     * the shared arena's [ArenaLock]. Only the owner closes it ([ownsChunkArena]).
+     * A root allocator (`sharedArena == null`) creates and owns a fresh
+     * [ShardedChunkArena]; per-EventLoop children created by [createChild] **share**
+     * it, so all EventLoops carve from and return runs to one off-EventLoop-safe
+     * central back-end whose per-shard [ArenaLock]s serialise cross-thread access
+     * while spreading it across shards. A buffer carved on one EventLoop and released
+     * on another returns its run through its shard's lock. Only the owner closes it
+     * ([ownsChunkArena]).
      */
-    private val chunkArena: ChunkArena = sharedChunkArena ?: ChunkArena(
+    private val shardedArena: ShardedChunkArena = sharedArena ?: ShardedChunkArena(
+        shardCount = DEFAULT_SHARD_COUNT,
         sizeClasses = sizeClasses,
         newChunkBacking = { newBuffer(CHUNK_SIZE) },
         newChunkView = ::newChunkView,
     )
 
-    /** True when this instance created its own [chunkArena] and must close it. */
-    private val ownsChunkArena: Boolean = sharedChunkArena == null
+    /** True when this instance created its own [shardedArena] and must close it. */
+    private val ownsChunkArena: Boolean = sharedArena == null
 
     /** Constructs a fresh backing buffer of exactly [capacity] bytes (platform seam). */
     protected abstract fun newBuffer(capacity: Int): IoBuf
@@ -294,11 +305,27 @@ abstract class PooledAllocator internal constructor(
      * Constructs a sibling instance for a single EventLoop (platform seam).
      * Subclasses must propagate the same [freelistFactory] / [statsCounter] /
      * [lifecycleListener] so per-EL children inherit the user-selected strategy and
-     * feed one aggregate observer, and must pass [sharedChunkArena] straight to
-     * `super(... sharedChunkArena = sharedChunkArena)` so the child shares the
-     * root's thread-safe central arena instead of creating its own.
+     * feed one aggregate observer, and must pass [sharedArena] / [shardIdx] straight
+     * to `super(... sharedArena = sharedArena, shardIdx = shardIdx)` so the child
+     * shares the root's sharded central arena (instead of creating its own) and
+     * carves from its assigned [shardIdx].
      */
-    internal abstract fun newChildInstance(maxTotalBytes: Long, sharedChunkArena: ChunkArena): PooledAllocator
+    internal abstract fun newChildInstance(
+        maxTotalBytes: Long,
+        sharedArena: ShardedChunkArena,
+        shardIdx: Int,
+    ): PooledAllocator
+
+    /**
+     * The shard index this allocator's pool-miss carve routes to. The base default
+     * is the instance's pinned [shardIdx] (Netty `leastUsedArena` style: one EL per
+     * shard, uncontended). The Native allocator overrides this to hash off-EL threads
+     * across shards (an EL thread on its own child → pinned; a foreign thread → its
+     * thread id), so concurrent carves from many threads spread across shard locks.
+     * The returned value is masked to the shard count by [ShardedChunkArena.carve],
+     * so an override may return any int (e.g. a raw thread id).
+     */
+    protected open fun shardIndexForCarve(): Int = shardIdx
 
     /**
      * Installs the default Netty-style size-class ladder: every cached class
@@ -403,7 +430,7 @@ abstract class PooledAllocator internal constructor(
                 // system allocation). The view's capacity is the class size, so it
                 // pools on release like any cached buffer; its freeBacking returns
                 // the run to the chunk when the pool is full.
-                val fresh = chunkArena.carve(idx)
+                val fresh = shardedArena.carve(idx, shardIndexForCarve())
                 (fresh as AbstractIoBuf).owner = poolOwner
                 recordAllocate(
                     buf = fresh,
@@ -609,9 +636,9 @@ abstract class PooledAllocator internal constructor(
             // allocator) reports them; per-EventLoop children share that one arena,
             // so reporting from every child would multiply the chunk counts by the
             // child count for any observer that sums per-child snapshots.
-            cumulativeChunksAllocated = if (ownsChunkArena) chunkArena.cumulativeChunksAllocated else 0L,
-            cumulativeChunksFreed = if (ownsChunkArena) chunkArena.cumulativeChunksFreed else 0L,
-            residentChunks = if (ownsChunkArena) chunkArena.chunkCount else 0,
+            cumulativeChunksAllocated = if (ownsChunkArena) shardedArena.cumulativeChunksAllocated else 0L,
+            cumulativeChunksFreed = if (ownsChunkArena) shardedArena.cumulativeChunksFreed else 0L,
+            residentChunks = if (ownsChunkArena) shardedArena.chunkCount else 0,
             isClosed = closed,
             classCount = nSizes,
             perClassHits = perClassHits.copyOf(),
@@ -658,7 +685,7 @@ abstract class PooledAllocator internal constructor(
     }
 
     /** Resident chunk count (test/diagnostic observability). */
-    internal val chunkCount: Int get() = chunkArena.chunkCount
+    internal val chunkCount: Int get() = shardedArena.chunkCount
 
     /** Cached entry count for [capacity]'s size class (test/diagnostic observability). */
     internal fun cachedCountOf(capacity: Int): Int =
@@ -707,7 +734,7 @@ abstract class PooledAllocator internal constructor(
                 evict--
             }
         }
-        chunkArena.reclaim(WARM_RESERVE)
+        shardedArena.reclaim(shardIdx, WARM_RESERVE)
     }
 
     final override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
@@ -715,11 +742,12 @@ abstract class PooledAllocator internal constructor(
 
     final override fun createChild(): BufferAllocator {
         check(!closed) { "allocator is closed" }
-        // Share this allocator's chunk arena with the child so all per-EventLoop
-        // children carve from and return runs to one thread-safe central back-end
-        // (off-EventLoop safety). The child owns its own size-class freelist cache
-        // (per-EL, lock-free hot path) but borrows the shared arena for misses.
-        val child = newChildInstance(maxTotalBytes, chunkArena)
+        // Share this allocator's sharded chunk arena with the child so all
+        // per-EventLoop children carve from and return runs to one off-EventLoop-safe
+        // central back-end. The child owns its own size-class freelist cache (per-EL,
+        // lock-free hot path) but borrows the shared arena for misses, pinned to one
+        // shard (its index — Netty leastUsedArena style: ~one EventLoop per shard).
+        val child = newChildInstance(maxTotalBytes, shardedArena, children.size)
         children.add(child)
         return child
     }
@@ -770,7 +798,7 @@ abstract class PooledAllocator internal constructor(
         // first, above), so by the time the owner tears the arena down, no child
         // freelist will issue a fresh carve; in-flight releases held across close
         // take the arena's closed-flag direct path (see ChunkArena.returnRun).
-        if (ownsChunkArena) chunkArena.close()
+        if (ownsChunkArena) shardedArena.close()
     }
 
     /**
@@ -843,6 +871,15 @@ abstract class PooledAllocator internal constructor(
 
         /** Idle chunks kept resident after a trim to avoid alloc/free thrashing. */
         internal const val WARM_RESERVE = 1
+
+        /**
+         * Number of central [ShardedChunkArena] shards (power-of-two so a thread id
+         * can be masked to a shard). Cuts the single-lock serialisation of the central
+         * back-end under concurrent carve (multiple EventLoops / off-EL threads missing
+         * their freelist front at once). Interim fixed value — tuning to the EventLoop
+         * count (`config.threads` / cores) is a later step.
+         */
+        internal const val DEFAULT_SHARD_COUNT = 8
 
         /**
          * Sentinel `classIdx` reported to [BufferAllocatorStatsCounter] for an
