@@ -37,16 +37,17 @@ class PooledDirectAllocator private constructor(
     freelistFactory: FreelistFactory?,
     statsCounter: BufferAllocatorStatsCounter,
     lifecycleListener: BufferAllocatorLifecycleListener,
-    sharedChunkArena: ChunkArena?,
-) : PooledAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedChunkArena) {
+    sharedArena: ShardedChunkArena?,
+    shardIdx: Int,
+) : PooledAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedArena, shardIdx) {
 
-    /** Public root constructor: creates and owns a fresh chunk arena. */
+    /** Public root constructor: creates and owns a fresh sharded chunk arena. */
     constructor(
         maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
         freelistFactory: FreelistFactory? = null,
         statsCounter: BufferAllocatorStatsCounter = NoOpStatsCounter,
         lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
-    ) : this(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, null)
+    ) : this(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, null, 0)
 
     init {
         installDefaultLadder()
@@ -66,8 +67,8 @@ class PooledDirectAllocator private constructor(
 
     override fun defaultFreelist(maxSlots: Int): Freelist = MutexFreelist(maxSlots)
 
-    override fun newChildInstance(maxTotalBytes: Long, sharedChunkArena: ChunkArena): PooledAllocator =
-        PooledDirectAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedChunkArena)
+    override fun newChildInstance(maxTotalBytes: Long, sharedArena: ShardedChunkArena, shardIdx: Int): PooledAllocator =
+        PooledDirectAllocator(maxTotalBytes, freelistFactory, statsCounter, lifecycleListener, sharedArena, shardIdx)
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? {
         if (length == 0) return null
