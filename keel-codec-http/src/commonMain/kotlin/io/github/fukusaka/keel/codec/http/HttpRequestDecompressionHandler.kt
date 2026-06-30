@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufAccumulator
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.CompressionRegistry
 import io.github.fukusaka.keel.compression.Decoder
@@ -48,8 +49,10 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *      do meaningful work past the trip point.
  *    - **L4: per-update output ceiling**, mechanical via
  *      [scratchCapacity] (default 8 KiB). Every `DecoderSession.update`
- *      writes into the shared scratch IoBuf, so one inflate call
- *      cannot produce more than [scratchCapacity] bytes before the
+ *      writes into a fixed [scratchCapacity]-sized [IoBuf] — the shared
+ *      per-channel scratch on the streaming path, a fresh
+ *      [IoBufAccumulator] chunk on the aggregated path — so one inflate
+ *      call cannot produce more than [scratchCapacity] bytes before the
  *      handler drains and re-checks L2 + L3. Closes: backend-side "one
  *      inflate call producing N MiB into the caller's buffer" — the
  *      buffer is bounded by the handler, not by the decoder.
@@ -90,7 +93,9 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  *
  * **Per-channel scratch buffer**: a single output [IoBuf] of
  * [SCRATCH_CAPACITY] bytes is allocated once per channel attach and
- * reused across every emit (mirrors `CompressionHandler` lifecycle).
+ * reused across every streaming-decode emit (mirrors `CompressionHandler`
+ * lifecycle). The aggregated-decode path uses a per-request pooled
+ * [IoBufAccumulator] instead.
  *
  * **Pipelining**: this handler tracks one in-flight request body at a
  * time (HTTP/1.1 is strictly sequential per connection).
@@ -125,7 +130,8 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  * @param scratchCapacity per-channel scratch IoBuf size for decoded
  *   output. This also acts as the **per-update output ceiling** (L4 in
  *   the layered defense table above): the decoder cannot produce more
- *   bytes in a single `update` call than the scratch can hold, which
+ *   bytes in a single `update` call than [scratchCapacity] bytes (the
+ *   per-update output buffer on either path), which
  *   bounds how much work a misbehaving / hostile codec can do between
  *   limit checks. Higher = fewer emit cycles + larger emit size, lower
  *   = tighter per-call cap. Default 8 KiB matches `CompressionHandler` /
@@ -269,94 +275,65 @@ public class HttpRequestDecompressionHandler(
         // `CompressionHandler` wrapBytes view (#670).
         val input = allocator.wrapBytes(src, 0, src.size)
             ?: allocator.allocate(src.size).apply { writeByteArray(src, 0, src.size) }
-        ensureScratch()
-        val out = scratch!!
-        bytesIn = 0
+        bytesIn = src.size.toLong()
         bytesOut = 0
         ratioBurstRemaining = ratioBurst
-        // Mutable holder so `drainTo` updates `buf` / `len` in place
-        // instead of returning a `Pair<ByteArray, Int>` per drain. A
-        // long compressed body produces many NEED_OUTPUT rounds; the
-        // per-drain Pair allocation showed up as residual GC pressure
-        // in the codec-http alloc backlog.
-        val sink = AggregatedDecodeSink(
-            initialCapacity = (src.size * INITIAL_DECODE_RATIO_GUESS).coerceAtLeast(MIN_AGGREGATED_BUF),
-        )
+        // The decoder writes straight into the accumulator's pooled chunk —
+        // no per-channel scratch and no doubling intermediate ByteArray. Each
+        // NEED_OUTPUT seals an 8 KiB chunk (the chunk size is the L4 per-update
+        // output ceiling), commits it, and re-checks L2 / L3 on the cumulative
+        // decoded bytes. The held chunks stay off-heap until the final flatten
+        // into the request's decoded body ByteArray.
+        val acc = IoBufAccumulator(allocator, chunkSize = scratchCapacity)
         try {
-            bytesIn = src.size.toLong()
             // Drain update loop.
             while (true) {
-                when (session.update(input, out)) {
-                    CodecStatus.NEED_OUTPUT -> drainTo(out, sink)
+                when (session.update(input, acc.writableChunk())) {
+                    CodecStatus.NEED_OUTPUT -> sealAndCount(acc)
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update should not return FINISHED")
                 }
             }
-            if (out.readableBytes > 0) drainTo(out, sink)
+            sealAndCount(acc)
             // Drive finish.
             var finishing = true
             while (finishing) {
-                when (session.finish(out)) {
-                    CodecStatus.NEED_OUTPUT -> drainTo(out, sink)
+                when (session.finish(acc.writableChunk())) {
+                    CodecStatus.NEED_OUTPUT -> sealAndCount(acc)
                     CodecStatus.NEED_INPUT, CodecStatus.FINISHED -> {
-                        if (out.readableBytes > 0) drainTo(out, sink)
+                        sealAndCount(acc)
                         finishing = false
                     }
                 }
             }
+            // Flatten the held chunks once (the decoded body is a ByteArray at
+            // the application boundary). Inside the try so a failed body-sized
+            // allocation releases the held pool chunks via the catch.
+            return acc.toByteArray()
+        } catch (t: Throwable) {
+            acc.release()
+            throw t
         } finally {
             session.close()
             input.release()
         }
-        return if (sink.len == sink.buf.size) sink.buf else sink.buf.copyOf(sink.len)
     }
 
     /**
-     * Per-call mutable buffer state for [decodeAggregated]'s drain loop.
-     * Replaces a `var result: ByteArray; var resultLen: Int` plus a
-     * `Pair<ByteArray, Int>` return on every drain — the holder is
-     * allocated once per aggregated request and mutated in place across
-     * the (potentially many) update / finish rounds. The handler reuses
-     * its per-channel scratch [IoBuf]; this holder is per-request only
-     * because the result buffer is the request's decoded body and is
-     * handed off to the next handler at the end of the call.
+     * Commits the accumulator's in-flight chunk, adds its newly-committed
+     * bytes to [bytesOut], and runs the L2 / L3 zip-bomb checks on the
+     * cumulative decoded total. A no-op when the in-flight chunk is empty.
+     * Replaces the old scratch-drain path's per-drain
+     * `bytesOut += n; checkLimits()`; the per-update output is still bounded
+     * by the chunk size (L4), so the checks run at the same 8 KiB cadence.
      */
-    private class AggregatedDecodeSink(initialCapacity: Int) {
-        var buf: ByteArray = ByteArray(initialCapacity)
-        var len: Int = 0
-    }
-
-    /**
-     * Resize [sink].buf (if necessary) to fit [out]'s readable bytes
-     * plus the existing [sink].len, copy them in, advance [bytesOut],
-     * and enforce limits. Mutates [sink] in place — see
-     * [AggregatedDecodeSink] for why this is not a Pair-returning function.
-     *
-     * **Critical**: clears [out] after the drain. `readByteArray` only
-     * advances `readerIndex`; without resetting `writerIndex` via
-     * [IoBuf.clear], the scratch buffer accumulates writes across drains
-     * until `writableBytes == 0`. Once that happens the next
-     * `session.update` cannot make progress (its internal drain loop
-     * exits on `writableBytes == 0`), returns NEED_OUTPUT, this drain
-     * sees `readableBytes == 0`, and the `while (true)` loop in
-     * [decodeAggregated] spins. Triggered by any decoded body that
-     * exceeds [SCRATCH_CAPACITY] (8 KiB by default) in one update round
-     * — i.e. a routine compressed POST > 8 KiB. Regression-pinned by
-     * `aggregated decode drains output beyond a single scratch fill
-     * without spinning`.
-     */
-    private fun drainTo(out: IoBuf, sink: AggregatedDecodeSink) {
-        val n = out.readableBytes
-        if (n == 0) return
-        bytesOut += n
+    private fun sealAndCount(acc: IoBufAccumulator) {
+        val before = acc.size
+        acc.commit()
+        val produced = acc.size - before
+        if (produced == 0) return
+        bytesOut += produced
         checkLimits()
-        val needed = sink.len + n
-        if (needed > sink.buf.size) {
-            sink.buf = sink.buf.copyOf(needed.coerceAtLeast(sink.buf.size * 2))
-        }
-        out.readByteArray(sink.buf, sink.len, n)
-        out.clear()
-        sink.len = needed
     }
 
     // ---- Streaming ----
@@ -734,11 +711,5 @@ public class HttpRequestDecompressionHandler(
 
         /** `Content-Encoding: identity` (RFC 9110 §8.4.1) — no transformation. */
         private const val ENCODING_IDENTITY: String = "identity"
-
-        /** Initial guess for aggregated-decode result buffer: 4× input size (~typical gzip ratio for text). */
-        private const val INITIAL_DECODE_RATIO_GUESS: Int = 4
-
-        /** Floor for the aggregated-decode result buffer to avoid pathological tiny allocations. */
-        private const val MIN_AGGREGATED_BUF: Int = 256
     }
 }

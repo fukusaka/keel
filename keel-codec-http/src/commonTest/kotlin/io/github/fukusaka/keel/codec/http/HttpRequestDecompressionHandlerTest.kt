@@ -540,6 +540,37 @@ class HttpRequestDecompressionHandlerTest {
     }
 
     @Test
+    fun `aggregated decode releases the held chunks when the absolute cap is exceeded`() {
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val registry = CompressionRegistry().apply { registerDecoder(MultiplyDecoder(factor = 4)) }
+        val state = ChainState()
+        // 4-byte input -> 16-byte decoded; cap at 10 trips in sealAndCount after
+        // the accumulator already committed the decoded chunk. The held pooled
+        // chunk must be released on the abort path, not leaked.
+        val handler = HttpRequestDecompressionHandler(
+            registry, tracker,
+            decompressionLimit = 10L,
+            ratioLimit = Int.MAX_VALUE,
+        )
+        val ctx = TestCtx(state)
+        val request = HttpRequest(
+            method = HttpMethod.POST,
+            uri = "/upload",
+            headers = HttpHeaders().apply {
+                add("Content-Encoding", "x4")
+                add("Content-Length", "4")
+            },
+            body = "AAAA".encodeToByteArray(),
+        )
+
+        val ex = assertFailsWith<RequestDecompressionLimitException> {
+            handler.onRead(ctx, request)
+        }
+        assertEquals(RequestDecompressionLimitException.Reason.AbsoluteSizeExceeded, ex.reason)
+        tracker.assertNoLeaks("aggregated decode must release the held chunks when the cap trips")
+    }
+
+    @Test
     fun `absolute cap opt-out via Long_MAX_VALUE allows large output`() {
         val registry = CompressionRegistry().apply { registerDecoder(MultiplyDecoder(factor = 4)) }
         val state = ChainState()
