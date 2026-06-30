@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
@@ -19,7 +20,8 @@ class HttpBodyAggregatorTest {
 
     // --- Test infrastructure ---
 
-    private val transport = TestIoTransport()
+    private val tracker = TrackingAllocator(DefaultAllocator)
+    private val transport = TestIoTransport(allocator = tracker)
     private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
 
     /** Collects aggregated [HttpRequest] and errors. */
@@ -49,7 +51,7 @@ class HttpBodyAggregatorTest {
 
     private fun bufOf(text: String): IoBuf {
         val bytes = text.encodeToByteArray()
-        val buf = DefaultAllocator.allocate(bytes.size)
+        val buf = tracker.allocate(bytes.size)
         buf.writeByteArray(bytes, 0, bytes.size)
         return buf
     }
@@ -78,6 +80,7 @@ class HttpBodyAggregatorTest {
         assertEquals("/data", req.path)
         assertNotNull(req.body)
         assertEquals("hello world", req.body!!.decodeToString())
+        tracker.assertNoLeaks("multi-chunk aggregation must release every held chunk")
     }
 
     @Test
@@ -90,6 +93,7 @@ class HttpBodyAggregatorTest {
 
         assertEquals(1, collector.requests.size)
         assertNull(collector.requests[0].body)
+        tracker.assertNoLeaks("zero-body must leave no held chunk")
     }
 
     @Test
@@ -110,6 +114,30 @@ class HttpBodyAggregatorTest {
         assertEquals(1, collector.errors.size)
         assertIs<HttpParseException>(collector.errors[0])
         assertTrue(collector.errors[0].message!!.contains("maxContentLength"))
+        tracker.assertNoLeaks("overflow must release every held + remaining chunk")
+    }
+
+    @Test
+    fun `overflow after partial accumulation releases the held chunks`() {
+        val (pipeline, collector) = createPipeline(maxContentLength = 8)
+
+        // "hello" (5) is held, then " world" (6) tips the total to 11 > 8.
+        pipeline.notifyRead(
+            bufOf(
+                "POST /big HTTP/1.1\r\n" +
+                "Host: example.com\r\n" +
+                "Content-Length: 11\r\n" +
+                "\r\n" +
+                "hello",
+            ),
+        )
+        pipeline.notifyRead(bufOf(" world"))
+
+        assertEquals(0, collector.requests.size)
+        assertEquals(1, collector.errors.size)
+        assertIs<HttpParseException>(collector.errors[0])
+        // The chunk held before overflow plus the overflowing chunk are released.
+        tracker.assertNoLeaks("overflow after partial accumulation must release the held chunk")
     }
 
     @Test
@@ -134,6 +162,7 @@ class HttpBodyAggregatorTest {
         assertEquals("hello", req.body!!.decodeToString())
         // Trailers are not surfaced on HttpRequest — they are discarded.
         assertNull(req.headers.getString("Trailer-Key"))
+        tracker.assertNoLeaks("chunked aggregation must release every held chunk")
     }
 
     @Test
@@ -152,11 +181,10 @@ class HttpBodyAggregatorTest {
         )
         pipeline.notifyRead(bufOf("def"))
 
-        // If IoBufs were not released, the allocator would eventually
-        // detect a leak (not asserted here, but the test exercises the
-        // release path through the aggregator).
         assertEquals(1, collector.requests.size)
         assertEquals("abcdef", collector.requests[0].body!!.decodeToString())
+        // The held chunks must be released by the end-of-body flatten.
+        tracker.assertNoLeaks("every held + input IoBuf must be released after aggregation")
     }
 
     @Test
@@ -171,5 +199,26 @@ class HttpBodyAggregatorTest {
 
         assertEquals(0, collector.requests.size)
         assertEquals(0, collector.errors.size)
+    }
+
+    @Test
+    fun `a new head before HttpBodyEnd releases the chunks held for the previous request`() {
+        val collector = RequestCollector()
+        val pipeline = channel.pipeline
+        pipeline.addLast("aggregator", HttpBodyAggregator())
+        pipeline.addLast("collector", collector)
+
+        // First request: a head and a held body chunk, but no HttpBodyEnd.
+        pipeline.notifyRead(HttpRequestHead(HttpMethod.POST, "/first"))
+        pipeline.notifyRead(HttpBody(bufOf("orphaned")))
+        // A second head arrives mid-body: startAggregation must release the
+        // chunk held for the first request before starting the second.
+        pipeline.notifyRead(HttpRequestHead(HttpMethod.POST, "/second"))
+        pipeline.notifyRead(HttpBodyEnd.EMPTY)
+
+        assertEquals(1, collector.requests.size)
+        assertEquals("/second", collector.requests[0].path)
+        assertNull(collector.requests[0].body)
+        tracker.assertNoLeaks("a new head mid-body must release the previously held chunk")
     }
 }

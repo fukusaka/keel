@@ -1,9 +1,11 @@
 package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufMutableChunks
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import kotlin.reflect.KClass
+
 /**
  * Buffers a streaming [HttpRequestHead] + [HttpBody] + [HttpBodyEnd]
  * sequence into a single legacy [HttpRequest] with the full body as
@@ -20,14 +22,18 @@ import kotlin.reflect.KClass
  * ```
  *
  * **Size limit**: if the accumulated body exceeds [maxContentLength],
- * all remaining body messages are drained (releasing their [IoBuf]s)
- * and an [HttpParseException] is propagated via
+ * the held and remaining body [IoBuf]s are released and an
+ * [HttpParseException] is propagated via
  * [PipelineHandlerContext.propagateError]. The caller is responsible
  * for closing the connection.
  *
- * **Lifecycle**: every inbound [IoBuf] is released after its bytes are
- * copied into the aggregation buffer. The aggregator is stateful and
- * must not be shared between connections.
+ * **Lifecycle**: inbound body [IoBuf]s are *held* in a pooled
+ * [IoBufMutableChunks] — no per-chunk copy and no growing intermediate
+ * array. The body is flattened to a contiguous [ByteArray] exactly once,
+ * at [HttpBodyEnd] (the application-API boundary), and that flatten
+ * releases every held chunk. On overflow, error, or a reset the held
+ * chunks are released in one pass instead. The aggregator is stateful
+ * and must not be shared between connections.
  */
 class HttpBodyAggregator(
     private val maxContentLength: Int = DEFAULT_MAX_CONTENT_LENGTH,
@@ -37,8 +43,7 @@ class HttpBodyAggregator(
     override val producedType: KClass<*> get() = HttpRequest::class
 
     private var head: HttpRequestHead? = null
-    private var body: ByteArray? = null
-    private var bodySize: Int = 0
+    private var acc: IoBufMutableChunks? = null
     private var overflowed: Boolean = false
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
@@ -56,50 +61,47 @@ class HttpBodyAggregator(
     }
 
     private fun startAggregation(newHead: HttpRequestHead) {
+        // A new head before the previous body completed: release any chunks
+        // still held so a malformed sequence cannot leak the pool.
+        acc?.release()
         head = newHead
-        body = null
-        bodySize = 0
+        acc = null
         overflowed = false
     }
 
     private fun appendContent(content: HttpBody) {
-        val src = content.content
-        try {
-            copyIntoBody(src)
-        } finally {
-            src.release()
-        }
+        foldChunk(content.content)
     }
 
-    private fun copyIntoBody(src: IoBuf) {
-        if (overflowed) return
-        val len = src.readableBytes
-        if (len == 0) return
-        if (bodySize + len > maxContentLength) {
-            overflowed = true
-            body = null
-            bodySize = 0
+    /**
+     * Folds one inbound [src] into the held accumulator. Ownership of a
+     * retained chunk transfers to [acc] (no copy); an empty chunk, an
+     * already-overflowed stream, or the chunk that tips the body past
+     * [maxContentLength] is released here instead.
+     */
+    private fun foldChunk(src: IoBuf) {
+        if (overflowed) {
+            src.release()
             return
         }
-        val cur = body
-        val needed = bodySize + len
-        val buf = when {
-            cur == null -> ByteArray(maxOf(len, INITIAL_BODY_CAPACITY))
-            cur.size < needed -> cur.copyOf(maxOf(needed, cur.size * 2).coerceAtMost(maxContentLength))
-            else -> cur
+        val len = src.readableBytes
+        if (len == 0) {
+            src.release()
+            return
         }
-        body = buf
-        src.readByteArray(buf, bodySize, len)
-        bodySize += len
+        val target = acc ?: IoBufMutableChunks().also { acc = it }
+        if (target.size + len > maxContentLength) {
+            overflowed = true
+            target.release()
+            acc = null
+            src.release()
+            return
+        }
+        target.add(src)
     }
 
     private fun completeAggregation(ctx: PipelineHandlerContext, last: HttpBodyEnd) {
-        val lastBuf = last.content
-        try {
-            if (lastBuf.readableBytes > 0) copyIntoBody(lastBuf)
-        } finally {
-            lastBuf.release()
-        }
+        foldChunk(last.content)
         val aggregatedHead = head
         if (aggregatedHead == null) {
             // Stray HttpBodyEnd without preceding head — reset defensively.
@@ -116,9 +118,20 @@ class HttpBodyAggregator(
             )
             return
         }
-        val finalBody = if (bodySize == 0) null else body?.copyOf(bodySize)
-        body = null
-        bodySize = 0
+        val held = acc
+        acc = null
+        // Flatten the held chunks to a contiguous array exactly once (the
+        // application-API boundary); null body when nothing was held. Guard
+        // the flatten so a failed body-sized allocation releases the held
+        // pool chunks instead of leaking them.
+        val finalBody = held?.let { chunks ->
+            try {
+                chunks.toByteArray()
+            } catch (t: Throwable) {
+                chunks.release()
+                throw t
+            }
+        }
         ctx.propagateRead(
             HttpRequest(
                 aggregatedHead.method,
@@ -131,17 +144,14 @@ class HttpBodyAggregator(
     }
 
     private fun resetAggregation() {
+        acc?.release()
         head = null
-        body = null
-        bodySize = 0
+        acc = null
         overflowed = false
     }
 
     private companion object {
         /** Default maximum aggregated body size: 1 MiB. */
         private const val DEFAULT_MAX_CONTENT_LENGTH = 1 shl 20
-
-        /** Initial backing array capacity, sized to fit small JSON payloads. */
-        private const val INITIAL_BODY_CAPACITY = 256
     }
 }
