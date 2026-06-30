@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.IoBufChunks
+import io.github.fukusaka.keel.buf.IoBufMutableChunks
 import io.github.fukusaka.keel.codec.http.HttpBody
 import io.github.fukusaka.keel.codec.http.HttpBodyEnd
 import io.github.fukusaka.keel.codec.http.HttpHeaderLimitsConfig
@@ -638,49 +639,40 @@ internal class Http1Call(
     }
 
     override suspend fun receiveBytes(): ByteArray {
-        // Collect every chunk first, then size the result array once and
-        // copy each chunk in exactly once: O(body) total copy. Growing an
-        // accumulator per chunk would be O(body * chunkCount) — quadratic
-        // in the chunk count, which a chunked-encoding client controls.
-        val chunks = ArrayList<IoBuf>()
+        // Collect every chunk into an IoBufMutableChunks (held pooled, no
+        // per-chunk realloc), then flatten once: O(body) total copy. The
+        // toByteArray() flatten stays inside the try so its body-sized
+        // allocation — whose size a chunked client controls — releases the
+        // held chunks on OOM instead of leaking them.
+        val acc = IoBufMutableChunks()
         try {
-            var total = 0
             while (true) {
                 val chunk = receiveChunk() ?: break
-                chunks.add(chunk)
-                total += chunk.readableBytes
+                acc.add(chunk)
             }
-            val acc = ByteArray(total)
-            var offset = 0
-            for (chunk in chunks) {
-                val n = chunk.readableBytes
-                if (n > 0) {
-                    chunk.readByteArray(acc, offset, n)
-                    offset += n
-                }
-            }
-            return acc
-        } finally {
-            for (chunk in chunks) chunk.release()
+            return acc.toByteArray()
+        } catch (t: Throwable) {
+            acc.release()
+            throw t
         }
     }
 
     override suspend fun receiveChunks(): IoBufChunks {
-        // Collect every body chunk and hand the whole list off as IoBufChunks
-        // — no flatten to a contiguous ByteArray. Ownership transfers to the
-        // caller (it releases). Empty chunks are dropped so they do not occupy
-        // a pool slot. On error before hand-off, release what was collected.
-        val chunks = ArrayList<IoBuf>()
+        // Collect every body chunk into an IoBufMutableChunks and hand it off
+        // as IoBufChunks — no flatten. Ownership transfers to the caller (it
+        // releases). On error before hand-off, release what was collected.
+        // (IoBufMutableChunks.add drops empty chunks.)
+        val acc = IoBufMutableChunks()
         try {
             while (true) {
                 val chunk = receiveChunk() ?: break
-                if (chunk.readableBytes > 0) chunks.add(chunk) else chunk.release()
+                acc.add(chunk)
             }
         } catch (t: Throwable) {
-            for (chunk in chunks) chunk.release()
+            acc.release()
             throw t
         }
-        return IoBufChunks.takeOwnership(chunks)
+        return acc.toIoBufChunks()
     }
 
     // --- response ---
