@@ -472,6 +472,85 @@ class HttpServerHandlerTest {
     }
 
     @Test
+    fun `receiveChunks hands the whole body off as pooled chunks`() {
+        var totalSize = -1
+        var body: String? = null
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/upload") { call ->
+                    val chunks = call.receiveChunks()
+                    try {
+                        totalSize = chunks.totalSize
+                        val sb = StringBuilder()
+                        chunks.forEach { sb.append(it.readString()) }
+                        body = sb.toString()
+                    } finally {
+                        chunks.release()
+                    }
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedPost("/upload", "hello world")
+
+        assertEquals(11, totalSize)
+        assertEquals("hello world", body)
+    }
+
+    @Test
+    fun `receiveChunks returns an empty IoBufChunks for a bodyless request`() {
+        var totalSize = -1
+        var chunkCount = -1
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/") { call ->
+                    val chunks = call.receiveChunks()
+                    totalSize = chunks.totalSize
+                    chunkCount = chunks.chunkCount
+                    chunks.release()
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedGet("/")
+
+        assertEquals(0, totalSize)
+        assertEquals(0, chunkCount)
+    }
+
+    @Test
+    fun `receiveChunks preserves a multi-chunk body as separate pooled chunks`() {
+        var chunkCount = -1
+        var totalSize = -1
+        var body: String? = null
+        install(
+            Router().apply {
+                register(HttpMethod.POST, "/upload") { call ->
+                    val chunks = call.receiveChunks()
+                    try {
+                        chunkCount = chunks.chunkCount
+                        totalSize = chunks.totalSize
+                        val sb = StringBuilder()
+                        chunks.forEach { sb.append(it.readString()) }
+                        body = sb.toString()
+                    } finally {
+                        chunks.release()
+                    }
+                    call.respond(HttpResponse.ok("ok"))
+                }
+            },
+        )
+
+        feedPostChunked("/upload", "alpha", "-", "beta", "-", "gamma")
+
+        assertEquals(5, chunkCount)
+        assertEquals(16, totalSize)
+        assertEquals("alpha-beta-gamma", body)
+    }
+
+    @Test
     fun `respondText sends a text plain response`() {
         install(
             Router().apply {
