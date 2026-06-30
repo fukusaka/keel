@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `benchmark`: `/upload-chunks` POST route reading the full body via `receiveChunks()` (owned pooled `IoBufChunks`, no flatten), pairing with `/upload-aggregate` (`receiveBytes`) for an A/B of the held-`ByteArray` GC recovery. (#859)
+
 - `server-http`: `HttpCall.receiveChunks(): IoBufChunks` reads the full request body as owned pooled chunks — no heap `ByteArray` flatten — for handlers that consume the body without a contiguous array (size checks, gather-write / proxy forwarding). (#858)
 
 - `benchmark`: `/upload-aggregate` POST route reading the full body via `receiveBytes()` (heap `ByteArray`), pairing with `/upload-stream` (pooled chunk drain) for an A/B of the HTTP-body held-`ByteArray` GC cost. (#857)
