@@ -2,7 +2,9 @@ package io.github.fukusaka.keel.buf
 
 /**
  * An owned, ordered list of pooled [IoBuf] chunks that together form one
- * logical outbound payload.
+ * logical payload — an outbound codec output gather-written to the
+ * transport, or an inbound request body collected via
+ * `HttpCall.receiveChunks`.
  *
  * Produced by a streaming codec that drains its output into a fresh pooled
  * buffer per step (rather than copying into one growing `ByteArray`), so the
@@ -10,13 +12,19 @@ package io.github.fukusaka.keel.buf
  * An encoder then writes a length prefix from [totalSize] and gather-writes
  * the chunks with one `propagateWrite` per chunk; the transport coalesces
  * them into a single `writev` and releases each chunk after the send.
+ * Inbound, `HttpCall.receiveChunks` collects the received body chunks into
+ * the same structure; the ownership contract below applies identically,
+ * while the length-prefix / gather-write / partial-hand-off notes are
+ * outbound-encoder specifics.
  *
  * ### Ownership semantics
  *
- * This object owns the chunks. Handing it to the transport (via the frame
- * or message it rides on) transfers ownership of *every* chunk — after that
- * the holder must not touch the chunks or this object. On an error path
- * *before* hand-off, the holder must call [release] to free every chunk.
+ * This object owns the chunks. The owner transfers ownership exactly once —
+ * either by handing it off to a consumer (outbound: the transport, via the
+ * frame or message it rides on, after which the holder must not touch the
+ * chunks or this object) or by calling [release] (the abort path before any
+ * hand-off, and the normal path once an inbound body has been consumed).
+ * [release] frees every chunk.
  *
  * **Single-use.** This object is meant to be consumed exactly once:
  *   - one full hand-off (the transport takes every chunk), or
@@ -35,11 +43,11 @@ package io.github.fukusaka.keel.buf
  * lifetime is "one logical send"; reference-bumping them across sends would
  * blur that boundary and defeat leak detection.
  *
- * **Partial hand-off.** If the encoder hands off the first N chunks then
- * a downstream `propagateWrite` throws on chunk N+1, the encoder owns the
- * remaining `chunkCount - N` chunks and must release them individually —
- * NOT by calling [release] on this object, which would attempt to release
- * the first N (already owned by the transport) too.
+ * **Partial hand-off (outbound encoders).** If an encoder hands off the
+ * first N chunks then a downstream `propagateWrite` throws on chunk N+1, the
+ * encoder owns the remaining `chunkCount - N` chunks and must release them
+ * individually — NOT by calling [release] on this object, which would attempt
+ * to release the first N (already owned by the transport) too.
  *
  * A dedicated type (rather than a raw `List<IoBuf>`) keeps the reference-
  * counted ownership explicit and leak-checkable: [release] frees the whole

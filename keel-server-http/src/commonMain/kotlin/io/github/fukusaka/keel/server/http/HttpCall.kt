@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufChunks
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpResponse
@@ -24,9 +25,11 @@ import io.github.fukusaka.keel.codec.http.HttpStatus
  * backed by their codec's stream object; the same `Router` /
  * [RouteHandler] / `Middleware` surface carries forward unchanged.
  *
- * **Request body** is exposed in two layers (see [receiveChunk] /
- * [receiveBytes]): a zero-copy primary that hands the decoder's native
- * buffer slices straight to the handler, and a copying convenience that
+ * **Request body** is exposed in three layers (see [receiveChunk] /
+ * [receiveChunks] / [receiveBytes]): a zero-copy primary that hands the
+ * decoder's native buffer slices straight to the handler one at a time, a
+ * pooled-collection form that hands the whole body off as owned
+ * [IoBufChunks] without a contiguous copy, and a copying convenience that
  * aggregates the whole body into a `ByteArray`.
  *
  * **Single response**: exactly one of [respond] / [respondText] /
@@ -117,6 +120,25 @@ public interface HttpCall {
      * a bodyless request.
      */
     public suspend fun receiveBytes(): ByteArray
+
+    /**
+     * Reads the entire request body as an owned list of pooled chunks —
+     * no flatten to a contiguous [ByteArray].
+     *
+     * The third body-read layer: [receiveChunk] streams one chunk at a
+     * time, [receiveBytes] flattens the whole body into a heap [ByteArray],
+     * and this hands the whole body off as pooled [IoBufChunks]. **Ownership
+     * transfers to the caller, which MUST [IoBufChunks.release] it** (or pass
+     * it to a sink that takes ownership).
+     *
+     * For handlers that consume the full body without needing a contiguous
+     * array — size checks, gather-write / proxy forwarding, pooled
+     * processing — this avoids the per-request heap [ByteArray] that
+     * [receiveBytes] allocates. The held chunks still occupy pooled buffers
+     * until released, so release promptly. Returns an empty [IoBufChunks]
+     * for a bodyless request.
+     */
+    public suspend fun receiveChunks(): IoBufChunks
 
     // --- response ---
 

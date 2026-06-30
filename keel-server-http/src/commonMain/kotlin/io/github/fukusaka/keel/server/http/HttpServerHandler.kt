@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufChunks
 import io.github.fukusaka.keel.codec.http.HttpBody
 import io.github.fukusaka.keel.codec.http.HttpBodyEnd
 import io.github.fukusaka.keel.codec.http.HttpHeaderLimitsConfig
@@ -662,6 +663,24 @@ internal class Http1Call(
         } finally {
             for (chunk in chunks) chunk.release()
         }
+    }
+
+    override suspend fun receiveChunks(): IoBufChunks {
+        // Collect every body chunk and hand the whole list off as IoBufChunks
+        // — no flatten to a contiguous ByteArray. Ownership transfers to the
+        // caller (it releases). Empty chunks are dropped so they do not occupy
+        // a pool slot. On error before hand-off, release what was collected.
+        val chunks = ArrayList<IoBuf>()
+        try {
+            while (true) {
+                val chunk = receiveChunk() ?: break
+                if (chunk.readableBytes > 0) chunks.add(chunk) else chunk.release()
+            }
+        } catch (t: Throwable) {
+            for (chunk in chunks) chunk.release()
+            throw t
+        }
+        return IoBufChunks.takeOwnership(chunks)
     }
 
     // --- response ---
