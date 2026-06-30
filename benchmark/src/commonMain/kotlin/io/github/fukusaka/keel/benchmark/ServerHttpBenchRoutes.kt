@@ -265,6 +265,27 @@ fun KeelHttpServerBuilder.installStreamingBenchRoutes() {
         )
     }
 
+    // POST /upload-aggregate — reads the FULL request body via receiveBytes(),
+    // which collects the pooled body chunks, holds them, then copies them into
+    // one heap ByteArray sized once from the total (one alloc, no double-realloc).
+    // Pairs with /upload-stream (receiveChunk drain, pooled, no hold/copy) for an
+    // A/B of the GC cost of holding + materialising the body as a heap ByteArray
+    // vs draining pooled chunks. Same response shape so only the read path differs.
+    post("/upload-aggregate") { call ->
+        val body = call.receiveBytes()
+        call.respond(
+            HttpResponse(
+                status = HttpStatus.OK,
+                version = HttpVersion.HTTP_1_1,
+                headers = HttpHeaders.of(
+                    HttpHeaderName.CONTENT_LENGTH to "0",
+                    "X-Bytes-Received" to body.size.toString(),
+                ),
+                body = EMPTY_BODY,
+            ),
+        )
+    }
+
     // POST /xthread — same body-drain as /upload-stream, but releases each
     // chunk on a background Dispatchers.Default coroutine instead of the
     // EventLoop. Releasing off the EventLoop is what makes the pooled buffer's
