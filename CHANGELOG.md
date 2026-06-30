@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io`, `server-http`: `IoBufMutableChunks` — a growable, release-safe owned list of pooled `IoBuf` chunks built by **adding existing chunks** (the mutable counterpart of `IoBufChunks`; distinct from `IoBufAccumulator`, which writes bytes into fresh chunks), with `toIoBufChunks()` / `toByteArray()` finalisers. `HttpCall.receiveBytes` / `receiveChunks` now collect through it instead of a hand-rolled `ArrayList<IoBuf>`. (#860)
+
 - `benchmark`: `/upload-chunks` POST route reading the full body via `receiveChunks()` (owned pooled `IoBufChunks`, no flatten), pairing with `/upload-aggregate` (`receiveBytes`) for an A/B of the held-`ByteArray` GC recovery. (#859)
 
 - `server-http`: `HttpCall.receiveChunks(): IoBufChunks` reads the full request body as owned pooled chunks — no heap `ByteArray` flatten — for handlers that consume the body without a contiguous array (size checks, gather-write / proxy forwarding). (#858)
