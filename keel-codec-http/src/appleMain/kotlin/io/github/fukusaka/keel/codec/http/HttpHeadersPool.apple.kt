@@ -28,13 +28,14 @@ import kotlin.experimental.ExperimentalNativeApi
  * fallback, correct as long as their EventLoop is pthread-pinned (every keel
  * engine today is, except NWConnection).
  *
- * The cast is safe: [headersPoolScope] is built by `scopeLocal { ... }`, whose
- * Apple actual is always a [DispatchQueueLocal] (the composite's outer layer).
+ * Reaches [DispatchQueueLocal.install] through [headersPoolScope]'s
+ * `dispatchQueueLocal` member — an Apple-only property on the Apple
+ * `ScopeLocal` actual, not part of the common `current` / `isScopedHere`
+ * contract. No cast: the composite's queue-scoped layer is exposed directly.
  */
 @OptIn(ExperimentalForeignApi::class)
-@Suppress("UNCHECKED_CAST")
 fun installScopedHeadersPool(queue: dispatch_queue_t) {
-    (headersPoolScope as DispatchQueueLocal<ArrayDeque<HttpHeaders>>).install(queue, ArrayDeque())
+    headersPoolScope.dispatchQueueLocal.install(queue, ArrayDeque())
 }
 
 @OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
