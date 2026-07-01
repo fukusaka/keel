@@ -74,6 +74,10 @@ fun main(args: Array<String>) {
         }
         return
     }
+    if (args.any { it == "--bench=iface-probe" }) {
+        runInterfaceDispatchProbeBench()
+        return
+    }
 
     // GC tuning via --gc-target=<bytes> (e.g. --gc-target=256m)
     applyGcTuning(args)

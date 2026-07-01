@@ -24,12 +24,11 @@ package io.github.fukusaka.keel.scope
  * Only the **read** side is common. [current] resolves the value for the
  * scope currently executing this code; [isScopedHere] reports whether that
  * scope has an explicitly installed value. The **install/write** side is
- * intentionally *not* on this interface because the three models are
- * incompatible: thread-locals auto-initialize per thread (no install),
- * `DispatchQueueLocal` installs per queue, and a block-scoped binding would
- * install per dynamic extent. Each actual exposes its own install path where
- * one exists (e.g. `DispatchQueueLocal.install(queue, value)`); auto-init
- * actuals expose none.
+ * intentionally *not* exposed here because the three models are incompatible:
+ * thread-locals auto-initialize per thread (no install), `DispatchQueueLocal`
+ * installs per queue, and a block-scoped binding would install per dynamic
+ * extent. Each actual exposes its own install path where one exists (e.g.
+ * `DispatchQueueLocal.install(queue, value)`); auto-init actuals expose none.
  *
  * Obtain an instance through the [scopeLocal] factory with a [fallback] that
  * produces the value for scopes that have no installed value (the common case
@@ -38,13 +37,33 @@ package io.github.fukusaka.keel.scope
  * **Why an abstraction.** keel runs EventLoops on raw pthreads it creates
  * itself, and — on Apple — on GCD serial queues that migrate across worker
  * pthreads. Per-scope state (object pools, per-connection counters) needs the
- * scope primitive that matches each platform's execution model; this interface
- * lets common code consume that state uniformly while each platform supplies
- * the correct binding.
+ * scope primitive that matches each platform's execution model; this
+ * `expect class` lets common code consume that state uniformly while each
+ * platform supplies the correct binding.
+ *
+ * **`expect class`, not an interface.** `current()` is called on the hot path
+ * of pooled-buffer consumers (`HttpHeadersPool` / `HttpRequestDecoder`). A
+ * micro-benchmark investigation found that Kotlin/Native's *genuinely
+ * polymorphic* interface dispatch (a call site with 2+ live implementers
+ * reachable in the compiled binary) costs real, measurable overhead — roughly
+ * 4x a concrete no-interface call on macOS arm64 — while a *monomorphic*
+ * interface call (one implementer resolvable at that call site, even if
+ * others exist elsewhere in the binary) is noticeably cheaper but still not
+ * free. `ScopeLocal`'s per-target `expect`/`actual` factory already ensures
+ * exactly one implementation is ever linked into a given compiled target —
+ * the best case for the compiler to devirtualize an interface call — but that
+ * is an optimization the compiler *happens* to apply, not a language
+ * guarantee. An `expect class` removes the interface layer structurally: each
+ * compiled target sees a single concrete class with no possible second
+ * implementer, so the call can never fall back to genuine (costly)
+ * polymorphic dispatch regardless of the optimizer's behavior. Each actual
+ * (`ScopeLocal.linux.kt` / `.jvm.kt` / `.js.kt` / `.apple.kt`) still
+ * implements the same per-platform binding described above; only the removed
+ * interface layer changed.
  *
  * @param T the value type bound per scope. Must be a non-null reference type.
  */
-interface ScopeLocal<T : Any> {
+expect class ScopeLocal<T : Any> {
     /**
      * Returns this slot's value for the scope currently executing this code:
      * the installed value if the current scope had one installed, otherwise a
