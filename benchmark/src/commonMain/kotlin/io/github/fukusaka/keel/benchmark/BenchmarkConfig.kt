@@ -140,6 +140,15 @@ data class BenchmarkConfig(
      * zero-overhead) for normal runs.
      */
     val profileXthread: Boolean = false,
+    /**
+     * Selects the buffer allocator (`--allocator=keel|netty`, default `keel`).
+     * `netty` routes buffers through Netty's `PooledByteBufAllocator` — a
+     * comparison baseline for keel's own `PooledDirectAllocator`. JVM only, and
+     * only for engines that consume `config.allocator` (the NIO engine); the
+     * Netty engine always uses `ch.alloc()` and Native ignores it. Profiling
+     * flags apply only to the keel allocator.
+     */
+    val allocatorImpl: String = "keel",
     val socket: SocketConfig = SocketConfig(),
     val engineConfig: EngineConfig = EngineConfig.None,
 ) {
@@ -161,6 +170,7 @@ data class BenchmarkConfig(
                     "engine" -> config = config.copy(engine = value)
                     "port" -> config = config.copy(port = value.toInt())
                     "profile" -> config = config.copy(profile = value)
+                    "allocator" -> config = config.copy(allocatorImpl = value)
                     "connection-close" -> config = config.copy(connectionClose = value.toBooleanStrict())
                     "compression" -> config = config.copy(compression = value.toBooleanStrict())
                     "middleware-depth" -> config = config.copy(middlewareDepth = value.toInt())
