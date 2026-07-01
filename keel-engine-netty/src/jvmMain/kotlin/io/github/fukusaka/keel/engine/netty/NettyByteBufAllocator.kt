@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.buf.BufferAllocatorLifecycleListener
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.NoOpLifecycleListener
 import io.netty.buffer.ByteBufAllocator
+import io.netty.buffer.PooledByteBufAllocator
 
 /**
  * [BufferAllocator] that allocates keel [IoBuf]s backed by Netty
@@ -15,6 +16,20 @@ import io.netty.buffer.ByteBufAllocator
  * direct memory arena — the flush path can hand the underlying
  * `ByteBuf` to `nettyChannel.writeAndFlush` without wrapping through
  * `Unpooled.wrappedBuffer`.
+ *
+ * Also a **user-selectable allocator** for JVM engines that consume
+ * `IoEngineConfig.allocator` for their buffers — e.g. the NIO engine,
+ * whose zero-copy read/write path accepts any [IoBuf] backed by a
+ * `java.nio.ByteBuffer` through
+ * [NioByteBufferBacking][io.github.fukusaka.keel.buf.NioByteBufferBacking]
+ * (which [NettyByteBufIoBuf] implements). Passing [nettyByteBufAllocator]
+ * routes that engine's buffers through Netty's `PooledByteBufAllocator`,
+ * making it a **benchmark comparison baseline** for keel's own
+ * [PooledDirectAllocator][io.github.fukusaka.keel.buf.PooledDirectAllocator]:
+ * the same transport with the allocator isolated. The Netty engine itself
+ * always allocates from its channel's own `ByteBufAllocator` (`ch.alloc()`),
+ * so passing this as its `config.allocator` affects only the lifecycle
+ * listener, not allocation.
  *
  * **Per-EventLoop usage**: [createChild] returns `this` since
  * Netty's own `ByteBufAllocator` (e.g. [ByteBufAllocator.DEFAULT] or
@@ -35,7 +50,7 @@ import io.netty.buffer.ByteBufAllocator
  * engine-direct `NettyByteBufIoBuf` lifecycle event without any further
  * configuration.
  */
-internal class NettyByteBufAllocator(
+class NettyByteBufAllocator(
     private val byteBufAllocator: ByteBufAllocator,
     override val lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
 ) : BufferAllocator {
@@ -73,3 +88,19 @@ internal class NettyByteBufAllocator(
 
     override fun createChild(): BufferAllocator = this
 }
+
+/**
+ * Creates a [BufferAllocator] that backs keel [IoBuf]s with Netty
+ * [ByteBuf][io.netty.buffer.ByteBuf]s from [byteBufAllocator] (defaults to the
+ * process-wide [PooledByteBufAllocator.DEFAULT]).
+ *
+ * Pass the result as `IoEngineConfig.allocator` to a JVM engine that consumes
+ * it (the NIO engine) to route its buffers through Netty's pooled arena — a
+ * benchmark comparison baseline for keel's own `PooledDirectAllocator`. See
+ * [NettyByteBufAllocator] for the Netty-engine caveat (it uses `ch.alloc()`,
+ * not `config.allocator`, for allocation).
+ */
+fun nettyByteBufAllocator(
+    byteBufAllocator: ByteBufAllocator = PooledByteBufAllocator.DEFAULT,
+    lifecycleListener: BufferAllocatorLifecycleListener = NoOpLifecycleListener,
+): BufferAllocator = NettyByteBufAllocator(byteBufAllocator, lifecycleListener)
