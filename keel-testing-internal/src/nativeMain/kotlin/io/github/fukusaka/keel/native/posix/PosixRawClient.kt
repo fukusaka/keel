@@ -14,6 +14,7 @@ import platform.posix.errno
 import platform.posix.shutdown
 import platform.posix.socket
 import posix_testing.keel_connect_inet_loopback
+import posix_testing.keel_set_nosigpipe
 import posix_testing.keel_set_rcvtimeo
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -65,6 +66,12 @@ public object PosixRawClient {
     public fun rawConnect(port: Int, timeout: Duration = DEFAULT_TIMEOUT): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
+        // Suppress SIGPIPE on this blocking client fd (macOS: SO_NOSIGPIPE).
+        // Production sockets get this in PosixNativeSocketOps.setNonBlocking,
+        // which this blocking client never calls; without it a rawWrite to a
+        // peer the server has force-closed (e.g. by the write-idle timeout)
+        // delivers SIGPIPE and kills the test process instead of failing EPIPE.
+        keel_set_nosigpipe(fd)
         // Initial SO_RCVTIMEO value — rawRead recomputes it per retry
         // against an absolute deadline, but giving the initial call a
         // finite timeout prevents an accidental indefinite block from
