@@ -7,17 +7,17 @@ package io.github.fukusaka.keel.scope
  * value once per thread from [fallback], so there is no separate install path
  * and [isScopedHere] is always `true`.
  */
-private class ThreadLocalScopeLocal<T : Any>(fallback: () -> T) : ScopeLocal<T> {
+actual class ScopeLocal<T : Any> internal constructor(fallback: () -> T) {
     private val threadLocal: ThreadLocal<T> = ThreadLocal.withInitial(fallback)
 
-    override fun current(): T = threadLocal.get()
+    actual fun current(): T = threadLocal.get()
 
-    override fun isScopedHere(): Boolean = true
+    actual fun isScopedHere(): Boolean = true
 }
 
 /**
  * JVM [scopeLocal] actual: returns a [java.lang.ThreadLocal]-backed slot
- * (see [ThreadLocalScopeLocal]). The scope is the OS thread; [fallback] is the
+ * (see [ScopeLocal]). The scope is the OS thread; [fallback] is the
  * thread-local's initial supplier.
  */
-actual fun <T : Any> scopeLocal(fallback: () -> T): ScopeLocal<T> = ThreadLocalScopeLocal(fallback)
+actual fun <T : Any> scopeLocal(fallback: () -> T): ScopeLocal<T> = ScopeLocal(fallback)

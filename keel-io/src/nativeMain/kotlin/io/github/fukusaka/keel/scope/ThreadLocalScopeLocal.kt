@@ -3,9 +3,10 @@ package io.github.fukusaka.keel.scope
 import kotlin.native.concurrent.ThreadLocal
 
 /**
- * Per-OS-thread [ScopeLocal] backed by a Kotlin/Native [@ThreadLocal][ThreadLocal]
- * store keyed by slot identity. Shared by the Linux actual (used directly) and
- * the Apple actual (used as the off-GCD-queue fallback of `DispatchQueueLocal`).
+ * Per-OS-thread [ScopeLocal] backing store, a Kotlin/Native
+ * [@ThreadLocal][ThreadLocal] map keyed by slot identity. Shared by the Linux
+ * [ScopeLocal] actual (wrapped directly) and the Apple actual (used as the
+ * off-GCD-queue fallback of `DispatchQueueLocal`).
  *
  * One [perThreadStore] map per OS thread — including the raw pthreads keel's
  * epoll / kqueue / io_uring EventLoops run on — holds each slot's value for
@@ -53,11 +54,11 @@ import kotlin.native.concurrent.ThreadLocal
 @ThreadLocal
 private val perThreadStore: HashMap<Any, Any> = HashMap()
 
-internal class ThreadLocalScopeLocal<T : Any>(private val fallback: () -> T) : ScopeLocal<T> {
+internal class ThreadLocalScopeLocal<T : Any>(private val fallback: () -> T) {
     private val key = Any()
 
     @Suppress("UNCHECKED_CAST")
-    override fun current(): T = perThreadStore.getOrPut(key) { fallback() } as T
+    fun current(): T = perThreadStore.getOrPut(key) { fallback() } as T
 
-    override fun isScopedHere(): Boolean = perThreadStore.containsKey(key)
+    fun isScopedHere(): Boolean = perThreadStore.containsKey(key)
 }
