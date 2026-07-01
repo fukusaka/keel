@@ -1,3 +1,8 @@
+// MatchingDeclarationName false-positive (file-level, so @file:Suppress): see
+// the identical suppression + explanation in ScopeLocal.linux.kt (the sibling
+// intermediate-source-set actual).
+@file:Suppress("MatchingDeclarationName")
+
 package io.github.fukusaka.keel.scope
 
 import io.github.fukusaka.keel.apple.DispatchQueueLocal

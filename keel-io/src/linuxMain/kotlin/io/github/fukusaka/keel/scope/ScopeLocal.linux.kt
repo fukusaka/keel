@@ -1,3 +1,12 @@
+// MatchingDeclarationName false-positive (file-level, so @file:Suppress):
+// detekt's metadata-compile analysis of this intermediate source set
+// (linuxMain) expects the file's basename before the final `.kt` to equal the
+// class name, which the project's mandated `{Name}.{platform}.kt` actual-file
+// convention never satisfies. Leaf source sets (e.g. jvmMain's
+// ScopeLocal.jvm.kt) do not trigger this; only actual classes declared in an
+// intermediate source set do.
+@file:Suppress("MatchingDeclarationName")
+
 package io.github.fukusaka.keel.scope
 
 /**
