@@ -585,7 +585,12 @@ internal class Http1Call(
                 // accounting; the consumer is already waiting, the chunk
                 // never lingers.
                 bodyWaiter = null
-                waiter.resume(content)
+                // If the consumer is cancelled after this resume is dispatched
+                // but before its continuation runs, kotlinx's prompt-cancellation
+                // guarantee discards the resumed value — release the pooled chunk
+                // in that case so it is not leaked. onCancellation runs iff the
+                // value is not delivered, so the delivered path never double-frees.
+                waiter.resume(content) { _, _, _ -> content.release() }
             } else {
                 val queue = pending ?: ArrayDeque<IoBuf>().also { pending = it }
                 queue.addLast(content)
