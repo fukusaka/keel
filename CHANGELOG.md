@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io`: `BufferAllocator.createUntrackedChild()` — a child allocator the parent does **not** retain for cascade-close, for owners with an unbounded, churning child population (one allocator per accepted connection). The caller owns its `close()`; the default returns `createChild()`, so stateless and existing allocators are unaffected. (#867)
 - `io`, `server-http`: `IoBufMutableChunks` — a growable, release-safe owned list of pooled `IoBuf` chunks built by **adding existing chunks** (the mutable counterpart of `IoBufChunks`; distinct from `IoBufAccumulator`, which writes bytes into fresh chunks), with `toIoBufChunks()` / `toByteArray()` finalisers. `HttpCall.receiveBytes` / `receiveChunks` now collect through it instead of a hand-rolled `ArrayList<IoBuf>`. (#860)
 
 - `benchmark`: `/upload-chunks` POST route reading the full body via `receiveChunks()` (owned pooled `IoBufChunks`, no flatten), pairing with `/upload-aggregate` (`receiveBytes`) for an A/B of the held-`ByteArray` GC recovery. (#859)
@@ -46,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-nwconnection`: fix a per-connection allocator double-close SIGSEGV under CPU-constrained shutdown — the connection's own async GCD teardown raced the engine's `children` fan-out. The per-connection child is now an untracked child of the engine allocator (its only close path), and `engine.close()` joins each connection's teardown before draining the shared arena. (#867)
 - `server-http`: release the pooled request-body chunk when a body consumer (`receiveChunk` / `receiveBytes` / `receiveChunks`) is cancelled in the direct-hand-off resume window — it was leaked when kotlinx's prompt cancellation discarded the resumed value. (#863)
 - `io`: spread off-EventLoop carves across shards instead of clustering them onto one. The off-EL shard selector masked a raw pthread id whose low bits are alignment-constant, so every off-EL thread (`asSource` / `asSink` from a non-EventLoop coroutine, NWConnection serial-queue migration) landed on the same shard — measured 256 threads all on 1 of 32 shards on both Linux and macOS, serialising on one arena lock instead of sharding. Now mixes the id through a SplitMix64 finalizer first. (#856)
 - `io`: fix native `LongObjectMap` backward-shift deletion, which stopped scanning at the first non-movable entry and stranded later entries (whose home slot was at or before the removed slot) behind the gap — a still-present key then became unreachable (`get` returned `null` while `size` stayed correct) under put/remove churn. On the native epoll / kqueue / io_uring EventLoops this dropped a connection's pending-readiness registration, so its `connect` (or read) never resumed and connections stalled under concurrent load. (#846)

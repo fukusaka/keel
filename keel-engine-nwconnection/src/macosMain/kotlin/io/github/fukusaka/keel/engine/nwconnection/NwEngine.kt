@@ -28,10 +28,14 @@ import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import nwconnection.keel_nw_create_tcp_params
 import nwconnection.keel_nw_create_tcp_params_unix_listener
 import nwconnection.keel_nw_create_tcp_params_unix_listener_with_options
@@ -170,8 +174,14 @@ class NwEngine(
             // arrive during startup. localAddress is updated after the
             // assigned port is known.
             val serverChannel = NwStreamServer(
-                lsnr, InetSocketAddress(host, 0), allocator, bindConfig, config.loggerFactory, config.idleReadPolicy,
+                lsnr,
+                InetSocketAddress(host, 0),
+                allocator,
+                bindConfig,
+                config.loggerFactory,
+                config.idleReadPolicy,
                 config.idleTimeoutMillis,
+                ::trackConnection,
             )
 
             nw_listener_set_queue(lsnr, listenerQueue)
@@ -329,6 +339,7 @@ class NwEngine(
                         conn, connQueue, this@NwEngine.allocator, this@NwEngine.config.idleReadPolicy, logger,
                         idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
                     )
+                    trackConnection(transport)
                     val channel = NwPipelinedChannel(transport, logger)
                     // Listener-level TLS: connections arrive already TLS-encrypted,
                     // so skip per-connection TLS initialization.
@@ -442,6 +453,7 @@ class NwEngine(
             conn, connQueue, allocator, this@NwEngine.config.idleReadPolicy, channelLogger,
             idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
         )
+        trackConnection(transport)
         return NwPipelinedChannel(transport, channelLogger, remoteAddr, null)
     }
 
@@ -478,8 +490,14 @@ class NwEngine(
                 "io.github.fukusaka.keel.nwconnection.listener.unix", null,
             )
             val serverChannel = NwStreamServer(
-                lsnr, address, allocator, bindConfig, config.loggerFactory, this@NwEngine.config.idleReadPolicy,
+                lsnr,
+                address,
+                allocator,
+                bindConfig,
+                config.loggerFactory,
+                this@NwEngine.config.idleReadPolicy,
                 this@NwEngine.config.idleTimeoutMillis,
+                ::trackConnection,
             )
             nw_listener_set_queue(lsnr, listenerQueue)
 
@@ -549,6 +567,7 @@ class NwEngine(
             conn, connQueue, allocator, this@NwEngine.config.idleReadPolicy, channelLogger,
             idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
         )
+        trackConnection(transport)
         return NwPipelinedChannel(transport, channelLogger, address, address)
     }
 
@@ -605,6 +624,7 @@ class NwEngine(
                         conn, connQueue, this@NwEngine.allocator, this@NwEngine.config.idleReadPolicy, logger,
                         idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
                     )
+                    trackConnection(transport)
                     val channel = NwPipelinedChannel(transport, logger)
                     config.initializeConnection(channel)
                     pipelineInitializer(channel)
@@ -668,13 +688,44 @@ class NwEngine(
             closed = true
             coroutineContext.job.cancelAndJoin()
             listener?.let { nw_listener_cancel(it) }
-            // Close the engine-owned allocator child. NWConnection has no
-            // EL thread to join; the SupervisorJob cancel above ensures
-            // every coroutine that touches the allocator is finished
-            // before we drain its pool. The user-passed parent
-            // (`config.allocator`) stays borrowed.
+            // Close the engine-owned allocator child. NWConnection has no EL
+            // thread to join; instead each connection's tracking coroutine
+            // (trackConnection) joins its async GCD teardown under the
+            // cancelAndJoin above, so every untracked per-connection child is
+            // drained before we drain this pool and before the user tears down
+            // the shared arena. The user-passed parent (`config.allocator`)
+            // stays borrowed.
             allocator.close()
             logger.debug { "Engine closed" }
+        }
+    }
+
+    /**
+     * Ties [transport]'s lifecycle to this engine's coroutine scope so [close]
+     * joins the connection's async GCD teardown.
+     *
+     * The per-connection allocator child is an untracked child of the engine
+     * allocator (createUntrackedChild), so the engine no longer fans out to
+     * close it — this coroutine awaits the connection's own teardown instead.
+     * If the engine is closed while the connection is still live, the coroutine
+     * is cancelled; its `finally` then forces the teardown under [NonCancellable]
+     * so the untracked child is drained before the shared arena is torn down. On
+     * a normal connection close the teardown has already run, so the `finally`
+     * is a no-op and the coroutine completes promptly (no accumulation across
+     * the engine's lifetime).
+     */
+    private fun trackConnection(transport: NwIoTransport) {
+        launch {
+            try {
+                transport.awaitTeardown()
+            } finally {
+                if (!transport.isTornDown) {
+                    withContext(NonCancellable) {
+                        transport.close()
+                        withTimeoutOrNull(TEARDOWN_JOIN_TIMEOUT_MS) { transport.awaitTeardown() }
+                    }
+                }
+            }
         }
     }
 
@@ -765,5 +816,10 @@ class NwEngine(
         // Generous timeout for blocking operations at server startup.
         // Not on the hot path — only used by bindPipeline.
         private const val BIND_TIMEOUT_NS = 10L * 1_000_000_000L
+
+        // Safety bound for joining a per-connection teardown at engine close
+        // (trackConnection). Teardown is near-instant on the connQueue; this
+        // only guards against a wedged dispatch queue so close() cannot hang.
+        private const val TEARDOWN_JOIN_TIMEOUT_MS = 5_000L
     }
 }

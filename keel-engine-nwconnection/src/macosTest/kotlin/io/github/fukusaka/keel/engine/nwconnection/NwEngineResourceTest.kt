@@ -83,6 +83,38 @@ class NwEngineResourceTest {
     }
 
     @Test
+    fun `engine close force-tears-down a still-live connection without leak`() = runBlocking {
+        val tracker = TrackingAllocator()
+        val engine = NwEngine(IoEngineConfig(allocator = tracker))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+        // Drive one echo so the per-connection allocator child carves a buffer,
+        // then leave the channel and client OPEN — the connection is still live.
+        rawWrite(clientFd, "live-conn")
+        val buf = DefaultAllocator.allocate(64)
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.read(buf) }
+        assertEquals(9, n)
+        ch.write(buf)
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.flush() }
+
+        // Close the engine with the connection still live. The per-connection
+        // allocator child is untracked (createUntrackedChild), so the engine no
+        // longer fans out to close it; trackConnection's finally must force the
+        // teardown and join it. This returns without leaking the child's
+        // buffers or hanging (a hang would trip the withTimeout).
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { engine.close() }
+        close(clientFd)
+
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
+    }
+
+    @Test
     fun `engine-direct DispatchDataIoBuf fires lifecycleListener on inbound zero-copy + release`() = runBlocking {
         // SlabAllocator is the Native-side PooledAllocator subclass; its
         // lifecycleListener parameter is the channel through which

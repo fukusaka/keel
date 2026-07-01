@@ -154,11 +154,17 @@ internal class NwIoTransport(
     private val logger: Logger,
     idleTimeoutMillis: Long = 0,
     // Per-connection allocator child — see KDoc paragraph "Per-connection
-    // allocator confinement" below. The createChild() call must run before
-    // the AbstractIoTransport super constructor so allocator is set up
-    // before any callback can fire.
+    // allocator confinement" below. Uses createUntrackedChild() so the engine
+    // (parent) allocator does NOT retain and cascade-close it: this connection
+    // owns its allocator's close (via teardownOnConnQueue), and the engine joins
+    // that teardown at close() rather than fanning out to it. Registering it
+    // (createChild) would let the engine's children fan-out close it a second
+    // time, racing this connection's own async GCD teardown — the SIGSEGV this
+    // engine hit under CPU-constrained teardown. The call must run before the
+    // AbstractIoTransport super constructor so allocator is set up before any
+    // callback can fire.
 ) : AbstractIoTransport(
-    parentAllocator.createChild().also { it.installConfinement(NwQueueConfinement(connQueue)) },
+    parentAllocator.createUntrackedChild().also { it.installConfinement(NwQueueConfinement(connQueue)) },
 ) {
 
     /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
@@ -546,6 +552,23 @@ internal class NwIoTransport(
         }
     }
 
+    /**
+     * Completed once [teardownOnConnQueue] has finished, including the
+     * per-connection allocator child's [BufferAllocator.close]. The engine's
+     * per-connection tracking coroutine (`NwEngine.trackConnection`) awaits
+     * this to join the async GCD teardown at engine close — now that the child
+     * is untracked (`createUntrackedChild`), this teardown is the only path
+     * that closes it, so the engine must wait for it before the shared arena
+     * can be torn down.
+     */
+    private val teardownComplete = CompletableDeferred<Unit>()
+
+    /** Suspends until this connection's [teardownOnConnQueue] has completed. */
+    internal suspend fun awaitTeardown() = teardownComplete.await()
+
+    /** True once [teardownOnConnQueue] has run to completion. */
+    internal val isTornDown: Boolean get() = teardownComplete.isCompleted
+
     private fun teardownOnConnQueue() {
         assertOnConnQueue("NwIoTransport.teardownOnConnQueue")
         if (!markTeardownStarted()) return
@@ -557,11 +580,16 @@ internal class NwIoTransport(
         spareFallbackBuf?.release()
         spareFallbackBuf = null
         nw_connection_cancel(conn)
-        // Drain the per-connection allocator child's pool. The child is no
-        // longer reachable from the engine's children list after this point,
-        // so its chunks return to the parent (or to the OS) immediately
-        // instead of waiting for the engine-level close.
+        // Drain the per-connection allocator child's pool. The child is an
+        // untracked child of the engine allocator (createUntrackedChild), so
+        // this is its *only* close path — the engine does not fan out to it.
+        // Its chunks return to the shared arena immediately instead of waiting
+        // for the engine-level close.
         allocator.close()
+        // Signal teardown completion so the engine's tracking coroutine can
+        // join this async teardown at close(), guaranteeing the untracked
+        // child is drained before the shared arena is torn down.
+        teardownComplete.complete(Unit)
     }
 
     /**
