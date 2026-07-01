@@ -40,10 +40,9 @@ import platform.posix.pthread_self
  * C−B ≈ 19 ns on M1 vs ≈ 5 ns on the x86_64 host — far above the
  * `ThreadLocalScopeLocal` KDoc's HashMap ~6.7 ns (an x86_64 figure). `current()` is
  * `perThreadStore.getOrPut(key)` where `perThreadStore` is a `@ThreadLocal
- * HashMap`, so the cost splits into TLS resolution + HashMap + interface
- * dispatch:
- * - **D** `ThreadLocalScopeLocal` concrete `current()` (no interface) — isolates
- *   interface virtual dispatch (C−D).
+ * HashMap`:
+ * - **D** `ThreadLocalScopeLocal` constructed directly, bypassing [scopeLocal] —
+ *   see the 2026-07-01 correction below for what C−D actually isolates.
  * - **E** `@ThreadLocal HashMap.getOrPut(key)` inline — the `current()` body
  *   (TLS + HashMap), no virtual dispatch.
  * - **F** `@ThreadLocal Int` increment — TLS resolution cost alone.
@@ -61,7 +60,28 @@ import platform.posix.pthread_self
  * cross-thread-released buffer in the freeing thread's slot (leak). Cross-thread
  * free needs a sharded central allocator with an MPSC return queue (the next
  * allocator design step). This bench + its decomposition is the decision record;
- * kept `@Ignore`.
+ * kept `@Ignore`. **This verdict is unaffected by the correction below** — it
+ * rests on the race / leak / net-negative-guard findings, not on C−D.
+ *
+ * **Correction (2026-07-01).** The original write-up attributed C−D (≈8.5 ns on
+ * M1) to "Kotlin/Native arm64 interface virtual dispatch". That is wrong:
+ * **D bypasses [scopeLocal] entirely** and constructs [ThreadLocalScopeLocal]
+ * directly, so on macosArm64 — where [scopeLocal]'s Apple actual is a
+ * `DispatchQueueLocal`-composite that calls `dispatch_get_specific` — C and D
+ * exercise **different mechanisms**, not the same mechanism through an
+ * interface vs. a concrete reference. C−D therefore measures "Apple's
+ * GCD-composite path minus Linux/native's plain-HashMap path", not interface
+ * dispatch in isolation. A controlled experiment that changed only the
+ * `ScopeLocal` interface itself to a KMP `expect class` (identical composite
+ * mechanism on both sides) found the M1 cost **unchanged**: this bench's C−D
+ * 8.50 ns → 7.45 ns (noise-level), and a second, independent bench holding
+ * `compositeSlot.current()` constant showed 17.9 ns → 18.3 ns (also
+ * noise-level). Interface dispatch is not the dominant cost here; the real gap
+ * between D and the Apple composite is most likely the `dispatch_get_specific`
+ * GCD syscall itself (see the `dispatch_get_specific miss` breakdown in the
+ * sibling `ScopeLocalCostBench`), which switching away from an interface
+ * cannot remove. Investigating whether that GCD-syscall cost is itself
+ * reducible is a separate, correctly-scoped follow-up.
  */
 // Re-run: remove @Ignore, then
 //   ./gradlew :keel-io:macosArm64Test --tests "*PerThreadCacheFrontMicroBenchmark"
