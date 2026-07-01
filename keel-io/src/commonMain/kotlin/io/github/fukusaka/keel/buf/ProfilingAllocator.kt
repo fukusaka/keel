@@ -137,6 +137,9 @@ class ProfilingAllocator(
     override fun createChild(): BufferAllocator =
         ProfilingAllocator(delegate.createChild(), profile)
 
+    override fun createUntrackedChild(): BufferAllocator =
+        ProfilingAllocator(delegate.createUntrackedChild(), profile)
+
     override fun installConfinement(token: ConfinementToken) = delegate.installConfinement(token)
 }
 

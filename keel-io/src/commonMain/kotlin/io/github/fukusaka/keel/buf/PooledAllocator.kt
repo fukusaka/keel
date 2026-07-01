@@ -1,4 +1,4 @@
-@file:OptIn(UnsafeIoBufApi::class)
+@file:OptIn(UnsafeIoBufApi::class, kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
 
 package io.github.fukusaka.keel.buf
 
@@ -752,15 +752,40 @@ abstract class PooledAllocator internal constructor(
     final override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
         sliceDefaultIoBuf(source, offset, length)
 
-    final override fun createChild(): BufferAllocator {
+    /**
+     * Monotonic shard-assignment counter for [createUntrackedChild]. Tracked
+     * children pin to `children.size` (one EventLoop per shard); untracked
+     * children are an unbounded, churning population (one per connection), so
+     * they round-robin across shards via this counter instead — otherwise every
+     * untracked child would pin to the same shard and serialise its owner-context
+     * carves on one shard lock. Masked to the shard count by [ShardedChunkArena].
+     */
+    private val untrackedChildShard = kotlin.concurrent.atomics.AtomicInt(0)
+
+    final override fun createChild(): BufferAllocator = newChild(track = true)
+
+    final override fun createUntrackedChild(): BufferAllocator = newChild(track = false)
+
+    /**
+     * Shared construction for [createChild] (tracked) and [createUntrackedChild]
+     * (untracked). Both share this allocator's sharded chunk arena so every child
+     * carves from and returns runs to one off-EventLoop-safe central back-end; the
+     * child owns its own size-class freelist cache (per-owner, lock-free hot path)
+     * but borrows the shared arena for misses, pinned to one shard.
+     *
+     * When [track] is `true` the child joins [children] and this parent's [close]
+     * cascade-closes it, pinned to `children.size` (Netty leastUsedArena style:
+     * ~one EventLoop per shard). When `false` the child is left out of [children]
+     * — the caller owns its [close] — and its shard is round-robin from
+     * [untrackedChildShard] so an unbounded connection population spreads across
+     * shards. The untracked path never touches [children], so it stays safe under
+     * the concurrent per-connection construction NWConnection drives.
+     */
+    private fun newChild(track: Boolean): BufferAllocator {
         check(!closed) { "allocator is closed" }
-        // Share this allocator's sharded chunk arena with the child so all
-        // per-EventLoop children carve from and return runs to one off-EventLoop-safe
-        // central back-end. The child owns its own size-class freelist cache (per-EL,
-        // lock-free hot path) but borrows the shared arena for misses, pinned to one
-        // shard (its index — Netty leastUsedArena style: ~one EventLoop per shard).
-        val child = newChildInstance(maxTotalBytes, shardedArena, children.size)
-        children.add(child)
+        val shard = if (track) children.size else untrackedChildShard.fetchAndAdd(1)
+        val child = newChildInstance(maxTotalBytes, shardedArena, shard)
+        if (track) children.add(child)
         return child
     }
 

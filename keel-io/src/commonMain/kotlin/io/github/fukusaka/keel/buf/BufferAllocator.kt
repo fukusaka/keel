@@ -163,8 +163,32 @@ interface BufferAllocator {
      * pool when the engine is thread-pinned (epoll / kqueue / nio /
      * io_uring), or a single engine-wide pool when the engine has no
      * per-thread split (NwEngine, NodeEngine).
+     *
+     * See [createUntrackedChild] for children whose lifecycle the parent
+     * must **not** track (one allocator per accepted connection, etc.).
      */
     fun createChild(): BufferAllocator = this
+
+    /**
+     * Creates a child allocator whose lifecycle is **fully owned by the
+     * caller** and is **not tracked** by this parent for cascade-close.
+     *
+     * Identical to [createChild] except the parent does not retain the
+     * returned child: this parent's [close] will not close it, and the
+     * caller **must** [close] it exactly once itself.
+     *
+     * Use this for children with an independent, churning population the
+     * parent cannot bound — e.g. one allocator per accepted connection,
+     * closed when that connection tears down. Registering such children
+     * with [createChild] would (a) let the parent's teardown fan-out close
+     * them a second time, racing the connection's own close, and (b) grow
+     * the tracking set without bound. Per-EventLoop children (fixed count,
+     * each closed once by its owning EventLoop) should use [createChild].
+     *
+     * Stateless allocators return `this` via the [createChild] default, so
+     * they remain reusable regardless of tracking.
+     */
+    fun createUntrackedChild(): BufferAllocator = createChild()
 
     /**
      * Installs the [ConfinementToken] this allocator classifies releases against —
