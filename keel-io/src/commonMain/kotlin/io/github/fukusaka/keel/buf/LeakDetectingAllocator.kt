@@ -208,6 +208,9 @@ class LeakDetectingAllocator(
     override fun createChild(): BufferAllocator =
         LeakDetectingAllocator(delegate.createChild(), onLeak)
 
+    override fun createUntrackedChild(): BufferAllocator =
+        LeakDetectingAllocator(delegate.createUntrackedChild(), onLeak)
+
     override fun installConfinement(token: ConfinementToken) = delegate.installConfinement(token)
 }
 

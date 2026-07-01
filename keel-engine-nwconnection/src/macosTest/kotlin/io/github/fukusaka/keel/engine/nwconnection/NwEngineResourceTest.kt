@@ -1,13 +1,18 @@
+@file:OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+
 package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.core.InetSocketAddress
 
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.SlabAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import kotlin.concurrent.atomics.AtomicInt
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
@@ -80,6 +85,82 @@ class NwEngineResourceTest {
             0, tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
+    }
+
+    @Test
+    fun `engine close force-tears-down a still-live connection without leak`() = runBlocking {
+        val tracker = TrackingAllocator()
+        val engine = NwEngine(IoEngineConfig(allocator = tracker))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = connectRawClient(port)
+        val ch = server.accept()
+        // Drive one echo so the per-connection allocator child carves a buffer,
+        // then leave the channel and client OPEN — the connection is still live.
+        rawWrite(clientFd, "live-conn")
+        val buf = DefaultAllocator.allocate(64)
+        val n = withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.read(buf) }
+        assertEquals(9, n)
+        ch.write(buf)
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.flush() }
+
+        // Close the engine with the connection still live. The per-connection
+        // allocator child is untracked (createUntrackedChild), so the engine no
+        // longer fans out to close it; trackConnection's finally must force the
+        // teardown and join it. This returns without leaking the child's
+        // buffers or hanging (a hang would trip the withTimeout).
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) { engine.close() }
+        close(clientFd)
+
+        assertEquals(
+            0, tracker.outstandingCount,
+            "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+        )
+    }
+
+    @Test
+    fun `per-connection allocators are untracked eagerly-drained and not re-closed by engine close`() = runBlocking {
+        val counters = AllocatorCounters()
+        val engine = NwEngine(IoEngineConfig(allocator = CountingAllocator(DefaultAllocator, counters)))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val n = 3
+        repeat(n) {
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+            rawWrite(clientFd, "drain")
+            val buf = DefaultAllocator.allocate(16)
+            withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.read(buf) }
+            buf.release()
+            ch.close()
+            withTimeout(IO_OP_SHORT_TIMEOUT_MS) { ch.awaitClosed() }
+            close(clientFd)
+        }
+
+        // Unbounded-growth guard: the engine takes exactly one tracked child (its
+        // own), and every per-connection child is untracked — so the engine
+        // allocator's children list never grows with the connection count. A
+        // regression to createChild() would push trackedCreated to 1 + n.
+        assertEquals(1, counters.trackedCreated.load(), "only the engine's own child is tracked")
+        assertEquals(n, counters.untrackedCreated.load(), "each connection takes one untracked child")
+
+        // Eager-drain guard: each per-connection allocator is closed at its own
+        // connection teardown (before engine.close()), so its pooled chunks return
+        // to the shared arena immediately instead of being held until engine close.
+        withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
+            while (counters.closes.load() < n) delay(5)
+        }
+        assertEquals(n, counters.closes.load(), "all per-connection children drain at their own teardown, before engine close")
+
+        server.close()
+        engine.close()
+
+        // Double-close guard: engine.close() closes exactly one more allocator (its
+        // own child) and does NOT fan out to re-close the untracked per-connection
+        // children — the double-close that crashed under CPU-constrained shutdown.
+        assertEquals(n + 1, counters.closes.load(), "engine close must not re-close the untracked per-connection children")
     }
 
     @Test
@@ -191,4 +272,42 @@ class NwEngineResourceTest {
         engine.close()
     }
 
+}
+
+/**
+ * Shared counters for [CountingAllocator], mutated from GCD teardown callbacks
+ * (per-connection `allocator.close()`) and read from the test coroutine, so the
+ * counts are [AtomicInt]s.
+ */
+private class AllocatorCounters {
+    val trackedCreated = AtomicInt(0)
+    val untrackedCreated = AtomicInt(0)
+    val closes = AtomicInt(0)
+}
+
+/**
+ * A [BufferAllocator] decorator that counts `createChild` (tracked) vs
+ * `createUntrackedChild` (untracked) and `close` calls across the whole child
+ * tree into a shared [AllocatorCounters]. Lets a test assert that every
+ * per-connection child is untracked (bounded children list), drained at its own
+ * teardown (eager drain), and closed exactly once (no engine fan-out re-close).
+ */
+private class CountingAllocator(
+    private val delegate: BufferAllocator,
+    private val counters: AllocatorCounters,
+) : BufferAllocator by delegate {
+    override fun createChild(): BufferAllocator {
+        counters.trackedCreated.fetchAndAdd(1)
+        return CountingAllocator(delegate.createChild(), counters)
+    }
+
+    override fun createUntrackedChild(): BufferAllocator {
+        counters.untrackedCreated.fetchAndAdd(1)
+        return CountingAllocator(delegate.createUntrackedChild(), counters)
+    }
+
+    override fun close() {
+        counters.closes.fetchAndAdd(1)
+        delegate.close()
+    }
 }

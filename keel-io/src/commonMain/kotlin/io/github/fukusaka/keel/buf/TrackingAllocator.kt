@@ -151,6 +151,9 @@ class TrackingAllocator private constructor(
     override fun createChild(): BufferAllocator =
         TrackingAllocator(delegate.createChild(), stats)
 
+    override fun createUntrackedChild(): BufferAllocator =
+        TrackingAllocator(delegate.createUntrackedChild(), stats)
+
     override fun installConfinement(token: ConfinementToken) = delegate.installConfinement(token)
 
     override fun close() {

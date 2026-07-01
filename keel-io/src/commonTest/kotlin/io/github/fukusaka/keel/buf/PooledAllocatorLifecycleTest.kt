@@ -97,6 +97,30 @@ class PooledAllocatorLifecycleTest {
     }
 
     @Test
+    fun `close cascade-closes tracked children but not untracked ones`() {
+        if (!isPoolAllocator()) return
+        // Use a non-root parent so its close does not tear down the shared
+        // arena (only the root owns it), isolating the cascade behavior from
+        // arena lifecycle.
+        val root = createPoolAllocator()
+        val parent = root.createChild()
+        val tracked = parent.createChild()
+        val untracked = parent.createUntrackedChild()
+        assertNotSame(parent, untracked, "untracked child must be a fresh instance")
+
+        parent.close()
+
+        // Tracked child is cascade-closed by the parent (existing contract).
+        assertFailsWith<IllegalStateException> { tracked.allocate(8192) }
+        // Untracked child is NOT cascade-closed — the caller owns its close,
+        // so it stays usable (the shared arena is still open; root owns it).
+        untracked.allocate(8192).release()
+
+        untracked.close() // the caller is responsible for closing it
+        root.close()
+    }
+
+    @Test
     fun `release after close goes through freeBacking instead of the pool`() {
         if (!isPoolAllocator()) return
         val allocator = createPoolAllocator() as PooledAllocator
