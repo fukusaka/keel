@@ -62,3 +62,24 @@ static inline int keel_set_rcvtimeo(int fd, long sec, long usec) {
     tv.tv_usec = usec;
     return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
+
+/*
+ * keel_set_nosigpipe: suppress SIGPIPE per-socket on macOS/BSD (SO_NOSIGPIPE);
+ * no-op on Linux (SIGPIPE is suppressed per-call via MSG_NOSIGNAL in the
+ * Layer 1 keel_write / keel_writev wrappers instead).
+ *
+ * PosixRawClient's fd is a *blocking* socket, so it never passes through
+ * PosixNativeSocketOps.setNonBlocking() where production sockets get their
+ * SO_NOSIGPIPE. Without this, a rawWrite to a peer that has already been
+ * force-closed (e.g. by the write-idle timeout) delivers SIGPIPE and kills
+ * the test process instead of failing with EPIPE. Mirrors keel_set_nosigpipe
+ * in keel-native-posix/posix_socket.def.
+ */
+static inline void keel_set_nosigpipe(int fd) {
+#if !defined(__linux__)
+    int on = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+#else
+    (void)fd;
+#endif
+}
