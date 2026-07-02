@@ -26,6 +26,7 @@ object PipelineHttpNioBenchmark : EngineBenchmark {
             config = IoEngineConfig(
                 threads = threads,
                 loggerFactory = benchmarkLoggerFactory(),
+                allocator = benchmarkAllocatorFor(config),
             ),
         )
 

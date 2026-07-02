@@ -30,7 +30,7 @@ object ServerHttpNioBenchmark : EngineBenchmark {
             config = IoEngineConfig(
                 threads = threads,
                 loggerFactory = benchmarkLoggerFactory(),
-                allocator = benchmarkAllocator(config),
+                allocator = benchmarkAllocatorFor(config),
             ),
         )
         val (connectorConfigure, tlsCloseable) = serverHttpConnectorConfig(config)
