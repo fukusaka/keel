@@ -37,6 +37,37 @@ class NettyByteBufAllocatorTest {
     }
 
     @Test
+    fun `slice is a zero-copy view returning the correct bytes`() {
+        val src = alloc.allocate(16)
+        "0123456789".encodeToByteArray().let { src.writeByteArray(it, 0, it.size) }
+        val sliced = alloc.slice(src, 2, 4) // "2345"
+        assertTrue(sliced is NettyByteBufIoBuf)
+        assertEquals(4, sliced.capacity)
+        assertEquals(4, sliced.writerIndex)
+        assertEquals(0, sliced.readerIndex)
+        val out = ByteArray(4)
+        sliced.readByteArray(out, 0, 4)
+        assertEquals("2345", out.decodeToString())
+        src.release()
+        sliced.release()
+    }
+
+    @Test
+    fun `a held slice keeps its bytes after the source is released`() {
+        val src = alloc.allocate(16)
+        "0123456789".encodeToByteArray().let { src.writeByteArray(it, 0, it.size) }
+        val sliced = alloc.slice(src, 4, 3) as NettyByteBufIoBuf // "456"
+        // Release the source first — the retained slice shares the pooled memory
+        // and must keep its own reserve alive (the held-buffer path).
+        src.release()
+        assertTrue(sliced.byteBuf.refCnt() > 0, "retained slice keeps a live reserve after source release")
+        val out = ByteArray(3)
+        sliced.readByteArray(out, 0, 3)
+        assertEquals("456", out.decodeToString())
+        sliced.release()
+    }
+
+    @Test
     fun `wrapBytes returns null (unsupported)`() {
         assertNull(alloc.wrapBytes(byteArrayOf(1, 2, 3), 0, 3))
     }

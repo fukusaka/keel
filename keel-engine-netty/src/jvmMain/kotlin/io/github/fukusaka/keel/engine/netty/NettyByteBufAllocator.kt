@@ -65,15 +65,23 @@ class NettyByteBufAllocator(
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? = null
 
     override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf {
-        // Fallback path: allocate + copy (keel's codec layer doesn't exercise
-        // slice on the Netty write path). Returning a Netty-backed copy keeps
-        // the invariant that allocator returns NettyByteBufIoBuf.
-        //
         // [offset] is an absolute index into [source] (same semantics as
         // getByte). Callers pass buf.readerIndex directly, so do NOT add
         // source.readerIndex here — that would double-count the offset and
         // produce an out-of-bounds read on the underlying ByteBuf/ByteBuffer.
         require(offset + length <= source.writerIndex) { "slice range out of bounds" }
+        // Zero-copy for our own buffers: a retained slice shares the pooled
+        // memory and bumps refCnt, so a held slice keeps its bytes alive after
+        // the source is consumed. This avoids the heap ByteArray copy the
+        // fallback below incurs — the HTTP decoder slices per body chunk on the
+        // NIO engine, which dominated heap allocation (88% of pressure, JFR)
+        // when this path was an allocate-and-copy stub.
+        if (source is NettyByteBufIoBuf) {
+            return source.retainedSlice(offset, length, lifecycleListener)
+        }
+        // Fallback for a foreign IoBuf type (not expected on the Netty
+        // allocator path): allocate + copy, keeping the return-type invariant
+        // that the allocator hands back a NettyByteBufIoBuf.
         val buf = allocate(length)
         val tmp = ByteArray(length)
         for (i in 0 until length) tmp[i] = source.getByte(offset + i)
