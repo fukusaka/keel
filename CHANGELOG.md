@@ -65,6 +65,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `engine-nio`: the EventLoop selects with a JDK 11+ `Consumer` action instead of iterating the selected-key set, structurally removing the per-event `HashMap$Node` insert and per-wakeup key-set iterator (~14.6% of the `/hello` JFR allocation pressure); per-key dispatch semantics are unchanged. (#874)
 - `server-http`: `Router.resolve` walks the path over index ranges instead of splitting it into a segment list, and defers the path-parameter map until a parameter actually captures — a static-route request no longer allocates in the routing walk; resolution semantics (empty-segment skipping, precedence, backtracking, 404/405/406) are unchanged. (#873)
 - `codec-http`: `HttpHeaders.contentLength` and `isChunked` now parse the buffer-backed header slot in place (`IoBuf.parseDecLongAt` / a `CharSequence` view) instead of materialising the value `String` on every request-framing read; results are unchanged on all inputs. (#872)
 - `engine-netty`: make `NettyByteBufAllocator.slice()` zero-copy (Netty `retainedSlice`) instead of allocate-and-copy. The HTTP decoder slices per body chunk on the read path, so removing that heap `ByteArray` copy lifts the Netty engine's body-heavy throughput ~66% and cuts p99 tail latency ~35× (55–73 ms → 1.8 ms) and young-GC ~20× (`POST /upload-chunks`, 100 KiB). (#869)
