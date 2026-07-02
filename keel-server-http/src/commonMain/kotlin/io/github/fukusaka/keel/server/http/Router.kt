@@ -279,10 +279,14 @@ public class Router {
      * registered for [method] whose predicates all rejected [head].
      */
     public fun resolve(method: HttpMethod, path: String, head: HttpRequestHead): RouteResolution {
-        val segments = segmentsOf(path)
         val accept = parseAcceptHeader(head.headers.getCombined(HttpHeaderName.ACCEPT))
-        val matched = resolveNode(root, segments, 0, method, head, accept, HashMap())
+        // Hot path: walk the trie over (path, index) ranges — no segment
+        // split, no segment Strings, and no params map until a param branch
+        // actually captures. The miss paths below re-derive the segment list;
+        // they only run for 404 / 405 / 406 resolutions.
+        val matched = resolveNode(root, path, 0, method, head, accept, params = null)
         if (matched != null) return RouteResolution.Matched(matched)
+        val segments = segmentsOf(path)
         // 406 precedes 405/404: when the method's predicate-accepting
         // handlers all declared a `produces` type that the Accept header
         // refuses (and there was no content-negotiation catch-all), the
@@ -332,33 +336,81 @@ public class Router {
                 }
             }
         }
-        else -> literalChildren.getOrPut(segment) { Node() }
+        else -> literalChildren[segment] ?: Node().also { child ->
+            literalChildren[segment] = child
+            // Registration-time mirror for the resolve-time range lookup
+            // ([literalAt]): copy-append is fine on this cold path.
+            literalKeys += segment
+            literalHashes += segment.hashCode()
+            literalNodes += child
+        }
     }
 
+    /**
+     * Looks up the literal child whose key equals `path[start, end)` without
+     * materialising the segment: an exact `String.hashCode`-equivalent hash
+     * over the range pre-filters, then `regionMatches` confirms. Linear over
+     * the node's literal children — route fan-out per level is small, so the
+     * int-compare scan beats a `Map` lookup that would first need a segment
+     * `String` to hash.
+     */
+    private fun Node.literalAt(path: String, start: Int, end: Int): Node? {
+        val hashes = literalHashes
+        if (hashes.isEmpty()) return null
+        val h = regionHash(path, start, end)
+        val len = end - start
+        for (i in hashes.indices) {
+            if (hashes[i] != h) continue
+            val key = literalKeys[i]
+            if (key.length == len && path.regionMatches(start, key, 0, len)) return literalNodes[i]
+        }
+        return null
+    }
+
+    /**
+     * Recursive trie walk over `(path, from)` index ranges — the zero-alloc
+     * equivalent of walking [segmentsOf]'s list: leading / doubled / trailing
+     * slashes are skipped, so the visited segments are exactly the split's
+     * non-empty ones. Literal children match via [literalAt] (hash pre-filter
+     * + `regionMatches`, no segment `String`), and [params] stays `null`
+     * until a param or wildcard branch actually captures — the common
+     * static-route request allocates nothing on this walk.
+     */
+    @Suppress("ReturnCount")
     private fun resolveNode(
         node: Node,
-        segments: List<String>,
-        index: Int,
+        path: String,
+        from: Int,
         method: HttpMethod,
         head: HttpRequestHead,
         accept: List<AcceptRange>?,
-        params: HashMap<String, String>,
+        params: HashMap<String, String>?,
     ): RouteMatch? {
-        if (index < segments.size) {
-            val segment = segments[index]
-            node.literalChildren[segment]?.let { child ->
-                resolveNode(child, segments, index + 1, method, head, accept, params)?.let { return it }
+        var start = from
+        while (start < path.length && path[start] == '/') start++
+        if (start < path.length) {
+            var end = path.indexOf('/', start)
+            if (end < 0) end = path.length
+            node.literalAt(path, start, end)?.let { child ->
+                resolveNode(child, path, end, method, head, accept, params)?.let { return it }
             }
             // paramChildren is ordered constrained-first, unconstrained
             // last (see childFor), so the most specific branch is tried
             // first. A branch whose constraint the segment fails is
             // skipped like a literal mismatch, and a dead-end deeper down
             // backtracks to the next branch.
-            for (slot in node.paramChildren) {
-                if (slot.constraint != null && !slot.constraint.matches(segment)) continue
-                params[slot.name] = segment
-                resolveNode(slot.node, segments, index + 1, method, head, accept, params)?.let { return it }
-                params.remove(slot.name)
+            if (node.paramChildren.isNotEmpty()) {
+                // Captured params surface as Map<String, String>, so the
+                // segment String is materialised once per param position.
+                val segment = path.substring(start, end)
+                var captured = params
+                for (slot in node.paramChildren) {
+                    if (slot.constraint != null && !slot.constraint.matches(segment)) continue
+                    val p = captured ?: HashMap<String, String>().also { captured = it }
+                    p[slot.name] = segment
+                    resolveNode(slot.node, path, end, method, head, accept, p)?.let { return it }
+                    p.remove(slot.name)
+                }
             }
         } else {
             node.matchAt(method, head, accept, params)?.let { return it }
@@ -366,9 +418,10 @@ public class Router {
         // A trailing wildcard is terminal and matches the remaining segments —
         // zero or more — so a wildcard route also answers its bare prefix path.
         node.wildcardChild?.let { child ->
-            params["*"] = segments.subList(index, segments.size).joinToString("/")
-            child.matchAt(method, head, accept, params)?.let { return it }
-            params.remove("*")
+            val p = params ?: HashMap()
+            p["*"] = joinRemaining(path, start)
+            child.matchAt(method, head, accept, p)?.let { return it }
+            p.remove("*")
         }
         return null
     }
@@ -387,7 +440,7 @@ public class Router {
         method: HttpMethod,
         head: HttpRequestHead,
         accept: List<AcceptRange>?,
-        params: HashMap<String, String>,
+        params: HashMap<String, String>?,
     ): RouteMatch? {
         val handler = selectHandler(handlers[method], head, accept)
         val upgrade = upgrades.firstOrNull { it.predicate.acceptsOrNull(head) }?.protocol
@@ -395,7 +448,7 @@ public class Router {
             // The resource negotiates on Accept iff a handler matched and
             // this method × path declares any `produces` candidate.
             val varyOnAccept = handler != null && handlers[method]?.any { it.produces != null } == true
-            RouteMatch(handler, upgrade, params.toMap(), varyOnAccept)
+            RouteMatch(handler, upgrade, params?.toMap().orEmpty(), varyOnAccept)
         } else {
             null
         }
@@ -537,6 +590,14 @@ public class Router {
     private class Node {
         val literalChildren: MutableMap<String, Node> = mutableMapOf()
 
+        // Resolve-time mirror of [literalChildren] (parallel by index),
+        // appended on registration in [childFor]. [literalAt] scans these to
+        // match a `path[start, end)` range without materialising the segment
+        // — the map stays the registration-time source of truth.
+        var literalKeys: Array<String> = EMPTY_KEYS
+        var literalHashes: IntArray = EMPTY_HASHES
+        var literalNodes: Array<Node> = EMPTY_NODES
+
         /**
          * Parameter branches at this position. A position holds at most
          * one unconstrained `:name` plus any number of constrained ones,
@@ -640,6 +701,42 @@ public class Router {
 
         /** Splits [path] on `/`, dropping empty segments (leading / trailing / doubled slashes). */
         fun segmentsOf(path: String): List<String> = path.split('/').filter { it.isNotEmpty() }
+
+        val EMPTY_KEYS: Array<String> = emptyArray()
+        val EMPTY_HASHES: IntArray = IntArray(0)
+        val EMPTY_NODES: Array<Node> = emptyArray()
+
+        /**
+         * `String.hashCode`-equivalent hash over `path[start, end)` — the
+         * same 31-polynomial over chars, so it equals
+         * `path.substring(start, end).hashCode()` without the substring.
+         */
+        fun regionHash(path: String, start: Int, end: Int): Int {
+            var h = 0
+            for (i in start until end) h = 31 * h + path[i].code
+            return h
+        }
+
+        /**
+         * The remaining segments of [path] from [from], joined by `/` — the
+         * range equivalent of `segments.subList(index, size).joinToString("/")`
+         * on the [segmentsOf] segmentation: empty segments are dropped, so
+         * doubled / trailing slashes normalise away. Wildcard captures only.
+         */
+        fun joinRemaining(path: String, from: Int): String {
+            val sb = StringBuilder(path.length - from)
+            var i = from
+            while (i < path.length) {
+                while (i < path.length && path[i] == '/') i++
+                if (i >= path.length) break
+                var end = path.indexOf('/', i)
+                if (end < 0) end = path.length
+                if (sb.isNotEmpty()) sb.append('/')
+                sb.append(path, i, end)
+                i = end
+            }
+            return sb.toString()
+        }
 
         /** True when this predicate is null (a catch-all) or accepts [head]. */
         fun RoutePredicate?.acceptsOrNull(head: HttpRequestHead): Boolean = this == null || test(head)
