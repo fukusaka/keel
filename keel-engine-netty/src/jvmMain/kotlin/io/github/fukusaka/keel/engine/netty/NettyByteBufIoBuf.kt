@@ -220,6 +220,25 @@ internal class NettyByteBufIoBuf(
         if (freed) lifecycleListener.onReleased(this)
     }
 
+    /**
+     * Zero-copy slice of keel indices `[offset, offset + length)`: a Netty
+     * `retainedSlice` sharing this buffer's off-heap memory with an added
+     * reserve on the shared `refCnt`. The returned buffer can outlive this one
+     * (the held-buffer path holds body slices after the inbound buffer is
+     * consumed) and returns to the pool when its own refcount reaches zero — no
+     * `ByteArray` copy, unlike the allocator's foreign-buffer slice fallback.
+     */
+    internal fun retainedSlice(
+        offset: Int,
+        length: Int,
+        listener: BufferAllocatorLifecycleListener,
+    ): NettyByteBufIoBuf {
+        val sliced = byteBuf.retainedSlice(baseOffset + offset, length)
+        val buf = NettyByteBufIoBuf(sliced, baseOffset = 0, initialWriterIndex = length, lifecycleListener = listener)
+        listener.onAllocated(buf)
+        return buf
+    }
+
     companion object {
         /**
          * Wraps an already-populated inbound [ByteBuf] as an
