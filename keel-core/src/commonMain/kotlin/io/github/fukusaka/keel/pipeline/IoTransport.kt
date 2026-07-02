@@ -243,7 +243,13 @@ interface IoTransport {
 
     // === Properties ===
 
-    /** Buffer allocator for read buffer allocation. */
+    /**
+     * The buffer allocator for this transport's I/O buffers — read buffers, and
+     * any write buffers the codec layer allocates. Cheapest on the owning
+     * EventLoop (with the default pooled allocator, a lock-free freelist fast
+     * path); an off-EventLoop release is safe but takes the slower cross-context
+     * path via the allocator's confinement.
+     */
     val allocator: BufferAllocator
 
     /**

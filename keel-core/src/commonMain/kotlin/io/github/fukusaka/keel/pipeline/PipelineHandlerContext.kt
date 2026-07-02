@@ -58,7 +58,11 @@ interface PipelineHandlerContext {
     /** The handler associated with this context. */
     val handler: PipelineHandler
 
-    /** The buffer allocator for this channel. */
+    /**
+     * The channel's buffer allocator. Cheapest on the channel's EventLoop —
+     * with the default pooled allocator a lock-free freelist fast path; an
+     * off-EventLoop release is safe but takes the slower cross-context path.
+     */
     val allocator: BufferAllocator
 
     // --- Inbound propagation: next inbound handler ---

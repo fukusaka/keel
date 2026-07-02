@@ -36,7 +36,15 @@ import kotlinx.coroutines.Dispatchers
  */
 interface Channel : AutoCloseable {
 
-    /** Buffer allocator associated with this channel's engine. */
+    /**
+     * The buffer allocator for this channel.
+     *
+     * Buffers are cheapest to allocate and release on this channel's
+     * EventLoop: with the default pooled allocator the owning EventLoop hits a
+     * lock-free freelist fast path. A release from another thread is still safe
+     * (the pooled allocator routes it to the owning context via its
+     * confinement) but takes the slower cross-context path.
+     */
     val allocator: BufferAllocator
 
     /** Remote address of the peer, or null if not connected. */
