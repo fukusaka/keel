@@ -42,8 +42,8 @@ import kotlin.coroutines.resume
  * EventLoop thread (single loop iteration):
  *   1. drainTasks()          — run coroutine continuations
  *   2. drainRegistrations()  — channel.register(selector, 0) for new channels
- *   3. selector.select()     — block until events or wakeup
- *   4. processSelectedKeys() — interestOps(0) + cont.resume(Unit)
+ *   3. selector.select(action) — block until events or wakeup; invokes
+ *      [processReadyKey] per ready key (no selected-key set)
  * ```
  */
 internal class NioEventLoop(
@@ -108,6 +108,20 @@ internal class NioEventLoop(
         val channel: SelectableChannel,
         val continuation: CancellableContinuation<SelectionKey>,
     )
+
+    /**
+     * Pre-allocated action for the `Consumer`-based select (see [loop]):
+     * one instance for the loop's lifetime so the hot path allocates
+     * nothing per iteration.
+     *
+     * MUST be declared before the `init` block below — Kotlin initialises
+     * properties in declaration order, and that block starts [thread],
+     * whose [loop] reads this field immediately. Declared after the block
+     * it can still be `null` when the first `select` runs (the constructor
+     * loses the startup race on a cold JVM), the loop thread dies on the
+     * NPE, and every registration on this loop hangs forever.
+     */
+    private val readyKeyAction = java.util.function.Consumer<SelectionKey> { key -> processReadyKey(key) }
 
     init {
         thread = Thread({ loop() }, name).apply {
@@ -208,7 +222,7 @@ internal class NioEventLoop(
      * upgrade session (the SelectionKey per-op callback drop). `OP_ACCEPT` and `OP_CONNECT` get their own
      * slots too — they never overlap with `OP_READ` / `OP_WRITE` on the same
      * key in practice, but having a dedicated slot keeps
-     * [processSelectedKeys] uniform and avoids re-introducing the
+     * [processReadyKey] uniform and avoids re-introducing the
      * single-attachment pitfall the next time someone wires up a new op.
      *
      * Stays a plain mutable holder (not a `CancellableContinuation`): see
@@ -244,7 +258,7 @@ internal class NioEventLoop(
      * **Design invariant**: callbacks MUST be plain [Runnable] instances,
      * never a [CancellableContinuation]. `CancellableContinuationImpl`
      * transitively implements `Runnable` (via `DispatchedTask → scheduling.Task`),
-     * so storing a continuation directly would make [processSelectedKeys]
+     * so storing a continuation directly would make [processReadyKey]
      * invoke `DispatchedTask.run()` on the selector thread — this bypasses
      * the continuation's own state machine and leaves it installed as a
      * stale child handler of the parent Job, producing a
@@ -263,7 +277,7 @@ internal class NioEventLoop(
         // thread that owns the [Selector]. Same idiom as
         // `EpollEventLoop.register` / `KqueueEventLoop.register`: enforce a
         // single-writer invariant via dispatch so concurrent producers do
-        // not race the [processSelectedKeys] reader, and so the "set
+        // not race the [processReadyKey] reader, and so the "set
         // callback first, then set interest bit" ordering is naturally
         // happens-before for the loop thread without volatile fences.
         if (inEventLoop()) {
@@ -327,20 +341,33 @@ internal class NioEventLoop(
             drainTasks()
             drainRegistrations()
 
-            val n = if (taskQueue.isNotEmpty()) {
-                selector.selectNow()
+            // Consumer-based selection (JDK 11+): the platform selector
+            // invokes [processReadyKey] directly per ready key instead of
+            // populating the selected-key HashSet — structurally removing
+            // the per-event `HashMap$Node` insert and the per-iteration
+            // key-set iterator that dominated this loop's JFR allocation
+            // profile. The action runs while the selector holds its own
+            // locks, which is safe here because every selector / key
+            // mutation is funnelled to this thread (see
+            // [setInterestCallback]), and [processReadyKey] never
+            // re-enters a selection operation (the javadoc's only hard
+            // prohibition — cancelling keys, changing interest ops, and
+            // closing channels are explicitly permitted in the action).
+            if (taskQueue.isNotEmpty()) {
+                selector.selectNow(readyKeyAction)
             } else {
                 // Block until events / wakeup / the next connection deadline.
                 val next = deadlineScheduler.nextDeadlineMillis()
                 if (next == Long.MAX_VALUE) {
-                    selector.select()
+                    selector.select(readyKeyAction)
                 } else {
                     val remaining = next - nowMillis()
-                    if (remaining <= 0L) selector.selectNow() else selector.select(remaining)
+                    if (remaining <= 0L) {
+                        selector.selectNow(readyKeyAction)
+                    } else {
+                        selector.select(readyKeyAction, remaining)
+                    }
                 }
-            }
-            if (n > 0) {
-                processSelectedKeys()
             }
             // Fire any connection idle/read deadlines that elapsed during the wait.
             deadlineScheduler.expireDue(nowMillis())
@@ -385,80 +412,80 @@ internal class NioEventLoop(
     }
 
     /**
-     * Resumes continuations for all ready channels.
+     * Resumes continuations for one ready channel — the per-key action the
+     * `Consumer`-based select in [loop] invokes (no selected-key set, no
+     * iterator). The selector may invoke this more than once for the same
+     * key with a subset of its ready ops; the per-direction snapshot below
+     * handles subsets naturally. Exceptions must not escape (the selector
+     * relays them to [loop], aborting the remaining ready keys), so the
+     * whole body is guarded.
      *
-     * Unlike the previous implementation that called `key.cancel()`,
-     * this clears interest ops via `interestOps(0)` so the key remains
-     * valid for reuse. The next `read()` / `accept()` call will set
-     * interest ops again via [setInterest].
+     * Interest handling: clears the fired direction's interest bit via
+     * `interestOps` (not `key.cancel()`) so the key remains valid for
+     * reuse. The next `read()` / `accept()` call re-arms via [setInterest].
      */
-    private fun processSelectedKeys() {
-        val iter = selector.selectedKeys().iterator()
-        while (iter.hasNext()) {
-            val key = iter.next()
-            iter.remove()
-            try {
-                val callbacks = key.attachment() as? KeyCallbacks ?: continue
-                // Snapshot ready ops, clear interest+callback for ready
-                // direction, then run callbacks. Read and write fire
-                // independently; leaving the other direction's interest
-                // and callback intact preserves armRead while a flush
-                // is back-pressured (and vice versa). The previous
-                // implementation cleared all interest + the single
-                // `attach`ment unconditionally, dropping the
-                // not-yet-fired direction (the per-op callback drop root cause).
-                val readyOps = key.readyOps()
-                val readReady = (readyOps and SelectionKey.OP_READ) != 0
-                val writeReady = (readyOps and SelectionKey.OP_WRITE) != 0
-                val acceptReady = (readyOps and SelectionKey.OP_ACCEPT) != 0
-                val connectReady = (readyOps and SelectionKey.OP_CONNECT) != 0
-                val readCb = if (readReady) callbacks.readCallback else null
-                val writeCb = if (writeReady) callbacks.writeCallback else null
-                val acceptCb = if (acceptReady) callbacks.acceptCallback else null
-                val connectCb = if (connectReady) callbacks.connectCallback else null
-                // Defensive: a direction was reported ready but no callback was
-                // registered. Should never happen — the only path that sets an
-                // interest bit also installs the callback. If it does, the
-                // interest must still be cleared so the next select() does not
-                // spin on the same fd. Mirrors the WARN+remove guard in
-                // EpollEventLoop / KqueueEventLoop (PR #447 / #449).
-                warnIfStaleInterest(key, readReady, readCb, writeReady, writeCb, acceptReady, acceptCb, connectReady, connectCb)
-                var clearMask = 0
-                if (readReady) {
-                    callbacks.readCallback = null
-                    clearMask = clearMask or SelectionKey.OP_READ
-                }
-                if (writeReady) {
-                    callbacks.writeCallback = null
-                    clearMask = clearMask or SelectionKey.OP_WRITE
-                }
-                if (acceptReady) {
-                    callbacks.acceptCallback = null
-                    clearMask = clearMask or SelectionKey.OP_ACCEPT
-                }
-                if (connectReady) {
-                    callbacks.connectCallback = null
-                    clearMask = clearMask or SelectionKey.OP_CONNECT
-                }
-                if (clearMask != 0) {
-                    key.interestOps(key.interestOps() and clearMask.inv())
-                }
-                readCb?.run()
-                writeCb?.run()
-                acceptCb?.run()
-                connectCb?.run()
-            } catch (e: Exception) {
-                // Individual key failure must not stop processing other keys.
-                // The channel's coroutine will observe the error on next I/O.
-                logger.warn(e) { "SelectionKey processing failed" }
+    private fun processReadyKey(key: SelectionKey) {
+        try {
+            val callbacks = key.attachment() as? KeyCallbacks ?: return
+            // Snapshot ready ops, clear interest+callback for ready
+            // direction, then run callbacks. Read and write fire
+            // independently; leaving the other direction's interest
+            // and callback intact preserves armRead while a flush
+            // is back-pressured (and vice versa). The previous
+            // implementation cleared all interest + the single
+            // `attach`ment unconditionally, dropping the
+            // not-yet-fired direction (the per-op callback drop root cause).
+            val readyOps = key.readyOps()
+            val readReady = (readyOps and SelectionKey.OP_READ) != 0
+            val writeReady = (readyOps and SelectionKey.OP_WRITE) != 0
+            val acceptReady = (readyOps and SelectionKey.OP_ACCEPT) != 0
+            val connectReady = (readyOps and SelectionKey.OP_CONNECT) != 0
+            val readCb = if (readReady) callbacks.readCallback else null
+            val writeCb = if (writeReady) callbacks.writeCallback else null
+            val acceptCb = if (acceptReady) callbacks.acceptCallback else null
+            val connectCb = if (connectReady) callbacks.connectCallback else null
+            // Defensive: a direction was reported ready but no callback was
+            // registered. Should never happen — the only path that sets an
+            // interest bit also installs the callback. If it does, the
+            // interest must still be cleared so the next select() does not
+            // spin on the same fd. Mirrors the WARN+remove guard in
+            // EpollEventLoop / KqueueEventLoop (PR #447 / #449).
+            warnIfStaleInterest(key, readReady, readCb, writeReady, writeCb, acceptReady, acceptCb, connectReady, connectCb)
+            var clearMask = 0
+            if (readReady) {
+                callbacks.readCallback = null
+                clearMask = clearMask or SelectionKey.OP_READ
             }
+            if (writeReady) {
+                callbacks.writeCallback = null
+                clearMask = clearMask or SelectionKey.OP_WRITE
+            }
+            if (acceptReady) {
+                callbacks.acceptCallback = null
+                clearMask = clearMask or SelectionKey.OP_ACCEPT
+            }
+            if (connectReady) {
+                callbacks.connectCallback = null
+                clearMask = clearMask or SelectionKey.OP_CONNECT
+            }
+            if (clearMask != 0) {
+                key.interestOps(key.interestOps() and clearMask.inv())
+            }
+            readCb?.run()
+            writeCb?.run()
+            acceptCb?.run()
+            connectCb?.run()
+        } catch (e: Exception) {
+            // Individual key failure must not stop processing other keys.
+            // The channel's coroutine will observe the error on next I/O.
+            logger.warn(e) { "SelectionKey processing failed" }
         }
     }
 
     /**
      * Logs a WARN line for each direction that was reported ready by [Selector] but
      * had no registered callback in [KeyCallbacks]. Extracted from
-     * [processSelectedKeys] so the per-key dispatch loop stays under detekt's
+     * [processReadyKey] so the per-key dispatch loop stays under detekt's
      * cyclomatic-complexity limit. The message format mirrors the sibling guards
      * in `EpollEventLoop` / `KqueueEventLoop` (cf. PR #447 / #449).
      */
@@ -475,16 +502,16 @@ internal class NioEventLoop(
         connectCb: Runnable?,
     ) {
         if (readReady && readCb == null) {
-            logger.warn { "processSelectedKeys: no handler for ${key.channel()} OP_READ — clearing NIO interest" }
+            logger.warn { "processReadyKey: no handler for ${key.channel()} OP_READ — clearing NIO interest" }
         }
         if (writeReady && writeCb == null) {
-            logger.warn { "processSelectedKeys: no handler for ${key.channel()} OP_WRITE — clearing NIO interest" }
+            logger.warn { "processReadyKey: no handler for ${key.channel()} OP_WRITE — clearing NIO interest" }
         }
         if (acceptReady && acceptCb == null) {
-            logger.warn { "processSelectedKeys: no handler for ${key.channel()} OP_ACCEPT — clearing NIO interest" }
+            logger.warn { "processReadyKey: no handler for ${key.channel()} OP_ACCEPT — clearing NIO interest" }
         }
         if (connectReady && connectCb == null) {
-            logger.warn { "processSelectedKeys: no handler for ${key.channel()} OP_CONNECT — clearing NIO interest" }
+            logger.warn { "processReadyKey: no handler for ${key.channel()} OP_CONNECT — clearing NIO interest" }
         }
     }
 
