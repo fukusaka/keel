@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.codec.http
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.IoBufAsciiText
 import io.github.fukusaka.keel.buf.ioBufToLatin1String
+import io.github.fukusaka.keel.io.parseDecLongAt
 import io.github.fukusaka.keel.io.toDecLongOrNull
 
 /**
@@ -604,10 +605,49 @@ class HttpHeaders {
 
     internal fun getByLowercaseKey(key: String): String? = getString(key)
 
-    val contentLength: Long? get() = getString(HttpHeaderName.CONTENT_LENGTH_KEY)?.trim()?.toDecLongOrNull()
+    /**
+     * `Content-Length` parsed as a decimal [Long], or `null` when the header
+     * is absent or not a valid decimal number.
+     *
+     * Buffer-backed slots (the decoder's [addRange] hot path) are parsed in
+     * place with [parseDecLongAt] — no `String` and no [IoBufAsciiText] view
+     * is allocated per request. String-backed entries ([add] / [set] callers)
+     * keep the previous [String.trim] + [toDecLongOrNull] shape. Both parsers
+     * share one digit-grammar/overflow core, and the in-place path trims with
+     * the same [Char.isWhitespace] predicate as [String.trim], so the result
+     * is identical to the former `getString(...)?.trim()?.toDecLongOrNull()`.
+     */
+    val contentLength: Long?
+        get() {
+            if (slotCount == 0) return null
+            val key = HttpHeaderName.CONTENT_LENGTH_KEY
+            val i = lastMatch(caseInsensitiveHash(key), key)
+            if (i < 0) return null
+            val s = slotsOrFail()
+            val base = i * STRIDE
+            if (s[base + 1] == STRING_SENTINEL) return stringValue(s[base + 2]).trim().toDecLongOrNull()
+            // In-place parse of the stored value range. The decoder stores
+            // OWS-trimmed ranges already; re-trim defensively so an addRange
+            // caller that did not pre-trim gets the String-path semantics.
+            val buf = bufFor(i)
+            var start = valStartOf(i)
+            var end = start + s[base + 4]
+            while (start < end && isTrimmedByte(buf.getByte(start))) start++
+            while (end > start && isTrimmedByte(buf.getByte(end - 1))) end--
+            return buf.parseDecLongAt(start, end - start)
+        }
+
     val contentType: String? get() = getString(HttpHeaderName.CONTENT_TYPE_KEY)
+
+    /**
+     * Whether `Transfer-Encoding` contains a `chunked` token. Reads the value
+     * through the [get] view (no `String` materialisation on the decoder's
+     * buffer-backed hot path); [CharSequence.contains] with `ignoreCase`
+     * matches the previous `getString(...)` semantics character-for-character.
+     */
     val isChunked: Boolean
-        get() = getString(HttpHeaderName.TRANSFER_ENCODING_KEY)?.contains("chunked", ignoreCase = true) == true
+        get() = get(HttpHeaderName.TRANSFER_ENCODING_KEY)?.contains("chunked", ignoreCase = true) == true
+
     val connection: String? get() = getString(HttpHeaderName.CONNECTION_KEY)
 
     override fun equals(other: Any?): Boolean {
@@ -788,6 +828,14 @@ class HttpHeaders {
             }
             return h
         }
+
+        /**
+         * Whether [String.trim] would strip this Latin-1 decoded byte —
+         * the exact [Char.isWhitespace] predicate, so the in-place
+         * [contentLength] trim matches the String-path `.trim()`
+         * byte-for-byte.
+         */
+        private fun isTrimmedByte(b: Byte): Boolean = (b.toInt() and 0xFF).toChar().isWhitespace()
 
         /** ASCII case-insensitive equality between two [CharSequence]s. */
         internal fun csEqualsIgnoreCase(a: CharSequence, b: CharSequence): Boolean {
