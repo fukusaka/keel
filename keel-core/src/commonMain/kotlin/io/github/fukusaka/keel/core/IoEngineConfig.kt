@@ -19,7 +19,18 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  * Will evolve into a DSL builder as more options are added.
  * The migration from data class to DSL is non-breaking.
  *
- * @property allocator Buffer allocator for all channels created by this engine.
+ * @property allocator Root buffer allocator for the engine's I/O buffers.
+ *                     Engines never allocate from it directly — each derives its
+ *                     working allocator(s) as children via
+ *                     [createChild][BufferAllocator.createChild] (one **per
+ *                     EventLoop** for the thread-pinned engines — epoll / kqueue /
+ *                     nio / io_uring) and allocates from those, so this parent
+ *                     stays **borrowed** and can be shared across engines: closing
+ *                     an engine drains its own children, not this allocator. The
+ *                     Netty engine is the exception — it allocates from each
+ *                     channel's own `ByteBufAllocator` (`ch.alloc()`) and consumes
+ *                     only this allocator's
+ *                     [lifecycleListener][BufferAllocator.lifecycleListener].
  *                     Defaults to the platform's pooled allocator via
  *                     [defaultAllocator] (Native: `SlabAllocator`, JVM:
  *                     `PooledDirectAllocator` — both `PooledAllocator`
