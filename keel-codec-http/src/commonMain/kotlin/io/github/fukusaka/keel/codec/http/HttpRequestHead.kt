@@ -20,6 +20,14 @@ package io.github.fukusaka.keel.codec.http
  */
 data class HttpRequestHead(
     val method: HttpMethod,
+    // Deliberately a String, not a CharSequence view over the recv buffer
+    // (considered 2026-07-03, rejected): the net saving is one small String
+    // per request (a view object costs nearly as much), while a view would
+    // break String equality symmetry (`"x" == uri` never matches a view),
+    // break this data class's equals, and extend the headers
+    // release-lifecycle contract to the most-touched request field. The
+    // String is the same deliberate application-API boundary as
+    // WsMessage's ByteArray payloads.
     val uri: String,
     val version: HttpVersion = HttpVersion.HTTP_1_1,
     val headers: HttpHeaders = HttpHeaders(),
