@@ -99,6 +99,15 @@ class HttpRequestDecoder(
     // connection errors) so that a connection that once triggered a
     // partial read does not keep reallocating; only `accumulatorSize` is
     // reset between lines.
+    //
+    // Deliberately a heap ByteArray, not a pooled `IoBufAccumulator`
+    // (considered 2026-07-02, rejected): the consumers are ByteArray-bound
+    // (`decodeToString`, the `*InArr` parse helpers) so a flatten copy
+    // would remain; the steady state never allocates this at all
+    // (straddle-only); and growth is capped at `maxLineSize` and
+    // amortised over the connection lifetime (a handful of doublings,
+    // ever). Pooling would add ref-count lifecycle to a rare,
+    // correctness-critical path for no steady-state gain.
     private var accumulator: ByteArray? = null
     private var accumulatorSize: Int = 0
 
