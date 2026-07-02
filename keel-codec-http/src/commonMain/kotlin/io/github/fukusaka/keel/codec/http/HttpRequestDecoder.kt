@@ -824,6 +824,12 @@ class HttpRequestDecoder(
                 "Invalid trailer field (missing ':'): ${bufRangeToString(buf, start, length)}",
             )
         }
+        // Deliberately materialised `String`s + [HttpHeaders.add], not the
+        // header fast path's zero-copy [HttpHeaders.addRange] (considered
+        // 2026-07-02, rejected): addRange retains the recv buffer, and
+        // [HttpBodyEnd.trailers] has no release path — every HttpBodyEnd
+        // consumer would inherit a `trailers.release()` obligation or leak
+        // the buffer. Trailers are rare, so the two small copies are cheap.
         val name = bufAsciiToString(buf, start, nameLen)
         val valStart = trimLeftInBuf(buf, colon + 1, end)
         val valEnd = trimRightInBuf(buf, valStart, end)
