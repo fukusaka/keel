@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
@@ -10,6 +11,7 @@ import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.bindAllOrRollback
 import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
@@ -359,84 +361,90 @@ class NioEngine(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer = when (address) {
-        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
-    }
+    ): PipelinedStreamServer = bindPipeline(listOf(BindSpec(address, config)), pipelineInitializer)
 
-    private fun bindPipelineInet(
-        address: InetSocketAddress,
-        config: BindConfig,
+    /**
+     * Multi-address pipeline bind: every entry of [binds] becomes one
+     * listener of a single [NioPipelinedStreamServer], all armed on the
+     * shared boss loop. All-or-nothing: a failing bind closes the
+     * listeners bound so far (waking the boss loop so their ports free
+     * promptly) and rethrows.
+     */
+    override fun bindPipeline(
+        binds: List<BindSpec>,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
-
-        val host = address.requireIpLiteral()
-        val port = address.port
-        val serverChannel = java.nio.channels.ServerSocketChannel.open()
+        val listeners = bindAllOrRollback(
+            binds = binds,
+            logger = logger,
+            closeOne = { listener: NioPipelinedStreamServer.Listener ->
+                listener.serverChannel.close()
+                // Same deferred-close mechanics as a regular listener close:
+                // wake the boss loop so the rolled-back port frees promptly.
+                bossLoop.wakeup()
+            },
+        ) { spec -> openPipelineListener(spec) }
+        val serverPipeline = NioPipelinedStreamServer(
+            listeners = listeners,
+            bossLoop = bossLoop,
+            workerGroup = workerGroup,
+            logger = logger,
+            idleReadPolicy = this@NioEngine.config.idleReadPolicy,
+            pipelineInitializer = pipelineInitializer,
+        )
         try {
-            serverChannel.configureBlocking(false)
-            serverChannel.bind(JavaInetSocketAddress(host, port), config.backlog)
-
-            val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
-
-            val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress)
-            logger.debug { "Pipeline bound to $localAddr" }
-
-            val serverPipeline = NioPipelinedStreamServer(
-                serverChannel = serverChannel,
-                selectionKey = selectionKey,
-                bossLoop = bossLoop,
-                workerGroup = workerGroup,
-                localAddr = localAddr ?: error("Failed to get local address"),
-                logger = logger,
-                config = config,
-                idleReadPolicy = this@NioEngine.config.idleReadPolicy,
-                pipelineInitializer = pipelineInitializer,
-            )
             serverPipeline.start()
-            return serverPipeline
         } catch (t: Throwable) {
-            closeQuietly(serverChannel, "bindPipelineInet cleanup")
+            serverPipeline.close()
             throw t
         }
+        return serverPipeline
     }
 
-    private fun bindPipelineUnix(
-        address: UnixSocketAddress,
-        config: BindConfig,
-        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer {
-        check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly(
-            "NioEngine does not support abstract-namespace Unix sockets (JVM UnixDomainSocketAddress is filesystem-only)",
-        )
-
-        val serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+    /**
+     * Opens, binds, and boss-registers one pipeline listen socket.
+     * Cleans up its own channel on failure so [bindAllOrRollback] only has
+     * to roll back the listeners that were fully opened before it.
+     */
+    private fun openPipelineListener(spec: BindSpec): NioPipelinedStreamServer.Listener {
+        val address = spec.address
+        val serverChannel = when (address) {
+            is InetSocketAddress -> java.nio.channels.ServerSocketChannel.open()
+            is UnixSocketAddress -> {
+                address.requireFilesystemOnly(
+                    "NioEngine does not support abstract-namespace Unix sockets " +
+                        "(JVM UnixDomainSocketAddress is filesystem-only)",
+                )
+                ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+            }
+        }
         try {
             serverChannel.configureBlocking(false)
-            serverChannel.bind(UnixDomainSocketAddress.of(Path.of(address.path)), config.backlog)
+            when (address) {
+                is InetSocketAddress -> serverChannel.bind(
+                    JavaInetSocketAddress(address.requireIpLiteral(), address.port),
+                    spec.config.backlog,
+                )
+                is UnixSocketAddress -> serverChannel.bind(
+                    UnixDomainSocketAddress.of(Path.of(address.path)),
+                    spec.config.backlog,
+                )
+            }
 
             val selectionKey = bossLoop.registerChannelBlocking(serverChannel)
 
             val localAddr = NioPipelinedChannel.toSocketAddress(serverChannel.localAddress) ?: address
             logger.debug { "Pipeline bound to $localAddr" }
 
-            val serverPipeline = NioPipelinedStreamServer(
+            return NioPipelinedStreamServer.Listener(
                 serverChannel = serverChannel,
                 selectionKey = selectionKey,
-                bossLoop = bossLoop,
-                workerGroup = workerGroup,
-                localAddr = localAddr,
-                logger = logger,
-                config = config,
-                idleReadPolicy = this@NioEngine.config.idleReadPolicy,
-                pipelineInitializer = pipelineInitializer,
+                localAddress = localAddr,
+                config = spec.config,
             )
-            serverPipeline.start()
-            return serverPipeline
         } catch (t: Throwable) {
-            closeQuietly(serverChannel, "bindPipelineUnix cleanup")
+            closeQuietly(serverChannel, "bindPipeline listener cleanup")
             throw t
         }
     }
