@@ -110,9 +110,12 @@ internal class KqueuePipelinedStreamServer(
     private fun dispatchToWorker(clientFd: Int, listener: Listener) {
         val idx = workerIndex++ % workerGroup.size
         val workerLoop = workerGroup.at(idx)
-        workerLoop.dispatch(kotlin.coroutines.EmptyCoroutineContext, kotlinx.coroutines.Runnable {
-            onWorkerAccept(clientFd, workerLoop, listener)
-        })
+        workerLoop.dispatch(
+            kotlin.coroutines.EmptyCoroutineContext,
+            kotlinx.coroutines.Runnable {
+                onWorkerAccept(clientFd, workerLoop, listener)
+            },
+        )
     }
 
     private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop, listener: Listener) {
