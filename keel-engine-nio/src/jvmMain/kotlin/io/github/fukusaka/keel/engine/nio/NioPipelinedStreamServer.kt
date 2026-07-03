@@ -110,5 +110,10 @@ internal class NioPipelinedStreamServer(
         if (closed) return
         closed = true
         serverChannel.close()
+        // The kernel-level close (and the port release) is deferred until
+        // the boss selector's next selection operation processes the
+        // cancelled key — wake an idle boss loop so a closed listener's
+        // port frees promptly instead of lingering until the next event.
+        bossLoop.wakeup()
     }
 }

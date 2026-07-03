@@ -216,5 +216,9 @@ internal class NioStreamServer(
         }
         selectionKey.cancel()
         serverChannel.close()
+        // Same deferred-close mechanics as the pipelined server: wake the
+        // boss loop so the cancelled key is processed and the listener's
+        // port frees promptly.
+        bossLoop.wakeup()
     }
 }
