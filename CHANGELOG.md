@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-http`: `keelHttpServer { }` accepts multiple `connector { }` blocks — one listener per block (for example plain HTTP next to TLS), all serving the same routes from one lifecycle; a failed start closes the listeners already bound, and everything set inside a block (address, TLS, timeouts, limits, query parsing) scopes to that block's listener. Single-connector code is unchanged. (#875)
 - `engine-netty`: `NettyByteBufAllocator` is now public, with a `nettyByteBufAllocator(byteBufAllocator = PooledByteBufAllocator.DEFAULT)` factory — a Netty-`PooledByteBufAllocator`-backed keel `BufferAllocator` for JVM engines that consume `IoEngineConfig.allocator` (the NIO engine), e.g. as a comparison baseline for keel's own `PooledDirectAllocator`. (#868)
 - `io`: `BufferAllocator.createUntrackedChild()` — a child allocator the parent does **not** retain for cascade-close, for owners with an unbounded, churning child population (one allocator per accepted connection). The caller owns its `close()`; the default returns `createChild()`, so stateless and existing allocators are unaffected. (#867)
 - `io`, `server-http`: `IoBufMutableChunks` — a growable, release-safe owned list of pooled `IoBuf` chunks built by **adding existing chunks** (the mutable counterpart of `IoBufChunks`; distinct from `IoBufAccumulator`, which writes bytes into fresh chunks), with `toIoBufChunks()` / `toByteArray()` finalisers. `HttpCall.receiveBytes` / `receiveChunks` now collect through it instead of a hand-rolled `ArrayList<IoBuf>`. (#860)
@@ -48,6 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-nio`: closing a listener now wakes the boss selector, so the listener's port frees promptly — an idle loop used to keep a closed listener's port bound until the next unrelated event. (#875)
 - `engine-nwconnection`: fix a per-connection allocator double-close SIGSEGV under CPU-constrained shutdown — the connection's own async GCD teardown raced the engine's `children` fan-out. The per-connection child is now an untracked child of the engine allocator (its only close path), and `engine.close()` joins each connection's teardown before draining the shared arena. (#867)
 - `server-http`: release the pooled request-body chunk when a body consumer (`receiveChunk` / `receiveBytes` / `receiveChunks`) is cancelled in the direct-hand-off resume window — it was leaked when kotlinx's prompt cancellation discarded the resumed value. (#863)
 - `io`: spread off-EventLoop carves across shards instead of clustering them onto one. The off-EL shard selector masked a raw pthread id whose low bits are alignment-constant, so every off-EL thread (`asSource` / `asSink` from a non-EventLoop coroutine, NWConnection serial-queue migration) landed on the same shard — measured 256 threads all on 1 of 32 shards on both Linux and macOS, serialising on one arena lock instead of sharding. Now mixes the id through a SplitMix64 finalizer first. (#856)
