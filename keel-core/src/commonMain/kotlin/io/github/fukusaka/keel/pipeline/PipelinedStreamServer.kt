@@ -24,8 +24,19 @@ import io.github.fukusaka.keel.core.StreamServer
  */
 interface PipelinedStreamServer : AutoCloseable {
 
-    /** Local address this server is bound to. */
+    /**
+     * Local address this server is bound to. A multi-address server
+     * (created by the list-taking [StreamEngine.bindPipeline] overload)
+     * reports its first address in bind order; [localAddresses] carries
+     * them all.
+     */
     val localAddress: SocketAddress
+
+    /**
+     * The addresses this server is currently bound to, in bind order.
+     * Single-address servers (the default) report `[localAddress]`.
+     */
+    val localAddresses: List<SocketAddress> get() = listOf(localAddress)
 
     /** True if the server is listening for connections. */
     val isActive: Boolean

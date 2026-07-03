@@ -115,6 +115,47 @@ interface StreamEngine : IoEngine {
     ): PipelinedStreamServer = bindPipeline(InetSocketAddress(host, port), config, pipelineInitializer)
 
     /**
+     * Binds one server that listens on several addresses at once, with
+     * Pipeline-mode connection handling.
+     *
+     * The bind is all-or-nothing: either every entry of [binds] is bound
+     * and one [PipelinedStreamServer] owning all the listeners is
+     * returned, or — when any bind fails — every listener bound so far is
+     * closed again and the failure is rethrown.
+     *
+     * [pipelineInitializer] is shared by every address: a multi-address
+     * server is one application reachable through several doors.
+     * Per-address differences are expressed through each entry's
+     * [BindSpec.config] (e.g. a TLS config on the TLS port only), not
+     * through per-address handler chains — an application that differs
+     * per address is a different server (bind it separately).
+     *
+     * A single-entry list behaves exactly like the single-address
+     * [bindPipeline] overload.
+     *
+     * @param binds Listen endpoints, each with its own per-address
+     *   config, bound in list order. Must not be empty.
+     * @param pipelineInitializer Callback to configure the channel for
+     *   each accepted connection, regardless of the address it arrived on.
+     * @return a [PipelinedStreamServer] whose
+     *   [PipelinedStreamServer.localAddresses] lists every bound address
+     *   in [binds] order.
+     * @throws IllegalArgumentException if [binds] is empty.
+     * @throws UnsupportedOperationException if this engine does not
+     *   support pipeline mode or multi-address binding (engines adopt
+     *   this overload individually).
+     */
+    fun bindPipeline(
+        binds: List<BindSpec>,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedStreamServer {
+        require(binds.isNotEmpty()) { "binds must not be empty" }
+        throw UnsupportedOperationException(
+            "${this::class.simpleName} does not support multi-address pipeline mode",
+        )
+    }
+
+    /**
      * Opens an outbound connection to a remote peer.
      *
      * @param address Remote endpoint. Hostnames are resolved via
