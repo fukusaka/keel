@@ -1,11 +1,11 @@
 package io.github.fukusaka.keel.server.http.dsl
 
-import io.github.fukusaka.keel.codec.http.HttpHeaderLimitsConfig
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.server.ServerConnector
 import io.github.fukusaka.keel.server.dsl.KeelServerDsl
 import io.github.fukusaka.keel.server.http.AssetSource
+import io.github.fukusaka.keel.server.http.ConnectorSetup
 import io.github.fukusaka.keel.server.http.ContentTypeResolver
 import io.github.fukusaka.keel.server.http.ETagGenerator
 import io.github.fukusaka.keel.server.http.ErrorHandlers
@@ -38,12 +38,7 @@ import kotlin.reflect.KClass
 @KeelServerDsl
 public class KeelHttpServerBuilder internal constructor() {
 
-    private var connector: ServerConnector? = null
-    private var queryParameterConfig: QueryParameterConfig = QueryParameterConfig.DEFAULT
-    private var headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT
-    private var headerTimeoutMillis: Long = 0
-    private var requestTimeoutMillis: Long = 0
-    private var minBodyRateBytesPerSec: Long = 0
+    private val connectors: MutableList<ConnectorSetup> = mutableListOf()
     private val router = Router()
     private val middlewares = mutableListOf<Middleware>()
     private var notFoundHandler: RouteHandler? = null
@@ -58,21 +53,26 @@ public class KeelHttpServerBuilder internal constructor() {
      *
      * When omitted, the server binds an OS-assigned ephemeral port on
      * all interfaces and parses query strings with
-     * [QueryParameterConfig.DEFAULT]. May be called at most once. The
-     * bind host must be an IP literal — the Pipeline-mode bind cannot
-     * resolve hostnames.
+     * [QueryParameterConfig.DEFAULT]. The bind host must be an IP
+     * literal — the Pipeline-mode bind cannot resolve hostnames.
      *
-     * @throws IllegalStateException if a connector is already configured.
+     * May be declared multiple times: each `connector { }` block opens
+     * its own listener when the server starts, all serving the same
+     * routes — a single block is simply the N = 1 case, so existing
+     * single-connector code is unchanged. Listeners bind in declaration
+     * order, and everything set inside a block (address, TLS, timeouts,
+     * limits, query parsing) applies to that block's listener only.
      */
     public fun connector(configure: HttpConnectorBuilder.() -> Unit) {
-        check(connector == null) { "connector is already configured" }
         val builder = HttpConnectorBuilder().apply(configure)
-        connector = builder.buildConnector()
-        queryParameterConfig = builder.buildQueryConfig()
-        headerLimits = builder.buildHeaderLimits()
-        headerTimeoutMillis = builder.buildHeaderTimeout()
-        requestTimeoutMillis = builder.buildRequestTimeout()
-        minBodyRateBytesPerSec = builder.buildMinBodyRate()
+        connectors += ConnectorSetup(
+            connector = builder.buildConnector(),
+            queryParameterConfig = builder.buildQueryConfig(),
+            headerLimits = builder.buildHeaderLimits(),
+            headerTimeoutMillis = builder.buildHeaderTimeout(),
+            requestTimeoutMillis = builder.buildRequestTimeout(),
+            minBodyRateBytesPerSec = builder.buildMinBodyRate(),
+        )
     }
 
     /**
@@ -338,12 +338,7 @@ public class KeelHttpServerBuilder internal constructor() {
     internal fun build(engine: StreamEngine): KeelHttpServer =
         KeelHttpServer(
             engine,
-            connector ?: ServerConnector(),
-            queryParameterConfig,
-            headerLimits,
-            headerTimeoutMillis,
-            requestTimeoutMillis,
-            minBodyRateBytesPerSec,
+            connectors.ifEmpty { listOf(ConnectorSetup.default()) },
             router,
             middlewares.toList(),
             ErrorHandlers(notFoundHandler, exceptionMappers.toList()),

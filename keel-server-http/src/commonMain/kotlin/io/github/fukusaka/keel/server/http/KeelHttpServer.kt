@@ -15,9 +15,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * A native HTTP server built on a keel [StreamEngine].
  *
- * [KeelHttpServer] binds a listening socket in Pipeline mode and installs
- * the HTTP/1.1 server codec plus an [HttpServerHandler] dispatch stage on
- * every accepted connection. Each request is resolved through the
+ * [KeelHttpServer] binds one listening socket per configured connector in
+ * Pipeline mode and installs the HTTP/1.1 server codec plus an
+ * [HttpServerHandler] dispatch stage on every accepted connection —
+ * declare `connector { }` once for a single listener (the common case)
+ * or several times to serve multiple addresses (for example plain HTTP
+ * and TLS side by side) from one router and lifecycle. Each request is resolved through the
  * [Router] supplied at construction time.
  *
  * Construct via the [keelHttpServer] DSL:
@@ -43,18 +46,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  * shuts down gracefully — see its documentation. The engine itself is
  * owned by the caller and is never closed by [stop].
  */
-// Param count grows by one per new config knob (header / request deadline, …). The
-// constructor is `internal` and called from exactly one site (the DSL `build()`), so
-// suppressing is bounded; the planned config-bundle redesign will collapse these.
-@Suppress("LongParameterList")
 public class KeelHttpServer internal constructor(
     private val engine: StreamEngine,
-    private val connector: ServerConnector,
-    private val queryParameterConfig: QueryParameterConfig,
-    private val headerLimits: HttpHeaderLimitsConfig,
-    private val headerTimeoutMillis: Long,
-    private val requestTimeoutMillis: Long,
-    private val minBodyRateBytesPerSec: Long,
+    private val connectors: List<ConnectorSetup>,
     private val router: Router,
     private val middlewares: List<Middleware>,
     private val errorHandlers: ErrorHandlers,
@@ -71,19 +65,34 @@ public class KeelHttpServer internal constructor(
     private var run: ServerRun? = null
 
     /**
-     * The address the server is bound to.
+     * The address of the **first** connector's listener. A single-connector
+     * server (the common case) reads naturally; a multi-connector server
+     * should use [localAddresses].
      *
      * @throws IllegalStateException if the server has not been started.
      */
     public val localAddress: SocketAddress
-        get() = checkNotNull(run) { "server has not been started" }.server.localAddress
-
-    /** True while the server is bound and accepting connections. */
-    public val isActive: Boolean
-        get() = run?.server?.isActive == true
+        get() = checkNotNull(run) { "server has not been started" }.servers.first().localAddress
 
     /**
-     * Binds the listening socket and begins accepting connections.
+     * The bound address of every connector's listener, in [connector
+     * declaration order][io.github.fukusaka.keel.server.http.dsl.KeelHttpServerBuilder.connector].
+     *
+     * @throws IllegalStateException if the server has not been started.
+     */
+    public val localAddresses: List<SocketAddress>
+        get() = checkNotNull(run) { "server has not been started" }.servers.map { it.localAddress }
+
+    /** True while the server is bound and every listener is accepting connections. */
+    public val isActive: Boolean
+        get() = run?.servers?.all { it.isActive } == true
+
+    /**
+     * Binds one listening socket per configured connector and begins
+     * accepting connections on all of them. Connectors bind in declaration
+     * order; if any bind fails, the listeners already bound are closed
+     * before the failure is rethrown, so a failed [start] never leaks a
+     * live listener.
      *
      * @throws IllegalStateException if the server is already started.
      */
@@ -91,25 +100,44 @@ public class KeelHttpServer internal constructor(
         check(run == null) { "server is already started" }
         val scope = CoroutineScope(engine.coroutineContext + Job(engine.coroutineContext[Job]))
         val connections = ServerConnections()
-        val server = engine.bindPipeline(
-            connector.address,
-            connector.resolveBindConfig(engine),
-        ) { channel ->
-            channel.installHttpServerPipeline(
-                router = router,
-                middlewares = middlewares,
-                errorHandlers = errorHandlers,
-                queryParameterConfig = queryParameterConfig,
-                headerLimits = headerLimits,
-                headerTimeoutMillis = headerTimeoutMillis,
-                requestTimeoutMillis = requestTimeoutMillis,
-                minBodyRateBytesPerSec = minBodyRateBytesPerSec,
-                scope = scope,
-                connections = connections,
-                compression = compressionConfig,
-            )
+        val servers = ArrayList<PipelinedStreamServer>(connectors.size)
+        try {
+            for (setup in connectors) {
+                servers += bindConnector(setup, scope, connections)
+            }
+        } catch (t: Throwable) {
+            // Roll back the listeners bound before the failing connector —
+            // the caller sees the original failure, not a leaked socket.
+            servers.forEach { bound ->
+                runCatching { bound.close() }
+            }
+            scope.cancel()
+            throw t
         }
-        run = ServerRun(server, scope, connections)
+        run = ServerRun(servers, scope, connections)
+    }
+
+    private suspend fun bindConnector(
+        setup: ConnectorSetup,
+        scope: CoroutineScope,
+        connections: ServerConnections,
+    ): PipelinedStreamServer = engine.bindPipeline(
+        setup.connector.address,
+        setup.connector.resolveBindConfig(engine),
+    ) { channel ->
+        channel.installHttpServerPipeline(
+            router = router,
+            middlewares = middlewares,
+            errorHandlers = errorHandlers,
+            queryParameterConfig = setup.queryParameterConfig,
+            headerLimits = setup.headerLimits,
+            headerTimeoutMillis = setup.headerTimeoutMillis,
+            requestTimeoutMillis = setup.requestTimeoutMillis,
+            minBodyRateBytesPerSec = setup.minBodyRateBytesPerSec,
+            scope = scope,
+            connections = connections,
+            compression = compressionConfig,
+        )
     }
 
     /**
@@ -145,8 +173,8 @@ public class KeelHttpServer internal constructor(
         // fresh run up while this drain is still in flight.
         val current = run ?: return
         run = null
-        // Phase 1: stop accepting, then drain live connections.
-        current.server.close()
+        // Phase 1: stop accepting on every listener, then drain live connections.
+        current.servers.forEach { it.close() }
         val draining = current.connections.snapshot()
         draining.forEach { it.requestDrain() }
         if (gracePeriodMillis > 0) {
@@ -180,7 +208,7 @@ public class KeelHttpServer internal constructor(
      * the field, so its drain cannot outlive into the next run.
      */
     private class ServerRun(
-        val server: PipelinedStreamServer,
+        val servers: List<PipelinedStreamServer>,
         val scope: CoroutineScope,
         val connections: ServerConnections,
     )
@@ -191,5 +219,35 @@ public class KeelHttpServer internal constructor(
 
         /** Default total shutdown budget before connections are force-closed. */
         const val DEFAULT_TIMEOUT_MILLIS = 30_000L
+    }
+}
+
+/**
+ * One connector plus the codec / dispatch settings scoped to its listener.
+ *
+ * Everything declared inside a `connector { }` block applies to that
+ * block's listener only — a TLS connector may enforce tighter deadlines
+ * than its plain-HTTP sibling, for example. Routes, middleware, error
+ * handling, and compression stay server-wide (they are declared outside
+ * the block).
+ */
+internal class ConnectorSetup(
+    val connector: ServerConnector,
+    val queryParameterConfig: QueryParameterConfig,
+    val headerLimits: HttpHeaderLimitsConfig,
+    val headerTimeoutMillis: Long,
+    val requestTimeoutMillis: Long,
+    val minBodyRateBytesPerSec: Long,
+) {
+    internal companion object {
+        /** The listener a `keelHttpServer { }` with no `connector { }` block gets. */
+        fun default(): ConnectorSetup = ConnectorSetup(
+            connector = ServerConnector(),
+            queryParameterConfig = QueryParameterConfig.DEFAULT,
+            headerLimits = HttpHeaderLimitsConfig.DEFAULT,
+            headerTimeoutMillis = 0,
+            requestTimeoutMillis = 0,
+            minBodyRateBytesPerSec = 0,
+        )
     }
 }
