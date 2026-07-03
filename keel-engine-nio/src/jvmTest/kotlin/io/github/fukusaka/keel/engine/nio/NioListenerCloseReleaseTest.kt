@@ -1,12 +1,11 @@
 package io.github.fukusaka.keel.engine.nio
 
+import io.github.fukusaka.keel.core.InetSocketAddress
+import java.net.BindException
 import java.net.InetAddress
 import java.net.ServerSocket
 import kotlin.test.Test
 import kotlin.test.fail
-import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 /**
  * Closing a listener must release its port promptly. The JDK defers the
@@ -29,7 +28,7 @@ class NioListenerCloseReleaseTest {
             try {
                 ServerSocket(port, 1, InetAddress.getLoopbackAddress()).close()
                 return
-            } catch (e: java.net.BindException) {
+            } catch (e: BindException) {
                 last = e
                 Thread.sleep(POLL_INTERVAL_MS)
             }
@@ -38,34 +37,28 @@ class NioListenerCloseReleaseTest {
     }
 
     @Test
-    fun `closing a pipelined listener releases its port promptly`() = runBlocking {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            try {
-                val server = engine.bindPipeline(
-                    io.github.fukusaka.keel.core.InetSocketAddress("127.0.0.1", 0),
-                ) { }
-                val port = (server.localAddress as io.github.fukusaka.keel.core.InetSocketAddress).port
-                server.close()
-                assertPortReleased(port)
-            } finally {
-                engine.close()
-            }
+    fun `closing a pipelined listener releases its port promptly`() = runTest {
+        val engine = NioEngine()
+        try {
+            val server = engine.bindPipeline(InetSocketAddress("127.0.0.1", 0)) { }
+            val port = (server.localAddress as InetSocketAddress).port
+            server.close()
+            assertPortReleased(port)
+        } finally {
+            engine.close()
         }
     }
 
     @Test
-    fun `closing a coroutine-mode listener releases its port promptly`() = runBlocking {
-        withTimeout(15.seconds) {
-            val engine = NioEngine()
-            try {
-                val server = engine.bind("127.0.0.1", 0)
-                val port = (server.localAddress as io.github.fukusaka.keel.core.InetSocketAddress).port
-                server.close()
-                assertPortReleased(port)
-            } finally {
-                engine.close()
-            }
+    fun `closing a coroutine-mode listener releases its port promptly`() = runTest {
+        val engine = NioEngine()
+        try {
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+            server.close()
+            assertPortReleased(port)
+        } finally {
+            engine.close()
         }
     }
 
