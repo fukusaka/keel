@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
@@ -11,6 +12,7 @@ import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.bindAllOrRollback
 import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
@@ -261,9 +263,33 @@ class NwEngine(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer = when (address) {
-        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
+    ): PipelinedStreamServer = bindPipeline(listOf(BindSpec(address, config)), pipelineInitializer)
+
+    /**
+     * Multi-address pipeline bind: every entry of [binds] becomes one
+     * NWListener of a single [NwPipelinedServer]. Listener startups are
+     * awaited sequentially (each blocks until its ready state, as the
+     * single-address path always has). All-or-nothing: a failing bind
+     * cancels the listeners bound so far and rethrows.
+     */
+    override fun bindPipeline(
+        binds: List<BindSpec>,
+        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
+    ): PipelinedStreamServer {
+        check(!closed) { "Engine is closed" }
+        val listeners = bindAllOrRollback(
+            binds = binds,
+            logger = logger,
+            closeOne = { listener: NwPipelinedServer.Listener ->
+                cancelListenerQuietly(listener.listener, "multi-address bind rollback")
+            },
+        ) { spec ->
+            when (val address = spec.address) {
+                is InetSocketAddress -> openPipelineInetListener(address, spec.config, pipelineInitializer)
+                is UnixSocketAddress -> openPipelineUnixListener(address, spec.config, pipelineInitializer)
+            }
+        }
+        return NwPipelinedServer(listeners)
     }
 
     /**
@@ -280,13 +306,11 @@ class NwEngine(
         socketOptions: SocketOptions,
     ): BindConfig = TlsServerConfig(tls, installer = null, backlog = backlog, childSocketOptions = socketOptions)
 
-    private fun bindPipelineInet(
+    private fun openPipelineInetListener(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer {
-        check(!closed) { "Engine is closed" }
-
+    ): NwPipelinedServer.Listener {
         val host = address.requireIpLiteral()
         val port = address.port
         val portStr = if (port == 0) "0" else port.toString()
@@ -324,6 +348,14 @@ class NwEngine(
                 }
             }
 
+            // The listener's resolved bind address, published to the accept
+            // handler once the ready state assigns the port. Network.framework
+            // exposes no cheap per-connection local-endpoint query on this
+            // path, so the listener address is the accepted channel's
+            // localAddress (exact for the specific-address binds keel
+            // requires here) — the same fallback value the other engines use
+            // when the socket query is unavailable.
+            val boundLocal = kotlin.concurrent.AtomicReference<SocketAddress>(address)
             nw_listener_set_new_connection_handler(lsnr) { conn ->
                 if (conn != null) {
                     val connQueue = dispatch_queue_create(
@@ -340,7 +372,7 @@ class NwEngine(
                         idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
                     )
                     trackConnection(transport)
-                    val channel = NwPipelinedChannel(transport, logger)
+                    val channel = NwPipelinedChannel(transport, logger, localAddress = boundLocal.value)
                     // Listener-level TLS: connections arrive already TLS-encrypted,
                     // so skip per-connection TLS initialization.
                     if (!listenerLevelTls) {
@@ -365,32 +397,51 @@ class NwEngine(
             // reuse limitation over a TIME_WAIT port — see bindInet.
             check(assignedPort > 0) { "NWListener failed to start (port=$assignedPort, errno=$listenerErrno)" }
             val localAddr = InetSocketAddress(host, assignedPort)
+            boundLocal.value = localAddr
             logger.debug { "Pipeline bound to $host:$assignedPort" }
 
-            return NwPipelinedServer(lsnr, localAddr)
+            return NwPipelinedServer.Listener(lsnr, localAddr)
         } catch (t: Throwable) {
-            cancelListenerQuietly(lsnr, "bindPipelineInet cleanup")
+            cancelListenerQuietly(lsnr, "bindPipeline listener cleanup")
             throw t
         }
     }
 
-    /** Pipeline server wrapping an NWListener. */
-    private class NwPipelinedServer(
-        private val listener: nw_listener_t,
-        private val localAddr: SocketAddress,
+    /**
+     * Pipeline server wrapping one NWListener per bound address.
+     *
+     * [close] cancels every listener; Network.framework tears each down
+     * asynchronously on its own dispatch queue, so the port release is
+     * prompt but not synchronous with close() returning.
+     */
+    internal class NwPipelinedServer(
+        private val listeners: List<Listener>,
     ) : PipelinedStreamServer {
+
+        init {
+            require(listeners.isNotEmpty()) { "listeners must not be empty" }
+        }
+
         @kotlin.concurrent.Volatile
         private var closed = false
 
-        override val localAddress: SocketAddress get() = localAddr
+        override val localAddress: SocketAddress get() = listeners.first().localAddress
+        override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
         override val isActive: Boolean get() = !closed
 
         override fun close() {
-            if (!closed) {
-                closed = true
-                nw_listener_cancel(listener)
+            if (closed) return
+            closed = true
+            for (listener in listeners) {
+                nw_listener_cancel(listener.listener)
             }
         }
+
+        /** One bound listen address: its NWListener and resolved address. */
+        internal class Listener(
+            val listener: nw_listener_t,
+            val localAddress: SocketAddress,
+        )
     }
 
     /**
@@ -577,12 +628,11 @@ class NwEngine(
      * (public API — see [bindUnix]) instead of a TCP port.
      * Listener-level TLS is rejected for UDS (does not fit the UDS threat model).
      */
-    private fun bindPipelineUnix(
+    private fun openPipelineUnixListener(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer {
-        check(!closed) { "Engine is closed" }
+    ): NwPipelinedServer.Listener {
         address.requireFilesystemOnly("NwEngine does not support abstract-namespace Unix sockets")
         validateUnixPath(address.path)
         require(!isListenerLevelTls(config)) {
@@ -625,7 +675,9 @@ class NwEngine(
                         idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
                     )
                     trackConnection(transport)
-                    val channel = NwPipelinedChannel(transport, logger)
+                    // The UDS listener path is the accepted socket's local
+                    // address by definition.
+                    val channel = NwPipelinedChannel(transport, logger, localAddress = address)
                     config.initializeConnection(channel)
                     pipelineInitializer(channel)
                     transport.readEnabled = true
@@ -640,9 +692,9 @@ class NwEngine(
             }
             check(ready) { "NWListener failed to start on ${address.path} (errno=$listenerErrno)" }
             logger.debug { "Pipeline bound UDS ${address.path}" }
-            return NwPipelinedServer(lsnr, address)
+            return NwPipelinedServer.Listener(lsnr, address)
         } catch (t: Throwable) {
-            cancelListenerQuietly(lsnr, "bindPipelineUnix cleanup")
+            cancelListenerQuietly(lsnr, "bindPipeline listener cleanup")
             throw t
         }
     }
