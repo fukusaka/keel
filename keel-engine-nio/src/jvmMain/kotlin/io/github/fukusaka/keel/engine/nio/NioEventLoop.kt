@@ -130,6 +130,18 @@ internal class NioEventLoop(
         }
     }
 
+    /**
+     * Wakes the loop out of a blocked select. Needed after closing a
+     * channel registered with this loop's selector from another thread:
+     * the JDK defers the kernel-level close (and so the release of a
+     * listener's port) until the selector's next selection operation
+     * processes the cancelled key — without a wakeup an idle loop can
+     * sit in `select()` indefinitely and keep the port bound.
+     */
+    fun wakeup() {
+        selector.wakeup()
+    }
+
     /** Returns true if the current thread is this EventLoop's thread. */
     fun inEventLoop(): Boolean = Thread.currentThread() == thread
 
@@ -289,6 +301,12 @@ internal class NioEventLoop(
 
     private fun applySetInterestCallback(key: SelectionKey, ops: Int, callback: Runnable) {
         assertInEventLoop("NioEventLoop.applySetInterestCallback")
+        // The channel may close between the cross-thread dispatch and this
+        // task running (close-listener-right-after-bind is the canonical
+        // race): arming interest on a cancelled key is a benign no-op —
+        // the channel is gone and its callbacks with it. Without the guard
+        // the CancelledKeyException from interestOps() kills the loop.
+        if (!key.isValid) return
         val callbacks = (key.attachment() as? KeyCallbacks) ?: KeyCallbacks().also { key.attach(it) }
         if ((ops and SelectionKey.OP_READ) != 0) callbacks.readCallback = callback
         if ((ops and SelectionKey.OP_WRITE) != 0) callbacks.writeCallback = callback
@@ -323,6 +341,8 @@ internal class NioEventLoop(
 
     private fun applyRemoveInterest(key: SelectionKey, ops: Int) {
         assertInEventLoop("NioEventLoop.applyRemoveInterest")
+        // Same benign race as applySetInterestCallback: the key may have
+        // been cancelled since the dispatch — nothing left to disarm.
         if (!key.isValid) return
         val callbacks = key.attachment() as? KeyCallbacks
         if (callbacks != null) {
@@ -380,7 +400,15 @@ internal class NioEventLoop(
     private fun drainTasks() {
         while (true) {
             val task = taskQueue.poll() ?: break
-            task.run()
+            try {
+                task.run()
+            } catch (t: Throwable) {
+                // A single task must not take the whole EventLoop down —
+                // every channel on this loop dies with the thread. Log and
+                // keep draining; the failing task's own channel observes
+                // the error through its usual paths.
+                logger.warn(t) { "EventLoop task failed" }
+            }
         }
     }
 
