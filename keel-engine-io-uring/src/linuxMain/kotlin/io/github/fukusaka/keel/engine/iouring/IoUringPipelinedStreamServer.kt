@@ -16,6 +16,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io_uring.io_uring_prep_accept
 import io_uring.io_uring_prep_multishot_accept
+import io_uring.keel_cqe_has_more
 import io_uring.keel_prep_multishot_accept_direct
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
@@ -80,6 +81,7 @@ internal class IoUringPipelinedStreamServer(
     override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
     override val isActive: Boolean get() = !closed
 
+    @kotlin.concurrent.Volatile
     private var closed = false
 
     /**
@@ -167,7 +169,7 @@ internal class IoUringPipelinedStreamServer(
         directAllocActive: Boolean,
         listener: Listener,
     ) {
-        loop.submitMultishot(
+        val slot = loop.submitMultishot(
             prepare = { sqe ->
                 if (directAllocActive) {
                     keel_prep_multishot_accept_direct(sqe, serverFd, null, null, 0)
@@ -175,7 +177,14 @@ internal class IoUringPipelinedStreamServer(
                     io_uring_prep_multishot_accept(sqe, serverFd, null, null, 0)
                 }
             },
-            onCqe = { res, _ ->
+            onCqe = { res, flags ->
+                if (keel_cqe_has_more(flags) == 0) {
+                    // Terminal CQE: the drain releases the slot after this
+                    // callback, so the handle must not be cancelled later —
+                    // a stale cancelSqe would clobber whatever operation
+                    // re-acquired the slot.
+                    listener.armSlots[workerIndex] = -1
+                }
                 if (res >= 0 && !closed) {
                     logger.debug {
                         val label = if (directAllocActive) "slot" else "fd"
@@ -215,6 +224,7 @@ internal class IoUringPipelinedStreamServer(
                 }
             },
         )
+        listener.armSlots[workerIndex] = slot
     }
 
     /**
@@ -240,9 +250,14 @@ internal class IoUringPipelinedStreamServer(
         workerIndex: Int,
         listener: Listener,
     ) {
-        loop.submitMultishot(
+        val slot = loop.submitMultishot(
             prepare = { sqe -> io_uring_prep_accept(sqe, serverFd, null, null, 0) },
             onCqe = { res, _ ->
+                // A single-shot CQE is always terminal: the drain releases
+                // the slot after this callback. Clear the handle first so a
+                // concurrent close() never cancels a released slot; the
+                // re-arm below records the fresh one.
+                listener.armSlots[workerIndex] = -1
                 if (closed || res == -ECANCELED) return@submitMultishot
                 try {
                     if (res >= 0) {
@@ -267,6 +282,7 @@ internal class IoUringPipelinedStreamServer(
                 }
             },
         )
+        listener.armSlots[workerIndex] = slot
     }
 
     /**
@@ -355,18 +371,35 @@ internal class IoUringPipelinedStreamServer(
     }
 
     /**
-     * Closes every listener's server sockets.
+     * Closes every listener's server sockets and releases their ports.
      *
-     * Active connections continue until they close naturally.
-     * Idempotent.
+     * Closing the fd alone is not enough on io_uring: the armed accept SQE
+     * holds a kernel-side `struct file` reference, so the listening socket
+     * (and its port) would stay alive until the engine tears the ring down
+     * — invisibly so under `SO_REUSEPORT`, where a rebind simply joins the
+     * zombie group. Each worker therefore cancels its accept SQE and then
+     * closes its fd on its own EventLoop thread (the arm-slot handles are
+     * EL-confined, mirroring the transport's POLL_ADD teardown ordering),
+     * making the port release asynchronous but prompt — bounded by one EL
+     * dispatch plus the kernel processing the cancel.
+     *
+     * Active connections continue until they close naturally. Idempotent.
      */
     override fun close() {
-        if (!closed) {
-            closed = true
-            for (listener in listeners) {
-                for (fd in listener.serverFds) {
+        if (closed) return
+        closed = true
+        for (listener in listeners) {
+            for (i in listener.serverFds.indices) {
+                val loop = workerGroup.loopAt(i)
+                val fd = listener.serverFds[i]
+                loop.dispatch(EmptyCoroutineContext, kotlinx.coroutines.Runnable {
+                    val slot = listener.armSlots[i]
+                    if (slot >= 0) {
+                        listener.armSlots[i] = -1
+                        loop.cancelSqe(slot)
+                    }
                     closeFdSafely(fd, logger, "pipelined server close")
-                }
+                })
             }
         }
     }
@@ -382,5 +415,13 @@ internal class IoUringPipelinedStreamServer(
         val serverFds: IntArray,
         val localAddress: SocketAddress,
         val config: BindConfig,
-    )
+    ) {
+        /**
+         * Current accept-SQE slot per worker (`-1` = not armed). Each index
+         * is confined to its worker's EventLoop thread: arms and terminal
+         * CQEs write it there, and [close] reads it from a Runnable
+         * dispatched to that same loop — never cross-thread.
+         */
+        internal val armSlots = IntArray(serverFds.size) { -1 }
+    }
 }
