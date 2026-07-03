@@ -16,6 +16,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io_uring.io_uring_prep_accept
 import io_uring.io_uring_prep_multishot_accept
+import io_uring.keel_cqe_has_more
 import io_uring.keel_prep_multishot_accept_direct
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
@@ -28,10 +29,14 @@ import kotlin.coroutines.EmptyCoroutineContext
  * Pipeline-based server that distributes connections across [IoUringEventLoopGroup]
  * workers using `SO_REUSEPORT`.
  *
- * Each worker EventLoop owns a private server socket (all bound to the same
- * address via `SO_REUSEPORT`). The kernel distributes incoming connections
- * across these sockets by hashing the connection 4-tuple, eliminating
- * cross-thread accept coordination.
+ * One server owns one or more [Listener]s (one per bound address — the
+ * multi-address `bindPipeline` overload; a single-address bind is the
+ * one-element case). An inet listener holds one private server socket per
+ * worker EventLoop (all bound to the same address via `SO_REUSEPORT`); the
+ * kernel distributes incoming connections across those sockets by hashing
+ * the connection 4-tuple, eliminating cross-thread accept coordination. A
+ * Unix-domain listener holds a single socket serviced by worker 0
+ * (`SO_REUSEPORT` is not supported on `AF_UNIX`).
  *
  * For each accepted connection, the server creates an [IoUringPipelinedChannel],
  * applies the user-provided [pipelineInitializer] to set up the handler chain,
@@ -39,14 +44,15 @@ import kotlin.coroutines.EmptyCoroutineContext
  * drive the pipeline directly on the EventLoop thread.
  *
  * ```
- * Worker[0]: ServerSocket[0] → multishot accept → PipelinedChannel → pipeline
- * Worker[1]: ServerSocket[1] → multishot accept → PipelinedChannel → pipeline
- * Worker[N]: ServerSocket[N] → multishot accept → PipelinedChannel → pipeline
+ * Listener[A] (address A): Worker[0..N] × ServerSocket → multishot accept ┐
+ * Listener[B] (address B): Worker[0..N] × ServerSocket → multishot accept ┼→ PipelinedChannel → pipeline
  * ```
  *
  * @param workerGroup      The EventLoop group providing per-worker resources.
- * @param serverFds        One server socket fd per worker (SO_REUSEPORT).
- * @param pipelineInitializer Called for each accepted connection to add handlers.
+ * @param listeners        One entry per bound address, each holding its
+ *   per-worker socket fds and per-address config.
+ * @param pipelineInitializer Called for each accepted connection to add
+ *   handlers, regardless of the listener it arrived on.
  * @param capabilities     Runtime kernel feature flags.
  * @param writeModeSelector Engine-wide write-mode selector, forwarded to every
  *   accepted connection's transport. This server previously constructed its
@@ -58,9 +64,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 @OptIn(ExperimentalForeignApi::class)
 internal class IoUringPipelinedStreamServer(
     private val workerGroup: IoUringEventLoopGroup,
-    private val serverFds: IntArray,
-    private val localAddr: SocketAddress,
-    private val config: BindConfig,
+    private val listeners: List<Listener>,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val capabilities: IoUringCapabilities,
     private val writeModeSelector: IoModeSelector,
@@ -69,21 +73,28 @@ internal class IoUringPipelinedStreamServer(
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
 ) : PipelinedStreamServer {
 
-    override val localAddress: SocketAddress get() = localAddr
+    init {
+        require(listeners.isNotEmpty()) { "listeners must not be empty" }
+    }
+
+    override val localAddress: SocketAddress get() = listeners.first().localAddress
+    override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
     override val isActive: Boolean get() = !closed
 
+    @kotlin.concurrent.Volatile
     private var closed = false
 
     /**
-     * Arms multishot accept on each worker EventLoop and blocks the caller
-     * until every worker has enqueued its accept SQE.
+     * Arms accept on every listener socket and blocks the caller until
+     * every worker has enqueued its accept SQE.
      *
-     * Must be called after construction. Each worker starts accepting
-     * connections on its own SO_REUSEPORT server socket.
+     * Must be called after construction. For an inet listener each worker
+     * starts accepting connections on its own SO_REUSEPORT server socket;
+     * a Unix-domain listener's single socket is armed on worker 0.
      *
      * **Synchronous barrier**: the accept-SQE submission is dispatched to
      * each worker EventLoop via [IoUringEventLoop.dispatch], but this method
-     * blocks (via a per-worker [CompletableDeferred]) until every dispatched
+     * blocks (via a per-arm [CompletableDeferred]) until every dispatched
      * Runnable has completed its [IoUringEventLoop.submitMultishot] call.
      * This closes the race where a caller of `bindPipeline(...)` could
      * immediately initiate a TCP connect before the kernel-side
@@ -108,33 +119,39 @@ internal class IoUringPipelinedStreamServer(
         // registry is absent, fall back to the traditional accept path even
         // if acceptDirectAlloc is requested.
         val useDirectAlloc = capabilities.acceptDirectAlloc && capabilities.fixedFiles
-        val barriers = Array(workerGroup.size) { CompletableDeferred<Unit>() }
-        for (i in 0 until workerGroup.size) {
-            val loop = workerGroup.loopAt(i)
-            val serverFd = serverFds[i]
-            val hasRegistry = workerGroup.fileRegistryAt(i) != null
-            val directAllocActive = useDirectAlloc && hasRegistry
-            val barrier = barriers[i]
-            loop.dispatch(EmptyCoroutineContext, kotlinx.coroutines.Runnable {
-                try {
-                    if (capabilities.multishotAccept) {
-                        armMultishotAccept(loop, serverFd, i, directAllocActive)
-                    } else {
-                        // Kernels without IORING_ACCEPT_MULTISHOT (< 5.19):
-                        // a single-shot accept SQE re-armed per CQE. The
-                        // Coroutine-mode server has had this fallback since
-                        // its inception; the pipelined server previously
-                        // armed multishot unconditionally, which an older
-                        // kernel rejects with -EINVAL on every accept.
-                        armSingleShotAccept(loop, serverFd, i)
-                    }
-                    barrier.complete(Unit)
-                } catch (e: Throwable) {
-                    barrier.completeExceptionally(e)
-                }
-            })
+        val barriers = mutableListOf<CompletableDeferred<Unit>>()
+        for (listener in listeners) {
+            for (i in listener.serverFds.indices) {
+                val loop = workerGroup.loopAt(i)
+                val serverFd = listener.serverFds[i]
+                val hasRegistry = workerGroup.fileRegistryAt(i) != null
+                val directAllocActive = useDirectAlloc && hasRegistry
+                val barrier = CompletableDeferred<Unit>()
+                barriers.add(barrier)
+                loop.dispatch(
+                    EmptyCoroutineContext,
+                    kotlinx.coroutines.Runnable {
+                        try {
+                            if (capabilities.multishotAccept) {
+                                armMultishotAccept(loop, serverFd, i, directAllocActive, listener)
+                            } else {
+                                // Kernels without IORING_ACCEPT_MULTISHOT (< 5.19):
+                                // a single-shot accept SQE re-armed per CQE. The
+                                // Coroutine-mode server has had this fallback since
+                                // its inception; the pipelined server previously
+                                // armed multishot unconditionally, which an older
+                                // kernel rejects with -EINVAL on every accept.
+                                armSingleShotAccept(loop, serverFd, i, listener)
+                            }
+                            barrier.complete(Unit)
+                        } catch (e: Throwable) {
+                            barrier.completeExceptionally(e)
+                        }
+                    },
+                )
+            }
         }
-        // Block until every worker has enqueued its accept SQE. runBlocking
+        // Block until every worker has enqueued its accept SQEs. runBlocking
         // here is cheap: the EL threads are already running; each await
         // resumes as soon as the corresponding Runnable completes. Any
         // submitMultishot failure is rethrown on the calling thread so the
@@ -153,8 +170,9 @@ internal class IoUringPipelinedStreamServer(
         serverFd: Int,
         workerIndex: Int,
         directAllocActive: Boolean,
+        listener: Listener,
     ) {
-        loop.submitMultishot(
+        val slot = loop.submitMultishot(
             prepare = { sqe ->
                 if (directAllocActive) {
                     keel_prep_multishot_accept_direct(sqe, serverFd, null, null, 0)
@@ -162,7 +180,14 @@ internal class IoUringPipelinedStreamServer(
                     io_uring_prep_multishot_accept(sqe, serverFd, null, null, 0)
                 }
             },
-            onCqe = { res, _ ->
+            onCqe = { res, flags ->
+                if (keel_cqe_has_more(flags) == 0) {
+                    // Terminal CQE: the drain releases the slot after this
+                    // callback, so the handle must not be cancelled later —
+                    // a stale cancelSqe would clobber whatever operation
+                    // re-acquired the slot.
+                    listener.armSlots[workerIndex] = -1
+                }
                 if (res >= 0 && !closed) {
                     logger.debug {
                         val label = if (directAllocActive) "slot" else "fd"
@@ -179,7 +204,7 @@ internal class IoUringPipelinedStreamServer(
                     // fd / slot is traceable before falling
                     // through to the EL-level generic catch.
                     try {
-                        onAccept(res, workerIndex, directAllocActive)
+                        onAccept(res, workerIndex, directAllocActive, listener)
                     } catch (t: Throwable) {
                         val label = if (directAllocActive) "slot" else "fd"
                         logger.warn(t) {
@@ -202,6 +227,7 @@ internal class IoUringPipelinedStreamServer(
                 }
             },
         )
+        listener.armSlots[workerIndex] = slot
     }
 
     /**
@@ -221,16 +247,26 @@ internal class IoUringPipelinedStreamServer(
      * the chain. Direct-allocated accept is multishot-only (5.19+ implies
      * multishot accept), so this path always deals in raw fds.
      */
-    private fun armSingleShotAccept(loop: IoUringEventLoop, serverFd: Int, workerIndex: Int) {
-        loop.submitMultishot(
+    private fun armSingleShotAccept(
+        loop: IoUringEventLoop,
+        serverFd: Int,
+        workerIndex: Int,
+        listener: Listener,
+    ) {
+        val slot = loop.submitMultishot(
             prepare = { sqe -> io_uring_prep_accept(sqe, serverFd, null, null, 0) },
             onCqe = { res, _ ->
+                // A single-shot CQE is always terminal: the drain releases
+                // the slot after this callback. Clear the handle first so a
+                // concurrent close() never cancels a released slot; the
+                // re-arm below records the fresh one.
+                listener.armSlots[workerIndex] = -1
                 if (closed || res == -ECANCELED) return@submitMultishot
                 try {
                     if (res >= 0) {
                         logger.debug { "accept CQE (single-shot): worker=$workerIndex fd=$res" }
                         try {
-                            onAccept(res, workerIndex, directAlloc = false)
+                            onAccept(res, workerIndex, directAlloc = false, listener = listener)
                         } catch (t: Throwable) {
                             logger.warn(t) {
                                 "accept handler threw; connection orphaned: " +
@@ -245,10 +281,11 @@ internal class IoUringPipelinedStreamServer(
                         }
                     }
                 } finally {
-                    if (!closed) armSingleShotAccept(loop, serverFd, workerIndex)
+                    if (!closed) armSingleShotAccept(loop, serverFd, workerIndex, listener)
                 }
             },
         )
+        listener.armSlots[workerIndex] = slot
     }
 
     /**
@@ -262,8 +299,11 @@ internal class IoUringPipelinedStreamServer(
      *                  direct-allocated path this is the fixed-file index
      *                  chosen by the kernel.
      * @param directAlloc Whether this worker used direct-allocated accept.
+     * @param listener The listener the connection arrived on — its config
+     *                 (child socket options, timeouts, connection
+     *                 initializer) applies to this connection.
      */
-    private fun onAccept(acceptRes: Int, workerIndex: Int, directAlloc: Boolean) {
+    private fun onAccept(acceptRes: Int, workerIndex: Int, directAlloc: Boolean, listener: Listener) {
         val loop = workerGroup.loopAt(workerIndex)
         // Null on kernels without IORING_REGISTER_PBUF_RING (< 5.19): the
         // transport's read dispatch falls back to plain single-shot recv
@@ -273,14 +313,17 @@ internal class IoUringPipelinedStreamServer(
         val allocator = workerGroup.allocatorAt(workerIndex)
         val fileRegistry = workerGroup.fileRegistryAt(workerIndex)
         val bufferTable = workerGroup.bufferTableAt(workerIndex)
-        val transport = if (directAlloc) {
+        val config = listener.config
+        val transport: IoUringIoTransport
+        val channelLocal: SocketAddress
+        if (directAlloc) {
             // Kernel has placed the fd into fileRegistry's table at index
             // `acceptRes`. The raw fd is not available to userspace; pass
             // -1 as the sentinel rawFd. O_NONBLOCK is not set (no
             // SOCK_NONBLOCK in accept flags), but io_uring SQE-based
             // I/O is independent of O_NONBLOCK. FALLBACK_CQE (direct
             // syscall path) is coerced to CQE in IoUringIoTransport.
-            IoUringIoTransport(
+            transport = IoUringIoTransport(
                 fd = -1,
                 eventLoop = loop,
                 capabilities = capabilities,
@@ -294,10 +337,16 @@ internal class IoUringPipelinedStreamServer(
                 idleTimeoutMillis = config.idleTimeoutMillis ?: loop.idleTimeoutMillis,
                 readBufferSize = workerGroup.readBufferSize,
             )
+            // No raw fd to getsockname on a direct-allocated accept, so the
+            // listener's bind address is the best available local endpoint
+            // (exact for a specific-address bind; the wildcard form itself
+            // for a wildcard bind, unlike the raw-fd path's concrete
+            // interface address).
+            channelLocal = listener.localAddress
         } else {
             nativeSocketOps.setNonBlocking(acceptRes)
             nativeSocketOps.applySocketOptions(acceptRes, config.childSocketOptions)
-            IoUringIoTransport(
+            transport = IoUringIoTransport(
                 fd = acceptRes,
                 eventLoop = loop,
                 capabilities = capabilities,
@@ -310,25 +359,75 @@ internal class IoUringPipelinedStreamServer(
                 idleTimeoutMillis = config.idleTimeoutMillis ?: loop.idleTimeoutMillis,
                 readBufferSize = workerGroup.readBufferSize,
             )
+            // The accepted socket's own local endpoint (concrete interface
+            // address under a wildcard bind) — lets the shared pipeline
+            // initializer branch on the listening address. Falls back to
+            // the listener address if the query races a disconnecting peer.
+            channelLocal = runCatching {
+                nativeSocketOps.getLocalAddress(acceptRes)
+            }.getOrNull() ?: listener.localAddress
         }
-        val channel = IoUringPipelinedChannel(transport, logger)
+        val channel = IoUringPipelinedChannel(transport, logger, localAddress = channelLocal)
         config.initializeConnection(channel)
         pipelineInitializer(channel)
         transport.readEnabled = true
     }
 
     /**
-     * Closes all server sockets.
+     * Closes every listener's server sockets and releases their ports.
      *
-     * Active connections continue until they close naturally.
-     * Idempotent.
+     * Closing the fd alone is not enough on io_uring: the armed accept SQE
+     * holds a kernel-side `struct file` reference, so the listening socket
+     * (and its port) would stay alive until the engine tears the ring down
+     * — invisibly so under `SO_REUSEPORT`, where a rebind simply joins the
+     * zombie group. Each worker therefore cancels its accept SQE and then
+     * closes its fd on its own EventLoop thread (the arm-slot handles are
+     * EL-confined, mirroring the transport's POLL_ADD teardown ordering),
+     * making the port release asynchronous but prompt — bounded by one EL
+     * dispatch plus the kernel processing the cancel.
+     *
+     * Active connections continue until they close naturally. Idempotent.
      */
     override fun close() {
-        if (!closed) {
-            closed = true
-            for (fd in serverFds) {
-                closeFdSafely(fd, logger, "pipelined server close")
+        if (closed) return
+        closed = true
+        for (listener in listeners) {
+            for (i in listener.serverFds.indices) {
+                val loop = workerGroup.loopAt(i)
+                val fd = listener.serverFds[i]
+                loop.dispatch(
+                    EmptyCoroutineContext,
+                    kotlinx.coroutines.Runnable {
+                        val slot = listener.armSlots[i]
+                        if (slot >= 0) {
+                            listener.armSlots[i] = -1
+                            loop.cancelSqe(slot)
+                        }
+                        closeFdSafely(fd, logger, "pipelined server close")
+                    },
+                )
             }
         }
+    }
+
+    /**
+     * One bound listen address of this server: its per-worker socket fds
+     * (one per worker for inet via `SO_REUSEPORT`; a single element for
+     * Unix-domain sockets, serviced by worker 0), the resolved bind
+     * address, and the per-address config applied to connections accepted
+     * on it.
+     */
+    internal class Listener(
+        val serverFds: IntArray,
+        val localAddress: SocketAddress,
+        val config: BindConfig,
+    ) {
+        /**
+         * Current accept-SQE slot per worker (`-1` = not armed). Each index
+         * is confined to its worker's EventLoop thread: arms and terminal
+         * CQEs write it there, and [close] reads it from a Runnable
+         * dispatched to that same loop — never cross-thread.
+         */
+        internal val armSlots = IntArray(serverFds.size) { -1 }
     }
 }
