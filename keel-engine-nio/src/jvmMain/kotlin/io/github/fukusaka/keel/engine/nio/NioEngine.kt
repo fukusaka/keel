@@ -72,7 +72,7 @@ import java.net.InetSocketAddress as JavaInetSocketAddress
  *               to `availableProcessors()`. Bench A/B (k6 sse 50 VU / 15s)
  *               showed `availableProcessors() * 2` (Netty's
  *               `NioEventLoopGroup` default) regresses throughput by 9-18 %
- *               on both macOS M1 and luna 32-core, because each keel
+ *               on both macOS M1 and a 32-core Ryzen Linux host, because each keel
  *               EventLoop already saturates its core under per-frame-flush
  *               SSE and extra workers buy more cross-thread coordination
  *               than parallelism (worker-thread-count candidate (c) — rejected).
