@@ -19,103 +19,146 @@ import kotlinx.cinterop.ExperimentalForeignApi
 /**
  * Pipeline server channel for epoll-based connection acceptance on Linux.
  *
- * Uses the boss [EpollEventLoop] to listen for incoming connections via
- * EPOLLIN on the server fd. Accepted connections are distributed to
- * worker EventLoops in round-robin.
+ * One server owns one or more [Listener]s (one per bound address — the
+ * multi-address `bindPipeline` overload; a single-address bind is the
+ * one-element case). Every listener fd is armed for EPOLLIN on the shared
+ * boss [EpollEventLoop]; accepted connections are distributed to worker
+ * EventLoops in round-robin regardless of the listener they arrived on.
  *
  * Same architecture as [KqueuePipelinedStreamServer][io.github.fukusaka.keel.engine.kqueue.KqueuePipelinedStreamServer].
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class EpollPipelinedStreamServer(
-    private val serverFd: Int,
+    private val listeners: List<Listener>,
     private val bossLoop: EpollEventLoop,
     private val workerGroup: EpollEventLoopGroup,
-    private val localAddr: SocketAddress,
     private val logger: Logger,
-    private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
-) : PipelinedStreamServer, EpollEventLoop.FdReadyListener {
+) : PipelinedStreamServer {
 
-    override val localAddress: SocketAddress get() = localAddr
+    init {
+        require(listeners.isNotEmpty()) { "listeners must not be empty" }
+    }
+
+    override val localAddress: SocketAddress get() = listeners.first().localAddress
+    override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
     override val isActive: Boolean get() = !closed
 
     @kotlin.concurrent.Volatile
     private var closed = false
     private var workerIndex = 0 // Single boss thread only — no atomicity needed.
 
-    /** Starts accepting connections on the boss EventLoop. */
+    /**
+     * One persistent [EpollEventLoop.FdReadyListener] per listener —
+     * passing the same object to every [EpollEventLoop.registerCallback]
+     * avoids per-call lambda allocation on the accept re-arm fast path
+     * while carrying which listener became readable. Only `READ` is
+     * registered; `WRITE` is never armed for a listening fd.
+     */
+    private inner class AcceptArm(val listener: Listener) : EpollEventLoop.FdReadyListener {
+        override fun onReady(interest: EpollEventLoop.Interest) {
+            onAcceptable(this)
+        }
+
+        fun arm() {
+            if (closed) return
+            bossLoop.registerCallback(listener.serverFd, EpollEventLoop.Interest.READ, this)
+        }
+    }
+
+    private val acceptArms = listeners.map { AcceptArm(it) }
+
+    /** Starts accepting connections on the boss EventLoop (every listener). */
     fun start() {
-        armAccept()
+        acceptArms.forEach { it.arm() }
     }
 
     /**
-     * [EpollEventLoop.FdReadyListener] dispatch — passing `this` to
-     * [EpollEventLoop.registerCallback] avoids per-call lambda allocation on
-     * the accept re-arm fast path. Only `READ` is registered; `WRITE` is
-     * never armed for the listening fd.
+     * Seam-test convenience: drives the first (in seam scenarios, only)
+     * listener's accept loop directly without epoll readiness delivery.
+     * The production call site is [AcceptArm.onReady].
      */
-    override fun onReady(interest: EpollEventLoop.Interest) {
-        onAcceptable()
-    }
-
-    private fun armAccept() {
-        if (closed) return
-        bossLoop.registerCallback(serverFd, EpollEventLoop.Interest.READ, this)
-    }
-
-    // `internal` (was `private`) so accept-branch seam tests can drive the
-    // edge-triggered accept loop directly without going through epoll
-    // readiness delivery. Call site in production remains the
-    // `bossLoop.registerCallback` lambda armed by [armAccept].
     internal fun onAcceptable() {
+        onAcceptable(acceptArms.first())
+    }
+
+    private fun onAcceptable(arm: AcceptArm) {
         if (closed) return
+        val listener = arm.listener
         while (true) {
-            when (val result = nativeSocket.accept(serverFd)) {
+            when (val result = nativeSocket.accept(listener.serverFd)) {
                 is AcceptResult.Accepted -> {
                     nativeSocketOps.setNonBlocking(result.fd)
-                    nativeSocketOps.applySocketOptions(result.fd, config.childSocketOptions)
-                    dispatchToWorker(result.fd)
+                    nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
+                    dispatchToWorker(result.fd, listener)
                 }
                 AcceptResult.WouldBlock -> {
-                    armAccept()
+                    arm.arm()
                     return
                 }
                 is AcceptResult.Failed -> {
                     logger.error { "accept() failed: ${errnoMessage(result.errno)}" }
-                    armAccept()
+                    arm.arm()
                     return
                 }
             }
         }
     }
 
-    private fun dispatchToWorker(clientFd: Int) {
+    private fun dispatchToWorker(clientFd: Int, listener: Listener) {
         val idx = workerIndex++ % workerGroup.size
         val workerLoop = workerGroup.at(idx)
-        workerLoop.dispatch(kotlin.coroutines.EmptyCoroutineContext, kotlinx.coroutines.Runnable {
-            onWorkerAccept(clientFd, workerLoop)
-        })
+        workerLoop.dispatch(
+            kotlin.coroutines.EmptyCoroutineContext,
+            kotlinx.coroutines.Runnable {
+                onWorkerAccept(clientFd, workerLoop, listener)
+            },
+        )
     }
 
-    private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop) {
-        val rbs = config.readBufferSize ?: loop.readBufferSize
-        val ito = config.idleTimeoutMillis ?: loop.idleTimeoutMillis
+    private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop, listener: Listener) {
+        val rbs = listener.config.readBufferSize ?: loop.readBufferSize
+        val ito = listener.config.idleTimeoutMillis ?: loop.idleTimeoutMillis
         val transport = EpollIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
-        val channel = EpollPipelinedChannel(transport, logger)
-        config.initializeConnection(channel)
+        // The accepted socket's own local endpoint: for a specific-address
+        // listener it equals the listener address; for a wildcard bind it is
+        // the concrete interface address with the listener's port. Lets the
+        // shared pipeline initializer branch on the listening address. The
+        // getsockname query can fail on a fd torn down in the accept →
+        // worker-dispatch window, so fall back to the listener address.
+        val channelLocal = runCatching {
+            nativeSocketOps.getLocalAddress(clientFd)
+        }.getOrNull() ?: listener.localAddress
+        val channel = EpollPipelinedChannel(transport, logger, localAddress = channelLocal)
+        listener.config.initializeConnection(channel)
         pipelineInitializer(channel)
         transport.readEnabled = true
     }
 
     /**
-     * Stops accepting and closes the server socket fd.
-     * Pending accept callbacks become no-ops. Idempotent.
+     * Stops accepting and closes every listener's server socket fd.
+     * The kernel drops a closed fd from the epoll interest set, so no
+     * boss-loop coordination is needed. Pending accept callbacks become
+     * no-ops (closed flag check). Idempotent.
      */
     override fun close() {
         if (closed) return
         closed = true
-        closeFdSafely(serverFd, logger, "pipelined server close")
+        for (listener in listeners) {
+            closeFdSafely(listener.serverFd, logger, "pipelined server close")
+        }
     }
+
+    /**
+     * One bound listen socket of this server: its fd, the resolved bind
+     * address, and the per-address config applied to connections accepted
+     * on it.
+     */
+    internal class Listener(
+        val serverFd: Int,
+        val localAddress: SocketAddress,
+        val config: BindConfig,
+    )
 }

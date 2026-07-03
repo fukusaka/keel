@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
@@ -11,6 +12,7 @@ import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.bindAllOrRollback
 import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIp
@@ -322,72 +324,70 @@ class KqueueEngine(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer = when (address) {
-        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
-    }
+    ): PipelinedStreamServer = bindPipeline(listOf(BindSpec(address, config)), pipelineInitializer)
 
-    private fun bindPipelineUnix(
-        address: UnixSocketAddress,
-        config: BindConfig,
+    /**
+     * Multi-address pipeline bind: every entry of [binds] becomes one
+     * listener of a single [KqueuePipelinedStreamServer], all armed on the
+     * shared boss loop. All-or-nothing: a failing bind closes the
+     * listeners bound so far and rethrows.
+     */
+    override fun bindPipeline(
+        binds: List<BindSpec>,
         pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
     ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
-
-        val serverFd = nativeSocketOps.bindUnixListener(address, config.backlog)
-
+        val listeners = bindAllOrRollback(
+            binds = binds,
+            logger = logger,
+            closeOne = { listener: KqueuePipelinedStreamServer.Listener ->
+                closeFdSafely(listener.serverFd, logger, "multi-address bind rollback")
+            },
+        ) { spec -> openPipelineListener(spec) }
+        val serverChannel = KqueuePipelinedStreamServer(
+            listeners = listeners,
+            bossLoop = bossLoop,
+            workerGroup = workerGroup,
+            logger = logger,
+            pipelineInitializer = pipelineInitializer,
+            nativeSocket = nativeSocket,
+            nativeSocketOps = nativeSocketOps,
+        )
         try {
-            logger.debug { "Pipeline bound to $address" }
-            val serverChannel = KqueuePipelinedStreamServer(
-                serverFd = serverFd,
-                bossLoop = bossLoop,
-                workerGroup = workerGroup,
-                localAddr = address,
-                logger = logger,
-                config = config,
-                pipelineInitializer = pipelineInitializer,
-                nativeSocket = nativeSocket,
-                nativeSocketOps = nativeSocketOps,
-            )
             serverChannel.start()
-            return serverChannel
         } catch (t: Throwable) {
-            closeFdSafely(serverFd, logger, "bindPipelineUnix cleanup")
+            serverChannel.close()
             throw t
         }
+        return serverChannel
     }
 
-    private fun bindPipelineInet(
-        address: InetSocketAddress,
-        config: BindConfig,
-        pipelineInitializer: (io.github.fukusaka.keel.pipeline.PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer {
-        check(!closed) { "Engine is closed" }
-
-        val ip = address.requireIp()
-        val port = address.port
-        val serverFd = nativeSocketOps.bindListener(ip, port, config.backlog)
-
-        try {
-            val localAddr = nativeSocketOps.getLocalAddress(serverFd)
-            logger.debug { "Pipeline bound to $localAddr" }
-            val serverChannel = KqueuePipelinedStreamServer(
-                serverFd = serverFd,
-                bossLoop = bossLoop,
-                workerGroup = workerGroup,
-                localAddr = localAddr,
-                logger = logger,
-                config = config,
-                pipelineInitializer = pipelineInitializer,
-                nativeSocket = nativeSocket,
-                nativeSocketOps = nativeSocketOps,
-            )
-            serverChannel.start()
-            return serverChannel
-        } catch (t: Throwable) {
-            closeFdSafely(serverFd, logger, "bindPipelineInet cleanup")
-            throw t
+    /**
+     * Opens and binds one pipeline listen socket. Cleans up its own fd on
+     * failure so [bindAllOrRollback] only has to roll back the listeners
+     * that were fully opened before it.
+     */
+    private fun openPipelineListener(spec: BindSpec): KqueuePipelinedStreamServer.Listener {
+        return when (val address = spec.address) {
+            is InetSocketAddress -> {
+                val serverFd = nativeSocketOps.bindListener(address.requireIp(), address.port, spec.config.backlog)
+                try {
+                    val localAddr = nativeSocketOps.getLocalAddress(serverFd)
+                    logger.debug { "Pipeline bound to $localAddr" }
+                    KqueuePipelinedStreamServer.Listener(serverFd, localAddr, spec.config)
+                } catch (t: Throwable) {
+                    closeFdSafely(serverFd, logger, "bindPipeline listener cleanup")
+                    throw t
+                }
+            }
+            is UnixSocketAddress -> {
+                address.requireFilesystemOnly(
+                    "KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)",
+                )
+                val serverFd = nativeSocketOps.bindUnixListener(address, spec.config.backlog)
+                logger.debug { "Pipeline bound to $address" }
+                KqueuePipelinedStreamServer.Listener(serverFd, address, spec.config)
+            }
         }
     }
 

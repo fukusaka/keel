@@ -19,127 +19,146 @@ import kotlinx.cinterop.ExperimentalForeignApi
 /**
  * Pipeline server channel for kqueue-based connection acceptance.
  *
- * Uses the boss [KqueueEventLoop] to listen for incoming connections via
- * EVFILT_READ on the server fd. Accepted connections are distributed to
- * worker EventLoops in round-robin, where each creates a
- * [KqueuePipelinedChannel] and arms read callbacks.
+ * One server owns one or more [Listener]s (one per bound address — the
+ * multi-address `bindPipeline` overload; a single-address bind is the
+ * one-element case). Every listener fd is armed for EVFILT_READ on the shared
+ * boss [KqueueEventLoop]; accepted connections are distributed to worker
+ * EventLoops in round-robin regardless of the listener they arrived on.
  *
- * Unlike [KqueueStreamServer] (suspend-based), this server channel uses
- * callback-based registration for non-suspend pipeline processing.
- *
- * ```
- * Boss EventLoop:
- *   kevent(EVFILT_READ on serverFd) → accept() → clientFd
- *     → dispatch to worker EventLoop
- *
- * Worker EventLoop:
- *   KqueuePipelinedChannel(clientFd) → pipelineInitializer → armRead()
- * ```
+ * Same architecture as [EpollPipelinedStreamServer][io.github.fukusaka.keel.engine.epoll.EpollPipelinedStreamServer].
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueuePipelinedStreamServer(
-    private val serverFd: Int,
+    private val listeners: List<Listener>,
     private val bossLoop: KqueueEventLoop,
     private val workerGroup: KqueueEventLoopGroup,
-    private val localAddr: SocketAddress,
     private val logger: Logger,
-    private val config: BindConfig,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
-) : PipelinedStreamServer, KqueueEventLoop.FdReadyListener {
+) : PipelinedStreamServer {
 
-    override val localAddress: SocketAddress get() = localAddr
+    init {
+        require(listeners.isNotEmpty()) { "listeners must not be empty" }
+    }
+
+    override val localAddress: SocketAddress get() = listeners.first().localAddress
+    override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
     override val isActive: Boolean get() = !closed
 
     @kotlin.concurrent.Volatile
     private var closed = false
-    private var workerIndex = 0
+    private var workerIndex = 0 // Single boss thread only — no atomicity needed.
 
     /**
-     * Starts accepting connections on the boss EventLoop.
-     *
-     * Must be called after the boss EventLoop is started. Each accepted
-     * connection is dispatched to the next worker in round-robin order.
+     * One persistent [KqueueEventLoop.FdReadyListener] per listener —
+     * passing the same object to every [KqueueEventLoop.registerCallback]
+     * avoids per-call lambda allocation on the accept re-arm fast path
+     * while carrying which listener became readable. Only `READ` is
+     * registered; `WRITE` is never armed for a listening fd.
      */
+    private inner class AcceptArm(val listener: Listener) : KqueueEventLoop.FdReadyListener {
+        override fun onReady(interest: KqueueEventLoop.Interest) {
+            onAcceptable(this)
+        }
+
+        fun arm() {
+            if (closed) return
+            bossLoop.registerCallback(listener.serverFd, KqueueEventLoop.Interest.READ, this)
+        }
+    }
+
+    private val acceptArms = listeners.map { AcceptArm(it) }
+
+    /** Starts accepting connections on the boss EventLoop (every listener). */
     fun start() {
-        armAccept()
+        acceptArms.forEach { it.arm() }
     }
 
     /**
-     * [KqueueEventLoop.FdReadyListener] dispatch — passing `this` to
-     * [KqueueEventLoop.registerCallback] avoids per-call lambda allocation
-     * on the accept re-arm fast path. Only `READ` is registered; `WRITE` is
-     * never armed for the listening fd.
+     * Seam-test convenience: drives the first (in seam scenarios, only)
+     * listener's accept loop directly without kqueue readiness delivery.
+     * The production call site is [AcceptArm.onReady].
      */
-    override fun onReady(interest: KqueueEventLoop.Interest) {
-        // Peer-close on the listening fd is unusual (server.close() drives
-        // teardown via its own path), so [onPeerClosed] is left as the
-        // default no-op.
-        onAcceptable()
-    }
-
-    private fun armAccept() {
-        if (closed) return
-        bossLoop.registerCallback(serverFd, KqueueEventLoop.Interest.READ, this)
-    }
-
-    // `internal` (was `private`) so accept-branch seam tests can drive the
-    // edge-triggered accept loop directly without going through kqueue
-    // readiness delivery. Call site in production remains the
-    // `bossLoop.registerCallback` lambda armed by [armAccept].
     internal fun onAcceptable() {
+        onAcceptable(acceptArms.first())
+    }
+
+    private fun onAcceptable(arm: AcceptArm) {
         if (closed) return
-        // Accept all pending connections in a loop (edge-triggered behavior).
+        val listener = arm.listener
         while (true) {
-            when (val result = nativeSocket.accept(serverFd)) {
+            when (val result = nativeSocket.accept(listener.serverFd)) {
                 is AcceptResult.Accepted -> {
                     nativeSocketOps.setNonBlocking(result.fd)
-                    nativeSocketOps.applySocketOptions(result.fd, config.childSocketOptions)
-                    dispatchToWorker(result.fd)
+                    nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
+                    dispatchToWorker(result.fd, listener)
                 }
                 AcceptResult.WouldBlock -> {
-                    armAccept()
+                    arm.arm()
                     return
                 }
                 is AcceptResult.Failed -> {
-                    // Transient error — log and continue accepting.
                     logger.error { "accept() failed: ${errnoMessage(result.errno)}" }
-                    armAccept()
+                    arm.arm()
                     return
                 }
             }
         }
     }
 
-    private fun dispatchToWorker(clientFd: Int) {
+    private fun dispatchToWorker(clientFd: Int, listener: Listener) {
         val idx = workerIndex++ % workerGroup.size
         val workerLoop = workerGroup.at(idx)
-        workerLoop.dispatch(kotlin.coroutines.EmptyCoroutineContext, kotlinx.coroutines.Runnable {
-            onWorkerAccept(clientFd, workerLoop)
-        })
+        workerLoop.dispatch(
+            kotlin.coroutines.EmptyCoroutineContext,
+            kotlinx.coroutines.Runnable {
+                onWorkerAccept(clientFd, workerLoop, listener)
+            },
+        )
     }
 
-    private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop) {
-        val rbs = config.readBufferSize ?: loop.readBufferSize
-        val ito = config.idleTimeoutMillis ?: loop.idleTimeoutMillis
+    private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop, listener: Listener) {
+        val rbs = listener.config.readBufferSize ?: loop.readBufferSize
+        val ito = listener.config.idleTimeoutMillis ?: loop.idleTimeoutMillis
         val transport = KqueueIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
-        val channel = KqueuePipelinedChannel(transport, logger)
-        config.initializeConnection(channel)
+        // The accepted socket's own local endpoint: for a specific-address
+        // listener it equals the listener address; for a wildcard bind it is
+        // the concrete interface address with the listener's port. Lets the
+        // shared pipeline initializer branch on the listening address. The
+        // getsockname query can fail on a fd torn down in the accept →
+        // worker-dispatch window, so fall back to the listener address.
+        val channelLocal = runCatching {
+            nativeSocketOps.getLocalAddress(clientFd)
+        }.getOrNull() ?: listener.localAddress
+        val channel = KqueuePipelinedChannel(transport, logger, localAddress = channelLocal)
+        listener.config.initializeConnection(channel)
         pipelineInitializer(channel)
         transport.readEnabled = true
     }
 
     /**
-     * Stops accepting and closes the server socket fd.
-     *
-     * Pending accept callbacks become no-ops (closed flag check).
-     * Does NOT close worker EventLoops or existing client channels —
-     * caller (typically [KqueueEngine.close]) is responsible. Idempotent.
+     * Stops accepting and closes every listener's server socket fd.
+     * The kernel drops a closed fd from the kqueue interest set, so no
+     * boss-loop coordination is needed. Pending accept callbacks become
+     * no-ops (closed flag check). Idempotent.
      */
     override fun close() {
         if (closed) return
         closed = true
-        closeFdSafely(serverFd, logger, "pipelined server close")
+        for (listener in listeners) {
+            closeFdSafely(listener.serverFd, logger, "pipelined server close")
+        }
     }
+
+    /**
+     * One bound listen socket of this server: its fd, the resolved bind
+     * address, and the per-address config applied to connections accepted
+     * on it.
+     */
+    internal class Listener(
+        val serverFd: Int,
+        val localAddress: SocketAddress,
+        val config: BindConfig,
+    )
 }
