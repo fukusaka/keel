@@ -99,7 +99,16 @@ internal class NioPipelinedStreamServer(
             listener.config.readBufferSize ?: loop.readBufferSize,
             listener.config.idleTimeoutMillis ?: loop.idleTimeoutMillis,
         )
-        val channel = NioPipelinedChannel(transport, logger)
+        // The accepted socket's own local endpoint: for a specific-address
+        // listener it equals the listener address; for a wildcard bind it is
+        // the concrete interface address with the listener's port. Lets the
+        // shared pipeline initializer branch on the listening address. The
+        // socket query can fail if the peer disconnected in the accept →
+        // worker-dispatch window, so fall back to the listener address.
+        val channelLocal = runCatching {
+            NioPipelinedChannel.toSocketAddress(client.localAddress)
+        }.getOrNull() ?: listener.localAddress
+        val channel = NioPipelinedChannel(transport, logger, localAddress = channelLocal)
         listener.config.initializeConnection(channel)
         pipelineInitializer(channel)
         transport.readEnabled = true
