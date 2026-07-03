@@ -24,10 +24,10 @@ import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
-import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.fillSockaddrUn
+import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io_uring.io_uring_prep_connect
@@ -466,7 +466,14 @@ class IoUringEngine(
             },
         ) { spec -> openPipelineListener(spec) }
         val server = IoUringPipelinedStreamServer(
-            workerGroup, listeners, pipelineInitializer, resolvedCapabilities, writeModeSelector, logger, nativeSocket, nativeSocketOps,
+            workerGroup = workerGroup,
+            listeners = listeners,
+            pipelineInitializer = pipelineInitializer,
+            capabilities = resolvedCapabilities,
+            writeModeSelector = writeModeSelector,
+            logger = logger,
+            nativeSocket = nativeSocket,
+            nativeSocketOps = nativeSocketOps,
         )
         try {
             server.start()

@@ -128,24 +128,27 @@ internal class IoUringPipelinedStreamServer(
                 val directAllocActive = useDirectAlloc && hasRegistry
                 val barrier = CompletableDeferred<Unit>()
                 barriers.add(barrier)
-                loop.dispatch(EmptyCoroutineContext, kotlinx.coroutines.Runnable {
-                    try {
-                        if (capabilities.multishotAccept) {
-                            armMultishotAccept(loop, serverFd, i, directAllocActive, listener)
-                        } else {
-                            // Kernels without IORING_ACCEPT_MULTISHOT (< 5.19):
-                            // a single-shot accept SQE re-armed per CQE. The
-                            // Coroutine-mode server has had this fallback since
-                            // its inception; the pipelined server previously
-                            // armed multishot unconditionally, which an older
-                            // kernel rejects with -EINVAL on every accept.
-                            armSingleShotAccept(loop, serverFd, i, listener)
+                loop.dispatch(
+                    EmptyCoroutineContext,
+                    kotlinx.coroutines.Runnable {
+                        try {
+                            if (capabilities.multishotAccept) {
+                                armMultishotAccept(loop, serverFd, i, directAllocActive, listener)
+                            } else {
+                                // Kernels without IORING_ACCEPT_MULTISHOT (< 5.19):
+                                // a single-shot accept SQE re-armed per CQE. The
+                                // Coroutine-mode server has had this fallback since
+                                // its inception; the pipelined server previously
+                                // armed multishot unconditionally, which an older
+                                // kernel rejects with -EINVAL on every accept.
+                                armSingleShotAccept(loop, serverFd, i, listener)
+                            }
+                            barrier.complete(Unit)
+                        } catch (e: Throwable) {
+                            barrier.completeExceptionally(e)
                         }
-                        barrier.complete(Unit)
-                    } catch (e: Throwable) {
-                        barrier.completeExceptionally(e)
-                    }
-                })
+                    },
+                )
             }
         }
         // Block until every worker has enqueued its accept SQEs. runBlocking
@@ -392,14 +395,17 @@ internal class IoUringPipelinedStreamServer(
             for (i in listener.serverFds.indices) {
                 val loop = workerGroup.loopAt(i)
                 val fd = listener.serverFds[i]
-                loop.dispatch(EmptyCoroutineContext, kotlinx.coroutines.Runnable {
-                    val slot = listener.armSlots[i]
-                    if (slot >= 0) {
-                        listener.armSlots[i] = -1
-                        loop.cancelSqe(slot)
-                    }
-                    closeFdSafely(fd, logger, "pipelined server close")
-                })
+                loop.dispatch(
+                    EmptyCoroutineContext,
+                    kotlinx.coroutines.Runnable {
+                        val slot = listener.armSlots[i]
+                        if (slot >= 0) {
+                            listener.armSlots[i] = -1
+                            loop.cancelSqe(slot)
+                        }
+                        closeFdSafely(fd, logger, "pipelined server close")
+                    },
+                )
             }
         }
     }
