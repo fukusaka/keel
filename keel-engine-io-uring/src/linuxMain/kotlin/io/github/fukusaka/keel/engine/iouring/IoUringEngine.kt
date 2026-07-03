@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
@@ -11,6 +12,7 @@ import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.bindAllOrRollback
 import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
@@ -423,16 +425,15 @@ class IoUringEngine(
     /**
      * Creates a pipeline-based server with SO_REUSEPORT multi-thread accept.
      *
-     * Each worker EventLoop owns a private server socket. The kernel
-     * distributes incoming connections across workers by 4-tuple hash.
-     * For each connection, [pipelineInitializer] is called to set up the
-     * handler chain, then multishot recv is armed for zero-suspend I/O.
+     * Each worker EventLoop owns a private server socket per bound inet
+     * address. The kernel distributes incoming connections across workers
+     * by 4-tuple hash. For each connection, [pipelineInitializer] is called
+     * to set up the handler chain, then multishot recv is armed for
+     * zero-suspend I/O.
      *
      * Unlike [bind] (which returns a suspend-based [StreamServer]), this
      * method creates a fully callback-driven server with no coroutine overhead.
      *
-     * @param host Bind address (e.g., "0.0.0.0").
-     * @param port Port number.
      * @param pipelineInitializer Called per accepted connection to add handlers.
      * @return A [PipelinedStreamServer] for lifecycle management.
      * @throws IllegalStateException if the engine is closed.
@@ -441,67 +442,80 @@ class IoUringEngine(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer = when (address) {
-        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
-    }
+    ): PipelinedStreamServer = bindPipeline(listOf(BindSpec(address, config)), pipelineInitializer)
 
-    private fun bindPipelineUnix(
-        address: UnixSocketAddress,
-        config: BindConfig,
+    /**
+     * Multi-address pipeline bind: every entry of [binds] becomes one
+     * listener of a single [IoUringPipelinedStreamServer] — an inet entry
+     * expands to one SO_REUSEPORT socket per worker, a Unix-domain entry
+     * to a single socket on worker 0. All-or-nothing: a failing bind
+     * closes the listeners bound so far and rethrows.
+     */
+    override fun bindPipeline(
+        binds: List<BindSpec>,
         pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedStreamServer {
         check(!closed) { "Engine is closed" }
-
-        // SO_REUSEPORT is not supported on AF_UNIX, so the pipeline path uses a
-        // single server fd. Only one worker receives accept readiness — UDS
-        // workloads are typically low-fanout (IPC / sidecars) so the loss of
-        // kernel-side connection hashing is acceptable.
-        val serverFds = intArrayOf(nativeSocketOps.bindUnixListener(address, config.backlog))
+        val listeners = bindAllOrRollback(
+            binds = binds,
+            logger = logger,
+            closeOne = { listener: IoUringPipelinedStreamServer.Listener ->
+                for (fd in listener.serverFds) {
+                    closeFdSafely(fd, logger, "multi-address bind rollback")
+                }
+            },
+        ) { spec -> openPipelineListener(spec) }
+        val server = IoUringPipelinedStreamServer(
+            workerGroup, listeners, pipelineInitializer, resolvedCapabilities, writeModeSelector, logger, nativeSocket, nativeSocketOps,
+        )
         try {
-            val server = IoUringPipelinedStreamServer(
-                workerGroup, serverFds, address, config, pipelineInitializer, resolvedCapabilities, writeModeSelector, logger, nativeSocket, nativeSocketOps,
-            )
             server.start()
-            logger.debug { "Pipeline server bound to $address (1 worker, UDS)" }
-            return server
         } catch (t: Throwable) {
-            for (fd in serverFds) closeFdSafely(fd, logger, "bindPipelineUnix cleanup")
+            server.close()
             throw t
         }
+        logger.debug { "Pipeline server bound to ${server.localAddresses} (${workerGroup.size} workers)" }
+        return server
     }
 
-    private fun bindPipelineInet(
-        address: InetSocketAddress,
-        config: BindConfig,
-        pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer {
-        check(!closed) { "Engine is closed" }
-
-        val ip = address.requireIp()
-        val port = address.port
-        // Track how many fds have been successfully created so that a mid-loop
-        // failure (e.g. EMFILE between workers) closes only the fds actually
-        // acquired, not uninitialised zero slots which would be interpreted as
-        // stdin and produce a spurious `close(0)` warning.
-        val serverFds = IntArray(workerGroup.size)
-        var createdCount = 0
-        try {
-            for (i in serverFds.indices) {
-                serverFds[i] = nativeSocketOps.bindListener(ip, port, config.backlog, reusePort = true)
-                createdCount = i + 1
+    /**
+     * Opens and binds one pipeline listen address. Cleans up its own fds on
+     * failure so [bindAllOrRollback] only has to roll back the listeners
+     * that were fully opened before it.
+     */
+    private fun openPipelineListener(spec: BindSpec): IoUringPipelinedStreamServer.Listener {
+        return when (val address = spec.address) {
+            is InetSocketAddress -> {
+                val ip = address.requireIp()
+                val port = address.port
+                // Track how many fds have been successfully created so that a mid-loop
+                // failure (e.g. EMFILE between workers) closes only the fds actually
+                // acquired, not uninitialised zero slots which would be interpreted as
+                // stdin and produce a spurious `close(0)` warning.
+                val serverFds = IntArray(workerGroup.size)
+                var createdCount = 0
+                try {
+                    for (i in serverFds.indices) {
+                        serverFds[i] = nativeSocketOps.bindListener(ip, port, spec.config.backlog, reusePort = true)
+                        createdCount = i + 1
+                    }
+                    // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
+                    val localAddr = nativeSocketOps.getLocalAddress(serverFds[0])
+                    IoUringPipelinedStreamServer.Listener(serverFds, localAddr, spec.config)
+                } catch (t: Throwable) {
+                    for (i in 0 until createdCount) closeFdSafely(serverFds[i], logger, "bindPipeline listener cleanup")
+                    throw t
+                }
             }
-            // All fds bind to the same address (SO_REUSEPORT); [0] is representative.
-            val localAddr = nativeSocketOps.getLocalAddress(serverFds[0])
-            val server = IoUringPipelinedStreamServer(
-                workerGroup, serverFds, localAddr, config, pipelineInitializer, resolvedCapabilities, writeModeSelector, logger, nativeSocket, nativeSocketOps,
-            )
-            server.start()
-            logger.debug { "Pipeline server bound to $ip:$port (${workerGroup.size} workers)" }
-            return server
-        } catch (t: Throwable) {
-            for (i in 0 until createdCount) closeFdSafely(serverFds[i], logger, "bindPipelineInet cleanup")
-            throw t
+            is UnixSocketAddress -> {
+                // SO_REUSEPORT is not supported on AF_UNIX, so a Unix-domain
+                // listener uses a single server fd. Only worker 0 receives
+                // accept readiness — UDS workloads are typically low-fanout
+                // (IPC / sidecars) so the loss of kernel-side connection
+                // hashing is acceptable.
+                val serverFd = nativeSocketOps.bindUnixListener(address, spec.config.backlog)
+                IoUringPipelinedStreamServer.Listener(intArrayOf(serverFd), address, spec.config)
+            }
         }
     }
 
