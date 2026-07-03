@@ -48,6 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-nio`: release a closed listener's port promptly. Listener close now wakes the boss selector (the cancelled key was otherwise processed only on the next unrelated wakeup), interest ops on cancelled keys are skipped, and a throwing queued task no longer kills the event loop. (#876)
 - `engine-nwconnection`: fix a per-connection allocator double-close SIGSEGV under CPU-constrained shutdown — the connection's own async GCD teardown raced the engine's `children` fan-out. The per-connection child is now an untracked child of the engine allocator (its only close path), and `engine.close()` joins each connection's teardown before draining the shared arena. (#867)
 - `server-http`: release the pooled request-body chunk when a body consumer (`receiveChunk` / `receiveBytes` / `receiveChunks`) is cancelled in the direct-hand-off resume window — it was leaked when kotlinx's prompt cancellation discarded the resumed value. (#863)
 - `io`: spread off-EventLoop carves across shards instead of clustering them onto one. The off-EL shard selector masked a raw pthread id whose low bits are alignment-constant, so every off-EL thread (`asSource` / `asSink` from a non-EventLoop coroutine, NWConnection serial-queue migration) landed on the same shard — measured 256 threads all on 1 of 32 shards on both Linux and macOS, serialising on one arena lock instead of sharding. Now mixes the id through a SplitMix64 finalizer first. (#856)
