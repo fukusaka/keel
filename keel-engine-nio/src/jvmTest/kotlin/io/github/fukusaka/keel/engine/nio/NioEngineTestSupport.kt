@@ -3,8 +3,11 @@ package io.github.fukusaka.keel.engine.nio
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import java.net.BindException
 import java.net.InetAddress
+import java.net.ServerSocket
 import java.net.Socket
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -55,6 +58,29 @@ internal fun uniqueUdsPath(): String {
     val pid = ProcessHandle.current().pid()
     val seq = udsSeq.getAndIncrement()
     return "/tmp/keel-nio-uds-$pid-$seq.sock"
+}
+
+// Budget for a closed / rolled-back listener's port to become claimable
+// again. The JDK defers the kernel-level close of a selector-registered
+// channel until the next selection operation, so release is prompt (the
+// engine wakes the boss loop) but not synchronous with close().
+internal const val PORT_RELEASE_BUDGET_MS = 2_000L
+internal const val PORT_RELEASE_POLL_MS = 20L
+
+/** Claims [port] with a raw ServerSocket, retrying up to [budgetMillis]. */
+internal fun assertPortReleased(port: Int, budgetMillis: Long = PORT_RELEASE_BUDGET_MS) {
+    val deadline = System.currentTimeMillis() + budgetMillis
+    var last: Exception? = null
+    while (System.currentTimeMillis() < deadline) {
+        try {
+            ServerSocket(port, 1, InetAddress.getLoopbackAddress()).close()
+            return
+        } catch (e: BindException) {
+            last = e
+            Thread.sleep(PORT_RELEASE_POLL_MS)
+        }
+    }
+    fail("port $port still bound ${budgetMillis}ms after the listener was closed", last)
 }
 
 internal fun connectRawClient(port: Int): Socket {
