@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
@@ -9,6 +10,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.bindAllOrRollback
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
@@ -191,9 +193,37 @@ class NodeEngine(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer = when (address) {
-        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
+    ): PipelinedStreamServer = bindPipeline(listOf(BindSpec(address, config)), pipelineInitializer)
+
+    /**
+     * Multi-address pipeline bind: every entry of [binds] becomes one
+     * `net.Server` of a single [NodePipelinedServer] (Node's own model is
+     * strictly one listen per server instance). All-or-nothing for the
+     * failures this engine can observe synchronously — argument validation
+     * (the ephemeral-port rejection) and server construction; an
+     * asynchronous listen failure (e.g. a port conflict surfacing in the
+     * `error` event after this method returned) follows the engine's
+     * existing single-address semantics, because Node assigns bind results
+     * asynchronously and this non-suspend method cannot await them.
+     */
+    override fun bindPipeline(
+        binds: List<BindSpec>,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedStreamServer {
+        check(!closed) { "Engine is closed" }
+        val listeners = bindAllOrRollback(
+            binds = binds,
+            logger = logger,
+            closeOne = { listener: NodePipelinedServer.Listener ->
+                listener.server.close()
+            },
+        ) { spec ->
+            when (val address = spec.address) {
+                is InetSocketAddress -> openPipelineInetListener(address, spec.config, pipelineInitializer)
+                is UnixSocketAddress -> openPipelineUnixListener(address, spec.config, pipelineInitializer)
+            }
+        }
+        return NodePipelinedServer(listeners)
     }
 
     /**
@@ -211,19 +241,17 @@ class NodeEngine(
         socketOptions: SocketOptions,
     ): BindConfig = TlsServerConfig(tls, installer = null, backlog = backlog, childSocketOptions = socketOptions)
 
-    private fun bindPipelineUnix(
+    private fun openPipelineUnixListener(
         address: UnixSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer {
-        check(!closed) { "Engine is closed" }
+    ): NodePipelinedServer.Listener {
         rejectAbstractOnNonLinux(address)
 
         // Listener-level TLS is TCP-specific — for UDS there is no
         // net.tls equivalent (Node.js `tls.createServer` opens TCP
         // listener under the hood). Fall back to plain net.createServer.
         val srv = Net.createServer { _ -> }
-        val serverChannel = NodePipelinedServer(srv, address)
 
         srv.on("connection") { socket: dynamic ->
             val typedSocket = socket.unsafeCast<Socket>()
@@ -234,11 +262,13 @@ class NodeEngine(
                 this.allocator,
                 idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
             )
+            // The UDS listener path is the accepted socket's local address
+            // by definition.
             val channel = NodePipelinedChannel(
                 transport,
                 channelLogger,
                 address,
-                null,
+                address,
             )
             config.initializeConnection(channel)
             pipelineInitializer(channel)
@@ -252,16 +282,14 @@ class NodeEngine(
             logger.debug { "Pipeline bound to $address" }
         }
 
-        return serverChannel
+        return NodePipelinedServer.Listener(srv, address)
     }
 
-    private fun bindPipelineInet(
+    private fun openPipelineInetListener(
         address: InetSocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer {
-        check(!closed) { "Engine is closed" }
-
+    ): NodePipelinedServer.Listener {
         val host = address.requireIpLiteral()
         val port = address.port
         require(port > 0) {
@@ -269,8 +297,10 @@ class NodeEngine(
                 "Node.js assigns the port asynchronously in the listen callback."
         }
 
+        // With the ephemeral port rejected above, the requested address IS
+        // the bound address — no post-listen fixup needed.
+        val localAddr = InetSocketAddress(host, port)
         val srv = createServer(config)
-        val serverChannel = NodePipelinedServer(srv, InetSocketAddress(host, port))
         val connectionEvent = serverConnectionEvent(config)
 
         srv.on(connectionEvent) { socket: dynamic ->
@@ -279,6 +309,14 @@ class NodeEngine(
             val remoteAddr = typedSocket.remoteAddress?.let { h ->
                 typedSocket.remotePort?.let { p -> InetSocketAddress(h, p) }
             }
+            // The accepted socket's own local endpoint (concrete interface
+            // address under a wildcard bind) — lets a shared pipeline
+            // initializer branch on the listening address; the listener
+            // address is the fallback when the socket properties are
+            // already gone.
+            val channelLocal = typedSocket.localAddress?.let { h ->
+                typedSocket.localPort?.let { p -> InetSocketAddress(h, p) }
+            } ?: localAddr
             val channelLogger = this.channelLogger
             val transport = NodeIoTransport(
                 typedSocket,
@@ -289,7 +327,7 @@ class NodeEngine(
                 transport,
                 channelLogger,
                 remoteAddr,
-                null,
+                channelLocal,
             )
             // Per-connection BindConfig (keel TlsHandler). Listener-level TLS
             // (tls.createServer) is already active at the transport level, so
@@ -305,13 +343,10 @@ class NodeEngine(
         listenOpts.port = port
         listenOpts.backlog = config.backlog
         srv.listen(listenOpts) {
-            val addr = srv.address()
-            val assignedPort = addr.port as Int
-            serverChannel.updateLocalAddress(InetSocketAddress(host, assignedPort))
-            logger.debug { "Pipeline bound to $host:$assignedPort" }
+            logger.debug { "Pipeline bound to $host:$port" }
         }
 
-        return serverChannel
+        return NodePipelinedServer.Listener(srv, localAddr)
     }
 
     override suspend fun connect(address: SocketAddress): KeelChannel = connect(address, ConnectConfig.DEFAULT)
@@ -492,25 +527,40 @@ class NodeEngine(
      * Wraps the underlying server for lifecycle management.
      * [localAddress] is updated when the listen callback fires.
      */
-    private class NodePipelinedServer(
-        private val server: Server,
-        private var localAddr: SocketAddress,
+    /**
+     * Pipeline server wrapping one `net.Server` per bound address (Node's
+     * own model is strictly one listen per server instance).
+     *
+     * [close] initiates every server's close; Node stops accepting and
+     * releases each listen socket asynchronously on the event loop, so the
+     * port release is prompt but not synchronous with close() returning.
+     */
+    internal class NodePipelinedServer(
+        private val listeners: List<Listener>,
     ) : PipelinedStreamServer {
+
+        init {
+            require(listeners.isNotEmpty()) { "listeners must not be empty" }
+        }
+
         private var _active = true
 
-        override val localAddress: SocketAddress get() = localAddr
+        override val localAddress: SocketAddress get() = listeners.first().localAddress
+        override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
         override val isActive: Boolean get() = _active
 
-        /** Updates the local address after listen completes. */
-        internal fun updateLocalAddress(addr: SocketAddress) {
-            localAddr = addr
-        }
-
         override fun close() {
-            if (_active) {
-                _active = false
-                server.close()
+            if (!_active) return
+            _active = false
+            for (listener in listeners) {
+                listener.server.close()
             }
         }
+
+        /** One bound listen address: its `net.Server` and resolved address. */
+        internal class Listener(
+            val server: Server,
+            val localAddress: SocketAddress,
+        )
     }
 }
