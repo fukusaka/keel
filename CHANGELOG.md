@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `engine-nio`: implement the multi-address `bindPipeline` overload — one pipelined server binds N addresses on the shared boss loop with all-or-nothing rollback; accepted pipelined channels now report their `localAddress` (single-address binds included). (#878)
 - `core`: multi-address bind surface — `BindSpec` (per-address bind config), `PipelinedStreamServer.localAddresses`, and an all-or-nothing `bindPipeline(List<BindSpec>)` overload. Engines adopt the overload in follow-ups; the default reports unsupported. (#877)
 - `engine-netty`: `NettyByteBufAllocator` is now public, with a `nettyByteBufAllocator(byteBufAllocator = PooledByteBufAllocator.DEFAULT)` factory — a Netty-`PooledByteBufAllocator`-backed keel `BufferAllocator` for JVM engines that consume `IoEngineConfig.allocator` (the NIO engine), e.g. as a comparison baseline for keel's own `PooledDirectAllocator`. (#868)
 - `io`: `BufferAllocator.createUntrackedChild()` — a child allocator the parent does **not** retain for cascade-close, for owners with an unbounded, churning child population (one allocator per accepted connection). The caller owns its `close()`; the default returns `createChild()`, so stateless and existing allocators are unaffected. (#867)
