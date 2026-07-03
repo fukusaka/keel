@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `engine-io-uring`: implement the multi-address `bindPipeline` overload — each inet address expands to one SO_REUSEPORT socket per worker; accepted pipelined channels now report `localAddress` (the listener address on the direct-allocated accept path, where no raw fd exists to query). (#880)
 - `engine-epoll`, `engine-kqueue`: implement the multi-address `bindPipeline` overload — same shape as the NIO reference (one server owning N listeners on the shared boss loop, all-or-nothing rollback); accepted pipelined channels now report `localAddress`. (#879)
 - `engine-nio`: implement the multi-address `bindPipeline` overload — one pipelined server binds N addresses on the shared boss loop with all-or-nothing rollback; accepted pipelined channels now report their `localAddress` (single-address binds included). (#878)
 - `core`: multi-address bind surface — `BindSpec` (per-address bind config), `PipelinedStreamServer.localAddresses`, and an all-or-nothing `bindPipeline(List<BindSpec>)` overload. Engines adopt the overload in follow-ups; the default reports unsupported. (#877)
@@ -51,6 +52,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-io-uring`: release a closed pipelined listener's port — `close()` now cancels each worker's armed accept SQE before closing the fd; the SQE's kernel-side file reference otherwise kept the socket alive (invisibly under SO_REUSEPORT) until engine shutdown. (#880)
 - `engine-nio`: release a closed listener's port promptly. Listener close now wakes the boss selector (the cancelled key was otherwise processed only on the next unrelated wakeup), interest ops on cancelled keys are skipped, and a throwing queued task no longer kills the event loop. (#876)
 - `engine-nwconnection`: fix a per-connection allocator double-close SIGSEGV under CPU-constrained shutdown — the connection's own async GCD teardown raced the engine's `children` fan-out. The per-connection child is now an untracked child of the engine allocator (its only close path), and `engine.close()` joins each connection's teardown before draining the shared arena. (#867)
 - `server-http`: release the pooled request-body chunk when a body consumer (`receiveChunk` / `receiveBytes` / `receiveChunks`) is cancelled in the direct-hand-off resume window — it was leaked when kotlinx's prompt cancellation discarded the resumed value. (#863)
