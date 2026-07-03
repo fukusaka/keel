@@ -130,6 +130,18 @@ internal class NioEventLoop(
         }
     }
 
+    /**
+     * Wakes the loop out of a blocked select. Needed after closing a
+     * channel registered with this loop's selector from another thread:
+     * the JDK defers the kernel-level close (and so the release of a
+     * listener's port) until the selector's next selection operation
+     * processes the cancelled key — without a wakeup an idle loop can
+     * sit in `select()` indefinitely and keep the port bound.
+     */
+    fun wakeup() {
+        selector.wakeup()
+    }
+
     /** Returns true if the current thread is this EventLoop's thread. */
     fun inEventLoop(): Boolean = Thread.currentThread() == thread
 
