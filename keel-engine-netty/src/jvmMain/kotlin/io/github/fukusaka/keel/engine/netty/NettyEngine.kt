@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.core.InetSocketAddress
@@ -11,10 +12,12 @@ import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.core.bindAllOrRollback
 import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
@@ -437,9 +440,31 @@ class NettyEngine(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer = when (address) {
-        is InetSocketAddress -> bindPipelineInet(address, config, pipelineInitializer)
-        is UnixSocketAddress -> bindPipelineUnix(address, config, pipelineInitializer)
+    ): PipelinedStreamServer = bindPipeline(listOf(BindSpec(address, config)), pipelineInitializer)
+
+    /**
+     * Multi-address pipeline bind: every entry of [binds] becomes one
+     * Netty server channel of a single [NettyPipelinedServer] — one
+     * `ServerBootstrap` per entry, sharing the engine's boss/worker
+     * groups, with the entry's own config captured by its child
+     * initializer. All-or-nothing: a failing bind closes the listeners
+     * bound so far and rethrows.
+     */
+    override fun bindPipeline(
+        binds: List<BindSpec>,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedStreamServer {
+        check(!closed) { "Engine is closed" }
+        val listeners = bindAllOrRollback(
+            binds = binds,
+            logger = logger,
+            closeOne = { listener: NettyPipelinedServer.Listener ->
+                // Rollback must leave the port free when it returns, so the
+                // all-or-nothing contract holds — block on the close future.
+                listener.serverChannel.close().sync()
+            },
+        ) { spec -> openPipelineListener(spec, pipelineInitializer) }
+        return NettyPipelinedServer(listeners, logger)
     }
 
     /**
@@ -456,96 +481,77 @@ class NettyEngine(
         socketOptions: SocketOptions,
     ): BindConfig = TlsServerConfig(tls, NettySslInstaller(), backlog, socketOptions)
 
-    private fun bindPipelineUnix(
-        address: UnixSocketAddress,
+    /**
+     * Per-connection setup shared by every pipeline listener: the child
+     * initializer wires the keel transport + channel (including the
+     * accepted socket's remote/local addresses — the local address is the
+     * branch key a shared [pipelineInitializer] can dispatch on) and
+     * applies the listener's own [config].
+     */
+    private fun pipelineChildInitializer(
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer {
-        check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly(
-            "NettyEngine does not support abstract-namespace Unix sockets (JDK UnixDomainSocketAddress is filesystem-only)",
-        )
-
-        val bootstrap = ServerBootstrap()
-            .group(bossGroup, workerGroup)
-            .channel(nettyTransport.serverDomainSocketChannelClass())
-            .applyChildSocketOptions(config.childSocketOptions)
-            .childHandler(object : ChannelInitializer<NettyNativeChannel>() {
-                override fun initChannel(ch: NettyNativeChannel) {
-                    ch.config().isAutoRead = false
-                    // Deliver all inbound bytes before signalling read-closed on TCP FIN.
-                    ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
-                    val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
-                    val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
-                    val transport = NettyIoTransport(
-                        ch, allocatorFor(ch), effectiveIdleReadPolicy,
-                        effectiveIdleTimeout(config.idleTimeoutMillis),
-                    )
-                    val keelChannel = NettyPipelinedChannel(
-                        transport, logger, remoteAddr, localAddr,
-                    )
-                    ch.pipeline().addLast(transport.handler)
-                    config.initializeConnection(keelChannel)
-                    pipelineInitializer(keelChannel)
-                    transport.readEnabled = true
-                }
-            })
-
-        val nettyServerCh = bootstrap.bind(nettyTransport.newUdsAddress(address.path)).sync().channel()
-        try {
-            val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress()) ?: address
-            logger.debug { "Pipeline bound to $localAddr" }
-            return NettyPipelinedServer(nettyServerCh, localAddr)
-        } catch (t: Throwable) {
-            closeQuietly(nettyServerCh, "bindPipelineUnix cleanup")
-            throw t
+    ): ChannelInitializer<io.netty.channel.Channel> = object : ChannelInitializer<io.netty.channel.Channel>() {
+        override fun initChannel(ch: io.netty.channel.Channel) {
+            ch.config().isAutoRead = false
+            // Deliver all inbound bytes before signalling read-closed on TCP FIN.
+            ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
+            val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
+            val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
+            val transport = NettyIoTransport(
+                ch, allocatorFor(ch), effectiveIdleReadPolicy,
+                effectiveIdleTimeout(config.idleTimeoutMillis),
+            )
+            val keelChannel = NettyPipelinedChannel(
+                transport, logger, remoteAddr, localAddr,
+            )
+            ch.pipeline().addLast(transport.handler)
+            config.initializeConnection(keelChannel)
+            pipelineInitializer(keelChannel)
+            transport.readEnabled = true
         }
     }
 
-
-    private fun bindPipelineInet(
-        address: InetSocketAddress,
-        config: BindConfig,
+    /**
+     * Opens and binds one pipeline listen address: one `ServerBootstrap`
+     * per entry (Netty's per-listener config unit), blocking until the
+     * server channel is bound. Cleans up its own channel on failure so
+     * [bindAllOrRollback] only has to roll back the listeners that were
+     * fully opened before it.
+     */
+    private fun openPipelineListener(
+        spec: BindSpec,
         pipelineInitializer: (PipelinedChannel) -> Unit,
-    ): PipelinedStreamServer {
-        check(!closed) { "Engine is closed" }
-
-        val host = address.requireIpLiteral()
-        val port = address.port
-        val bootstrap = ServerBootstrap()
-            .group(bossGroup, workerGroup)
-            .channel(nettyTransport.serverSocketChannelClass())
-            .option(ChannelOption.SO_BACKLOG, config.backlog)
-            .applyChildSocketOptions(config.childSocketOptions)
-            .childHandler(object : ChannelInitializer<SocketChannel>() {
-                override fun initChannel(ch: SocketChannel) {
-                    ch.config().isAutoRead = false
-                    // Deliver all inbound bytes before signalling read-closed on TCP FIN.
-                    ch.config().setOption(ChannelOption.ALLOW_HALF_CLOSURE, true)
-                    val remoteAddr = NettyPipelinedChannel.toSocketAddress(ch.remoteAddress())
-                    val localAddr = NettyPipelinedChannel.toSocketAddress(ch.localAddress())
-                    val transport = NettyIoTransport(
-                        ch, allocatorFor(ch), effectiveIdleReadPolicy,
-                        effectiveIdleTimeout(config.idleTimeoutMillis),
-                    )
-                    val keelChannel = NettyPipelinedChannel(
-                        transport, logger, remoteAddr, localAddr,
-                    )
-                    ch.pipeline().addLast(transport.handler)
-                    config.initializeConnection(keelChannel)
-                    pipelineInitializer(keelChannel)
-                    transport.readEnabled = true
-                }
-            })
-
-        val nettyServerCh = bootstrap.bind(host, port).sync().channel()
+    ): NettyPipelinedServer.Listener {
+        val config = spec.config
+        val nettyServerCh = when (val address = spec.address) {
+            is InetSocketAddress -> ServerBootstrap()
+                .group(bossGroup, workerGroup)
+                .channel(nettyTransport.serverSocketChannelClass())
+                .option(ChannelOption.SO_BACKLOG, config.backlog)
+                .applyChildSocketOptions(config.childSocketOptions)
+                .childHandler(pipelineChildInitializer(config, pipelineInitializer))
+                .bind(address.requireIpLiteral(), address.port).sync().channel()
+            is UnixSocketAddress -> {
+                address.requireFilesystemOnly(
+                    "NettyEngine does not support abstract-namespace Unix sockets " +
+                        "(JDK UnixDomainSocketAddress is filesystem-only)",
+                )
+                ServerBootstrap()
+                    .group(bossGroup, workerGroup)
+                    .channel(nettyTransport.serverDomainSocketChannelClass())
+                    .applyChildSocketOptions(config.childSocketOptions)
+                    .childHandler(pipelineChildInitializer(config, pipelineInitializer))
+                    .bind(nettyTransport.newUdsAddress(address.path)).sync().channel()
+            }
+        }
         try {
             val localAddr = NettyPipelinedChannel.toSocketAddress(nettyServerCh.localAddress())
-                ?: error("Failed to get local address")
+                ?: spec.address
             logger.debug { "Pipeline bound to $localAddr" }
-            return NettyPipelinedServer(nettyServerCh, localAddr)
+            return NettyPipelinedServer.Listener(nettyServerCh, localAddr)
         } catch (t: Throwable) {
-            closeQuietly(nettyServerCh, "bindPipelineInet cleanup")
+            closeQuietly(nettyServerCh, "bindPipeline listener cleanup")
             throw t
         }
     }
@@ -601,26 +607,49 @@ class NettyEngine(
     }
 
     /**
-     * [PipelinedStreamServer] backed by a Netty server channel.
+     * [PipelinedStreamServer] backed by one Netty server channel per bound
+     * address (one per [Listener]).
      *
-     * Wraps the underlying Netty channel for lifecycle management.
-     * [close] blocks until the Netty channel is fully closed to ensure
-     * the listen socket is released.
+     * [close] initiates every listener's close and then blocks until each
+     * Netty channel is fully closed, so all listen sockets are released
+     * when it returns; a close failure on one listener is logged and does
+     * not stop the remaining listeners from closing.
      */
-    private class NettyPipelinedServer(
-        private val serverChannel: NettyNativeChannel,
-        override val localAddress: SocketAddress,
+    internal class NettyPipelinedServer(
+        private val listeners: List<Listener>,
+        private val logger: Logger,
     ) : PipelinedStreamServer {
+
+        init {
+            require(listeners.isNotEmpty()) { "listeners must not be empty" }
+        }
+
         @Volatile
         private var closed = false
 
-        override val isActive: Boolean get() = !closed && serverChannel.isActive
+        override val localAddress: SocketAddress get() = listeners.first().localAddress
+        override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
+        override val isActive: Boolean get() = !closed && listeners.all { it.serverChannel.isActive }
 
         override fun close() {
-            if (!closed) {
-                closed = true
-                serverChannel.close().sync()
+            if (closed) return
+            closed = true
+            // Initiate every close first, then await each — the listeners
+            // drain in parallel instead of serially.
+            val futures = listeners.map { it.serverChannel.close() }
+            for ((i, future) in futures.withIndex()) {
+                try {
+                    future.sync()
+                } catch (t: Throwable) {
+                    logger.warn(t) { "closing the listener for ${listeners[i].localAddress} failed" }
+                }
             }
         }
+
+        /** One bound listen address: its Netty server channel and resolved address. */
+        internal class Listener(
+            val serverChannel: NettyNativeChannel,
+            val localAddress: SocketAddress,
+        )
     }
 }

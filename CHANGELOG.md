@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `engine-netty`: implement the multi-address `bindPipeline` overload — one `ServerBootstrap` per address sharing the engine's event loop groups, all-or-nothing rollback, close awaiting every listener. (#881)
 - `engine-io-uring`: implement the multi-address `bindPipeline` overload — each inet address expands to one SO_REUSEPORT socket per worker; accepted pipelined channels now report `localAddress` (the listener address on the direct-allocated accept path, where no raw fd exists to query). (#880)
 - `engine-epoll`, `engine-kqueue`: implement the multi-address `bindPipeline` overload — same shape as the NIO reference (one server owning N listeners on the shared boss loop, all-or-nothing rollback); accepted pipelined channels now report `localAddress`. (#879)
 - `engine-nio`: implement the multi-address `bindPipeline` overload — one pipelined server binds N addresses on the shared boss loop with all-or-nothing rollback; accepted pipelined channels now report their `localAddress` (single-address binds included). (#878)
