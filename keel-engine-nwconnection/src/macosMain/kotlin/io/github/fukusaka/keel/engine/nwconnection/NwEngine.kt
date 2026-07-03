@@ -331,6 +331,16 @@ class NwEngine(
 
             nw_listener_set_queue(lsnr, listenerQueue)
 
+            // The listener's resolved bind address, published to the accept
+            // handler from the ready-state handler (both run on the listener
+            // queue, so accepts serialize after the publication). Network
+            // .framework exposes no cheap per-connection local-endpoint query
+            // on this path, so the listener address is the accepted channel's
+            // localAddress (exact for the specific-address binds keel
+            // requires here) — the same fallback value the other engines use
+            // when the socket query is unavailable.
+            val boundLocal = kotlin.concurrent.AtomicReference<SocketAddress>(address)
+
             // Block until listener reaches ready state.
             val sem = dispatch_semaphore_create(0)
             var assignedPort = -1
@@ -339,6 +349,12 @@ class NwEngine(
             nw_listener_set_state_changed_handler(lsnr) { state, error ->
                 if (state == nw_listener_state_ready) {
                     assignedPort = nw_listener_get_port(lsnr).toInt()
+                    // Publish the resolved address before signalling, on the
+                    // listener queue itself: accepts are serialized on the
+                    // same queue, so no accept can observe the pre-ready
+                    // placeholder (relevant for port-0 binds, where the
+                    // requested address lacks the assigned port).
+                    boundLocal.value = InetSocketAddress(host, assignedPort)
                     dispatch_semaphore_signal(sem)
                 } else if (state == nw_listener_state_failed) {
                     // Surface the POSIX errno (e.g. EADDRINUSE) instead of an
@@ -348,14 +364,6 @@ class NwEngine(
                 }
             }
 
-            // The listener's resolved bind address, published to the accept
-            // handler once the ready state assigns the port. Network.framework
-            // exposes no cheap per-connection local-endpoint query on this
-            // path, so the listener address is the accepted channel's
-            // localAddress (exact for the specific-address binds keel
-            // requires here) — the same fallback value the other engines use
-            // when the socket query is unavailable.
-            val boundLocal = kotlin.concurrent.AtomicReference<SocketAddress>(address)
             nw_listener_set_new_connection_handler(lsnr) { conn ->
                 if (conn != null) {
                     val connQueue = dispatch_queue_create(
@@ -397,7 +405,6 @@ class NwEngine(
             // reuse limitation over a TIME_WAIT port — see bindInet.
             check(assignedPort > 0) { "NWListener failed to start (port=$assignedPort, errno=$listenerErrno)" }
             val localAddr = InetSocketAddress(host, assignedPort)
-            boundLocal.value = localAddr
             logger.debug { "Pipeline bound to $host:$assignedPort" }
 
             return NwPipelinedServer.Listener(lsnr, localAddr)
