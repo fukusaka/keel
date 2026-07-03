@@ -344,7 +344,6 @@ internal class NioEventLoop(
         // Same benign race as applySetInterestCallback: the key may have
         // been cancelled since the dispatch — nothing left to disarm.
         if (!key.isValid) return
-        if (!key.isValid) return
         val callbacks = key.attachment() as? KeyCallbacks
         if (callbacks != null) {
             if ((ops and SelectionKey.OP_READ) != 0) callbacks.readCallback = null
