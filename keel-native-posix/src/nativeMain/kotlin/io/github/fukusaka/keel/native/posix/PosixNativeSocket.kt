@@ -5,12 +5,9 @@ import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.ULongVar
-import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
-import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
-import kotlinx.cinterop.toCPointer
 import platform.posix.EAGAIN
 import platform.posix.EINPROGRESS
 import platform.posix.EINTR
@@ -58,16 +55,17 @@ public object PosixNativeSocket : NativeSocket {
         return decodeWriteResult(n)
     }
 
-    override fun writev(fd: Int, ptrs: LongArray, lens: IntArray, count: Int): WriteResult = memScoped {
-        val bases = allocArray<CPointerVar<ByteVar>>(count)
-        val nativeLens = allocArray<ULongVar>(count)
-        for (i in 0 until count) {
-            @Suppress("UNCHECKED_CAST")
-            bases[i] = ptrs[i].toCPointer<ByteVar>()
-            nativeLens[i] = lens[i].convert()
-        }
-        val n = keel_writev(fd, bases.reinterpret(), nativeLens.reinterpret(), count)
-        decodeWriteResult(n)
+    override fun writev(
+        fd: Int,
+        bases: CPointer<CPointerVar<ByteVar>>,
+        lens: CPointer<ULongVar>,
+        count: Int,
+    ): WriteResult {
+        // The arrays arrive pre-built and caller-owned (see [NativeSocket.writev]),
+        // so this is a plain syscall forward — no memScoped arena, no per-call
+        // allocation on the flush hot path.
+        val n = keel_writev(fd, bases.reinterpret(), lens.reinterpret(), count)
+        return decodeWriteResult(n)
     }
 
     override fun accept(serverFd: Int): AcceptResult {

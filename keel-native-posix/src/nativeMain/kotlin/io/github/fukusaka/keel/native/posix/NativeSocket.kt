@@ -2,7 +2,9 @@ package io.github.fukusaka.keel.native.posix
 
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ULongVar
 
 /**
  * POSIX socket syscalls, abstracted behind a single interface.
@@ -71,19 +73,28 @@ public interface NativeSocket {
      * Gather-write: writes [count] regions to [fd] in a single
      * `writev(2)` call.
      *
-     * The regions are described by two parallel primitive arrays
-     * (`[ptrs]` holds native addresses as `Long`; `[lens]` the byte
-     * counts). The caller pre-allocates and reuses these arrays from the
-     * EventLoop hot path to avoid per-flush allocation that the former
-     * `List<NativeRegion>` signature forced. The caller is responsible
-     * for keeping the underlying memory pinned / alive for the duration
-     * of the call.
+     * The regions are described by two parallel caller-owned **native**
+     * arrays ([bases] holds the region base pointers; [lens] the byte
+     * counts as `size_t`). The caller pre-allocates and reuses these
+     * arrays from the EventLoop hot path so the whole gather path
+     * performs no per-flush allocation: the former `LongArray` /
+     * `IntArray` signature still forced this layer to rebuild native
+     * temporaries inside a `memScoped` arena (two `allocArray` calls
+     * plus a pointer round-trip through `Long`) on every call. The
+     * arrays are only read during the call — ownership and lifetime
+     * stay with the caller, who must keep the pointed-to buffers alive
+     * for the duration of the call.
      *
-     * @param count number of active entries — only `ptrs[0..count-1]` /
-     *   `lens[0..count-1]` are read. Must be `>= 0` and
-     *   `<= ptrs.size`, `<= lens.size`.
+     * @param count number of active entries — only `bases[0..count-1]` /
+     *   `lens[0..count-1]` are read. Must be `>= 0` and within the
+     *   caller's allocated capacity for both arrays.
      */
-    public fun writev(fd: Int, ptrs: LongArray, lens: IntArray, count: Int): WriteResult
+    public fun writev(
+        fd: Int,
+        bases: CPointer<CPointerVar<ByteVar>>,
+        lens: CPointer<ULongVar>,
+        count: Int,
+    ): WriteResult
 
     /**
      * Accepts a connection on [serverFd] with `accept(fd, NULL, NULL)`.

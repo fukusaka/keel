@@ -18,14 +18,16 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.convert
+import kotlinx.cinterop.plus
+import kotlinx.cinterop.set
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.posix.SHUT_WR
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.plus
-import platform.posix.SHUT_WR
 
 /**
  * kqueue [IoTransport] implementation for macOS.
@@ -101,20 +103,6 @@ internal class KqueueIoTransport(
     }
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
-
-    // Parallel primitive arrays reused across [flushGather] calls to
-    // feed [NativeSocket.writev] without per-flush heap allocation.
-    // Grown lazily (1.5x) via [ensureWritevCapacity] when pendingWrites
-    // exceeds the current capacity.
-    private var writevPtrs: LongArray = LongArray(INITIAL_WRITEV_CAPACITY)
-    private var writevLens: IntArray = IntArray(INITIAL_WRITEV_CAPACITY)
-
-    private fun ensureWritevCapacity(n: Int) {
-        if (writevPtrs.size >= n) return
-        val grown = maxOf(writevPtrs.size + (writevPtrs.size shr 1), n)
-        writevPtrs = LongArray(grown)
-        writevLens = IntArray(grown)
-    }
 
     // --- Read path ---
 
@@ -315,15 +303,17 @@ internal class KqueueIoTransport(
      */
     private fun flushGather(): Boolean {
         val count = pendingWrites.size
-        ensureWritevCapacity(count)
+        eventLoop.ensureWritevCapacity(count)
+        val bases = eventLoop.writevBases
+        val lens = eventLoop.writevLens
         var totalBytes = 0
         for (i in 0 until count) {
             val pw = pendingWrites[i]
-            writevPtrs[i] = (pw.buf.unsafePointer + pw.offset)!!.rawValue.toLong()
-            writevLens[i] = pw.length
+            bases[i] = (pw.buf.unsafePointer + pw.offset)!!
+            lens[i] = pw.length.convert()
             totalBytes += pw.length
         }
-        val writtenBytes: Int = when (val result = nativeSocket.writev(fd, writevPtrs, writevLens, count)) {
+        val writtenBytes: Int = when (val result = nativeSocket.writev(fd, bases, lens, count)) {
             WriteResult.WouldBlock -> {
                 // Nothing written — register WRITE and retry all later.
                 registerWriteCallback()
@@ -425,12 +415,6 @@ internal class KqueueIoTransport(
     }
 
     private companion object {
-        /**
-         * Starting capacity of the [writevPtrs] / [writevLens] scratch
-         * arrays. Grown 1.5x on demand.
-         */
-        const val INITIAL_WRITEV_CAPACITY = 8
-
         /**
          * `maxCount` hint for the read-buffer size class — passed to
          * [BufferAllocator.hintSizeClass] at bind time. Matches the

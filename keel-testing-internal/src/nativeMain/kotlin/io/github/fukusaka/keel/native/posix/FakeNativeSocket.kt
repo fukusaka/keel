@@ -2,7 +2,9 @@ package io.github.fukusaka.keel.native.posix
 
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ULongVar
 
 /**
  * Test-only in-memory [NativeSocket] implementation.
@@ -138,7 +140,12 @@ public class FakeNativeSocket : NativeSocket {
         return writeQueue[fd]?.removeFirstOrNull() ?: defaultWrite
     }
 
-    override fun writev(fd: Int, ptrs: LongArray, lens: IntArray, count: Int): WriteResult {
+    override fun writev(
+        fd: Int,
+        bases: CPointer<CPointerVar<ByteVar>>,
+        lens: CPointer<ULongVar>,
+        count: Int,
+    ): WriteResult {
         writevCalls++
         return writevQueue[fd]?.removeFirstOrNull() ?: defaultWrite
     }
