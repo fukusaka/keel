@@ -26,17 +26,15 @@ import kotlin.test.assertFalse
  * pins that a failed handshake surfaces as a structured [TlsException]
  * rather than a hang.
  *
- * **Why only the failure case**: keel's MbedTLS factory wires
- * [TlsConfig.verifyMode] and [TlsConfig.trustAnchors] but not yet
- * [TlsConfig.serverName]. A *verifying* MbedTLS client (`verifyMode`
- * PEER / REQUIRED) is never given the hostname MbedTLS requires
- * (`mbedtls_ssl_set_hostname`), so it aborts with "verify a certificate
- * without an expected hostname" — the failure vehicle here. A full
- * MbedTLS-to-MbedTLS handshake therefore cannot complete through the public
- * API, so the mutual-TLS cases (a `REQUIRED` server rejecting a cert-less
- * client, and accepting one whose cert its `trustAnchors` validate), which
- * need a completing peer, live in [MbedTlsMutualTlsTest] paired with an
- * OpenSSL client.
+ * **Failure vehicles**: the first test's client has no `trustAnchors` and
+ * no [TlsConfig.serverName], so verification aborts (Mbed TLS refuses to
+ * verify without an expected hostname; with `serverName` wired it would
+ * next fail on the untrusted self-signed chain). The completing-handshake
+ * counterparts live in [MbedTlsHostnameVerificationTest] (a verifying
+ * client with `trustAnchors` + matching `serverName` completes fully
+ * in-memory); the mutual-TLS cases (a `REQUIRED` server rejecting a
+ * cert-less client, and accepting one whose cert its `trustAnchors`
+ * validate) live in [MbedTlsMutualTlsTest] paired with an OpenSSL client.
  *
  * The companion close-path bug — `protect()` leaving `send_capacity` /
  * `send_written` stale so `close()`'s `mbedtls_ssl_close_notify` writes
@@ -64,10 +62,9 @@ class MbedTlsHandshakeErrorPathTest {
         val server = factory.createServerCodec(
             TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.NONE),
         )
-        // A keel MbedTLS client cannot be configured to trust the
-        // self-signed server (verifyMode / trustAnchors / serverName are
-        // not wired), so the default peer verification aborts the
-        // handshake — surfacing as a TlsException through the pump.
+        // The client has neither trustAnchors nor serverName, so the
+        // default peer verification aborts the handshake — surfacing as
+        // a TlsException through the pump.
         val client = factory.createClientCodec(TlsConfig())
 
         assertFailsWith<TlsException>("an unverifiable server must abort the handshake") {
