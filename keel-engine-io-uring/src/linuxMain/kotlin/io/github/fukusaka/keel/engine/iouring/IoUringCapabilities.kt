@@ -388,8 +388,9 @@ data class IoUringCapabilities(
      * the explicit limit.
      *
      * **Measured effect**: keel's hot path (multishot accept + multishot
-     * recv + SEND_ZC) does not spawn IO_WQ workers — verified on luna
-     * (32-core) with pipeline-http-io-uring /hello at 4t/100c load,
+     * recv + SEND_ZC) does not spawn IO_WQ workers — verified on a
+     * 32-core Ryzen Linux host with pipeline-http-io-uring /hello at
+     * 4t/100c load,
      * `/proc/<pid>/task` count stays at 36 (32 EL pthreads + GC + Main)
      * with or without cap. Setting aggressive caps (bounded=2,
      * unbounded=4) produces no measurable throughput change on remote

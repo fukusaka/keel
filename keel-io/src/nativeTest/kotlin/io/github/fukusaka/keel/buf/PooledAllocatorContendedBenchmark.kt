@@ -20,15 +20,15 @@ import platform.posix.pthread_tVar
  * Native counterpart of the JVM `PooledAllocatorContendedBenchmark`. Drives N
  * pthread workers doing `allocate(size) → writeByte → release` roundtrips
  * against one shared [SlabAllocator] (the native pool allocator). The intent,
- * scenarios (uniform / mixed), and output format match the JVM version so the
- * Phase 1 (Option A) / Phase 2 (Option B) comparison reads identically across
- * platforms.
+ * scenarios (uniform / mixed), and output format match the JVM version so a
+ * before/after comparison between allocator freelist variants reads
+ * identically across platforms.
  *
  * **Why the JVM bench is not enough**: the unsafe baseline races are sensitive
  * to memory model + scheduler. The native side uses `SpinLockFreelist` and
  * direct `pthread_create`, so the contention shape can differ from the JVM
  * (where `TreiberStackFreelist` + `ForkJoinPool` workers run). Both targets
- * are production hosts (M1 macOS + linuxX64 luna), so both must be measured.
+ * are production hosts (M1 macOS + a 32-core Ryzen linuxX64 host), so both must be measured.
  *
  * Pthread is used directly (mirroring `ContendedFreelistBench`) rather than
  * Kotlin/Native `Worker`s, to keep the harness close to the native engines'
