@@ -96,7 +96,6 @@ dependencies {
         if (isLinux || isMacos) dokka(project(":keel-tls-openssl"))
         if (isLinux || isMacos) dokka(project(":keel-tls-mbedtls"))
         if (isLinux || isMacos) dokka(project(":keel-tls-awslc"))
-        dokka(project(":keel-tls-nodejs"))
     }
     dokka(project(":keel-codec-http"))
     dokka(project(":keel-codec-websocket"))

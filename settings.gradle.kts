@@ -73,5 +73,5 @@ if (providers.gradleProperty("benchmark").isPresent) {
 // cinterop link errors on machines without the required libraries.
 //   ./gradlew -Ptls :keel-tls-mbedtls:macosArm64Test
 if (providers.gradleProperty("tls").isPresent) {
-    include(":keel-tls-mbedtls", ":keel-tls-openssl", ":keel-tls-awslc", ":keel-tls-nodejs")
+    include(":keel-tls-mbedtls", ":keel-tls-openssl", ":keel-tls-awslc")
 }
