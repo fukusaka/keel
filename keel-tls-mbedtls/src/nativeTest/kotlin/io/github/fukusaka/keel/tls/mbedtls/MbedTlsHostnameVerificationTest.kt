@@ -21,7 +21,11 @@ import kotlin.test.assertTrue
  * when [TlsConfig.serverName] is wired through — the positive case here
  * is the regression pin for that wiring. The negative case pins that the
  * name is actually used for verification: a trusted certificate presented
- * under the wrong name must still abort the handshake.
+ * under the wrong name must still abort the handshake. A third case pins
+ * `verifyHostname = false`: the chain is still verified but a name mismatch
+ * is tolerated (chain-only), via the per-SSL CN-mismatch-clearing callback.
+ * A fourth case pins that the callback clears *only* the name mismatch — a
+ * chain-only client presented with an untrusted certificate must still abort.
  *
  * The test certificate is self-signed with `CN=localhost` and acts as its
  * own trust anchor ([TestCertificates.SERVER_CERT]).
@@ -68,6 +72,53 @@ class MbedTlsHostnameVerificationTest {
             pump.driveHandshake(client = client, server = server)
         }
         assertFalse(client.isHandshakeComplete, "client must not complete against a name-mismatched certificate")
+
+        client.close()
+        server.close()
+    }
+
+    @Test
+    fun `verifyHostname false verifies the chain but tolerates a name mismatch`() {
+        val server = factory.createServerCodec(
+            TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.NONE),
+        )
+        val client = factory.createClientCodec(
+            TlsConfig(
+                trustAnchors = TlsTrustSource.Pem(TestCertificates.SERVER_CERT),
+                serverName = "wrong.example.com",
+                verifyHostname = false,
+            ),
+        )
+
+        pump.driveHandshake(client = client, server = server)
+        assertTrue(client.isHandshakeComplete, "chain-only client must complete despite the name mismatch")
+        assertTrue(server.isHandshakeComplete, "server must complete the handshake")
+
+        client.close()
+        server.close()
+    }
+
+    @Test
+    fun `verifyHostname false still rejects an untrusted chain`() {
+        val server = factory.createServerCodec(
+            TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.NONE),
+        )
+        // Chain-only, but the trust anchor is an unrelated CA — the server
+        // certificate is not signed by it. The name matches, so only the
+        // chain-trust flag is set; the CN-mismatch-clearing callback must not
+        // touch it, so the handshake must still abort.
+        val client = factory.createClientCodec(
+            TlsConfig(
+                trustAnchors = TlsTrustSource.Pem(TestCertificates.CLIENT_CA_CERT),
+                serverName = "localhost",
+                verifyHostname = false,
+            ),
+        )
+
+        assertFailsWith<TlsException>("an untrusted chain must abort even in chain-only mode") {
+            pump.driveHandshake(client = client, server = server)
+        }
+        assertFalse(client.isHandshakeComplete, "chain-only must not accept an untrusted certificate")
 
         client.close()
         server.close()
