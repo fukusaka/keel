@@ -814,8 +814,21 @@ internal class KqueueEventLoop(
             drainBatch.clear()
             taskQueue.drain(drainBatch)
             if (drainBatch.isEmpty()) return
-            for (task in drainBatch) {
-                task.run()
+            // Index-based iteration avoids Iterator allocation on every drain cycle.
+            for (i in 0 until drainBatch.size) {
+                // Same catch-and-warn guard as the NIO and io_uring drains: a
+                // dispatched task that throws (engine-internal teardown / arming
+                // Runnables, or a coroutine task whose machinery is not the
+                // thrower) must not kill the EventLoop pthread — every channel
+                // on this loop dies with it — or skip the remaining tasks in
+                // this batch. Coroutine tasks route their body exceptions to
+                // their Job before reaching here; this guard is the backstop
+                // for everything else.
+                try {
+                    drainBatch[i].run()
+                } catch (t: Throwable) {
+                    logger.warn(t) { "dispatched task threw on the EventLoop" }
+                }
             }
         }
     }
