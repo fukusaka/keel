@@ -59,6 +59,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **BREAKING** (`engine-netty`): `NettySslInstaller` now honours every
+  server-relevant axis of `TlsConfig` — `alpnProtocols`, `verifyMode`
+  (mTLS), `trustAnchors`, and `minVersion` / `maxVersion`. Previously
+  only `certificates` was wired and the rest were silently dropped;
+  the most dangerous case, `minVersion = TLS1_3`, was ignored so
+  TLS 1.2 peers could still connect. Any deployment relying on the
+  old lax behaviour must adjust `TlsConfig` (e.g. explicitly widen
+  the version range or set `verifyMode = NONE`) (#891)
 - `tls-mbedtls`: `verifyHostname = false` now takes effect — a per-connection
   verify callback tolerates a hostname mismatch while keeping the rest of chain
   verification and still sending SNI, matching the other backends (#890)
