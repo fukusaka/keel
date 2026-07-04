@@ -12,13 +12,19 @@ import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
-import kotlin.time.TimeSource
 import kotlinx.cinterop.Arena
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
+import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.asStableRef
+import kotlinx.cinterop.free
 import kotlinx.cinterop.get
+import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CancellableContinuation
@@ -49,6 +55,7 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.time.TimeSource
 
 /**
  * Single-threaded epoll event loop for Linux, also serving as a [CoroutineDispatcher].
@@ -172,6 +179,39 @@ internal class EpollEventLoop(
     // whose fields are overwritten by [EpollSyscallOps.waitEvents].
     // Only accessed from the EventLoop thread.
     private val eventBuffer: Array<EpEvent> = Array(MAX_EVENTS) { EpEvent() }
+
+    /**
+     * Shared gather-write scratch: one native (bases, lens) pair reused by
+     * every transport flush on this loop (see [EpollIoTransport.flushGather]). Kept per
+     * EventLoop rather than per connection so every flush on this thread
+     * touches the same hot memory — mirroring the locality of the memScoped
+     * arena this replaced — while performing no per-flush allocation.
+     * EL-confined like [eventBuffer]; freed once in [close] (safe: the loop
+     * thread is joined there, so no flush can be in flight).
+     */
+    internal var writevBases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
+        private set
+
+    /** Byte lengths (`size_t`) paired with [writevBases]. */
+    internal var writevLens: CPointer<ULongVar> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
+        private set
+
+    private var writevCapacity: Int = INITIAL_WRITEV_CAPACITY
+
+    /**
+     * Grows [writevBases] / [writevLens] (1.5x, at least [n]) so a gather
+     * flush of [n] regions fits. EventLoop thread only — callers run inside
+     * the flush path, which is confined to this loop.
+     */
+    internal fun ensureWritevCapacity(n: Int) {
+        if (writevCapacity >= n) return
+        val grown = maxOf(writevCapacity + (writevCapacity shr 1), n)
+        nativeHeap.free(writevBases)
+        nativeHeap.free(writevLens)
+        writevBases = nativeHeap.allocArray(grown)
+        writevLens = nativeHeap.allocArray(grown)
+        writevCapacity = grown
+    }
 
     private val wakeupFd: Int
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
@@ -780,6 +820,10 @@ internal class EpollEventLoop(
             // the EL thread is joined above — no concurrent allocate /
             // returnToPool calls. Default no-op for `DefaultAllocator` (tests
             // that instantiate this loop with the stateless allocator).
+            // Free the shared writev scratch arrays — the loop thread is
+            // joined above, so no transport flush can touch them anymore.
+            nativeHeap.free(writevBases)
+            nativeHeap.free(writevLens)
             allocator.close()
         }
     }
@@ -966,6 +1010,9 @@ internal class EpollEventLoop(
     }
 
     companion object {
+        /** Initial capacity of the shared writev scratch arrays (grows 1.5x). */
+        const val INITIAL_WRITEV_CAPACITY = 8
+
         /**
          * Maximum events per epoll_wait() call. 64 balances memory usage
          * (64 * sizeof(epoll_event) = ~768 bytes on x86_64) against

@@ -2,7 +2,9 @@ package io.github.fukusaka.keel.native.posix
 
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.memScoped
 import platform.posix.ECONNREFUSED
@@ -168,9 +170,13 @@ class FakeNativeSocketTest {
     fun `writev and send share defaultWrite but have independent queues`() {
         val fake = FakeNativeSocket().apply { defaultWrite = WriteResult.Written(100) }
         fake.enqueueWritev(fd = 3, WriteResult.Written(50))
-        assertEquals(WriteResult.Written(50), fake.writev(3, LongArray(0), IntArray(0), 0))
-        // writev queue drained — falls back to defaultWrite.
-        assertEquals(WriteResult.Written(100), fake.writev(3, LongArray(0), IntArray(0), 0))
+        memScoped {
+            val bases = allocArray<CPointerVar<ByteVar>>(1)
+            val lens = allocArray<ULongVar>(1)
+            assertEquals(WriteResult.Written(50), fake.writev(3, bases, lens, 0))
+            // writev queue drained — falls back to defaultWrite.
+            assertEquals(WriteResult.Written(100), fake.writev(3, bases, lens, 0))
+        }
         // send never scripted — also falls back to defaultWrite.
         withDummyBuf { buf ->
             assertEquals(WriteResult.Written(100), fake.send(3, buf, 10, 0))
