@@ -28,7 +28,7 @@ import platform.posix.pthread_tVar
  * to memory model + scheduler. The native side uses `SpinLockFreelist` and
  * direct `pthread_create`, so the contention shape can differ from the JVM
  * (where `TreiberStackFreelist` + `ForkJoinPool` workers run). Both targets
- * are production hosts (M1 macOS + linuxX64 luna), so both must be measured.
+ * are production hosts (M1 macOS + a 32-core Ryzen linuxX64 host), so both must be measured.
  *
  * Pthread is used directly (mirroring `ContendedFreelistBench`) rather than
  * Kotlin/Native `Worker`s, to keep the harness close to the native engines'
