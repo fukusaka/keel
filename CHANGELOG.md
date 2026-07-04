@@ -59,6 +59,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **BREAKING** (`engine-nodejs`): the Node.js listener-level TLS path
+  now honours every server-relevant axis of `TlsConfig` —
+  `alpnProtocols` (`options.ALPNProtocols`), `verifyMode`
+  (`options.requestCert` / `options.rejectUnauthorized`; `PEER` maps
+  cleanly to `requestCert = true` + `rejectUnauthorized = false`, the
+  true "want auth but continue" middle ground the NW backend cannot
+  express), `trustAnchors` (`options.ca`), and `minVersion` /
+  `maxVersion` (`options.minVersion` / `options.maxVersion`). Previously
+  only `options.key` / `options.cert` were wired; the same silent
+  security downgrade as the Netty and NW paths applied here too. The
+  main-less `keel-tls-nodejs` stub module (one prototype
+  `tls.createServer` smoke test, nothing else depending on it) is
+  deleted alongside — the same handshake coverage now lives on the
+  engine side in `NodeTlsOptionsTest` + `NodeListenerTlsIntegrationTest`
+  (#893)
 - **BREAKING** (`engine-nwconnection`): the NWConnection listener-level
   TLS path now honours every server-relevant axis of `TlsConfig` —
   `alpnProtocols` (`sec_protocol_options_add_tls_application_protocol`),
