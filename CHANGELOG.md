@@ -431,6 +431,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
+- `core`: document the engine resource-sharing invariant — every server bound from one
+  engine shares its event loops and engine-owned allocator, so extra servers add only
+  listen sockets and per-server state, and separate bind calls carry no atomicity between
+  them (#885)
+- `engine-netty`: correct allocator KDocs for Netty 4.2 — the engine's `ch.alloc()`
+  path defaults to the adaptive allocator (not pooled), while the `nettyByteBufAllocator`
+  factory deliberately keeps `PooledByteBufAllocator` as its comparison-baseline
+  default (#885)
 - `core`, `engine-nio`, `engine-netty`: corrected stale read-policy docs — under the default `IdleReadPolicy.DETECT_PEER_CLOSE`, nio/netty/nwconnection always deliver inbound bytes regardless of `readEnabled` (nothing is silently dropped since the pre-attach journal), so the bridge read watermark is documented as not yet bounding the queue on those engines or io_uring multishot recv; a pause-reads transport seam is the planned tightening. (#765)
 - `website`: add an HTTP Server DSL reference page — a guided tour of the `keelHttpServer { }` builder for first-time developers (#564)
 - `core` / `engine-nwconnection` / `engine-nodejs`: document the I/O ownership invariant as a cross-engine contract on `IoEngine` — every keel engine must serialise callbacks, state mutations, and coroutine resumptions for a given channel on a single owning thread (or serial-queue equivalent) in FIFO order. POSIX engines (`engine-kqueue` / `engine-epoll` / `engine-nio` / `engine-io-uring` / `engine-netty`) enforce this via an explicit `if (inEventLoop()) apply else dispatch(Runnable)` funnel plus `assertInEventLoop`; upstream-delegated engines (`engine-nwconnection` GCD serial dispatch queue, `engine-nodejs` libuv event loop) inherit the same property from their runtime. `NwConnectionQueueDispatcher` gains an `assertInConnectionQueue` helper wired into `NwIoTransport` callback entry points (`onReadComplete`, `teardownOnConnQueue`) as the upstream-delegated counterpart of `assertInEventLoop`; `engine-nodejs` documents the structural single-thread guarantee without a runtime check because JS exposes no thread-identity primitive (#516)

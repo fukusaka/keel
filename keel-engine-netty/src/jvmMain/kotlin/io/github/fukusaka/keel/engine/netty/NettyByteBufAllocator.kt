@@ -27,13 +27,14 @@ import io.netty.buffer.PooledByteBufAllocator
  * making it a **benchmark comparison baseline** for keel's own
  * [PooledDirectAllocator][io.github.fukusaka.keel.buf.PooledDirectAllocator]:
  * the same transport with the allocator isolated. The Netty engine itself
- * always allocates from its channel's own `ByteBufAllocator` (`ch.alloc()`),
- * so passing this as its `config.allocator` affects only the lifecycle
- * listener, not allocation.
+ * always allocates from its channel's own `ByteBufAllocator` (`ch.alloc()`
+ * — the adaptive [ByteBufAllocator.DEFAULT] on Netty 4.2, as the engine
+ * leaves `ChannelOption.ALLOCATOR` unset), so passing this as its
+ * `config.allocator` affects only the lifecycle listener, not allocation.
  *
  * **Per-EventLoop usage**: [createChild] returns `this` since
- * Netty's own `ByteBufAllocator` (e.g. [ByteBufAllocator.DEFAULT] or
- * `PooledByteBufAllocator`) manages its own per-thread arenas
+ * Netty's own `ByteBufAllocator` (the adaptive [ByteBufAllocator.DEFAULT]
+ * or `PooledByteBufAllocator`) manages its own per-thread pooling
  * internally. No keel-side per-EL wrapping needed.
  *
  * **`wrapBytes` / `slice`**: not required by the Netty engine's write
@@ -104,7 +105,11 @@ class NettyByteBufAllocator(
  *
  * Pass the result as `IoEngineConfig.allocator` to a JVM engine that consumes
  * it (the NIO engine) to route its buffers through Netty's pooled arena — a
- * benchmark comparison baseline for keel's own `PooledDirectAllocator`. See
+ * benchmark comparison baseline for keel's own `PooledDirectAllocator`. The
+ * default is deliberately the pooled allocator rather than Netty 4.2's
+ * adaptive [ByteBufAllocator.DEFAULT]: the arena-based pool is the
+ * like-for-like baseline for keel's chunk-arena design; pass an adaptive
+ * allocator explicitly to compare against Netty's current default. See
  * [NettyByteBufAllocator] for the Netty-engine caveat (it uses `ch.alloc()`,
  * not `config.allocator`, for allocation).
  */

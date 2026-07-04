@@ -165,9 +165,11 @@ class NettyEngine(
 
     private fun allocatorFor(ch: NettyNativeChannel): BufferAllocator =
         eventLoopAllocators.computeIfAbsent(ch.eventLoop()) {
-            // Route write-path buffers through Netty's pooled ByteBuf arena
-            // so flush can hand the underlying ByteBuf directly to
-            // writeAndFlush (no Unpooled.wrappedBuffer alloc / duplicate()).
+            // Route write-path buffers through the channel's own ByteBuf
+            // allocator (ch.alloc() — Netty 4.2's adaptive default; the
+            // engine leaves ChannelOption.ALLOCATOR unset) so flush can hand
+            // the underlying ByteBuf directly to writeAndFlush (no
+            // Unpooled.wrappedBuffer alloc / duplicate()).
             // Propagate the user-passed allocator's BufferAllocatorLifecycleListener
             // into the engine-direct NettyByteBufAllocator (pluggability item 12 B2.5
             // step 2) so a single listener installed on config.allocator observes

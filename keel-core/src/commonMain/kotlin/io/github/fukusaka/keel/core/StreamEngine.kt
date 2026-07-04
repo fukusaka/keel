@@ -50,6 +50,11 @@ interface StreamEngine : IoEngine {
      *
      * Internally performs: socket -> bind -> listen.
      *
+     * May be called several times: every server returned by this engine
+     * shares its event loops and allocator (see the resource-sharing
+     * invariant on [IoEngine]); separate calls carry no atomicity
+     * between them.
+     *
      * @param address Bind endpoint. For [InetSocketAddress], hostnames
      *   are resolved via [IoEngineConfig.resolver]. [UnixSocketAddress]
      *   throws [UnsupportedOperationException] until a future change
@@ -79,6 +84,12 @@ interface StreamEngine : IoEngine {
      * [pipelineInitializer]. Listener-level engines (e.g., Node.js,
      * NWConnection) may inspect [config] at listener creation time for
      * transport-level TLS setup.
+     *
+     * May be called several times: every server returned by this engine
+     * shares its event loops and allocator (see the resource-sharing
+     * invariant on [IoEngine]); separate calls carry no atomicity
+     * between them — for one server on several addresses, use the
+     * list-taking overload, whose bind is all-or-nothing.
      *
      * Non-suspend: Pipeline mode avoids coroutine overhead at bind time.
      * Engines that require async listener startup (e.g., NWConnection)

@@ -42,6 +42,19 @@ import kotlinx.coroutines.CoroutineScope
  * back to [kotlinx.coroutines.Dispatchers.Default], which is almost
  * never what the caller wants for I/O work.
  *
+ * **Resource-sharing invariant** (cross-engine contract): every
+ * `bind` / `bindPipeline` call — and therefore every server — on one
+ * engine shares the engine's accept and worker event loops and the
+ * engine-owned allocator. Creating several servers multiplies only
+ * the listen sockets and the callers' own per-server state, never the
+ * thread or buffer-pool footprint: child allocators scale with event
+ * loops or connections (engine-specific), never with server count.
+ * The engine must outlive every server and connection it produced;
+ * [close] is the owner's final call after they are all closed. There
+ * is no atomicity between separate bind calls — each call is its own
+ * unit (the multi-address `bindPipeline` overload is the
+ * all-or-nothing unit for one server on several addresses).
+ *
  * **I/O ownership invariant** (cross-engine contract): every keel
  * engine MUST execute all callbacks, state mutations, and coroutine
  * resumptions for a given channel on a single owning thread (or a
