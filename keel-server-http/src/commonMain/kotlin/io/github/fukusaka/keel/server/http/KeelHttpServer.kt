@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.codec.http.HttpHeaderLimitsConfig
+import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
@@ -49,7 +50,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 @Suppress("LongParameterList")
 public class KeelHttpServer internal constructor(
     private val engine: StreamEngine,
-    private val connector: ServerConnector,
+    private val connectors: List<ServerConnector>,
     private val queryParameterConfig: QueryParameterConfig,
     private val headerLimits: HttpHeaderLimitsConfig,
     private val headerTimeoutMillis: Long,
@@ -78,6 +79,14 @@ public class KeelHttpServer internal constructor(
     public val localAddress: SocketAddress
         get() = checkNotNull(run) { "server has not been started" }.server.localAddress
 
+    /**
+     * The addresses this server is bound to, in connector declaration
+     * order (see the underlying engine server's contract). Available
+     * after [start].
+     */
+    public val localAddresses: List<SocketAddress>
+        get() = checkNotNull(run) { "server has not been started" }.server.localAddresses
+
     /** True while the server is bound and accepting connections. */
     public val isActive: Boolean
         get() = run?.server?.isActive == true
@@ -92,8 +101,7 @@ public class KeelHttpServer internal constructor(
         val scope = CoroutineScope(engine.coroutineContext + Job(engine.coroutineContext[Job]))
         val connections = ServerConnections()
         val server = engine.bindPipeline(
-            connector.address,
-            connector.resolveBindConfig(engine),
+            connectors.map { BindSpec(it.address, it.resolveBindConfig(engine)) },
         ) { channel ->
             channel.installHttpServerPipeline(
                 router = router,
