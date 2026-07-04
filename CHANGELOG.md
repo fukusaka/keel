@@ -55,6 +55,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll`, `engine-kqueue`: a dispatched EventLoop task that throws no longer
+  kills the loop thread (every channel on the loop died with it) or skips the rest of
+  its drain batch — parity with the existing NIO / io_uring guards (#886)
 - `engine-io-uring`: release a closed pipelined listener's port — `close()` now cancels each worker's armed accept SQE before closing the fd; the SQE's kernel-side file reference otherwise kept the socket alive (invisibly under SO_REUSEPORT) until engine shutdown. (#880)
 - `engine-nio`: release a closed listener's port promptly. Listener close now wakes the boss selector (the cancelled key was otherwise processed only on the next unrelated wakeup), interest ops on cancelled keys are skipped, and a throwing queued task no longer kills the event loop. (#876)
 - `engine-nwconnection`: fix a per-connection allocator double-close SIGSEGV under CPU-constrained shutdown — the connection's own async GCD teardown raced the engine's `children` fan-out. The per-connection child is now an untracked child of the engine allocator (its only close path), and `engine.close()` joins each connection's teardown before draining the shared arena. (#867)
