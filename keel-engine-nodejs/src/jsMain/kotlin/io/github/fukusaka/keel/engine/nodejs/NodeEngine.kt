@@ -20,7 +20,6 @@ import io.github.fukusaka.keel.server.ServerTlsProvider
 import io.github.fukusaka.keel.server.TlsServerConfig
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
-import io.github.fukusaka.keel.tls.asPem
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
@@ -490,12 +489,7 @@ class NodeEngine(
     private fun createServer(config: BindConfig): Server {
         if (isListenerLevelTls(config)) {
             val tlsConfig = config as TlsServerConfig
-            val certs = requireNotNull(tlsConfig.tls.certificates) {
-                "Node.js listener-level TLS requires certificates"
-            }.asPem()
-            val options = js("{}")
-            options.key = certs.privateKeyPem
-            options.cert = certs.certificatePem
+            val options = NodeTlsOptions.build(tlsConfig.tls)
             return Tls.createServer(options) { _ -> }
         }
         return Net.createServer { _ -> }
