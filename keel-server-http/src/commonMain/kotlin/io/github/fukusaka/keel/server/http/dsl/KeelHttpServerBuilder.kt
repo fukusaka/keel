@@ -38,7 +38,7 @@ import kotlin.reflect.KClass
 @KeelServerDsl
 public class KeelHttpServerBuilder internal constructor() {
 
-    private var connector: ServerConnector? = null
+    private val connectors: MutableList<ServerConnector> = mutableListOf()
     private var queryParameterConfig: QueryParameterConfig = QueryParameterConfig.DEFAULT
     private var headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT
     private var headerTimeoutMillis: Long = 0
@@ -58,22 +58,64 @@ public class KeelHttpServerBuilder internal constructor() {
      *
      * When omitted, the server binds an OS-assigned ephemeral port on
      * all interfaces and parses query strings with
-     * [QueryParameterConfig.DEFAULT]. May be called at most once. The
-     * bind host must be an IP literal — the Pipeline-mode bind cannot
-     * resolve hostnames.
+     * [QueryParameterConfig.DEFAULT]. The bind host must be an IP
+     * literal — the Pipeline-mode bind cannot resolve hostnames.
      *
-     * @throws IllegalStateException if a connector is already configured.
+     * May be called several times: each block declares one listen
+     * endpoint of the same server (one application reachable through
+     * several doors), bound all-or-nothing in declaration order. The
+     * transport settings (host, port, backlog, socket options, TLS) are
+     * per-connector; the HTTP-semantics settings (`queryParameters { }`,
+     * `headerLimits { }`, and the header / request / body-rate limits)
+     * are server-wide and may be set away from their defaults by at most
+     * one block.
+     *
+     * @throws IllegalStateException if a server-wide setting is set by
+     *   more than one connector block.
      */
     public fun connector(configure: HttpConnectorBuilder.() -> Unit) {
-        check(connector == null) { "connector is already configured" }
         val builder = HttpConnectorBuilder().apply(configure)
-        connector = builder.buildConnector()
-        queryParameterConfig = builder.buildQueryConfig()
-        headerLimits = builder.buildHeaderLimits()
-        headerTimeoutMillis = builder.buildHeaderTimeout()
-        requestTimeoutMillis = builder.buildRequestTimeout()
-        minBodyRateBytesPerSec = builder.buildMinBodyRate()
+        connectors.add(builder.buildConnector())
+        // The HTTP-semantics settings inside the connector block are
+        // server-wide (one application reachable through several doors),
+        // not per-listener: at most one block may set each away from its
+        // default, and a second non-default setting is rejected instead of
+        // silently letting the last writer win — which also keeps a future
+        // per-connector promotion of the DoS knobs purely additive.
+        adoptServerWide("queryParameters", builder.buildQueryConfig(), QueryParameterConfig.DEFAULT) {
+            queryParameterConfig = it
+        }
+        adoptServerWide("headerLimits", builder.buildHeaderLimits(), HttpHeaderLimitsConfig.DEFAULT) {
+            headerLimits = it
+        }
+        adoptServerWide("headerTimeoutMillis", builder.buildHeaderTimeout(), 0L) {
+            headerTimeoutMillis = it
+        }
+        adoptServerWide("requestTimeoutMillis", builder.buildRequestTimeout(), 0L) {
+            requestTimeoutMillis = it
+        }
+        adoptServerWide("minBodyRateBytesPerSec", builder.buildMinBodyRate(), 0L) {
+            minBodyRateBytesPerSec = it
+        }
     }
+
+    /**
+     * Adopts a server-wide setting contributed from a connector block:
+     * a default [value] is a no-op, the first non-default value wins, and
+     * a second non-default value (even an equal one) fails fast — the
+     * setting is server-wide, so "which block owns it" must be
+     * unambiguous.
+     */
+    private fun <T> adoptServerWide(name: String, value: T, default: T, assign: (T) -> Unit) {
+        if (value == default) return
+        check(name !in serverWideSet) {
+            "$name is server-wide: configure it on at most one connector block"
+        }
+        serverWideSet.add(name)
+        assign(value)
+    }
+
+    private val serverWideSet = mutableSetOf<String>()
 
     /**
      * Registers [handler] for [method] requests matching the [path]
@@ -338,7 +380,7 @@ public class KeelHttpServerBuilder internal constructor() {
     internal fun build(engine: StreamEngine): KeelHttpServer =
         KeelHttpServer(
             engine,
-            connector ?: ServerConnector(),
+            if (connectors.isEmpty()) listOf(ServerConnector()) else connectors.toList(),
             queryParameterConfig,
             headerLimits,
             headerTimeoutMillis,

@@ -1,11 +1,13 @@
 package io.github.fukusaka.keel.testing.engine
 
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.bindAllOrRollback
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.coroutines.SupervisorJob
@@ -88,7 +90,38 @@ public class InMemoryEngine(
         address: SocketAddress,
         config: BindConfig,
         pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): PipelinedStreamServer = bindOneListener(address, config, pipelineInitializer)
+
+    /**
+     * Multi-address bind: one in-memory listener per entry, composed with
+     * the shared all-or-nothing rollback loop like the real engines —
+     * except that the returned server exposes every bound address while
+     * each entry keeps its own registry slot.
+     */
+    override fun bindPipeline(
+        binds: List<BindSpec>,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
     ): PipelinedStreamServer {
+        check(!closed) { "Engine is closed" }
+        val bound = bindAllOrRollback(
+            binds = binds,
+            logger = logger,
+            closeOne = { listener: InMemoryPipelinedStreamServer -> listener.close() },
+        ) { spec -> bindOneListener(spec.address, spec.config, pipelineInitializer) }
+        if (bound.size == 1) return bound.single()
+        return object : PipelinedStreamServer {
+            override val localAddress: SocketAddress get() = bound.first().localAddress
+            override val localAddresses: List<SocketAddress> get() = bound.map { it.localAddress }
+            override val isActive: Boolean get() = bound.all { it.isActive }
+            override fun close() = bound.forEach { it.close() }
+        }
+    }
+
+    private fun bindOneListener(
+        address: SocketAddress,
+        config: BindConfig,
+        pipelineInitializer: (PipelinedChannel) -> Unit,
+    ): InMemoryPipelinedStreamServer {
         check(!closed) { "Engine is closed" }
         val bound = assignEphemeralPort(address)
         check(bound !in listeners) { "address already bound: $bound" }
