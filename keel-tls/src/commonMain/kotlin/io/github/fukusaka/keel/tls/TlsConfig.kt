@@ -53,12 +53,10 @@ data class TlsConfig(
      * The server uses this to select the appropriate certificate when
      * hosting multiple domains. null disables SNI.
      *
-     * On the Mbed TLS backend this is also the reference name the peer
-     * certificate is verified against (`mbedtls_ssl_set_hostname`) — Mbed
-     * TLS refuses to verify a certificate without an expected hostname, so
-     * a verifying client ([verifyMode] other than [TlsVerifyMode.NONE])
-     * must set it. Other backends currently use it for SNI only; a unified
-     * hostname-verification contract across backends is tracked separately.
+     * On the keel `TlsCodec` backends this is also the reference name the peer
+     * certificate is verified against when hostname verification is active
+     * (see [verifyHostname]) — a verifying client ([verifyMode] other than
+     * [TlsVerifyMode.NONE]) with hostname verification on must set it.
      */
     val serverName: String? = null,
 
@@ -101,6 +99,37 @@ data class TlsConfig(
      * Analogous to nginx `ssl_handshake_timeout`.
      */
     val handshakeTimeoutMillis: Long = 0,
+
+    /**
+     * Whether a client verifies that the server certificate matches the
+     * expected hostname ([serverName]), independently of chain verification
+     * ([verifyMode]).
+     *
+     * This is a separate axis from [verifyMode]: [verifyMode] governs whether
+     * the certificate *chain* is trusted (and, on a server, whether a client
+     * certificate is required), while this governs whether the presented
+     * certificate's CN / SAN must match [serverName]. Applies to client codecs
+     * only — a server does not verify a peer hostname.
+     *
+     * - `null` (default): secure-by-default — hostname is verified when the
+     *   codec is a client, [verifyMode] is not [TlsVerifyMode.NONE], and
+     *   [serverName] is set.
+     * - `true`: force hostname verification; [serverName] must be set.
+     * - `false`: verify the chain (per [verifyMode]) but skip hostname
+     *   matching. For self-signed / dynamic-hostname development setups or
+     *   deployments that pin trust by other means. `curl`'s behaviour without
+     *   `--insecure` corresponds to the default; this flag's `false` value is
+     *   closer to verifying the chain while ignoring the name.
+     *
+     * To disable verification entirely (chain and hostname), use
+     * [verifyMode] = [TlsVerifyMode.NONE] or
+     * [trustAnchors] = [TlsTrustSource.InsecureTrustAll].
+     *
+     * **Backend support**: wired on the keel `TlsCodec` backends (JSSE,
+     * OpenSSL, AWS-LC, Mbed TLS). Engines that use their platform's native TLS
+     * stack (Netty, NWConnection, Node.js) do not consume this yet.
+     */
+    val verifyHostname: Boolean? = null,
 ) {
     init {
         if (maxVersion != null) {
@@ -110,6 +139,9 @@ data class TlsConfig(
         }
         require(handshakeTimeoutMillis >= 0) {
             "handshakeTimeoutMillis ($handshakeTimeoutMillis) must be >= 0 (0 disables the deadline)"
+        }
+        require(verifyHostname != true || serverName != null) {
+            "verifyHostname = true requires serverName to be set (there is no hostname to verify against)"
         }
     }
 }
