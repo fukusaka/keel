@@ -800,26 +800,15 @@ class NwEngine(
     }
 
     /**
-     * Creates TLS-enabled NWConnection parameters from [TlsServerConfig].
-     *
-     * Converts certificates to DER, unwraps PKCS#8 if needed, and delegates
-     * to [NwTlsParams.createTlsParameters] for SecIdentity creation.
+     * Creates TLS-enabled NWConnection parameters from [TlsServerConfig],
+     * honouring every server-relevant axis of [TlsConfig] — see
+     * [NwTlsParams.createTlsParameters].
      */
     private fun createTlsParams(
         tlsConfig: TlsServerConfig,
         socketOptions: SocketOptions,
     ): platform.Network.nw_parameters_t {
-        val certs = requireNotNull(tlsConfig.tls.certificates) {
-            "NWConnection listener-level TLS requires certificates"
-        }.asDer()
-        val keyDer = certs.privateKey
-        val (innerKey, algorithm) = if (Pkcs8KeyUnwrapper.isPkcs8(keyDer)) {
-            Pkcs8KeyUnwrapper.unwrap(keyDer)
-        } else {
-            // Already inner key format (PKCS#1/SEC1)
-            Pkcs8KeyUnwrapper.UnwrapResult(keyDer, Pkcs8KeyUnwrapper.KeyAlgorithm.UNKNOWN)
-        }
-        return NwTlsParams.createTlsParameters(certs.certificate, innerKey, algorithm, socketOptions)
+        return NwTlsParams.createTlsParameters(tlsConfig.tls, socketOptions)
     }
 
     /**

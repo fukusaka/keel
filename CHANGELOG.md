@@ -59,6 +59,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **BREAKING** (`engine-nwconnection`): the NWConnection listener-level
+  TLS path now honours every server-relevant axis of `TlsConfig` —
+  `alpnProtocols` (`sec_protocol_options_add_tls_application_protocol`),
+  `verifyMode` (`sec_protocol_options_set_peer_authentication_required`
+  — `PEER` is mapped to `REQUIRED` because Apple's
+  `sec_protocol_options_set_peer_authentication_optional` is
+  `API_UNAVAILABLE` on the Apple platforms), `trustAnchors` (a per-listener
+  `sec_protocol_options_set_verify_block` that pins the peer's chain to
+  the supplied PEM anchors via `SecTrustSetAnchorCertificates` +
+  `SecTrustSetAnchorCertificatesOnly` and evaluates them under an explicit
+  client SSL policy), and `minVersion` / `maxVersion`
+  (`sec_protocol_options_set_min_tls_protocol_version` etc.). Previously
+  only the server identity was wired; the same silent security downgrade
+  (`minVersion = TLS 1.3` ignored) and mTLS regression that fell out on
+  the Netty path applied here too (#892)
 - **BREAKING** (`engine-netty`): `NettySslInstaller` now honours every
   server-relevant axis of `TlsConfig` — `alpnProtocols`, `verifyMode`
   (mTLS), `trustAnchors`, and `minVersion` / `maxVersion`. Previously
