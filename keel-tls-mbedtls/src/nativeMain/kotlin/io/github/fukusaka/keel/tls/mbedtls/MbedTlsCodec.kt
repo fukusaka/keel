@@ -32,6 +32,7 @@ import mbedtls.mbedtls_ssl_handshake
 import mbedtls.mbedtls_ssl_init
 import mbedtls.mbedtls_ssl_is_handshake_over
 import mbedtls.mbedtls_ssl_read
+import mbedtls.mbedtls_ssl_set_hostname
 import mbedtls.mbedtls_ssl_setup
 import mbedtls.mbedtls_ssl_write
 
@@ -77,6 +78,14 @@ class MbedTlsCodec internal constructor(
             mbedtls_ssl_init(ssl.ptr)
             val ret = mbedtls_ssl_setup(ssl.ptr, session.conf.ptr)
             checkMbedTls(ret, "ssl_setup")
+            session.clientHostname?.let { host ->
+                // Client mode only (null for servers): sets the SNI value and
+                // the reference name for peer-certificate verification — Mbed
+                // TLS refuses to verify without an expected hostname. The
+                // string is copied into the ssl context, so its lifetime is
+                // this codec's, independent of the shared session.
+                checkMbedTls(mbedtls_ssl_set_hostname(ssl.ptr, host), "ssl_set_hostname")
+            }
             keel_mbedtls_bio_setup(ssl.ptr, bioCtx.ptr)
         } catch (e: Throwable) {
             // Roll back the partial heap allocations + the

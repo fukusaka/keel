@@ -88,6 +88,18 @@ internal class MbedTlsServerSession(
     isServer: Boolean,
     config: TlsConfig,
 ) {
+    /**
+     * Expected peer hostname for client-mode codecs ([TlsConfig.serverName]);
+     * always null for server sessions.
+     *
+     * Every [MbedTlsCodec] derived from this session wires it to
+     * `mbedtls_ssl_set_hostname`, which Mbed TLS uses both as the SNI value
+     * and as the reference name for peer-certificate verification. Mbed TLS
+     * refuses to verify a certificate without an expected hostname, so a
+     * verifying client can only complete a handshake when this is set.
+     */
+    val clientHostname: String? = if (isServer) null else config.serverName
+
     val srvcert = nativeHeap.alloc<mbedtls_x509_crt>()
     val pkey = nativeHeap.alloc<mbedtls_pk_context>()
     val conf = nativeHeap.alloc<mbedtls_ssl_config>()

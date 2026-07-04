@@ -55,6 +55,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `tls-mbedtls`: `TlsConfig.serverName` is now wired to `mbedtls_ssl_set_hostname` —
+  the client sends SNI and the peer certificate is verified against the name. Previously
+  the option was silently ignored, and Mbed TLS's expected-hostname requirement meant a
+  verifying client could not complete a handshake at all (#888)
 - `engine-epoll`, `engine-kqueue`: a dispatched EventLoop task that throws no longer
   kills the loop thread (every channel on the loop died with it) or skips the rest of
   its drain batch — parity with the existing NIO / io_uring guards (#886)

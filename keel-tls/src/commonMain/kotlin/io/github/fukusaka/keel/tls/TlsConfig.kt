@@ -46,11 +46,19 @@ data class TlsConfig(
     val alpnProtocols: List<String>? = null,
 
     /**
-     * Server name for SNI (Server Name Indication).
+     * Server name for SNI (Server Name Indication) and, where the backend
+     * supports it, the expected peer hostname for certificate verification.
      *
      * Used in client mode to indicate the hostname being connected to.
      * The server uses this to select the appropriate certificate when
      * hosting multiple domains. null disables SNI.
+     *
+     * On the Mbed TLS backend this is also the reference name the peer
+     * certificate is verified against (`mbedtls_ssl_set_hostname`) — Mbed
+     * TLS refuses to verify a certificate without an expected hostname, so
+     * a verifying client ([verifyMode] other than [TlsVerifyMode.NONE])
+     * must set it. Other backends currently use it for SNI only; a unified
+     * hostname-verification contract across backends is tracked separately.
      */
     val serverName: String? = null,
 

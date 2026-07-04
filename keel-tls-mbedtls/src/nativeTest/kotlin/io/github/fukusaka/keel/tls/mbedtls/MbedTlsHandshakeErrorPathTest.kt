@@ -6,7 +6,6 @@ import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsException
-import io.github.fukusaka.keel.tls.TlsResult
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
@@ -27,17 +26,15 @@ import kotlin.test.assertFalse
  * pins that a failed handshake surfaces as a structured [TlsException]
  * rather than a hang.
  *
- * **Why only the failure case**: keel's MbedTLS factory wires
- * [TlsConfig.verifyMode] and [TlsConfig.trustAnchors] but not yet
- * [TlsConfig.serverName]. A *verifying* MbedTLS client (`verifyMode`
- * PEER / REQUIRED) is never given the hostname MbedTLS requires
- * (`mbedtls_ssl_set_hostname`), so it aborts with "verify a certificate
- * without an expected hostname" — the failure vehicle here. A full
- * MbedTLS-to-MbedTLS handshake therefore cannot complete through the public
- * API, so the mutual-TLS cases (a `REQUIRED` server rejecting a cert-less
- * client, and accepting one whose cert its `trustAnchors` validate), which
- * need a completing peer, live in [MbedTlsMutualTlsTest] paired with an
- * OpenSSL client.
+ * **Failure vehicles**: the first test's client has no `trustAnchors` and
+ * no [TlsConfig.serverName], so verification aborts (Mbed TLS refuses to
+ * verify without an expected hostname; with `serverName` wired it would
+ * next fail on the untrusted self-signed chain). The completing-handshake
+ * counterparts live in [MbedTlsHostnameVerificationTest] (a verifying
+ * client with `trustAnchors` + matching `serverName` completes fully
+ * in-memory); the mutual-TLS cases (a `REQUIRED` server rejecting a
+ * cert-less client, and accepting one whose cert its `trustAnchors`
+ * validate) live in [MbedTlsMutualTlsTest] paired with an OpenSSL client.
  *
  * The companion close-path bug — `protect()` leaving `send_capacity` /
  * `send_written` stale so `close()`'s `mbedtls_ssl_close_notify` writes
@@ -53,6 +50,7 @@ class MbedTlsHandshakeErrorPathTest {
 
     private val allocator: BufferAllocator = DefaultAllocator
     private val factory = MbedTlsCodecFactory()
+    private val pump = MbedTlsHandshakePump(allocator)
 
     private val serverCerts = TlsCertificateSource.Pem(
         TestCertificates.SERVER_CERT,
@@ -64,14 +62,13 @@ class MbedTlsHandshakeErrorPathTest {
         val server = factory.createServerCodec(
             TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.NONE),
         )
-        // A keel MbedTLS client cannot be configured to trust the
-        // self-signed server (verifyMode / trustAnchors / serverName are
-        // not wired), so the default peer verification aborts the
-        // handshake — surfacing as a TlsException through the pump.
+        // The client has neither trustAnchors nor serverName, so the
+        // default peer verification aborts the handshake — surfacing as
+        // a TlsException through the pump.
         val client = factory.createClientCodec(TlsConfig())
 
         assertFailsWith<TlsException>("an unverifiable server must abort the handshake") {
-            driveHandshake(client = client, server = server)
+            pump.driveHandshake(client = client, server = server)
         }
         assertFalse(client.isHandshakeComplete, "client must not report a completed handshake on failure")
 
@@ -91,7 +88,7 @@ class MbedTlsHandshakeErrorPathTest {
         val client = factory.createClientCodec(TlsConfig(maxVersion = TlsVersion.TLS1_2))
 
         assertFailsWith<TlsException>("non-overlapping version ranges must abort the handshake") {
-            driveHandshake(client = client, server = server)
+            pump.driveHandshake(client = client, server = server)
         }
         assertFalse(server.isHandshakeComplete, "server must not complete when no common version exists")
 
@@ -110,72 +107,4 @@ class MbedTlsHandshakeErrorPathTest {
         }
     }
 
-    // --- In-memory handshake pump (mirrors JsseHandshakeErrorPathTest) ---
-
-    private fun driveHandshake(client: TlsCodec, server: TlsCodec) {
-        var inFlight = stepCodec(client, ByteArray(0)) // ClientHello
-        var rounds = 0
-        while (rounds++ < MAX_ROUNDS) {
-            if (client.isHandshakeComplete && server.isHandshakeComplete) return
-
-            val serverOut = stepCodec(server, inFlight)
-            if (client.isHandshakeComplete && server.isHandshakeComplete) return
-
-            val clientOut = stepCodec(client, serverOut)
-            inFlight = clientOut
-
-            if (clientOut.isEmpty() && serverOut.isEmpty()) {
-                if (client.isHandshakeComplete && server.isHandshakeComplete) return
-                error("handshake stalled with no bytes in flight and handshake incomplete")
-            }
-        }
-        error("handshake did not converge within $MAX_ROUNDS rounds")
-    }
-
-    private fun stepCodec(codec: TlsCodec, input: ByteArray): ByteArray {
-        val out = ArrayList<Byte>()
-        if (input.isNotEmpty()) {
-            val cipherIn = allocator.allocate(input.size)
-            cipherIn.writeByteArray(input, 0, input.size)
-            val plain = allocator.allocate(PLAINTEXT_BUF)
-            while (cipherIn.readableBytes > 0) {
-                val r = codec.unprotect(cipherIn, plain)
-                // The TlsCodec contract requires the caller to advance the
-                // ciphertext readerIndex by bytesConsumed.
-                cipherIn.readerIndex += r.bytesConsumed
-                if (r.status == TlsResult.NEED_WRAP) {
-                    drainProtect(codec, out)
-                }
-                if (r.bytesConsumed == 0 && r.status != TlsResult.NEED_WRAP) break
-                if (r.status == TlsResult.CLOSED) break
-            }
-            plain.release()
-            cipherIn.release()
-        }
-        drainProtect(codec, out)
-        return out.toByteArray()
-    }
-
-    private fun drainProtect(codec: TlsCodec, out: MutableList<Byte>) {
-        val emptyPlain = allocator.allocate(EMPTY_PLAINTEXT_BUF)
-        try {
-            while (true) {
-                val cipher = allocator.allocate(CIPHERTEXT_BUF)
-                val r = codec.protect(emptyPlain, cipher)
-                val produced = cipher.readableBytes
-                for (i in 0 until produced) out.add(cipher.getByte(cipher.readerIndex + i))
-                cipher.release()
-                if (r.status != TlsResult.NEED_WRAP) break
-            }
-        } finally {
-            emptyPlain.release()
-        }
-    }
-
-    private companion object {
-        private const val CIPHERTEXT_BUF = 18_432
-        private const val PLAINTEXT_BUF = 18_432
-        private const val EMPTY_PLAINTEXT_BUF = 16
-        private const val MAX_ROUNDS = 32
-    }
 }
