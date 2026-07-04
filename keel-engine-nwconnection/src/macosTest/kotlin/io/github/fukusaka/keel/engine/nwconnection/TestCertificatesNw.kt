@@ -1,34 +1,15 @@
-@file:OptIn(ExperimentalForeignApi::class)
-
 package io.github.fukusaka.keel.engine.nwconnection
 
-import io.github.fukusaka.keel.tls.TlsCertificateSource
-import io.github.fukusaka.keel.tls.TlsConfig
-import io.github.fukusaka.keel.tls.TlsTrustSource
-import io.github.fukusaka.keel.tls.TlsVerifyMode
-import io.github.fukusaka.keel.tls.TlsVersion
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlin.test.Test
-import kotlin.test.assertFailsWith
-import kotlin.test.assertNotNull
-
 /**
- * Smoke coverage for [NwTlsParams.createTlsParameters]: exercises every
- * server-relevant axis of [TlsConfig] and pins that the C wrapper
- * accepts the resulting call — i.e. every setting funnels through
- * `keel_nw_create_tls_tcp_params_full` without the Security framework
- * or Network framework rejecting the composed options.
+ * Test certificate fixtures for NW engine TLS integration tests.
  *
- * Handshake-level Red-Green (that these settings actually reach the
- * wire and reject non-conforming peers) lives in
- * [NwListenerTlsIntegrationTest], which stands up a real NWListener and
- * an NWConnection client against it. This file stays a pure unit smoke
- * — it does not open sockets.
+ * Self-signed RSA 2048-bit server cert (CN=localhost) + a separately-rooted
+ * client CA and a client cert signed by it, used to exercise mTLS trust
+ * anchor pinning. Same material as the other TLS test modules.
  */
-class NwTlsParamsTest {
+internal object TestCertificatesNw {
 
-    /** Self-signed RSA 2048-bit certificate, CN=localhost. */
-    private val certPem = """
+    val SERVER_CERT = """
 -----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUaVO1WKzG9gPzYk5Td3h5tNjDl0QwDQYJKoZIhvcNAQEL
 BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDQwMzA0MjcxNloXDTI3MDQw
@@ -50,7 +31,7 @@ wIy8X6kST+S43rMGiQ==
 -----END CERTIFICATE-----
 """.trimIndent() + "\n"
 
-    private val keyPem = """
+    val SERVER_KEY = """
 -----BEGIN PRIVATE KEY-----
 MIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQCyFmiTuQ3QU6bL
 5Bdc8OrhkjQOP9/bQpiPGS7Yd0RwxdBujJj5iHgXQCDdh1AJr1I3BIRFcprHNAJH
@@ -81,8 +62,7 @@ XDEgg9dRd2akza/XK5Hj
 -----END PRIVATE KEY-----
 """.trimIndent() + "\n"
 
-    /** Second, unrelated CA to exercise the pinned trust anchor path. */
-    private val clientCaPem = """
+    val CLIENT_CA_CERT = """
 -----BEGIN CERTIFICATE-----
 MIIDHTCCAgWgAwIBAgIUMew2SLfE51igIDq864OnJUAi4HQwDQYJKoZIhvcNAQEL
 BQAwHjEcMBoGA1UEAwwTa2VlbC10ZXN0LWNsaWVudC1jYTAeFw0yNjA1MzAwMjM5
@@ -104,68 +84,56 @@ F1n/hcr7SImvdjcT85WEDf/dfkBK9dvTRZN+DFC5s3Zg
 -----END CERTIFICATE-----
 """.trimIndent() + "\n"
 
-    private val serverCerts = TlsCertificateSource.Pem(certPem, keyPem)
+    val CLIENT_CERT = """
+-----BEGIN CERTIFICATE-----
+MIIDCTCCAfGgAwIBAgIUc7Kq8u8ojqfJG523cOmN7iegjKUwDQYJKoZIhvcNAQEL
+BQAwHjEcMBoGA1UEAwwTa2VlbC10ZXN0LWNsaWVudC1jYTAeFw0yNjA1MzAwMjM5
+MjRaFw0zNjA1MjcwMjM5MjRaMBsxGTAXBgNVBAMMEGtlZWwtdGVzdC1jbGllbnQw
+ggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCv8fK7SJvkPtvlKNyxQ7Pk
+268f//+FVFXybtLVHxVuLOoGKkaxG++b1HLXQaXpG/szAjmr+Qk9RRNUjQxoi5jF
+agzSfVAsIY/WApXoPjA9gTOzUg+BkhG4SgGeP8anMvMgOlosGmEtpm5IdrPFLhNI
+BFY+EhCTKvIrWanwf9CfpkgU08eQkv21GBOrNvuamdOq2LmDzOWS8REHANWjRXEN
+oyJHu9BljOb3v26GwzQV4dDz3/3zGEpuWc+LFXJ/2fX/SV5WZnUrIImezWWiAiZX
+nGBaMsVnPNMJ/gk5hJkzlp8swb90ytZDgUyHshEri+LIRtn6hSX3pjjqsaRNKq8b
+AgMBAAGjQjBAMB0GA1UdDgQWBBTErbi60RWfIqEAo2UoOJABqRzsgzAfBgNVHSME
+GDAWgBRv40oD3eCEDhe8OAXi9QGL8BtWzTANBgkqhkiG9w0BAQsFAAOCAQEAgA82
+6ZXOb339SYoyZw89TRA7r9w6zPABtuKZzl6GLOqk77gANXwwtoWnnQHBBT5hXxj1
+RfpY7Qbepxb9ZLOsdIi1H/NiGRnZxE4fu7ktKPHgpDutZx4V5BuyLxrIVEpsnWJy
+qfTvwLx7/82IKEPta6GNKLvbKTef9XcwwsoJeMfp74Gcjd7S9/7g3PmdTwkHyR1F
+PDadoQXSTtYBP5CB6W9KHjMUE8UKLjovWg1vvCKGi0vsN0hJlL89ZWxkCEbVELUC
+en4mee+VvtzJB0RVu3cLIH6bte2aO+rQsxDO3sjJ4ythZvWV0tiQLZO4zs8YOcyx
+6yH5pLwn6/CJsR99JQ==
+-----END CERTIFICATE-----
+""".trimIndent() + "\n"
 
-    // --- Smoke: every axis composes cleanly ---
-
-    @Test
-    fun `default TlsConfig produces valid parameters`() {
-        val params = NwTlsParams.createTlsParameters(TlsConfig(certificates = serverCerts))
-        assertNotNull(params, "default TlsConfig must produce valid parameters")
-    }
-
-    @Test
-    fun `alpnProtocols composes without error`() {
-        val params = NwTlsParams.createTlsParameters(
-            TlsConfig(
-                certificates = serverCerts,
-                alpnProtocols = listOf("h2", "http/1.1"),
-            ),
-        )
-        assertNotNull(params)
-    }
-
-    @Test
-    fun `min and max version composes without error`() {
-        val params = NwTlsParams.createTlsParameters(
-            TlsConfig(
-                certificates = serverCerts,
-                minVersion = TlsVersion.TLS1_3,
-                maxVersion = TlsVersion.TLS1_3,
-            ),
-        )
-        assertNotNull(params)
-    }
-
-    @Test
-    fun `verifyMode REQUIRED with pinned trust anchors composes without error`() {
-        val params = NwTlsParams.createTlsParameters(
-            TlsConfig(
-                certificates = serverCerts,
-                verifyMode = TlsVerifyMode.REQUIRED,
-                trustAnchors = TlsTrustSource.Pem(clientCaPem),
-            ),
-        )
-        assertNotNull(params, "mTLS with a pinned CA anchor must compose without error")
-    }
-
-    @Test
-    fun `verifyMode NONE without trustAnchors composes without error`() {
-        val params = NwTlsParams.createTlsParameters(
-            TlsConfig(
-                certificates = serverCerts,
-                verifyMode = TlsVerifyMode.NONE,
-            ),
-        )
-        assertNotNull(params)
-    }
-
-    // --- Failure cases ---
-
-    @Test
-    fun `missing certificates throws`() {
-        assertFailsWith<IllegalArgumentException> {
-            NwTlsParams.createTlsParameters(TlsConfig(certificates = null))
-        }
-    }
+    val CLIENT_KEY = """
+-----BEGIN PRIVATE KEY-----
+MIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQCv8fK7SJvkPtvl
+KNyxQ7Pk268f//+FVFXybtLVHxVuLOoGKkaxG++b1HLXQaXpG/szAjmr+Qk9RRNU
+jQxoi5jFagzSfVAsIY/WApXoPjA9gTOzUg+BkhG4SgGeP8anMvMgOlosGmEtpm5I
+drPFLhNIBFY+EhCTKvIrWanwf9CfpkgU08eQkv21GBOrNvuamdOq2LmDzOWS8REH
+ANWjRXENoyJHu9BljOb3v26GwzQV4dDz3/3zGEpuWc+LFXJ/2fX/SV5WZnUrIIme
+zWWiAiZXnGBaMsVnPNMJ/gk5hJkzlp8swb90ytZDgUyHshEri+LIRtn6hSX3pjjq
+saRNKq8bAgMBAAECgf9Gchk941SHjqN8nV+/mdvtRghYR6eHOr0u1DCWJFvwQQty
+bHrhbs4BFo7koORM8WcihUGSGaQZZA7ZS6AsO7hvUobPwFzZTpbImUBsPHoUJicN
+JU4QEuwFXZxIQEDJsRynSrXP8r/2By0g1mYkDM6rhxEAyTrZsdhEgyIHqSVexgse
+k07o+lw5Sy2x5yXSwWcAoZTWxU7NZcB2PlIA4oCcAxM6uzrfPcRi7mzXKlmvOZgx
+sE308ucr/QN4ah5tUY4OSQR9V1tt1jzAltIASSGw75Y/JVCYqXaeMtc2CDPtlB7p
+M+frPeJfmLgORiq/zwS8ZT1edtxhplV86DtbXMECgYEA10RUtltydgBwyfZQr3RF
+peOaCInKgVjWH8CTX21XqSWnqSOvdZmhy2Kq7eWRa01MH4RBzaDkPuG17l5v/MZR
+2cqpQlt56rf4CBrD9lhjqu1saIsQ6aSAbOSaP0cc3ujo1gSGbP84WqYjVr/8oOO0
+H4yNBP5Rra9+QaQVjw8UWNsCgYEA0TzX6UhkibMFMMJuzrTuds/nETUSQlPRIRR8
+/bYKfP5spr4hr3STWHQdtuWmsW58BU5xPHIJ78Za/MAumlXJF4YyCI/hrzz54rKs
+1/Wvoi9TfPkCfD+sBArCzKuK6JimK9ZAxkq+robv1i4gRwM4f7ATzhSqx1cdcBBP
+W8N4tsECgYEAiuYFPxEsfuVz4Wz0zPFaS1rbteyq5OEccKqCrQ1RhcvNLf7fpSL3
+WdOVdSEuvqzGlINzLipFfCmJiYAYBGM2xy/UHQQHW6NPAHO8xARucwj1bVNmG0vQ
+rfKncHMDNvXT3txWnJflleAjZ0NDz9B9FepLx9ANheN5tQMaAg/50gcCgYBF50Tf
+DC+CjYuTYbHxXyM4EHdLGWbzP9tjaNvlS1cvsTSNdIH+gzzi1VBEFW9eYeIPR8iv
+AA5vy94ECRTIvRZExLGciK1GhWGaqkTylYNK9PK4ktyQtBj89Ldl932d/bmudZMI
+bFpOJoikDp77+oh6qFHFjMQNev47vUc2ChUfQQKBgGjGrjpnF5KLl/tVfj541F8H
+nHC2R7cVDjdJjz4lWUOrhaYAFh+vwvu/dSkWVPMhB7NhcmDW3HGK6iqKb7ZXqQ3A
+JTcPZjukAqrn3BFvs5JCyfqdN1iRCJ1UIv4UgGlZf0Cyc2Q/w4L/FCsFaLVRB4AV
+BMQUaN68Zpzysj1HXecj
+-----END PRIVATE KEY-----
+""".trimIndent() + "\n"
 }
