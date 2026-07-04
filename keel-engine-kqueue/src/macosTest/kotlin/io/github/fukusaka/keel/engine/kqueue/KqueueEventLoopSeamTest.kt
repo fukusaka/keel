@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.darwin.EVFILT_WRITE
@@ -12,6 +13,7 @@ import platform.posix.EBADF
 import platform.posix.EINTR
 import platform.posix.EMFILE
 import platform.posix.ENFILE
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -260,6 +262,24 @@ class KqueueEventLoopSeamTest {
      * Logger that captures messages at exactly [level] into [sink].
      * All other levels are discarded.
      */
+    @Test
+    fun `a throwing dispatched task does not kill the loop or skip later tasks`() {
+        val warns = mutableListOf<String>()
+        val fake = FakeKqueueSyscallOps().apply {
+            scriptWaitFailure(EBADF) // terminate loop() after the first drain
+        }
+        val el = KqueueEventLoop(logger = levelRecordingLogger(LogLevel.WARN, warns), syscallOps = fake)
+        var laterTaskRan = false
+        // Both tasks are queued before loop() runs, so they land in the same
+        // drain batch: the guard must run the second despite the first throwing.
+        el.dispatch(EmptyCoroutineContext, Runnable { throw IllegalStateException("boom") })
+        el.dispatch(EmptyCoroutineContext, Runnable { laterTaskRan = true })
+        el.loop()
+        assertTrue(laterTaskRan, "the task queued after the throwing one must still run")
+        assertEquals(1, warns.size, "the throwing task should produce exactly one warn log")
+        assertTrue(warns.first().contains("task"), "warn should mention the failing task, got: ${warns.first()}")
+    }
+
     private fun levelRecordingLogger(captured: LogLevel, sink: MutableList<String>): Logger = object : Logger {
         override fun isLoggable(level: LogLevel): Boolean = level == captured
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
