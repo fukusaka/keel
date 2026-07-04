@@ -20,9 +20,9 @@ import platform.posix.pthread_tVar
  * Native counterpart of the JVM `PooledAllocatorContendedBenchmark`. Drives N
  * pthread workers doing `allocate(size) → writeByte → release` roundtrips
  * against one shared [SlabAllocator] (the native pool allocator). The intent,
- * scenarios (uniform / mixed), and output format match the JVM version so the
- * Phase 1 (Option A) / Phase 2 (Option B) comparison reads identically across
- * platforms.
+ * scenarios (uniform / mixed), and output format match the JVM version so a
+ * before/after comparison between allocator freelist variants reads
+ * identically across platforms.
  *
  * **Why the JVM bench is not enough**: the unsafe baseline races are sensitive
  * to memory model + scheduler. The native side uses `SpinLockFreelist` and
