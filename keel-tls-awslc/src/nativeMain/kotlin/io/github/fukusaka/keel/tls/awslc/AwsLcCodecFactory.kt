@@ -24,11 +24,11 @@ import awslc.keel_awslc_ctx_load_ca_pem
 import awslc.keel_awslc_ctx_load_pem_cert
 import awslc.keel_awslc_ctx_load_pem_key
 import awslc.keel_awslc_err_string
+import awslc.keel_awslc_set1_host
 import awslc.keel_awslc_set_max_proto_version
 import awslc.keel_awslc_set_min_proto_version
 import awslc.keel_awslc_set_sni
 import io.github.fukusaka.keel.tls.TlsCertificateSource
-import io.github.fukusaka.keel.tls.asPem
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
@@ -37,13 +37,14 @@ import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
+import io.github.fukusaka.keel.tls.asPem
+import io.github.fukusaka.keel.tls.hostnameToVerify
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
-
 /**
  * [TlsCodecFactory] implementation backed by AWS-LC (BoringSSL fork).
  *
@@ -83,6 +84,7 @@ class AwsLcCodecFactory : TlsCodecFactory {
         SSL_set_connect_state(ssl)
 
         configureSni(ssl, config)
+        configureHostnameVerification(ssl, config)
 
         val bioCtx = setupBio(ssl)
         SSL_CTX_free(ctx)
@@ -208,6 +210,21 @@ class AwsLcCodecFactory : TlsCodecFactory {
     private fun configureSni(ssl: CPointer<SSL>, config: TlsConfig) {
         val name = config.serverName ?: return
         keel_awslc_set_sni(ssl, name)
+    }
+
+    /**
+     * Enables peer-certificate hostname verification (CN / SAN must match
+     * [TlsConfig.serverName]) when [TlsConfig.hostnameToVerify] resolves to a
+     * name. Client-only; chain verification is configured separately.
+     */
+    private fun configureHostnameVerification(ssl: CPointer<SSL>, config: TlsConfig) {
+        val host = config.hostnameToVerify(isClient = true) ?: return
+        if (keel_awslc_set1_host(ssl, host) != 1) {
+            throw TlsException(
+                "SSL_set1_host($host) failed: ${errorString()}",
+                TlsErrorCategory.HANDSHAKE_FAILED,
+            )
+        }
     }
 
     private fun setupBio(ssl: CPointer<SSL>): keel_awslc_bio_ctx {

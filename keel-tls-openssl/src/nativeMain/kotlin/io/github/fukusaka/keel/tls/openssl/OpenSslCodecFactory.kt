@@ -4,7 +4,6 @@ package io.github.fukusaka.keel.tls.openssl
 
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsCodec
-import io.github.fukusaka.keel.tls.asPem
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsErrorCategory
@@ -12,6 +11,8 @@ import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
+import io.github.fukusaka.keel.tls.asPem
+import io.github.fukusaka.keel.tls.hostnameToVerify
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -19,7 +20,6 @@ import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
 import openssl.OPENSSL_init_ssl
-import openssl.keel_openssl_bio_ctx
 import openssl.SSL
 import openssl.SSL_CTX
 import openssl.SSL_CTX_free
@@ -35,15 +35,16 @@ import openssl.SSL_set_connect_state
 import openssl.TLS1_2_VERSION
 import openssl.TLS1_3_VERSION
 import openssl.TLS_method
+import openssl.keel_openssl_bio_ctx
 import openssl.keel_openssl_bio_setup
 import openssl.keel_openssl_ctx_load_ca_pem
 import openssl.keel_openssl_ctx_load_pem_cert
 import openssl.keel_openssl_ctx_load_pem_key
 import openssl.keel_openssl_err_string
+import openssl.keel_openssl_set1_host
 import openssl.keel_openssl_set_max_proto_version
 import openssl.keel_openssl_set_min_proto_version
 import openssl.keel_openssl_set_sni
-
 /**
  * [TlsCodecFactory] implementation backed by OpenSSL 3.x [SSL_CTX].
  *
@@ -85,6 +86,7 @@ class OpenSslCodecFactory : TlsCodecFactory {
         SSL_set_connect_state(ssl)
 
         configureSni(ssl, config)
+        configureHostnameVerification(ssl, config)
 
         val bioCtx = setupBio(ssl)
         SSL_CTX_free(ctx)
@@ -214,6 +216,22 @@ class OpenSslCodecFactory : TlsCodecFactory {
     private fun configureSni(ssl: CPointer<SSL>, config: TlsConfig) {
         val name = config.serverName ?: return
         keel_openssl_set_sni(ssl, name)
+    }
+
+    /**
+     * Enables peer-certificate hostname verification (CN / SAN must match
+     * [TlsConfig.serverName]) when [TlsConfig.hostnameToVerify] resolves to a
+     * name. Client-only: [createClientCodec] is the sole caller. Chain
+     * verification is configured separately in [configureVerification].
+     */
+    private fun configureHostnameVerification(ssl: CPointer<SSL>, config: TlsConfig) {
+        val host = config.hostnameToVerify(isClient = true) ?: return
+        if (keel_openssl_set1_host(ssl, host) != 1) {
+            throw TlsException(
+                "SSL_set1_host($host) failed: ${errorString()}",
+                TlsErrorCategory.HANDSHAKE_FAILED,
+            )
+        }
     }
 
     private fun setupBio(ssl: CPointer<SSL>): keel_openssl_bio_ctx {

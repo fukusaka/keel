@@ -6,7 +6,6 @@ import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsException
-import io.github.fukusaka.keel.tls.TlsResult
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
@@ -54,6 +53,7 @@ class AwsLcHandshakeErrorPathTest {
 
     private val allocator: BufferAllocator = DefaultAllocator
     private val factory = AwsLcCodecFactory()
+    private val pump = AwsLcHandshakePump(allocator)
 
     private val serverCerts = TlsCertificateSource.Pem(
         TestCertificates.SERVER_CERT,
@@ -70,7 +70,7 @@ class AwsLcHandshakeErrorPathTest {
         )
 
         assertFailsWith<TlsException>("untrusted server cert must abort the handshake") {
-            driveHandshake(client = client, server = server)
+            pump.driveHandshake(client = client, server = server)
         }
         assertFalse(client.isHandshakeComplete, "client must not report a completed handshake on failure")
 
@@ -91,7 +91,7 @@ class AwsLcHandshakeErrorPathTest {
         )
 
         assertFailsWith<TlsException>("non-overlapping version ranges must abort the handshake") {
-            driveHandshake(client = client, server = server)
+            pump.driveHandshake(client = client, server = server)
         }
         assertFalse(server.isHandshakeComplete, "server must not complete when no common version exists")
 
@@ -108,7 +108,7 @@ class AwsLcHandshakeErrorPathTest {
             TlsConfig(trustAnchors = TlsTrustSource.InsecureTrustAll, verifyMode = TlsVerifyMode.NONE),
         )
 
-        driveHandshake(client = client, server = server)
+        pump.driveHandshake(client = client, server = server)
 
         assertTrue(client.isHandshakeComplete, "client handshake must complete in the control case")
         assertTrue(server.isHandshakeComplete, "server handshake must complete in the control case")
@@ -127,7 +127,7 @@ class AwsLcHandshakeErrorPathTest {
         )
 
         assertFailsWith<TlsException>("a missing required client certificate must abort the handshake") {
-            driveHandshake(client = client, server = server)
+            pump.driveHandshake(client = client, server = server)
         }
         assertFalse(server.isHandshakeComplete, "server must not complete without the required client cert")
 
@@ -144,7 +144,7 @@ class AwsLcHandshakeErrorPathTest {
             TlsConfig(trustAnchors = TlsTrustSource.InsecureTrustAll, verifyMode = TlsVerifyMode.NONE),
         )
 
-        driveHandshake(client = client, server = server)
+        pump.driveHandshake(client = client, server = server)
 
         assertTrue(server.isHandshakeComplete, "a PEER server accepts a cert-less client")
         assertTrue(client.isHandshakeComplete, "client handshake completes against a PEER server")
@@ -153,72 +153,4 @@ class AwsLcHandshakeErrorPathTest {
         server.close()
     }
 
-    // --- In-memory handshake pump (mirrors JsseHandshakeErrorPathTest) ---
-
-    private fun driveHandshake(client: TlsCodec, server: TlsCodec) {
-        var inFlight = stepCodec(client, ByteArray(0)) // ClientHello
-        var rounds = 0
-        while (rounds++ < MAX_ROUNDS) {
-            if (client.isHandshakeComplete && server.isHandshakeComplete) return
-
-            val serverOut = stepCodec(server, inFlight)
-            if (client.isHandshakeComplete && server.isHandshakeComplete) return
-
-            val clientOut = stepCodec(client, serverOut)
-            inFlight = clientOut
-
-            if (clientOut.isEmpty() && serverOut.isEmpty()) {
-                if (client.isHandshakeComplete && server.isHandshakeComplete) return
-                error("handshake stalled with no bytes in flight and handshake incomplete")
-            }
-        }
-        error("handshake did not converge within $MAX_ROUNDS rounds")
-    }
-
-    private fun stepCodec(codec: TlsCodec, input: ByteArray): ByteArray {
-        val out = ArrayList<Byte>()
-        if (input.isNotEmpty()) {
-            val cipherIn = allocator.allocate(input.size)
-            cipherIn.writeByteArray(input, 0, input.size)
-            val plain = allocator.allocate(PLAINTEXT_BUF)
-            while (cipherIn.readableBytes > 0) {
-                val r = codec.unprotect(cipherIn, plain)
-                // The TlsCodec contract requires the caller to advance the
-                // ciphertext readerIndex by bytesConsumed.
-                cipherIn.readerIndex += r.bytesConsumed
-                if (r.status == TlsResult.NEED_WRAP) {
-                    drainProtect(codec, out)
-                }
-                if (r.bytesConsumed == 0 && r.status != TlsResult.NEED_WRAP) break
-                if (r.status == TlsResult.CLOSED) break
-            }
-            plain.release()
-            cipherIn.release()
-        }
-        drainProtect(codec, out)
-        return out.toByteArray()
-    }
-
-    private fun drainProtect(codec: TlsCodec, out: MutableList<Byte>) {
-        val emptyPlain = allocator.allocate(EMPTY_PLAINTEXT_BUF)
-        try {
-            while (true) {
-                val cipher = allocator.allocate(CIPHERTEXT_BUF)
-                val r = codec.protect(emptyPlain, cipher)
-                val produced = cipher.readableBytes
-                for (i in 0 until produced) out.add(cipher.getByte(cipher.readerIndex + i))
-                cipher.release()
-                if (r.status != TlsResult.NEED_WRAP) break
-            }
-        } finally {
-            emptyPlain.release()
-        }
-    }
-
-    private companion object {
-        private const val CIPHERTEXT_BUF = 18_432
-        private const val PLAINTEXT_BUF = 18_432
-        private const val EMPTY_PLAINTEXT_BUF = 16
-        private const val MAX_ROUNDS = 32
-    }
 }

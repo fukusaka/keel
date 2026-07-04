@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
+import io.github.fukusaka.keel.tls.hostnameToVerify
 import java.io.ByteArrayInputStream
 import java.io.FileInputStream
 import java.security.KeyFactory
@@ -27,7 +28,6 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.TrustManagerFactorySpi
 import javax.net.ssl.X509TrustManager
-
 /**
  * [TlsCodecFactory] implementation backed by JSSE [SSLContext].
  *
@@ -65,6 +65,7 @@ class JsseTlsCodecFactory : TlsCodecFactory {
         engine.useClientMode = true
         configureAlpn(engine, config)
         configureSni(engine, config)
+        configureHostnameVerification(engine, config)
         configureProtocols(engine, config)
         return JsseTlsCodec(engine)
     }
@@ -177,6 +178,20 @@ class JsseTlsCodecFactory : TlsCodecFactory {
         val name = config.serverName ?: return
         val params = engine.sslParameters
         params.serverNames = listOf(SNIHostName(name))
+        engine.sslParameters = params
+    }
+
+    /**
+     * Enables peer-certificate hostname verification via
+     * `SSLParameters.setEndpointIdentificationAlgorithm("HTTPS")` when
+     * [TlsConfig.hostnameToVerify] resolves to a name; otherwise leaves it
+     * unset (chain-only). Client-only. JSSE matches the presented
+     * certificate against the peer host passed to `createSSLEngine`.
+     */
+    private fun configureHostnameVerification(engine: SSLEngine, config: TlsConfig) {
+        if (config.hostnameToVerify(isClient = true) == null) return
+        val params = engine.sslParameters
+        params.endpointIdentificationAlgorithm = "HTTPS"
         engine.sslParameters = params
     }
 

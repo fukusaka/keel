@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `tls`: `TlsConfig.verifyHostname` (`Boolean?`) — a client-side axis, separate from
+  `verifyMode`, controlling whether the server certificate's CN / SAN must match
+  `serverName`. `null` verifies by default (client + `verifyMode` ≠ `NONE` + `serverName`
+  set), `true` forces it, `false` verifies the chain but skips the name (#889)
 - `server-http`: `connector { }` may now be declared several times — one HTTP server binds every declared address all-or-nothing and serves the same routes on each; `KeelHttpServer.localAddresses` lists them. Server-wide settings inside the block may be set by at most one connector. (#884)
 - `engine-nwconnection`, `engine-nodejs`: implement the multi-address `bindPipeline` overload, completing it across all seven engines — one NWListener / `net.Server` per address behind one server object; accepted pipelined channels now report `localAddress` on both engines. (#882)
 - `engine-netty`: implement the multi-address `bindPipeline` overload — one `ServerBootstrap` per address sharing the engine's event loop groups, all-or-nothing rollback, close awaiting every listener. (#881)
@@ -81,6 +85,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`tls`): the JSSE / OpenSSL / AWS-LC clients now verify the server
+  certificate hostname by default (matching `serverName`); previously a chain-valid
+  certificate for any name was accepted. A name mismatch now aborts the handshake — set
+  `verifyHostname = false` to keep the prior chain-only behaviour (#889)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: the writev gather path no longer
   allocates per flush — the seam takes caller-owned native arrays and each EventLoop
   shares one pre-allocated scratch pair across its transports (#887)

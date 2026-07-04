@@ -123,6 +123,19 @@ static int keel_openssl_set_sni(SSL *ssl, const char *hostname) {
 }
 
 // ============================================================
+// Hostname verification wrapper
+// ============================================================
+//
+// Sets the expected DNS name the peer certificate must match. Chain
+// verification (SSL_VERIFY_PEER) is orthogonal; this adds CN / SAN
+// matching on top. Client-only. SSL_set1_host is a real function (not a
+// macro) but is wrapped for symmetry with the SNI setter above.
+
+static int keel_openssl_set1_host(SSL *ssl, const char *hostname) {
+    return SSL_set1_host(ssl, hostname);
+}
+
+// ============================================================
 // Protocol version range
 // ============================================================
 //
