@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.asPem
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
+import io.github.fukusaka.keel.tls.hostnameToVerify
 import io.github.fukusaka.keel.tls.TlsErrorCategory
 import io.github.fukusaka.keel.tls.TlsException
 import io.github.fukusaka.keel.tls.TlsTrustSource
@@ -42,6 +43,7 @@ import openssl.keel_openssl_ctx_load_pem_key
 import openssl.keel_openssl_err_string
 import openssl.keel_openssl_set_max_proto_version
 import openssl.keel_openssl_set_min_proto_version
+import openssl.keel_openssl_set1_host
 import openssl.keel_openssl_set_sni
 
 /**
@@ -85,6 +87,7 @@ class OpenSslCodecFactory : TlsCodecFactory {
         SSL_set_connect_state(ssl)
 
         configureSni(ssl, config)
+        configureHostnameVerification(ssl, config)
 
         val bioCtx = setupBio(ssl)
         SSL_CTX_free(ctx)
@@ -214,6 +217,22 @@ class OpenSslCodecFactory : TlsCodecFactory {
     private fun configureSni(ssl: CPointer<SSL>, config: TlsConfig) {
         val name = config.serverName ?: return
         keel_openssl_set_sni(ssl, name)
+    }
+
+    /**
+     * Enables peer-certificate hostname verification (CN / SAN must match
+     * [TlsConfig.serverName]) when [TlsConfig.hostnameToVerify] resolves to a
+     * name. Client-only: [createClientCodec] is the sole caller. Chain
+     * verification is configured separately in [configureVerification].
+     */
+    private fun configureHostnameVerification(ssl: CPointer<SSL>, config: TlsConfig) {
+        val host = config.hostnameToVerify(isClient = true) ?: return
+        if (keel_openssl_set1_host(ssl, host) != 1) {
+            throw TlsException(
+                "SSL_set1_host($host) failed: ${errorString()}",
+                TlsErrorCategory.HANDSHAKE_FAILED,
+            )
+        }
     }
 
     private fun setupBio(ssl: CPointer<SSL>): keel_openssl_bio_ctx {

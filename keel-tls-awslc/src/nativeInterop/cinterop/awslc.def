@@ -106,6 +106,18 @@ static int keel_awslc_set_sni(SSL *ssl, const char *hostname) {
 }
 
 // ============================================================
+// Hostname verification wrapper
+// ============================================================
+//
+// Sets the expected DNS name the peer certificate must match (CN / SAN),
+// on top of chain verification. AWS-LC exports SSL_set1_host (OpenSSL
+// 1.1+ API). Client-only.
+
+static int keel_awslc_set1_host(SSL *ssl, const char *hostname) {
+    return SSL_set1_host(ssl, hostname);
+}
+
+// ============================================================
 // Protocol version range
 // ============================================================
 //
