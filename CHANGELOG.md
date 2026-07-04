@@ -59,6 +59,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `tls-mbedtls`: `verifyHostname = false` now takes effect — a per-connection
+  verify callback tolerates a hostname mismatch while keeping the rest of chain
+  verification and still sending SNI, matching the other backends (#890)
 - `tls-mbedtls`: `TlsConfig.serverName` is now wired to `mbedtls_ssl_set_hostname` —
   the client sends SNI and the peer certificate is verified against the name. Previously
   the option was silently ignored, and Mbed TLS's expected-hostname requirement meant a

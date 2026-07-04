@@ -10,7 +10,6 @@ import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
 import io.github.fukusaka.keel.tls.asPem
-import kotlin.concurrent.AtomicInt
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.addressOf
@@ -40,15 +39,15 @@ import mbedtls.mbedtls_ssl_conf_max_tls_version
 import mbedtls.mbedtls_ssl_conf_min_tls_version
 import mbedtls.mbedtls_ssl_conf_own_cert
 import mbedtls.mbedtls_ssl_config
-import mbedtls.mbedtls_ssl_protocol_version
 import mbedtls.mbedtls_ssl_config_defaults
 import mbedtls.mbedtls_ssl_config_free
 import mbedtls.mbedtls_ssl_config_init
+import mbedtls.mbedtls_ssl_protocol_version
 import mbedtls.mbedtls_x509_crt
 import mbedtls.mbedtls_x509_crt_free
 import mbedtls.mbedtls_x509_crt_init
 import mbedtls.mbedtls_x509_crt_parse
-
+import kotlin.concurrent.AtomicInt
 /**
  * Shared, read-after-setup Mbed TLS resources for one
  * ([isServer], [TlsConfig]) pair.
@@ -99,6 +98,33 @@ internal class MbedTlsServerSession(
      * verifying client can only complete a handshake when this is set.
      */
     val clientHostname: String? = if (isServer) null else config.serverName
+
+    /**
+     * Whether a client should verify the certificate chain but skip the
+     * hostname match ([TlsConfig.verifyHostname] = `false`). Always false for
+     * servers and whenever verification is off entirely ([TlsVerifyMode.NONE],
+     * where nothing is checked anyway).
+     *
+     * When true, [MbedTlsCodec] still calls `mbedtls_ssl_set_hostname(ssl,
+     * serverName)` — so SNI is sent and the reference name is present — and
+     * additionally installs a per-SSL verify callback that clears only the
+     * CN-mismatch bit (`MBEDTLS_X509_BADCERT_CN_MISMATCH`), leaving every other
+     * verification result (untrusted / expired / revoked / bad key) intact.
+     * Mbed TLS invokes that callback for each cert in the peer chain with a
+     * mutable flags word, so clearing the bit makes the handshake tolerate a
+     * name mismatch while the chain is still fully verified.
+     *
+     * Keeping `set_hostname(serverName)` means **SNI is preserved** in
+     * chain-only mode, matching the JSSE / OpenSSL / AWS-LC backends. The
+     * simpler `mbedtls_ssl_set_hostname(ssl, NULL)` would also skip the CN
+     * check, but Mbed TLS ties SNI to the reference name, so it would drop SNI
+     * as a side effect — the callback avoids that so all four backends behave
+     * the same.
+     */
+    val chainOnly: Boolean =
+        !isServer &&
+            config.verifyMode != TlsVerifyMode.NONE &&
+            config.verifyHostname == false
 
     val srvcert = nativeHeap.alloc<mbedtls_x509_crt>()
     val pkey = nativeHeap.alloc<mbedtls_pk_context>()

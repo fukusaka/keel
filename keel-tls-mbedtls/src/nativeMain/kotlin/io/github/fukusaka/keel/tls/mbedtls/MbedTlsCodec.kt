@@ -23,6 +23,7 @@ import mbedtls.MBEDTLS_ERR_SSL_WANT_READ
 import mbedtls.MBEDTLS_ERR_SSL_WANT_WRITE
 import mbedtls.keel_mbedtls_bio_ctx
 import mbedtls.keel_mbedtls_bio_setup
+import mbedtls.keel_mbedtls_set_verify_chain_only
 import mbedtls.keel_mbedtls_strerror
 import mbedtls.mbedtls_ssl_close_notify
 import mbedtls.mbedtls_ssl_context
@@ -78,13 +79,29 @@ class MbedTlsCodec internal constructor(
             mbedtls_ssl_init(ssl.ptr)
             val ret = mbedtls_ssl_setup(ssl.ptr, session.conf.ptr)
             checkMbedTls(ret, "ssl_setup")
-            session.clientHostname?.let { host ->
-                // Client mode only (null for servers): sets the SNI value and
-                // the reference name for peer-certificate verification — Mbed
-                // TLS refuses to verify without an expected hostname. The
-                // string is copied into the ssl context, so its lifetime is
-                // this codec's, independent of the shared session.
-                checkMbedTls(mbedtls_ssl_set_hostname(ssl.ptr, host), "ssl_set_hostname")
+            if (session.chainOnly) {
+                // verifyHostname = false: verify the chain but tolerate a CN /
+                // SAN mismatch. Still set_hostname(host) so SNI is sent and the
+                // reference name is present, then install a per-SSL verify
+                // callback that clears only the CN-mismatch bit (leaving
+                // untrusted / expired / revoked intact). Keeping SNI matches
+                // the JSSE / OpenSSL / AWS-LC backends — set_hostname(NULL)
+                // would skip the check too, but Mbed TLS ties SNI to the
+                // reference name, so it would also drop SNI.
+                session.clientHostname?.let { host ->
+                    checkMbedTls(mbedtls_ssl_set_hostname(ssl.ptr, host), "ssl_set_hostname")
+                }
+                keel_mbedtls_set_verify_chain_only(ssl.ptr)
+            } else {
+                session.clientHostname?.let { host ->
+                    // Client mode only (null for servers): sets the SNI value
+                    // and the reference name for peer-certificate verification
+                    // — Mbed TLS refuses to verify without an expected
+                    // hostname. The string is copied into the ssl context, so
+                    // its lifetime is this codec's, independent of the shared
+                    // session.
+                    checkMbedTls(mbedtls_ssl_set_hostname(ssl.ptr, host), "ssl_set_hostname")
+                }
             }
             keel_mbedtls_bio_setup(ssl.ptr, bioCtx.ptr)
         } catch (e: Throwable) {

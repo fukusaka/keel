@@ -125,3 +125,26 @@ static void keel_mbedtls_bio_setup(mbedtls_ssl_context *ssl,
     mbedtls_ssl_set_bio(ssl, ctx,
                         keel_mbedtls_bio_send, keel_mbedtls_bio_recv, NULL);
 }
+
+// chain-only verification (TlsConfig.verifyHostname = false): a per-SSL
+// verify callback that clears ONLY the CN / SAN mismatch bit and leaves
+// every other verification result intact (untrusted / expired / revoked
+// still fail). Mbed TLS calls this for each cert in the peer chain with a
+// mutable flags word (x509_crt_merge_flags_with_cb), so clearing the bit
+// here makes the handshake tolerate a name mismatch while the chain is
+// still verified. Client-only. Installed with mbedtls_ssl_set_hostname()
+// still set to serverName, so SNI is sent (unlike set_hostname(NULL),
+// which would also drop SNI).
+static int keel_mbedtls_verify_skip_hostname(void *ctx, mbedtls_x509_crt *crt,
+                                             int depth, uint32_t *flags) {
+    (void)ctx; (void)crt; (void)depth;
+    *flags &= ~(uint32_t)MBEDTLS_X509_BADCERT_CN_MISMATCH;
+    return 0;
+}
+
+// Install the chain-only verify callback on a per-connection ssl context
+// (mbedtls_ssl_set_verify, not conf_verify — the config is shared across
+// codecs derived from one session and must not be mutated).
+static void keel_mbedtls_set_verify_chain_only(mbedtls_ssl_context *ssl) {
+    mbedtls_ssl_set_verify(ssl, keel_mbedtls_verify_skip_hostname, NULL);
+}
