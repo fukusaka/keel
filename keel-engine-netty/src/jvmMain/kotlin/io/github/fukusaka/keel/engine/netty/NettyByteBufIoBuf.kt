@@ -54,10 +54,12 @@ import java.nio.ByteBuffer
  * exists because `AbstractIoBuf` close-time runs `freeBacking()` on
  * own-memory backings (`nativeHeap.free` / chunk-arena `returnChunkRun`),
  * and engine shutdown can land that on a pool that is itself going away.
- * `NettyByteBufIoBuf` sits over a Netty `PooledByteBufAllocator` pool —
- * those pools are process-lifetime (no `close()` API in
- * `PooledByteBufAllocator`), so returning the wrapper's reserve to the
- * pool at close time is always safe and is the right cleanup. Folding
+ * `NettyByteBufIoBuf` sits over a Netty allocator's pool — the adaptive
+ * `ch.alloc()` default on the Netty engine, or `PooledByteBufAllocator`
+ * via [nettyByteBufAllocator] — and those pools are process-lifetime
+ * (Netty's allocators expose no `close()` API), so returning the
+ * wrapper's reserve to the pool at close time is always safe and is the
+ * right cleanup. Folding
  * close into `byteBuf.release()` also eliminates the TOCTOU window that
  * a separate `closed` flag would carry (the flag check and
  * `byteBuf.retain()` cannot be fused into a single CAS across two
