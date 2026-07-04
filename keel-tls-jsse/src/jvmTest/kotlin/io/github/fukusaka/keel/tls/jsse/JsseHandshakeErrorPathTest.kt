@@ -8,7 +8,6 @@ import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsErrorCategory
 import io.github.fukusaka.keel.tls.TlsException
-import io.github.fukusaka.keel.tls.TlsResult
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
@@ -50,16 +49,16 @@ import kotlin.test.assertTrue
  * for diagnostics instead.
  *
  * **Scope note**: version-downgrade is covered via
- * [TlsConfig.minVersion] / [maxVersion]. SNI-hostname-mismatch is not yet
- * covered — keel's [TlsConfig] does not enable SSLEngine endpoint
- * identification (`setEndpointIdentificationAlgorithm("HTTPS")`), so a
- * hostname mismatch cannot be induced through the public config; that
- * remains a follow-up gated on a hostname-verification knob.
+ * [TlsConfig.minVersion] / [maxVersion]. SNI-hostname-mismatch lives in
+ * [JsseHostnameVerificationTest], which uses [TlsConfig.verifyHostname]
+ * (wired to `setEndpointIdentificationAlgorithm("HTTPS")`) to induce and
+ * pin the mismatch.
  */
 class JsseHandshakeErrorPathTest {
 
     private val allocator: BufferAllocator = DefaultAllocator
     private val factory = JsseTlsCodecFactory()
+    private val pump = JsseHandshakePump(allocator)
 
     private val serverCerts = TlsCertificateSource.Pem(
         TestCertificates.SERVER_CERT,
@@ -82,7 +81,7 @@ class JsseHandshakeErrorPathTest {
         )
 
         val error = assertFailsWith<TlsException> {
-            driveHandshake(client = client, server = server)
+            pump.driveHandshake(client = client, server = server)
         }
         assertEquals(
             TlsErrorCategory.PROTOCOL_ERROR,
@@ -113,7 +112,7 @@ class JsseHandshakeErrorPathTest {
         )
 
         val error = assertFailsWith<TlsException> {
-            driveHandshake(client = client, server = server)
+            pump.driveHandshake(client = client, server = server)
         }
         assertEquals(
             TlsErrorCategory.PROTOCOL_ERROR,
@@ -140,7 +139,7 @@ class JsseHandshakeErrorPathTest {
         )
 
         assertFailsWith<TlsException>("non-overlapping version ranges must abort the handshake") {
-            driveHandshake(client = client, server = server)
+            pump.driveHandshake(client = client, server = server)
         }
         assertFalse(server.isHandshakeComplete, "server must not complete when no common version exists")
 
@@ -161,7 +160,7 @@ class JsseHandshakeErrorPathTest {
             TlsConfig(trustAnchors = TlsTrustSource.InsecureTrustAll, verifyMode = TlsVerifyMode.NONE),
         )
 
-        driveHandshake(client = client, server = server)
+        pump.driveHandshake(client = client, server = server)
 
         assertTrue(client.isHandshakeComplete, "client handshake must complete in the control case")
         assertTrue(server.isHandshakeComplete, "server handshake must complete in the control case")
@@ -170,102 +169,4 @@ class JsseHandshakeErrorPathTest {
         server.close()
     }
 
-    // --- In-memory handshake pump ---
-
-    /**
-     * Drives a TLS handshake between [client] and [server] entirely in
-     * memory. The client speaks first (ClientHello); thereafter each
-     * side's outbound records are fed to the peer until both complete or
-     * the round budget is exhausted. Any [TlsException] thrown by a codec
-     * propagates to the caller.
-     */
-    private fun driveHandshake(client: TlsCodec, server: TlsCodec) {
-        var inFlight = stepCodec(client, ByteArray(0)) // produce ClientHello
-        var rounds = 0
-        while (rounds++ < MAX_ROUNDS) {
-            if (client.isHandshakeComplete && server.isHandshakeComplete) return
-
-            val serverOut = stepCodec(server, inFlight)
-            if (client.isHandshakeComplete && server.isHandshakeComplete) return
-
-            val clientOut = stepCodec(client, serverOut)
-            inFlight = clientOut
-
-            if (clientOut.isEmpty() && serverOut.isEmpty()) {
-                if (client.isHandshakeComplete && server.isHandshakeComplete) return
-                error("handshake stalled with no bytes in flight and handshake incomplete")
-            }
-        }
-        error("handshake did not converge within $MAX_ROUNDS rounds")
-    }
-
-    /**
-     * Feeds [input] (peer ciphertext, possibly empty) into [codec] and
-     * returns all ciphertext the codec produces in response. Inbound
-     * records are unwrapped one at a time; whenever the codec signals
-     * [TlsResult.NEED_WRAP] (or after the input is drained) the codec's
-     * pending outbound handshake records are wrapped and collected.
-     */
-    private fun stepCodec(codec: TlsCodec, input: ByteArray): ByteArray {
-        val out = ArrayList<Byte>()
-        if (input.isNotEmpty()) {
-            val cipherIn = allocator.allocate(input.size)
-            cipherIn.writeByteArray(input, 0, input.size)
-            val plain = allocator.allocate(PLAINTEXT_BUF)
-            while (cipherIn.readableBytes > 0) {
-                val r = codec.unprotect(cipherIn, plain)
-                // Per the TlsCodec contract the caller advances the
-                // ciphertext readerIndex by bytesConsumed; without this the
-                // same record is re-fed and the AEAD key schedule desyncs.
-                cipherIn.readerIndex += r.bytesConsumed
-                if (r.status == TlsResult.NEED_WRAP) {
-                    drainProtect(codec, out)
-                }
-                // Stop if the codec made no progress and is not asking to
-                // wrap — feeding the same bytes again would spin forever.
-                if (r.bytesConsumed == 0 && r.status != TlsResult.NEED_WRAP) break
-                if (r.status == TlsResult.CLOSED) break
-            }
-            plain.release()
-            cipherIn.release()
-        }
-        // Drain any pending outbound flight (ClientHello on the first
-        // call, the client Finished after consuming the server flight,
-        // etc.). On a codec with nothing to send this is a cheap no-op.
-        drainProtect(codec, out)
-        return out.toByteArray()
-    }
-
-    /**
-     * Wraps [codec]'s pending outbound records (with empty plaintext)
-     * into [out], looping while the codec reports [TlsResult.NEED_WRAP]
-     * so a multi-record handshake flight is fully produced.
-     */
-    private fun drainProtect(codec: TlsCodec, out: MutableList<Byte>) {
-        val emptyPlain = allocator.allocate(EMPTY_PLAINTEXT_BUF)
-        try {
-            while (true) {
-                val cipher = allocator.allocate(CIPHERTEXT_BUF)
-                val r = codec.protect(emptyPlain, cipher)
-                val produced = cipher.readableBytes
-                for (i in 0 until produced) out.add(cipher.getByte(cipher.readerIndex + i))
-                cipher.release()
-                if (r.status != TlsResult.NEED_WRAP) break
-            }
-        } finally {
-            emptyPlain.release()
-        }
-    }
-
-    private companion object {
-        // TLS records cap at 2^14 + overhead; size handshake buffers
-        // generously so a full flight (certificate chain) fits.
-        private const val CIPHERTEXT_BUF = 18_432
-        private const val PLAINTEXT_BUF = 18_432
-        private const val EMPTY_PLAINTEXT_BUF = 16
-
-        // Handshake completes in a handful of round-trips; the bound just
-        // guards against a pump bug spinning forever.
-        private const val MAX_ROUNDS = 32
-    }
 }
