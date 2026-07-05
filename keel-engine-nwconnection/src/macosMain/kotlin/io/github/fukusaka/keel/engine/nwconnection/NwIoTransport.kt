@@ -457,36 +457,78 @@ internal class NwIoTransport(
     private var pendingFlushCompletion: CompletableDeferred<Unit>? = null
 
     /**
-     * Suspends until the in-flight [keel_nw_write_async] callback fires.
+     * True while an `nw_connection_send` initiated by [performFlush] has not yet
+     * fired its completion callback. Used by [flush] to coalesce back-to-back
+     * `requestFlush` calls that arrive while a previous send is in flight:
+     * their bytes accumulate in [pendingWrites] and are drained together by
+     * [drainInFlightCompletion] when the in-flight callback fires. The first
+     * flush of any response bypasses this and dispatches immediately, so
+     * single-shot responses (`/hello`, `/large`) pay no extra latency, while
+     * high-frequency flushes (SSE / chunked streaming) collapse per-frame
+     * `nw_connection_send` calls into gathered writev sends.
      *
-     * Suspending releases connQueue so the write-completion callback
-     * (which also runs on connQueue) can execute and complete
-     * [pendingFlushCompletion]. Once resumed, the write is confirmed
-     * delivered to the network layer and [close] can safely cancel the
-     * connection without discarding the data.
+     * Touched only from connQueue (same invariant as [pendingFlushCompletion]).
+     */
+    private var writeInFlight: Boolean = false
+
+    /**
+     * Suspends until every currently-outstanding `nw_connection_send` initiated
+     * by [flush] has fired its completion callback.
+     *
+     * Ordinarily this awaits one completion and returns. When [drainInFlightCompletion]
+     * chains another send (bytes accumulated in [pendingWrites] while the previous
+     * send was in flight), it swaps [pendingFlushCompletion] to a new deferred
+     * before signalling the old one; the loop below observes the swap and awaits
+     * the new completion too, so the caller never resumes with data still in flight.
      */
     override suspend fun awaitPendingFlush() {
-        pendingFlushCompletion?.await()
-        pendingFlushCompletion = null
+        while (true) {
+            val current = pendingFlushCompletion ?: return
+            current.await()
+            if (pendingFlushCompletion === current) {
+                pendingFlushCompletion = null
+                return
+            }
+            // drainInFlightCompletion queued another send; wait for it too.
+        }
     }
 
     /**
-     * Sends all pending writes via NWConnection.
+     * Sends pending writes via NWConnection.
      *
-     * NWConnection's `nw_connection_send` accepts data without EAGAIN —
-     * flow control is handled internally by the framework. The write callback
-     * releases buffers, completes [pendingFlushCompletion] so that
-     * [awaitPendingFlush] can resume, and invokes [onFlushComplete].
+     * NWConnection's `nw_connection_send` accepts data without EAGAIN — flow
+     * control is handled internally by the framework. Each send incurs a GCD
+     * dispatch onto the connection queue, so per-frame flushing on chunked
+     * streaming (SSE) turns into N × `nw_connection_send`, which caps
+     * throughput. To collapse those without breaking the per-frame streaming
+     * semantic, [flush] only initiates a send when no other send is in
+     * flight; concurrent `requestFlush` calls accumulate in [pendingWrites]
+     * and are drained by [drainInFlightCompletion] when the in-flight
+     * callback fires.
      *
      * @return always `false` because NWConnection writes are asynchronous.
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
+        // Coalesce with the outstanding send — its completion callback will
+        // pick up whatever we accumulate here via drainInFlightCompletion.
+        if (writeInFlight) return false
 
         val completion = CompletableDeferred<Unit>()
         pendingFlushCompletion = completion
+        writeInFlight = true
+        performFlush(completion)
+        return false
+    }
 
-        // Transfer ownership to FlushContext for release in callback.
+    /**
+     * Drains one batch of [pendingWrites] via `nw_connection_send`.
+     *
+     * The caller MUST set [writeInFlight] before calling; [drainInFlightCompletion]
+     * clears it and re-drives another [performFlush] if more writes have
+     * accumulated in the meantime.
+     */
+    private fun performFlush(completion: CompletableDeferred<Unit>) {
         val writes = ArrayList(pendingWrites)
         pendingWrites.clear()
         val totalBytes = writes.sumOf { it.length }
@@ -497,9 +539,17 @@ internal class NwIoTransport(
             val ptr = checkNotNull(pw.buf.unsafePointer + pw.offset) {
                 "buf.unsafePointer + offset returned null; IoBuf pointer must be valid"
             }
-            val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion, logger) { delta ->
-                transport.updatePendingBytes(delta)
-            })
+            val ref = StableRef.create(
+                FlushContext(
+                    writes,
+                    totalBytes,
+                    onFlushComplete,
+                    completion,
+                    logger,
+                    { delta -> transport.updatePendingBytes(delta) },
+                    { transport.drainInFlightCompletion() },
+                ),
+            )
             keel_nw_write_async(conn, ptr, pw.length.toUInt(), flushCallback, ref.asCPointer())
         } else {
             memScoped {
@@ -512,20 +562,43 @@ internal class NwIoTransport(
                     bufs[i] = p.reinterpret()
                     lens[i] = writes[i].length.toUInt()
                 }
-                val ref = StableRef.create(FlushContext(writes, totalBytes, onFlushComplete, completion, logger) { delta ->
-                    transport.updatePendingBytes(delta)
-                })
+                val ref = StableRef.create(
+                    FlushContext(
+                        writes,
+                        totalBytes,
+                        onFlushComplete,
+                        completion,
+                        logger,
+                        { delta -> transport.updatePendingBytes(delta) },
+                        { transport.drainInFlightCompletion() },
+                    ),
+                )
                 keel_nw_writev_async(conn, bufs.reinterpret(), lens, writes.size, flushCallback, ref.asCPointer())
             }
         }
-        // The write is outstanding until its completion callback drains it. NWConnection
-        // applies the peer's flow control to that completion (it is delayed while the
-        // peer's receive window is full), so arming the write-idle timer here closes a
-        // slow-read peer that never drains the response. The completion's
-        // updatePendingBytes refreshes the timer on partial drain and cancels it once
-        // pendingBytes reaches 0 (a fast peer therefore never trips it).
+        // Arm the write-idle timer here (the send is outstanding until its
+        // callback drains it). NWConnection applies peer flow control to that
+        // callback (delayed while the peer's receive window is full), so this
+        // is where a slow-read peer that never drains the response gets
+        // detected. The completion's updatePendingBytes refreshes the timer on
+        // partial drain and cancels it once pendingBytes reaches 0.
         armWriteIdleTimeout()
-        return false // Always async.
+    }
+
+    /**
+     * Invoked from [flushCallback] after the in-flight send completes. Clears
+     * [writeInFlight] and, if [pendingWrites] accumulated more bytes while
+     * the send was outstanding, kicks off another [performFlush] so the
+     * coalesced batch drains without waiting for the next caller-driven
+     * `requestFlush`.
+     */
+    private fun drainInFlightCompletion() {
+        writeInFlight = false
+        if (pendingWrites.isEmpty()) return
+        val nextCompletion = CompletableDeferred<Unit>()
+        pendingFlushCompletion = nextCompletion
+        writeInFlight = true
+        performFlush(nextCompletion)
     }
 
     /**
@@ -621,6 +694,7 @@ internal class NwIoTransport(
         val completion: CompletableDeferred<Unit>,
         val logger: Logger,
         val onPendingBytesUpdate: (Int) -> Unit,
+        val onDrainCheck: () -> Unit,
     )
 
     companion object {
@@ -696,8 +770,17 @@ internal class NwIoTransport(
             flushCtx.onPendingBytesUpdate(-flushCtx.totalBytes)
             // Resume any awaitPendingFlush() waiter before invoking onComplete
             // so that the waiter can observe a fully-settled write state.
+            // Drain any coalesced writes BEFORE resuming any awaitPendingFlush waiter,
+            // so the waiter observes writeInFlight=false when it resumes. If we
+            // completed first and the awaiter ran inline, it could enqueue a new
+            // chunk while writeInFlight was still true — flush() would coalesce it
+            // and close() would then cancel it. drainInFlightCompletion may swap
+            // pendingFlushCompletion to a new deferred; awaitPendingFlush chains
+            // onto that so no send is silently orphaned.
+            flushCtx.onDrainCheck()
             flushCtx.completion.complete(Unit)
-            flushCtx.onComplete?.invoke() ?: Unit
+            flushCtx.onComplete?.invoke()
+            Unit
         }
     }
 }
