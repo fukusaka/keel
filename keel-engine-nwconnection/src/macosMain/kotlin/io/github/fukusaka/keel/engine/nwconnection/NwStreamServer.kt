@@ -76,6 +76,8 @@ internal class NwStreamServer(
     private val idleReadPolicy: IdleReadPolicy,
     /** Engine-wide default idle timeout; the per-server [BindConfig.idleTimeoutMillis] overrides it. */
     private val idleTimeoutMillis: Long,
+    /** Engine-wide `IoEngineConfig.flushCoalescing`, passed through to every accepted connection's transport. */
+    private val flushCoalescing: Boolean,
     /**
      * Ties each accepted connection's transport to the engine's coroutine scope
      * so engine close joins its async teardown (see `NwEngine.trackConnection`).
@@ -189,8 +191,13 @@ internal class NwStreamServer(
         val remoteAddr = extractAddress(conn)
         val connLogger = loggerFactory.logger("NwPipelinedChannel")
         val transport = NwIoTransport(
-            conn, connQueue, allocator, idleReadPolicy, connLogger,
+            conn,
+            connQueue,
+            allocator,
+            idleReadPolicy,
+            connLogger,
             idleTimeoutMillis = bindConfig.idleTimeoutMillis ?: idleTimeoutMillis,
+            flushCoalescing = flushCoalescing,
         )
         trackTransport(transport)
         val channel = NwPipelinedChannel(transport, connLogger, remoteAddr, localAddress)
