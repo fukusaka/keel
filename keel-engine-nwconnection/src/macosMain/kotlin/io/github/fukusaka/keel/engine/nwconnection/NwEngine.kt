@@ -183,6 +183,7 @@ class NwEngine(
                 config.loggerFactory,
                 config.idleReadPolicy,
                 config.idleTimeoutMillis,
+                config.flushCoalescing,
                 ::trackConnection,
             )
 
@@ -376,8 +377,13 @@ class NwEngine(
                     nw_connection_start(conn)
 
                     val transport = NwIoTransport(
-                        conn, connQueue, this@NwEngine.allocator, this@NwEngine.config.idleReadPolicy, logger,
+                        conn,
+                        connQueue,
+                        this@NwEngine.allocator,
+                        this@NwEngine.config.idleReadPolicy,
+                        logger,
                         idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
+                        flushCoalescing = this@NwEngine.config.flushCoalescing,
                     )
                     trackConnection(transport)
                     val channel = NwPipelinedChannel(transport, logger, localAddress = boundLocal.value)
@@ -508,8 +514,13 @@ class NwEngine(
         logger.debug { "Connected to $remoteAddr" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
         val transport = NwIoTransport(
-            conn, connQueue, allocator, this@NwEngine.config.idleReadPolicy, channelLogger,
+            conn,
+            connQueue,
+            allocator,
+            this@NwEngine.config.idleReadPolicy,
+            channelLogger,
             idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
+            flushCoalescing = this@NwEngine.config.flushCoalescing,
         )
         trackConnection(transport)
         return NwPipelinedChannel(transport, channelLogger, remoteAddr, null)
@@ -555,6 +566,7 @@ class NwEngine(
                 config.loggerFactory,
                 this@NwEngine.config.idleReadPolicy,
                 this@NwEngine.config.idleTimeoutMillis,
+                this@NwEngine.config.flushCoalescing,
                 ::trackConnection,
             )
             nw_listener_set_queue(lsnr, listenerQueue)
@@ -622,8 +634,13 @@ class NwEngine(
         logger.debug { "Connected to UDS ${address.path}" }
         val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
         val transport = NwIoTransport(
-            conn, connQueue, allocator, this@NwEngine.config.idleReadPolicy, channelLogger,
+            conn,
+            connQueue,
+            allocator,
+            this@NwEngine.config.idleReadPolicy,
+            channelLogger,
             idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
+            flushCoalescing = this@NwEngine.config.flushCoalescing,
         )
         trackConnection(transport)
         return NwPipelinedChannel(transport, channelLogger, address, address)
@@ -678,8 +695,13 @@ class NwEngine(
                     nw_connection_start(conn)
 
                     val transport = NwIoTransport(
-                        conn, connQueue, this@NwEngine.allocator, this@NwEngine.config.idleReadPolicy, logger,
+                        conn,
+                        connQueue,
+                        this@NwEngine.allocator,
+                        this@NwEngine.config.idleReadPolicy,
+                        logger,
                         idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
+                        flushCoalescing = this@NwEngine.config.flushCoalescing,
                     )
                     trackConnection(transport)
                     // The UDS listener path is the accepted socket's local

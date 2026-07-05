@@ -283,6 +283,11 @@ internal class NioIoTransport(
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
+        // Opt-out: bypass coalescing when the engine config disables it.
+        // Each flush() drains synchronously through performFlush, matching
+        // the pre-#897 immediate-send behaviour for latency-sensitive
+        // workloads.
+        if (!eventLoop.flushCoalescing) return performFlush()
         if (flushScheduled) return false
         flushScheduled = true
         val transport = this

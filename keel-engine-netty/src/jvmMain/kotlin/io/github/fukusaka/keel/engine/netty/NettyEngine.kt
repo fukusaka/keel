@@ -204,6 +204,7 @@ class NettyEngine(
                     val transport = NettyIoTransport(
                         ch, allocatorFor(ch), effectiveIdleReadPolicy,
                         effectiveIdleTimeout(bindConfig.idleTimeoutMillis),
+                        config.flushCoalescing,
                     )
                     val keelChannel = NettyPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
@@ -271,6 +272,7 @@ class NettyEngine(
                     val transport = NettyIoTransport(
                         ch, allocatorFor(ch), effectiveIdleReadPolicy,
                         effectiveIdleTimeout(bindConfig.idleTimeoutMillis),
+                        config.flushCoalescing,
                     )
                     val keelChannel = NettyPipelinedChannel(
                         transport, logger, remoteAddr, localAddr,
@@ -360,6 +362,7 @@ class NettyEngine(
         val transport = NettyIoTransport(
             nettyChannel, allocatorFor(nettyChannel), effectiveIdleReadPolicy,
             effectiveIdleTimeout(idleTimeoutOverride),
+            config.flushCoalescing,
         )
         val keelChannel = NettyPipelinedChannel(
             transport, logger, remoteAddr, localAddr,
@@ -417,6 +420,7 @@ class NettyEngine(
         val transport = NettyIoTransport(
             nettyChannel, allocatorFor(nettyChannel), effectiveIdleReadPolicy,
             effectiveIdleTimeout(idleTimeoutOverride),
+            config.flushCoalescing,
         )
         val keelChannel = NettyPipelinedChannel(
             transport, logger, remoteAddr, localAddr,

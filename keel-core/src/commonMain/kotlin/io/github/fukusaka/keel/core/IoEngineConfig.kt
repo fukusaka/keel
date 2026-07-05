@@ -124,6 +124,30 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  *                          The other engines (io_uring / nio / netty / nodejs /
  *                          nwconnection) ignore it for now; it is wired into them
  *                          in follow-up changes.**
+ * @property flushCoalescing When `true` (default), the write path coalesces
+ *                          per-frame `requestFlush` calls that land in the same
+ *                          EventLoop tick into a single gathered send (one
+ *                          `writev(2)` on the POSIX engines, one
+ *                          `nw_connection_send`/`Socket._writev`/`Channel.flush`
+ *                          on the push engines). This is the ~4-7x SSE /
+ *                          chunked-streaming speedup delivered by PRs
+ *                          #894 / #895 / #896 / #897 — see the release notes
+ *                          for the per-engine mechanism.
+ *
+ *                          When `false`, every `flush()` issues its send
+ *                          immediately. Correctness is identical; the trade-off
+ *                          is one EL tick of added per-frame latency (μs on
+ *                          loopback) for the streaming throughput gain. Choose
+ *                          `false` when strict per-frame delivery matters more
+ *                          than throughput (real-time protocols, financial
+ *                          tickers, latency-sensitive HTTP-long-polling).
+ *
+ *                          Currently honoured by the nwconnection, nodejs,
+ *                          netty, and nio engines (the four batch-coalescing
+ *                          PRs). The kqueue / epoll / io_uring engines still
+ *                          send per frame regardless and treat this field as
+ *                          a no-op; they may adopt the same pattern in a
+ *                          follow-up once measurement justifies it.
  */
 data class IoEngineConfig(
     val allocator: BufferAllocator = defaultAllocator(),
@@ -133,6 +157,7 @@ data class IoEngineConfig(
     val idleReadPolicy: IdleReadPolicy = IdleReadPolicy.DETECT_PEER_CLOSE,
     val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     val idleTimeoutMillis: Long = 0,
+    val flushCoalescing: Boolean = true,
 ) {
     init {
         requireValidReadBufferSize(readBufferSize)

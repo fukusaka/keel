@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `IoEngineConfig.flushCoalescing: Boolean = true` — the opt-out for the per-tick flush coalescing added by #894 / #895 / #896 / #897. When left at the default the write path collapses per-frame `requestFlush` calls into one gathered send (the ~4-7x SSE / chunked-streaming speedup). Set to `false` to make every `flush()` issue its send immediately for latency-sensitive workloads (real-time protocols, financial tickers). Honoured by the nwconnection, nodejs, netty, and nio engines; the kqueue / epoll / io_uring engines still send per frame regardless and treat the field as a no-op. (#898)
+
 - `tls`: `TlsConfig.verifyHostname` (`Boolean?`) — a client-side axis, separate from
   `verifyMode`, controlling whether the server certificate's CN / SAN must match
   `serverName`. `null` verifies by default (client + `verifyMode` ≠ `NONE` + `serverName`

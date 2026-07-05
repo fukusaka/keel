@@ -94,6 +94,7 @@ class NioEngine(
             config.allocator,
             config.readBufferSize,
             config.idleTimeoutMillis,
+            config.flushCoalescing,
         )
     private var closed = false
 

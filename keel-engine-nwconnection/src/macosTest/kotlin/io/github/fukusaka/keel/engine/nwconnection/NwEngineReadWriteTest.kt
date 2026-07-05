@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.native.posix.PosixRawClient
@@ -410,6 +411,40 @@ class NwEngineReadWriteTest {
                 server.close()
                 engine.close()
             }
+        }
+    }
+
+    @Test
+    fun echoRoundTripWithFlushCoalescingDisabled() = runBlocking {
+        // Verifies that IoEngineConfig.flushCoalescing = false preserves
+        // correctness — every flush issues its own nw_connection_send
+        // immediately instead of coalescing with the in-flight one.
+        withTimeout(5.seconds) {
+            val engine = NwEngine(IoEngineConfig(flushCoalescing = false))
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+
+            val clientFd = connectRawClient(port)
+            val serverCh = server.accept()
+
+            rawWrite(clientFd, "hello")
+
+            val readBuf = DefaultAllocator.allocate(64)
+            val n = serverCh.read(readBuf)
+            assertEquals(5, n)
+
+            serverCh.write(readBuf)
+            serverCh.flush()
+
+            val echo = PosixRawClient.rawReadUpTo(clientFd, 5)
+            assertEquals("hello", echo)
+
+            withContext(serverCh.ioDispatcher) {
+                serverCh.close()
+            }
+            close(clientFd)
+            server.close()
+            engine.close()
         }
     }
 

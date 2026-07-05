@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.nodejs
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import kotlin.test.Test
@@ -288,6 +289,43 @@ class NodeEngineReadWriteTest {
         assertEquals(-1, n)
         buf.release()
 
+        serverCh.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun echoRoundTripWithFlushCoalescingDisabled() = runTest(timeout = 15.seconds) {
+        // Verifies that IoEngineConfig.flushCoalescing = false preserves
+        // correctness — each keel-side flush issues an immediate socket.write
+        // instead of corking + scheduling a setImmediate uncork.
+        val engine = NodeEngine(IoEngineConfig(flushCoalescing = false))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientCh = engine.connect("127.0.0.1", port)
+        val serverCh = server.accept()
+
+        val writeBuf = DefaultAllocator.allocate(64)
+        for (b in "hello".encodeToByteArray()) writeBuf.writeByte(b)
+        clientCh.write(writeBuf)
+        clientCh.flush()
+
+        val readBuf = DefaultAllocator.allocate(64)
+        val n = serverCh.read(readBuf)
+        assertEquals(5, n)
+
+        serverCh.write(readBuf)
+        serverCh.flush()
+
+        val echoBuf = DefaultAllocator.allocate(64)
+        val n2 = clientCh.read(echoBuf)
+        assertEquals(5, n2)
+        val received = ByteArray(5) { echoBuf.readByte() }.decodeToString()
+        assertEquals("hello", received)
+
+        echoBuf.release()
+        clientCh.close()
         serverCh.close()
         server.close()
         engine.close()

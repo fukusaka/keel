@@ -76,6 +76,13 @@ internal class NioEventLoop(
      * [io.github.fukusaka.keel.core.ConnectConfig.idleTimeoutMillis] is `null`.
      */
     val idleTimeoutMillis: Long = 0,
+    /**
+     * Engine-wide default for `IoEngineConfig.flushCoalescing`. When `true`
+     * (default), transports on this loop coalesce per-frame `requestFlush`
+     * calls into one gathered `writev(2)` per EL tick. When `false`, every
+     * `flush()` issues its `SocketChannel.write` immediately.
+     */
+    val flushCoalescing: Boolean = true,
 ) : CoroutineDispatcher() {
 
     internal val selector: Selector = Selector.open()
@@ -586,9 +593,17 @@ internal class NioEventLoopGroup(
     allocator: BufferAllocator,
     readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     idleTimeoutMillis: Long = 0,
+    flushCoalescing: Boolean = true,
 ) {
     private val loops = Array(size) { i ->
-        NioEventLoop("$namePrefix-$i", logger, allocator.createChild(), readBufferSize, idleTimeoutMillis)
+        NioEventLoop(
+            "$namePrefix-$i",
+            logger,
+            allocator.createChild(),
+            readBufferSize,
+            idleTimeoutMillis,
+            flushCoalescing,
+        )
     }
     private val index = java.util.concurrent.atomic.AtomicInteger(0)
 

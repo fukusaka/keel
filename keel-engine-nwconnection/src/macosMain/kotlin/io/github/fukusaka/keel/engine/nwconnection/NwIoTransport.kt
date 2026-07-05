@@ -153,6 +153,7 @@ internal class NwIoTransport(
     private val idleReadPolicy: IdleReadPolicy,
     private val logger: Logger,
     idleTimeoutMillis: Long = 0,
+    private val flushCoalescing: Boolean = true,
     // Per-connection allocator child — see KDoc paragraph "Per-connection
     // allocator confinement" below. Uses createUntrackedChild() so the engine
     // (parent) allocator does NOT retain and cascade-close it: this connection
@@ -510,9 +511,14 @@ internal class NwIoTransport(
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
-        // Coalesce with the outstanding send — its completion callback will
-        // pick up whatever we accumulate here via drainInFlightCompletion.
-        if (writeInFlight) return false
+        // Opt-out: skip the in-flight coalescing when the engine config disables
+        // it. Every flush() issues its own nw_connection_send immediately —
+        // matches the pre-#894 behaviour for latency-sensitive workloads.
+        if (flushCoalescing) {
+            // Coalesce with the outstanding send — its completion callback will
+            // pick up whatever we accumulate here via drainInFlightCompletion.
+            if (writeInFlight) return false
+        }
 
         val completion = CompletableDeferred<Unit>()
         pendingFlushCompletion = completion

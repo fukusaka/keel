@@ -81,6 +81,7 @@ internal class NettyIoTransport(
     allocator: BufferAllocator,
     private val idleReadPolicy: IdleReadPolicy,
     idleTimeoutMillis: Long = 0,
+    private val flushCoalescing: Boolean = true,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher = NettyEventLoopDispatcher(nettyChannel.eventLoop())
@@ -408,12 +409,19 @@ internal class NettyIoTransport(
                     bb.limit(pw.offset + pw.length)
                     Unpooled.wrappedBuffer(bb)
                 }
-                // write() queues into ChannelOutboundBuffer's unflushed segment;
-                // the deferred flush() below promotes them together.
-                lastFuture = nettyChannel.write(nettyBuf)
+                // With `flushCoalescing = true` (default), write() only queues
+                // into ChannelOutboundBuffer's unflushed segment; the deferred
+                // flush() scheduled below promotes them together. With
+                // `flushCoalescing = false`, opt-out to immediate send by using
+                // writeAndFlush on the last buffer (Netty's pre-#896 pattern).
+                lastFuture = if (flushCoalescing || pw !== writes.last()) {
+                    nettyChannel.write(nettyBuf)
+                } else {
+                    nettyChannel.writeAndFlush(nettyBuf)
+                }
             }
 
-            if (!flushScheduled) {
+            if (flushCoalescing && !flushScheduled) {
                 flushScheduled = true
                 val transport = this
                 nettyChannel.eventLoop().execute {

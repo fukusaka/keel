@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import kotlin.test.Test
@@ -280,6 +281,36 @@ class NettyEngineReadWriteTest {
 
         buf.release()
         ch.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun echoRoundTripWithFlushCoalescingDisabled() = runTest {
+        // Verifies that IoEngineConfig.flushCoalescing = false preserves
+        // correctness — each keel-side flush uses Netty's writeAndFlush on
+        // the final buffer instead of deferring flush() to the next EL tick.
+        val engine = NettyEngine(IoEngineConfig(flushCoalescing = false))
+        val server = engine.bind("127.0.0.1", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val client = connectRawClient(port)
+        val serverCh = server.accept()
+
+        rawWrite(client, "hello")
+
+        val readBuf = DefaultAllocator.allocate(64)
+        val n = serverCh.read(readBuf)
+        assertEquals(5, n)
+
+        serverCh.write(readBuf)
+        serverCh.flush()
+
+        val echo = rawRead(client, 5)
+        assertEquals("hello", echo)
+
+        serverCh.close()
+        client.close()
         server.close()
         engine.close()
     }
