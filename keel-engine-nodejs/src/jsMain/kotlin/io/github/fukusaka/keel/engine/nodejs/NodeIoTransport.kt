@@ -51,6 +51,7 @@ internal class NodeIoTransport(
     private val socket: Socket,
     allocator: BufferAllocator,
     idleTimeoutMillis: Long = 0,
+    private val flushCoalescing: Boolean = true,
 ) : AbstractIoTransport(allocator) {
 
     override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
@@ -192,7 +193,10 @@ internal class NodeIoTransport(
 
         var totalFlushed = 0
         var backpressured = false
-        if (!corkPending) {
+        // Opt-out: skip the cork/uncork protocol when the engine config disables
+        // coalescing. Each socket.write goes straight to Node's internal buffer
+        // as it did before #895.
+        if (flushCoalescing && !corkPending) {
             socket.cork()
             corkPending = true
             setImmediate {

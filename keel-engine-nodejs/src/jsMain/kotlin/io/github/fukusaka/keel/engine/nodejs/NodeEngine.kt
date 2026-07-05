@@ -260,6 +260,7 @@ class NodeEngine(
                 typedSocket,
                 this.allocator,
                 idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
+                flushCoalescing = this@NodeEngine.config.flushCoalescing,
             )
             // The UDS listener path is the accepted socket's local address
             // by definition.
@@ -321,6 +322,7 @@ class NodeEngine(
                 typedSocket,
                 this.allocator,
                 idleTimeoutMillis = effectiveIdleTimeout(config.idleTimeoutMillis),
+                flushCoalescing = this@NodeEngine.config.flushCoalescing,
             )
             val channel = NodePipelinedChannel(
                 transport,
@@ -381,6 +383,7 @@ class NodeEngine(
                     socket,
                     allocator,
                     idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
+                    flushCoalescing = this@NodeEngine.config.flushCoalescing,
                 )
                 val channel = NodePipelinedChannel(
                     transport,
@@ -440,6 +443,7 @@ class NodeEngine(
                     socket,
                     allocator,
                     idleTimeoutMillis = effectiveIdleTimeout(idleTimeoutOverride),
+                    flushCoalescing = this@NodeEngine.config.flushCoalescing,
                 )
                 val channel = NodePipelinedChannel(
                     transport,
