@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -488,6 +489,38 @@ class KqueueEngineReadWriteTest {
 
             buf.release()
             ch.close()
+            server.close()
+            engine.close()
+        }
+    }
+
+    @Test
+    fun echoRoundTripWithFlushCoalescingDisabled() = runBlocking {
+        // Verifies that IoEngineConfig.flushCoalescing = false preserves
+        // correctness — each keel-side flush drains synchronously via
+        // performFlush() instead of scheduling a next-tick coalesce.
+        withTimeout(5.seconds) {
+            val engine = KqueueEngine(IoEngineConfig(flushCoalescing = false))
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+
+            val clientFd = connectRawClient(port)
+            val serverCh = server.accept()
+
+            rawWrite(clientFd, "hello")
+
+            val readBuf = DefaultAllocator.allocate(64)
+            val n = serverCh.read(readBuf)
+            assertEquals(5, n)
+
+            serverCh.write(readBuf)
+            serverCh.flush()
+
+            val echo = rawRead(clientFd, 5)
+            assertEquals("hello", echo)
+
+            serverCh.close()
+            close(clientFd)
             server.close()
             engine.close()
         }
