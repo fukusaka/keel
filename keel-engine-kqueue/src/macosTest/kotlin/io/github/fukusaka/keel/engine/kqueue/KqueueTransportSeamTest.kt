@@ -44,7 +44,12 @@ class KqueueTransportSeamTest {
 
     @BeforeTest
     fun setUp() {
-        eventLoop = KqueueEventLoop(logger)
+        // Disable the per-tick flush coalescing so `flush()` delegates
+        // synchronously to `performFlush()` — the seam tests exercise
+        // errno branches / syscall behaviour and are not driving an EL
+        // thread that could drain the deferred runnable. Under the opt-out
+        // the semantics reduce to pre-#899 immediate-send.
+        eventLoop = KqueueEventLoop(logger, flushCoalescing = false)
         // Disposable real socket fd — needed for `kevent` in WouldBlock
         // branch (`registerWriteCallback`). No real I/O happens; the
         // fake intercepts every byte-level syscall.

@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `core`: `IoEngineConfig.flushCoalescing: Boolean = true` — the opt-out for the per-tick flush coalescing added by #894 / #895 / #896 / #897. When left at the default the write path collapses per-frame `requestFlush` calls into one gathered send (the ~4-7x SSE / chunked-streaming speedup). Set to `false` to make every `flush()` issue its send immediately for latency-sensitive workloads (real-time protocols, financial tickers). Honoured by the nwconnection, nodejs, netty, and nio engines; the kqueue / epoll / io_uring engines still send per frame regardless and treat the field as a no-op. (#898)
 
+### Fixed
+
+- `engine-kqueue`: per-emit `flush()` is now deferred to the next EL tick via `KqueueEventLoop.dispatch`; same-tick per-frame `requestFlush` calls accumulate into `pendingWrites` and drain through a single gathered `writev(2)`, giving SSE `pipeline-http-kqueue` +398% (4.2K → 20.9K rps) and `server-http-kqueue` +136% (4.2K → 9.9K rps) on loopback (mac, 100×1KB × 50VU, BENCH_RUNS=3 median). `/hello` is tied and `/large` regresses -7% (Node.js #895-shape trade-off on the single-emit path — opt out via `IoEngineConfig.flushCoalescing = false` for latency-sensitive workloads). (#899)
+
 - `tls`: `TlsConfig.verifyHostname` (`Boolean?`) — a client-side axis, separate from
   `verifyMode`, controlling whether the server certificate's CN / SAN must match
   `serverName`. `null` verifies by default (client + `verifyMode` ≠ `NONE` + `serverName`
