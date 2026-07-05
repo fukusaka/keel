@@ -16,6 +16,15 @@ import io.netty.handler.ssl.SslContextBuilder
 import io.netty.handler.ssl.SslHandler
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory
 import java.io.ByteArrayInputStream
+import java.nio.file.Files
+import java.nio.file.Path
+import java.security.KeyFactory
+import java.security.KeyStore
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
+import java.security.spec.PKCS8EncodedKeySpec
+import java.util.Base64
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -244,7 +253,131 @@ class NettySslInstallerTlsConfigTest {
         clientCh.close(); serverCh.close()
     }
 
+    // --- KeyStoreFile cert × mTLS (the `forServer(KeyManagerFactory)` +
+    //     `trustManager(...)` chain that Pem-based tests do not cover) ---
+
+    @Test
+    fun `KeyStoreFile cert + verifyMode REQUIRED accepts a valid client cert`() {
+        val keyStorePath = writeServerKeyStore()
+        val server = installer.buildSslContext(
+            TlsConfig(
+                certificates = TlsCertificateSource.KeyStoreFile(
+                    keyStorePath.toString(),
+                    KEYSTORE_PASSWORD,
+                ),
+                verifyMode = TlsVerifyMode.REQUIRED,
+                trustAnchors = TlsTrustSource.Pem(TestCertificates.CLIENT_CA_CERT),
+            ),
+        )
+        val clientCtx = SslContextBuilder.forClient()
+            .keyManager(
+                ByteArrayInputStream(TestCertificates.CLIENT_CERT.toByteArray()),
+                ByteArrayInputStream(TestCertificates.CLIENT_KEY.toByteArray()),
+            )
+            .trustManager(InsecureTrustManagerFactory.INSTANCE)
+            .build()
+
+        val serverCh = EmbeddedChannel(server.newHandler(allocator))
+        val clientCh = EmbeddedChannel(clientCtx.newHandler(allocator))
+        driveHandshake(client = clientCh, server = serverCh)
+
+        assertTrue(
+            serverCh.sslHandler().handshakeFuture().isSuccess,
+            "KeyStoreFile-loaded server must complete the mTLS handshake",
+        )
+        assertTrue(clientCh.sslHandler().handshakeFuture().isSuccess)
+
+        clientCh.close(); serverCh.close()
+    }
+
+    @Test
+    fun `KeyStoreFile cert + verifyMode REQUIRED rejects an anonymous client`() {
+        // The failure-mode counterpart of the happy-path test above. Together
+        // they pin that both branches of `NettySslInstaller.buildSslContext`
+        // — `forServerFromPem` and `forServerFromKeyStore` — produce a
+        // functionally equivalent `SslContext` when combined with a mTLS
+        // trust manager. Before this the KeyStoreFile + trustManager combo
+        // was only reasoned about, not exercised.
+        val keyStorePath = writeServerKeyStore()
+        val server = installer.buildSslContext(
+            TlsConfig(
+                certificates = TlsCertificateSource.KeyStoreFile(
+                    keyStorePath.toString(),
+                    KEYSTORE_PASSWORD,
+                ),
+                verifyMode = TlsVerifyMode.REQUIRED,
+                trustAnchors = TlsTrustSource.Pem(TestCertificates.CLIENT_CA_CERT),
+            ),
+        )
+        val clientCtx = SslContextBuilder.forClient()
+            .trustManager(InsecureTrustManagerFactory.INSTANCE)
+            .build()
+
+        val serverCh = EmbeddedChannel(server.newHandler(allocator))
+        val clientCh = EmbeddedChannel(clientCtx.newHandler(allocator))
+        val serverFuture = serverCh.sslHandler().handshakeFuture()
+        driveHandshake(client = clientCh, server = serverCh, expectFailure = true)
+
+        assertFalse(
+            serverFuture.isSuccess,
+            "KeyStoreFile-loaded server must still reject an anonymous client under REQUIRED",
+        )
+
+        clientCh.close(); serverCh.close()
+    }
+
     // --- helpers ---
+
+    /**
+     * Writes a PKCS12 KeyStore containing the server's cert + private key
+     * to a temp file and tracks it in [tempKeyStores] for cleanup in
+     * [tearDown]. The KeyStoreFile fixture the installer needs is
+     * synthesised from the same PEM material the Pem-based cases use, so
+     * the two branches are exercised against the same identity — any
+     * behavioural drift shows up as an assertion divergence between the
+     * `Pem` and `KeyStoreFile` tests.
+     */
+    private fun writeServerKeyStore(): Path {
+        val certFactory = CertificateFactory.getInstance("X.509")
+        val serverCert = certFactory.generateCertificate(
+            ByteArrayInputStream(TestCertificates.SERVER_CERT.toByteArray()),
+        ) as X509Certificate
+
+        val pkcs8Bytes = pemToDer(TestCertificates.SERVER_KEY)
+        val privateKey = KeyFactory.getInstance("RSA")
+            .generatePrivate(PKCS8EncodedKeySpec(pkcs8Bytes))
+
+        val keyStore = KeyStore.getInstance("PKCS12")
+        keyStore.load(null, null)
+        keyStore.setKeyEntry(
+            "server",
+            privateKey,
+            KEYSTORE_PASSWORD.toCharArray(),
+            arrayOf(serverCert),
+        )
+
+        val path = Files.createTempFile("keel-netty-tls-", ".p12")
+        tempKeyStores.add(path)
+        Files.newOutputStream(path).use { out ->
+            keyStore.store(out, KEYSTORE_PASSWORD.toCharArray())
+        }
+        return path
+    }
+
+    private fun pemToDer(pem: String): ByteArray {
+        val base64 = pem.lineSequence()
+            .filter { !it.startsWith("-----") && it.isNotBlank() }
+            .joinToString("")
+        return Base64.getDecoder().decode(base64)
+    }
+
+    private val tempKeyStores = mutableListOf<Path>()
+
+    @AfterTest
+    fun cleanupKeyStores() {
+        tempKeyStores.forEach { Files.deleteIfExists(it) }
+        tempKeyStores.clear()
+    }
 
     /**
      * Shuttles outbound TLS records between the two peers' embedded
@@ -298,5 +431,9 @@ class NettySslInstallerTlsConfigTest {
     private fun EmbeddedChannel.sslHandler(): SslHandler {
         val h = pipeline().get(SslHandler::class.java)
         return assertNotNull(h, "channel must have an SslHandler installed")
+    }
+
+    private companion object {
+        private const val KEYSTORE_PASSWORD = "keel-test"
     }
 }
