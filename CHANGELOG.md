@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll`: per-emit `flush()` is now deferred to the next EL tick via `EpollEventLoop.dispatch`; same-tick per-frame `requestFlush` calls accumulate into `pendingWrites` and drain through a single gathered `writev(2)`, giving SSE `pipeline-http-epoll` +45% (34.1K → 49.6K rps) on loopback (linux, 100×1KB × 50VU, BENCH_RUNS=3 median). `server-http-epoll` SSE, `/hello`, and `/large` are all tied — the absolute gain matches kqueue #899 (~16K rps) but is relatively smaller because pre-fix epoll was already ceiling-limited by client-side / kernel-dispatch overhead rather than per-frame `writev` cost. Opt out via `IoEngineConfig.flushCoalescing = false` for latency-sensitive workloads. (#900)
 - `engine-kqueue`: per-emit `flush()` is now deferred to the next EL tick via `KqueueEventLoop.dispatch`; same-tick per-frame `requestFlush` calls accumulate into `pendingWrites` and drain through a single gathered `writev(2)`, giving SSE `pipeline-http-kqueue` +398% (4.2K → 20.9K rps) and `server-http-kqueue` +136% (4.2K → 9.9K rps) on loopback (mac, 100×1KB × 50VU, BENCH_RUNS=3 median). `/hello` is tied and `/large` regresses -7% (Node.js #895-shape trade-off on the single-emit path — opt out via `IoEngineConfig.flushCoalescing = false` for latency-sensitive workloads). (#899)
 
 - `tls`: `TlsConfig.verifyHostname` (`Boolean?`) — a client-side axis, separate from
