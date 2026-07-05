@@ -59,7 +59,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-nwconnection`: coalesce back-to-back `nw_connection_send` calls at the transport layer so per-frame chunked streaming (SSE / WS-style N-emit-per-response paths through `ktor-cio-keel-*`, `ktor-keel-*`, and `pipeline-http`) collapses onto gathered writev sends instead of one GCD dispatch per frame. Loopback SSE (100 × 1KB, 50 VU) throughput on `pipeline-http-nwconnection` improves from ~1.5K to ~11K req/s, and on `ktor-cio-keel-nwconnection` from ~0.46K to ~2.8K req/s, without regressing single-response paths (`/hello` tied). (#TBD)
+- `engine-nwconnection`: coalesce back-to-back `nw_connection_send` calls at the transport layer so per-frame chunked streaming (SSE / WS-style N-emit-per-response paths through `ktor-cio-keel-*`, `ktor-keel-*`, and `pipeline-http`) collapses onto gathered writev sends instead of one GCD dispatch per frame. Loopback SSE (100 × 1KB, 50 VU) throughput on `pipeline-http-nwconnection` improves from ~1.5K to ~11K req/s, and on `ktor-cio-keel-nwconnection` from ~0.46K to ~2.8K req/s, without regressing single-response paths (`/hello` tied). (#894)
 
 - **BREAKING** (`engine-nodejs`): the Node.js listener-level TLS path
   now honours every server-relevant axis of `TlsConfig` —
