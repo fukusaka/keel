@@ -34,6 +34,15 @@ external interface Socket : NodeEventEmitter {
     fun destroy(): Socket
     fun setNoDelay(noDelay: Boolean = definedExternally): Socket
     fun setKeepAlive(enable: Boolean = definedExternally, initialDelay: Int = definedExternally): Socket
+
+    // `cork()` forces buffering of all subsequent `write()` calls until
+    // `uncork()` (or `end()`) is called; on `uncork()`, the buffered writes
+    // are flushed together — Node uses the `Socket._writev` path, which
+    // maps to a single `writev(2)` on POSIX, coalescing many per-frame
+    // sends into one gather send.
+    fun cork(): Unit
+
+    fun uncork(): Unit
     val remoteAddress: String?
     val remotePort: Int?
     val localAddress: String?

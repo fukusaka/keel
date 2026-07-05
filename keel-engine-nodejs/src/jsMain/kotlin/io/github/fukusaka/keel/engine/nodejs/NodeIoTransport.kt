@@ -9,6 +9,12 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 
 /**
+ * Schedules [callback] to run on the next iteration of Node's event loop after
+ * pending I/O events. Used by [NodeIoTransport.flush] to coalesce corked writes.
+ */
+private external fun setImmediate(callback: () -> Unit): dynamic
+
+/**
  * Node.js socket-based [IoTransport] implementation.
  *
  * Handles both read and write paths for Node.js sockets.
@@ -153,11 +159,27 @@ internal class NodeIoTransport(
     // --- Write path ---
 
     /**
+     * Set to `true` while a corked write batch is scheduled to be flushed by
+     * a pending [setImmediate] tick. Additional [flush] calls that arrive
+     * before that tick fires leave the socket corked and let their bytes
+     * accumulate in Node's internal buffer; the scheduled tick emits a single
+     * `uncork()`, at which point Node collapses all queued writes into one
+     * `Socket._writev` → `writev(2)` gather send.
+     */
+    private var corkPending: Boolean = false
+
+    /**
      * Sends all pending writes via Node.js `socket.write()`.
      *
+     * On the first call in a given event-loop tick this corks the socket
+     * and schedules an `uncork()` via [setImmediate]. Subsequent calls in
+     * the same tick observe [corkPending] and write straight into the corked
+     * buffer without arming another tick. When the scheduled callback runs,
+     * `uncork()` releases every buffered write together — Node maps that
+     * to `Socket._writev` on POSIX, coalescing the per-frame `socket.write`
+     * calls typical of SSE / chunked streaming into one `writev(2)` gather.
+     *
      * Node.js buffers data internally — no EAGAIN handling needed.
-     * Each pending write is copied byte-by-byte from [IoBuf]'s backing
-     * Int8Array into a Node.js Buffer.
      *
      * @return always `true` because Node.js socket.write is synchronous
      *         from the caller's perspective (buffers internally).
@@ -165,6 +187,20 @@ internal class NodeIoTransport(
     override fun flush(): Boolean {
         var totalFlushed = 0
         var backpressured = false
+        if (!corkPending) {
+            socket.cork()
+            corkPending = true
+            setImmediate {
+                if (corkPending) {
+                    corkPending = false
+                    // Skip the uncork if the socket was already destroyed by close():
+                    // uncork() on a destroyed socket is a no-op in Node but avoiding
+                    // the call keeps the trace clean when the connection was aborted
+                    // mid-batch.
+                    if (opened) socket.uncork()
+                }
+            }
+        }
         for (pw in pendingWrites) {
             val src = pw.buf.unsafeArray
             // Int8Array.subarray shares the same underlying ArrayBuffer (zero-copy view).
