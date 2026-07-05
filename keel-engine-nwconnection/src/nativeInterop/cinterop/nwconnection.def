@@ -120,10 +120,18 @@ nw_parameters_t keel_nw_create_tcp_params_with_options(int no_delay,
  * TlsConfig.minVersion, so this null-sentinel is defensive).
  *
  * verify_block memory: the anchor CA CFDataRef / SecCertificateRef array
- * is materialised inside this function and captured by the verify block
- * via a __block CFArrayRef. That array outlives this function through
- * ARC — the block retains it, and it is released when the block itself
- * is deallocated by the sec_protocol_options_t owner.
+ * is materialised inside this function and captured by the outer TLS
+ * options block as an `id` (toll-free bridged NSArray). Under MRR block
+ * copy semantics the id capture is retained on `Block_copy` and released
+ * on `Block_release`, so the array lives exactly as long as the block
+ * does — which is until sec_protocol_options_t (and the params object
+ * that owns it) is deallocated. The `CFRelease` at the end of this
+ * function drops the +1 that `CFArrayCreateMutable` handed us, leaving
+ * the block's own retain intact. The earlier `__block CFMutableArrayRef`
+ * capture leaked that +1 because CoreFoundation types receive no
+ * automatic retain/release treatment through `_Block_object_assign`
+ * (`__block id` behaves differently under MRR — CF types are just plain
+ * pointers to the block runtime).
  */
 nw_parameters_t keel_nw_create_tls_tcp_params_full(sec_identity_t identity,
                                                     int tls_min,
@@ -139,21 +147,34 @@ nw_parameters_t keel_nw_create_tls_tcp_params_full(sec_identity_t identity,
     if (!identity) return NULL;
 
     /* Materialise the pinned-CA anchors up front (once per listener),
-     * so the verify block can just consult a captured CFArrayRef. */
-    __block CFMutableArrayRef anchors = NULL;
+     * so the verify block can just consult a captured array.
+     *
+     * Captured as `id` (not the raw CFMutableArrayRef) so the outer TLS
+     * options block retains it during Block_copy under MRR — CF types get
+     * no such treatment through block copy, so the previous captured
+     * `CFMutableArrayRef` leaked the initial `CFArrayCreateMutable` +1
+     * because there was nothing to balance it against. Bridging to `id`
+     * lets `_Block_object_assign` retain the anchors on Block_copy and
+     * release them again on Block_release, at which point we can drop
+     * our own +1 with a plain `CFRelease` right after the params are
+     * assembled. Toll-free bridging keeps the underlying object
+     * (CFArray === NSArray) unchanged. */
+    id anchors = nil;
     if (require_peer_auth && ca_count > 0 && ca_certs_der && ca_certs_lens) {
-        anchors = CFArrayCreateMutable(NULL, ca_count, &kCFTypeArrayCallBacks);
-        if (anchors) {
+        CFMutableArrayRef cf_anchors = CFArrayCreateMutable(
+            NULL, ca_count, &kCFTypeArrayCallBacks);
+        if (cf_anchors) {
             for (int i = 0; i < ca_count; i++) {
                 CFDataRef der = CFDataCreate(NULL, ca_certs_der[i], ca_certs_lens[i]);
                 if (!der) continue;
                 SecCertificateRef cert = SecCertificateCreateWithData(NULL, der);
                 CFRelease(der);
                 if (cert) {
-                    CFArrayAppendValue(anchors, cert);
+                    CFArrayAppendValue(cf_anchors, cert);
                     CFRelease(cert);
                 }
             }
+            anchors = (__bridge id)cf_anchors;
         }
     }
 
@@ -215,7 +236,7 @@ nw_parameters_t keel_nw_create_tls_tcp_params_full(sec_identity_t identity,
                              * TLS trust when TlsConfig.trustAnchors is a
                              * Pem list (keel's other backends behave the
                              * same way). */
-                            SecTrustSetAnchorCertificates(trust, anchors);
+                            SecTrustSetAnchorCertificates(trust, (__bridge CFArrayRef)anchors);
                             SecTrustSetAnchorCertificatesOnly(trust, true);
 
                             CFErrorRef err = NULL;
@@ -236,10 +257,14 @@ nw_parameters_t keel_nw_create_tls_tcp_params_full(sec_identity_t identity,
         }
     );
     if (params) nw_parameters_set_reuse_local_address(params, true);
-    /* The `anchors` array is retained by the verify block above if one
-     * was installed; the local __block reference goes out of scope here
-     * without a manual CFRelease. If no verify block was installed
-     * (peer_auth off, or ca_count == 0) then `anchors` was NULL. */
+    /* Drop our own +1 from CFArrayCreateMutable. Under MRR the outer TLS
+     * options block copy above retained `anchors` as an `id` capture, so
+     * the array stays live for the block's lifetime after this release
+     * (Block_release will drop the block's retain when nw_parameters_t
+     * tears down its options and the block along with it). If no
+     * verify block was installed (peer_auth off, or ca_count == 0)
+     * then `anchors` is nil and this is a no-op. */
+    if (anchors) CFRelease((__bridge CFTypeRef)anchors);
     return params;
 }
 
