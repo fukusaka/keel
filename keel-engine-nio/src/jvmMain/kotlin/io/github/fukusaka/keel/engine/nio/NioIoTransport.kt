@@ -289,6 +289,12 @@ internal class NioIoTransport(
         eventLoop.dispatch(
             EmptyCoroutineContext,
             Runnable {
+                // No-op if the transport was torn down between scheduling and
+                // this tick: [teardownOnEventLoop] already drained
+                // `pendingWrites`, cleared `flushScheduled`, and released
+                // buffers, so we would only fire `onFlushComplete` for an
+                // already-closed channel here.
+                if (!transport.opened) return@Runnable
                 transport.flushScheduled = false
                 val done = transport.performFlush()
                 if (done && transport.pendingWrites.isEmpty()) {
