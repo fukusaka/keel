@@ -143,9 +143,9 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  *                          tickers, latency-sensitive HTTP-long-polling).
  *
  *                          Currently honoured by the nwconnection, nodejs,
- *                          netty, nio, and kqueue engines. The epoll /
- *                          io_uring engines still send per frame regardless
- *                          and treat this field as a no-op; they may adopt
+ *                          netty, nio, kqueue, and epoll engines. The
+ *                          io_uring engine still sends per frame regardless
+ *                          and treats this field as a no-op; it may adopt
  *                          the same pattern in a follow-up once measurement
  *                          justifies it.
  */
