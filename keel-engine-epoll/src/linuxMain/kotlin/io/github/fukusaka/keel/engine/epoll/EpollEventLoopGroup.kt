@@ -30,10 +30,19 @@ internal class EpollEventLoopGroup(
     allocator: BufferAllocator,
     readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     idleTimeoutMillis: Long = 0,
+    flushCoalescing: Boolean = true,
 ) {
 
     private val loops =
-        Array(size) { EpollEventLoop(logger, allocator.createChild(), readBufferSize, idleTimeoutMillis) }
+        Array(size) {
+            EpollEventLoop(
+                logger,
+                allocator.createChild(),
+                readBufferSize,
+                idleTimeoutMillis,
+                flushCoalescing,
+            )
+        }
     private val index = AtomicInt(0)
 
     /** Number of EventLoops in this group. */

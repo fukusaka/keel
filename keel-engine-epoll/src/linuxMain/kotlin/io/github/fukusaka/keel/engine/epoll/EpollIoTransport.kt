@@ -214,6 +214,38 @@ internal class EpollIoTransport(
 
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
+        // Opt-out: bypass coalescing when the engine config disables it.
+        // Each flush() drains synchronously through performFlush, matching
+        // the pre-#900 immediate-send behaviour for latency-sensitive
+        // workloads (mirrors kqueue #899 / NIO #897 opt-out).
+        if (!eventLoop.flushCoalescing) return performFlush()
+        // Defer to next EL tick so same-tick per-emit requestFlush calls
+        // coalesce into one writev (mirrors kqueue #899 / NIO #897).
+        if (flushScheduled) return false
+        flushScheduled = true
+        val transport = this
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                if (!transport.opened) return@Runnable
+                transport.flushScheduled = false
+                val done = transport.performFlush()
+                if (done && transport.pendingWrites.isEmpty()) {
+                    transport.flushContinuation?.let { cont ->
+                        transport.flushContinuation = null
+                        cont.resume(Unit)
+                    }
+                    transport.onFlushComplete?.invoke()
+                }
+            },
+        )
+        return false
+    }
+
+    private var flushScheduled = false
+
+    private fun performFlush(): Boolean {
+        if (pendingWrites.isEmpty()) return true
         flushCount++
         if (pendingWrites.size == 1) {
             return flushSingle(pendingWrites.removeFirst())
@@ -243,6 +275,11 @@ internal class EpollIoTransport(
         if (!markTeardownStarted()) return
         cancelIdleTimeout()
         cancelWriteIdleTimeout()
+        // Same-tick send→close: drain deferred writes before releasing.
+        if (flushScheduled) {
+            flushScheduled = false
+            performFlush()
+        }
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
@@ -372,7 +409,9 @@ internal class EpollIoTransport(
 
     /** EPOLLOUT callback body — invoked via [onReady] when [EpollEventLoop.Interest.WRITE] fires. */
     private fun onWritable() {
-        val done = flush()
+        // Retry drain immediately when fd becomes writable — do NOT go through
+        // flush() which would re-defer to the next tick.
+        val done = performFlush()
         if (done) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
