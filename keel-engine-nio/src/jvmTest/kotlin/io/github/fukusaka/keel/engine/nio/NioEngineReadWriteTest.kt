@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -407,6 +408,37 @@ class NioEngineReadWriteTest {
         assertEquals(payload, received)
 
         ch.close()
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun echoRoundTripWithFlushCoalescingDisabled() = runTest {
+        // Verifies that IoEngineConfig.flushCoalescing = false preserves
+        // correctness — each keel-side write + flush issues an immediate
+        // SocketChannel.write instead of deferring to the next EL tick, but
+        // the peer still receives every byte in order.
+        val engine = NioEngine(IoEngineConfig(flushCoalescing = false))
+        val server = engine.bind("0.0.0.0", 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val client = connectRawClient(port)
+        val serverCh = server.accept()
+
+        rawWrite(client, "hello")
+
+        val readBuf = DefaultAllocator.allocate(64)
+        val n = serverCh.read(readBuf)
+        assertEquals(5, n)
+
+        serverCh.write(readBuf)
+        serverCh.flush()
+
+        val echo = rawRead(client, 5)
+        assertEquals("hello", echo)
+
+        serverCh.close()
         client.close()
         server.close()
         engine.close()
