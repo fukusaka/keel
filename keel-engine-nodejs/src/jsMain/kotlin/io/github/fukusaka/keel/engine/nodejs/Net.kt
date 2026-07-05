@@ -40,9 +40,9 @@ external interface Socket : NodeEventEmitter {
     // are flushed together — Node uses the `Socket._writev` path, which
     // maps to a single `writev(2)` on POSIX, coalescing many per-frame
     // sends into one gather send.
-    fun cork(): Unit
+    fun cork()
 
-    fun uncork(): Unit
+    fun uncork()
     val remoteAddress: String?
     val remotePort: Int?
     val localAddress: String?

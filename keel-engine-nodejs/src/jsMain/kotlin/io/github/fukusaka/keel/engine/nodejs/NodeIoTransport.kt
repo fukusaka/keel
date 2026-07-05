@@ -185,6 +185,11 @@ internal class NodeIoTransport(
      *         from the caller's perspective (buffers internally).
      */
     override fun flush(): Boolean {
+        // Skip the cork/uncork protocol when there is nothing to write — otherwise
+        // a stray `requestFlush` without a preceding `requestWrite` would still cork
+        // the socket, schedule a setImmediate, and burn a tick to uncork nothing.
+        if (pendingWrites.isEmpty()) return true
+
         var totalFlushed = 0
         var backpressured = false
         if (!corkPending) {
