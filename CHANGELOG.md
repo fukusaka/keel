@@ -59,6 +59,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-nodejs`: coalesce back-to-back `socket.write()` calls per event-loop tick via `Socket.cork()` / `Socket.uncork()`. The first `flush` per tick corks the socket and schedules an `uncork()` for the next tick via `setImmediate`; every `flush` that lands in the same tick appends to the cork buffer, so Node collapses per-frame writes into a single `Socket._writev` → `writev(2)` gather send. Loopback SSE (100 × 1KB, 50 VU) throughput on `pipeline-http-nodejs` improves from ~0.7K to ~3.3K req/s and on `server-http-nodejs` from ~0.7K to ~3.2K req/s; `/hello` improves ~14% too (its status + headers + body + terminator emits now share one writev). Trade-off: single-write large responses (`/large`, 100 KB body) show ~5% regression from the extra cork/uncork overhead. (#895)
+
 - `engine-nwconnection`: coalesce back-to-back `nw_connection_send` calls at the transport layer so per-frame chunked streaming (SSE / WS-style N-emit-per-response paths through `ktor-cio-keel-*`, `ktor-keel-*`, and `pipeline-http`) collapses onto gathered writev sends instead of one GCD dispatch per frame. Loopback SSE (100 × 1KB, 50 VU) throughput on `pipeline-http-nwconnection` improves from ~1.5K to ~11K req/s, and on `ktor-cio-keel-nwconnection` from ~0.46K to ~2.8K req/s, without regressing single-response paths (`/hello` tied). (#894)
 
 - **BREAKING** (`engine-nodejs`): the Node.js listener-level TLS path
