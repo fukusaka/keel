@@ -346,19 +346,39 @@ internal class NettyIoTransport(
     // --- Write path ---
 
     /**
-     * The [ChannelFuture] returned by the most recent [writeAndFlush] call.
-     * Set on every [flush] invocation; read by [awaitPendingFlush].
+     * The [ChannelFuture] returned by the most recent `write()` in [flush].
+     * Read by [awaitPendingFlush] so callers block until the last queued
+     * message reaches the OS TCP send buffer.
      * Only accessed on the EventLoop thread.
      */
     private var lastFlushFuture: ChannelFuture? = null
 
     /**
-     * Sends all pending writes via Netty's [writeAndFlush].
+     * True while a `Channel.flush()` is already scheduled to run on the next
+     * `EventLoop.execute` iteration. Additional [flush] calls that arrive
+     * before that iteration fires only queue their bytes via `Channel.write`
+     * — the scheduled flush picks them up together, so per-frame keel
+     * `requestFlush` calls collapse into one Netty `doWrite()` pass and
+     * therefore one gathered `writev(2)` on the socket (instead of one
+     * `writeAndFlush` → `doWrite` per frame).
      *
-     * Batches all pending writes into Netty's outbound buffer using
-     * [write][NettyNativeChannel.write], then issues a single flush on
-     * the last write. The last write's [ChannelFuture] listener releases
-     * buffers and invokes [onFlushComplete].
+     * Only accessed on the EventLoop thread.
+     */
+    private var flushScheduled: Boolean = false
+
+    /**
+     * Queues all pending writes into Netty's outbound buffer via
+     * [write][NettyNativeChannel.write] and schedules a single
+     * `Channel.flush()` on the next `EventLoop.execute` iteration. If a
+     * flush is already scheduled (from an earlier call in the same tick),
+     * this call just adds to the outbound buffer — the pending scheduled
+     * flush drains everything in one pass through `ChannelOutboundBuffer`,
+     * which Netty turns into a single gathered `writev(2)` send.
+     *
+     * The per-write [ChannelFuture] returned by `write()` still completes
+     * only after the deferred flush has actually pushed the bytes to the
+     * wire, so the buffer-release listener and [awaitPendingFlush] retain
+     * their original semantics.
      *
      * @return always `false` because Netty writes are asynchronous.
      */
@@ -374,7 +394,7 @@ internal class NettyIoTransport(
         val callback = onFlushComplete
         try {
             var lastFuture: ChannelFuture? = null
-            for ((i, pw) in writes.withIndex()) {
+            for (pw in writes) {
                 val buf = pw.buf
                 val nettyBuf: ByteBuf = if (buf is NettyByteBufIoBuf) {
                     // Zero-wrap path: keel IoBuf is directly a Netty ByteBuf.
@@ -388,18 +408,25 @@ internal class NettyIoTransport(
                     bb.limit(pw.offset + pw.length)
                     Unpooled.wrappedBuffer(bb)
                 }
-                if (i == size - 1) {
-                    lastFuture = nettyChannel.writeAndFlush(nettyBuf)
-                } else {
-                    nettyChannel.write(nettyBuf)
+                // write() queues into ChannelOutboundBuffer's unflushed segment;
+                // the deferred flush() below promotes them together.
+                lastFuture = nettyChannel.write(nettyBuf)
+            }
+
+            if (!flushScheduled) {
+                flushScheduled = true
+                val transport = this
+                nettyChannel.eventLoop().execute {
+                    transport.flushScheduled = false
+                    transport.nettyChannel.flush()
                 }
             }
 
             if (lastFuture != null) {
                 lastFlushFuture = lastFuture
-                // If the writeAndFlush did not complete synchronously, the bytes are
-                // sitting in Netty's outbound buffer because the peer's receive window
-                // is full (slow-read) — start the write-idle clock. The listener's
+                // If the write did not complete synchronously, bytes are sitting
+                // in Netty's outbound buffer because the peer's receive window is
+                // full (slow-read) — start the write-idle clock. The listener's
                 // updatePendingBytes drains it: a full drain (pendingBytes == 0)
                 // cancels the timer, a partial drain refreshes it. A synchronously
                 // completed write (fast peer) skips arming entirely.
