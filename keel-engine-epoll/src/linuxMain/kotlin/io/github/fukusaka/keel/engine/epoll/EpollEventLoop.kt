@@ -133,6 +133,14 @@ internal class EpollEventLoop(
      * [io.github.fukusaka.keel.core.ConnectConfig.idleTimeoutMillis] is `null`.
      */
     val idleTimeoutMillis: Long = 0,
+    /**
+     * Engine-wide [io.github.fukusaka.keel.core.IoEngineConfig.flushCoalescing]
+     * value. When `true` (default), [EpollIoTransport.flush] schedules the
+     * actual send onto the next EL tick via [dispatch] so that same-tick
+     * per-emit `requestFlush` calls collapse into one `writev(2)`. When
+     * `false`, each `flush()` sends immediately (pre-#900 behaviour).
+     */
+    val flushCoalescing: Boolean = true,
     private val syscallOps: EpollSyscallOps = PosixEpollSyscallOps,
 ) : CoroutineDispatcher(), EpollSuspendRegister {
 
