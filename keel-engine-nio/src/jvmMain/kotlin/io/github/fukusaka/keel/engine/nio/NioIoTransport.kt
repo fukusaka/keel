@@ -256,7 +256,33 @@ internal class NioIoTransport(
      * @return `true` if all data was sent synchronously, `false` if the send
      *         buffer is full and an async OP_WRITE callback is pending.
      */
+    // Defer the actual write to the next EL tick so per-frame requestFlush
+    // calls collapse into one gather writev via flushGather.
+    private var flushScheduled: Boolean = false
+
     override fun flush(): Boolean {
+        if (pendingWrites.isEmpty()) return true
+        if (flushScheduled) return false
+        flushScheduled = true
+        val transport = this
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                transport.flushScheduled = false
+                val done = transport.performFlush()
+                if (done && transport.pendingWrites.isEmpty()) {
+                    transport.flushContinuation?.let { cont ->
+                        transport.flushContinuation = null
+                        cont.resume(Unit)
+                    }
+                    transport.onFlushComplete?.invoke()
+                }
+            },
+        )
+        return false
+    }
+
+    private fun performFlush(): Boolean {
         if (pendingWrites.isEmpty()) return true
         flushCount++
         if (pendingWrites.size == 1) {
@@ -285,6 +311,18 @@ internal class NioIoTransport(
 
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
+        // Drain any deferred flush before releasing pending writes: a
+        // `close()` that races the `EventLoop.dispatch` scheduled by
+        // [flush] would otherwise drop the buffered bytes on the floor.
+        // This is exercised by e.g. `KeelWebSocketTest` where the server
+        // handler `send`s a message and then returns (letting the pipeline
+        // close the channel) all on the same EventLoop task — the
+        // deferred flush task is still behind us in the queue when we
+        // reach here.
+        if (flushScheduled && pendingWrites.isNotEmpty()) {
+            flushScheduled = false
+            performFlush()
+        }
         cancelIdleTimeout()
         cancelWriteIdleTimeout()
         for (pw in pendingWrites) pw.buf.release()
