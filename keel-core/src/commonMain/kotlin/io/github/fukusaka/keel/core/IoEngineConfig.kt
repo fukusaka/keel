@@ -142,12 +142,19 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  *                          than throughput (real-time protocols, financial
  *                          tickers, latency-sensitive HTTP-long-polling).
  *
- *                          Currently honoured by the nwconnection, nodejs,
- *                          netty, nio, kqueue, and epoll engines. The
- *                          io_uring engine still sends per frame regardless
- *                          and treats this field as a no-op; it may adopt
- *                          the same pattern in a follow-up once measurement
- *                          justifies it.
+ *                          Honoured by the nwconnection, nodejs, netty, nio,
+ *                          kqueue, and epoll engines. The io_uring engine
+ *                          treats this field as a no-op **by design**: its
+ *                          ring-based SQE submission already batches at the
+ *                          syscall boundary (one `io_uring_submit_and_wait`
+ *                          per EventLoop iteration submits all pending SQEs),
+ *                          so there is no per-frame `writev(2)` cost to
+ *                          coalesce away. A spike confirmed that layering
+ *                          the same defer-to-next-tick shape on top breaks
+ *                          the async CQE completion chain (pipeline SSE
+ *                          iterations stopped completing) without any
+ *                          headroom to justify the required rewrite. This
+ *                          is a closed decision, not deferred work.
  */
 data class IoEngineConfig(
     val allocator: BufferAllocator = defaultAllocator(),
