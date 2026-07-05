@@ -251,12 +251,76 @@ internal class NioIoTransport(
     // --- Write path ---
 
     /**
-     * Attempts to send all pending writes via [SocketChannel.write].
+     * True while a [performFlush] runnable is already queued to run on the
+     * next [NioEventLoop.dispatch] tick. Subsequent [flush] calls that arrive
+     * before that tick fires just leave their bytes in [pendingWrites]; the
+     * scheduled tick drains everything through [flushGather] in a single
+     * `writev(2)`, so per-frame keel `requestFlush` calls collapse into one
+     * gathered send instead of one `SocketChannel.write` per frame.
      *
-     * @return `true` if all data was sent synchronously, `false` if the send
-     *         buffer is full and an async OP_WRITE callback is pending.
+     * Only accessed on the EventLoop thread.
+     */
+    private var flushScheduled: Boolean = false
+
+    /**
+     * Schedules pending writes to be drained on the next [NioEventLoop.dispatch]
+     * tick. If a scheduled tick is already pending ([flushScheduled] == true),
+     * this call just leaves the bytes in [pendingWrites] — the pending tick
+     * picks them up together, so per-frame `requestFlush` calls collapse into
+     * one `flushGather` (`GatheringByteChannel.write` → `writev(2)`) call.
+     *
+     * SSE / chunked-streaming semantics are preserved: order is FIFO,
+     * back-pressure via [pipeline.isWritable] + [awaitPendingFlush] still fires
+     * on `pendingBytes` accumulation, and the per-frame delivery latency
+     * increases by at most one EL tick (μs on loopback). Correctness is
+     * verified by the SSE bench (`checks_succeeded = 100%` on the 100-frame
+     * body-size check).
+     *
+     * @return always `false` because the actual write is deferred to the next
+     *         EL tick; the write completion resumes any [awaitPendingFlush]
+     *         waiter and invokes [onFlushComplete] from inside the scheduled
+     *         runnable.
      */
     override fun flush(): Boolean {
+        if (pendingWrites.isEmpty()) return true
+        if (flushScheduled) return false
+        flushScheduled = true
+        val transport = this
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                // No-op if the transport was torn down between scheduling and
+                // this tick: [teardownOnEventLoop] already drained
+                // `pendingWrites`, cleared `flushScheduled`, and released
+                // buffers, so we would only fire `onFlushComplete` for an
+                // already-closed channel here.
+                if (!transport.opened) return@Runnable
+                transport.flushScheduled = false
+                val done = transport.performFlush()
+                if (done && transport.pendingWrites.isEmpty()) {
+                    transport.flushContinuation?.let { cont ->
+                        transport.flushContinuation = null
+                        cont.resume(Unit)
+                    }
+                    transport.onFlushComplete?.invoke()
+                }
+            },
+        )
+        return false
+    }
+
+    /**
+     * Attempts to drain [pendingWrites] via [SocketChannel.write] (single write)
+     * or [flushGather] (gather `writev(2)`). Called both by the deferred
+     * runnable in [flush] and by [teardownOnEventLoop] to flush any
+     * outstanding bytes before releasing them.
+     *
+     * @return `true` if all pending data was sent synchronously, `false` if
+     *         the send buffer is full and an async OP_WRITE callback is
+     *         pending (installed by [flushSingle] / [flushGather] via
+     *         [registerWriteCallback]).
+     */
+    private fun performFlush(): Boolean {
         if (pendingWrites.isEmpty()) return true
         flushCount++
         if (pendingWrites.size == 1) {
@@ -285,6 +349,18 @@ internal class NioIoTransport(
 
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
+        // Drain any deferred flush before releasing pending writes: a
+        // `close()` that races the `EventLoop.dispatch` scheduled by
+        // [flush] would otherwise drop the buffered bytes on the floor.
+        // This is exercised by e.g. `KeelWebSocketTest` where the server
+        // handler `send`s a message and then returns (letting the pipeline
+        // close the channel) all on the same EventLoop task — the
+        // deferred flush task is still behind us in the queue when we
+        // reach here.
+        if (flushScheduled && pendingWrites.isNotEmpty()) {
+            flushScheduled = false
+            performFlush()
+        }
         cancelIdleTimeout()
         cancelWriteIdleTimeout()
         for (pw in pendingWrites) pw.buf.release()
