@@ -435,6 +435,24 @@ internal class EpollIoTransport(
                     !opened -> cont.cancel()
                     pendingWrites.isEmpty() -> cont.resume(Unit)
                     else -> {
+                        // If a coalesced flush is already queued to run on the next
+                        // EL tick, run it now instead of waiting for the tick to fire.
+                        // The awaitFlushComplete path is the backpressure gate under
+                        // high-concurrency /large workloads; the extra EL-tick round-trip
+                        // was measured at ~-25% throughput on 32-core Linux epoll
+                        // (16t/500c) because every producer that reaches this branch
+                        // pays one tick of latency before the flush drains. SSE-style
+                        // rapid emits still benefit from coalescing when no one is
+                        // waiting: `flush()` continues to defer as before, and only
+                        // callers already suspended in `awaitPendingFlush()` short-circuit.
+                        if (flushScheduled) {
+                            flushScheduled = false
+                            val done = performFlush()
+                            if (done && pendingWrites.isEmpty()) {
+                                cont.resume(Unit)
+                                return@Runnable
+                            }
+                        }
                         flushContinuation = cont
                         cont.invokeOnCancellation { flushContinuation = null }
                     }
