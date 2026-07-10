@@ -480,7 +480,7 @@ internal class HttpServerHandler(
         fun methodNotAllowedResponse(allowedMethods: Set<HttpMethod>): HttpResponse {
             val allow = allowedMethods.map { it.name }.sorted().joinToString(", ")
             val base = HttpResponse.of(HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed")
-            val headers = HttpHeaders.build {
+            val headers = HttpHeaders.build(base.headers.size + 1) {
                 base.headers.forEach { name, value -> add(name, value) }
                 set(HttpHeaderName.ALLOW, allow)
             }
@@ -779,7 +779,7 @@ private const val CONNECTION_CLOSE = "close"
  * shared constant (`NOT_FOUND_RESPONSE` and the like).
  */
 private fun HttpHeaders.withConnectionClose(): HttpHeaders =
-    HttpHeaders.build {
+    HttpHeaders.build(this@withConnectionClose.size + 1) {
         this@withConnectionClose.forEach { name, value -> add(name, value) }
         set(HttpHeaderName.CONNECTION, CONNECTION_CLOSE)
     }
@@ -828,7 +828,7 @@ private fun HttpHeaders.withVaryAccept(): HttpHeaders {
         .flatMap { it.split(',') }
         .map { it.trim() }
     if (present.any { it == "*" || it.equals(ACCEPT_FIELD, ignoreCase = true) }) return this
-    return HttpHeaders.build {
+    return HttpHeaders.build(this@withVaryAccept.size + 1) {
         this@withVaryAccept.forEach { name, value -> add(name, value) }
         add(HttpHeaderName.VARY, ACCEPT_FIELD)
     }
