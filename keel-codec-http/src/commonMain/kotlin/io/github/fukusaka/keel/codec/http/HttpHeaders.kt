@@ -334,6 +334,33 @@ class HttpHeaders {
     fun add(name: CharSequence, value: CharSequence): HttpHeaders = add(name.toString(), value.toString())
 
     /**
+     * Pre-sizes storage for [entries] header fields so a builder adding a
+     * statically known count allocates its slot array and string store at
+     * exactly that size, instead of the [INITIAL_ENTRY_CAPACITY] floor the
+     * first [add] would otherwise apply. The unpooled response path
+     * ([HttpResponse.ok] etc.) builds a two-header `Content-Type` +
+     * `Content-Length` set on every response, so without a hint each response
+     * allocates an eight-slot `IntArray` and a sixteen-slot `ArrayList` for
+     * two entries.
+     *
+     * No-op once storage exists or when [entries] is non-positive; adding
+     * beyond [entries] grows normally. The string store is pre-allocated too
+     * because the [build] / [of] callers that pass a hint use the `String`
+     * [add] path (the buffer-range [addRange] path is the decoder's, which
+     * pools instances instead of hinting).
+     *
+     * The hint is advisory: one large enough that `entries * STRIDE` would
+     * overflow `Int` (wrapping to a negative [IntArray] size) is ignored and
+     * the instance falls back to lazy growth, rather than throwing on what is
+     * a caller sizing mistake.
+     */
+    internal fun reserve(entries: Int) {
+        if (entries <= 0 || entries > MAX_RESERVE_ENTRIES || slots != null) return
+        slots = IntArray(entries * STRIDE)
+        if (stringBacking == null) stringBacking = ArrayList(entries * 2)
+    }
+
+    /**
      * Adds a header whose name and value are byte ranges in [buf] (the
      * Variant Y parse path). Writes five ints into [slots] without
      * allocating any per-header object. The first range-add captures
@@ -783,14 +810,34 @@ class HttpHeaders {
 
         private const val INITIAL_ENTRY_CAPACITY: Int = 8
 
+        /**
+         * Largest [reserve] hint that does not overflow the slot [IntArray]
+         * (`entries * STRIDE`). A hint above this is treated as absent so the
+         * advisory pre-sizing never throws [NegativeArraySizeException] on a
+         * caller sizing mistake.
+         */
+        private const val MAX_RESERVE_ENTRIES: Int = Int.MAX_VALUE / STRIDE
+
         val EMPTY: HttpHeaders = HttpHeaders()
 
         fun borrow(): HttpHeaders = HttpHeadersPool.borrow()
 
         fun build(block: HttpHeaders.() -> Unit): HttpHeaders = HttpHeaders().apply(block)
 
+        /**
+         * [build] that pre-sizes storage for [expectedEntries] header fields
+         * (see [reserve]) — for the unpooled response-construction path where
+         * the field count is statically known (2 for a typical `Content-Type`
+         * + `Content-Length` response), so it does not over-allocate the slot
+         * array and string store to the [INITIAL_ENTRY_CAPACITY] default.
+         * Adding more than [expectedEntries] inside [block] grows normally.
+         */
+        fun build(expectedEntries: Int, block: HttpHeaders.() -> Unit): HttpHeaders =
+            HttpHeaders().also { it.reserve(expectedEntries) }.apply(block)
+
         fun of(vararg pairs: Pair<String, String>): HttpHeaders {
             val headers = HttpHeaders()
+            headers.reserve(pairs.size)
             for ((name, value) in pairs) headers.add(name, value)
             return headers
         }
