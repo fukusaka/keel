@@ -61,7 +61,7 @@ data class HttpResponse(
         /** Creates a 200 OK response with an optional text body. */
         fun ok(body: String? = null, contentType: String = "text/plain"): HttpResponse {
             val bytes = body?.encodeToByteArray()
-            val headers = HttpHeaders.build {
+            val headers = HttpHeaders.build(RESPONSE_HEADER_COUNT) {
                 add(HttpHeaderName.CONTENT_TYPE, contentType)
                 add(HttpHeaderName.CONTENT_LENGTH, (bytes?.size ?: 0).toString())
             }
@@ -70,7 +70,7 @@ data class HttpResponse(
 
         /** Creates a 200 OK response with a binary body. */
         fun ok(body: ByteArray, contentType: String = "application/octet-stream"): HttpResponse {
-            val headers = HttpHeaders.build {
+            val headers = HttpHeaders.build(RESPONSE_HEADER_COUNT) {
                 add(HttpHeaderName.CONTENT_TYPE, contentType)
                 add(HttpHeaderName.CONTENT_LENGTH, body.size.toString())
             }
@@ -80,7 +80,7 @@ data class HttpResponse(
         /** Creates a 404 Not Found response with an optional text body. */
         fun notFound(body: String? = null): HttpResponse {
             val bytes = body?.encodeToByteArray()
-            val headers = HttpHeaders.build {
+            val headers = HttpHeaders.build(RESPONSE_HEADER_COUNT) {
                 add(HttpHeaderName.CONTENT_TYPE, "text/plain")
                 add(HttpHeaderName.CONTENT_LENGTH, (bytes?.size ?: 0).toString())
             }
@@ -90,11 +90,18 @@ data class HttpResponse(
         /** Creates a response with the given [status] and optional text body. */
         fun of(status: HttpStatus, body: String? = null, contentType: String = "text/plain"): HttpResponse {
             val bytes = body?.encodeToByteArray()
-            val headers = HttpHeaders.build {
+            val headers = HttpHeaders.build(RESPONSE_HEADER_COUNT) {
                 add(HttpHeaderName.CONTENT_TYPE, contentType)
                 add(HttpHeaderName.CONTENT_LENGTH, (bytes?.size ?: 0).toString())
             }
             return HttpResponse(status, headers = headers, body = bytes)
         }
+
+        /**
+         * Header-field count the factory methods build (`Content-Type` +
+         * `Content-Length`), passed to [HttpHeaders.build] so the unpooled
+         * response headers are sized to exactly two slots.
+         */
+        private const val RESPONSE_HEADER_COUNT: Int = 2
     }
 }
