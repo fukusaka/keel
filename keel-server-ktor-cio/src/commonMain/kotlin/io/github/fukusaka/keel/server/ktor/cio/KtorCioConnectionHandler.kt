@@ -18,6 +18,8 @@ import io.ktor.util.pipeline.execute
 import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.InternalAPI
+import io.ktor.utils.io.availableForRead
 import io.ktor.utils.io.close
 import io.ktor.utils.io.discard
 import io.ktor.utils.io.readAvailable
@@ -29,6 +31,9 @@ import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.io.IOException
+import kotlinx.io.bytestring.ByteString
+import kotlinx.io.indexOf
 import kotlin.coroutines.ContinuationInterceptor
 
 /**
@@ -185,6 +190,15 @@ internal class KtorCioConnectionHandler(
         val serverKeepAlive = configuration.keepAlive
 
         while (channel.isActive && !input.isClosedForRead) {
+            // Buffer the whole request head BEFORE taking the parse mutex, so
+            // `parseRequest` consumes already-arrived bytes and never suspends
+            // while holding it. On Native the mutex is process-wide, so any
+            // suspension under it stalls every other connection's parse: a
+            // pooled client idling between keep-alive requests, a peer that
+            // sends only the leading CRLF that RFC 9112 3.5 permits, or one
+            // that stops mid-request-line would each park with the lock held
+            // until they disconnect.
+            if (!input.awaitRequestHead()) break
             val request = parserMutex.withLock { parseRequest(input) } ?: break
 
             val length = request.headers[HttpHeaders.ContentLength]?.toDecLongOrNull() ?: -1L
@@ -412,3 +426,49 @@ internal class KtorCioConnectionHandler(
         private const val INBOUND_BRIDGE_NAME = "__ktor_cio_inbound__"
     }
 }
+
+/**
+ * Suspends until a complete request head — everything up to and including the
+ * terminating `CRLF CRLF` — is buffered in [this], or the peer closes.
+ *
+ * `parseRequest` must run under the process-wide parse mutex on Native (see
+ * [HeaderParseMutex]), and anything it suspends on suspends every other
+ * connection's parse with it. Buffering the head first means the locked
+ * `parseRequest` only consumes bytes that already arrived.
+ *
+ * Leading empty lines belong to the head: RFC 9112 3.5 lets a client send
+ * `CRLF`s before the request line and `parseRequest` skips them, so a head is
+ * complete only once a `CRLF CRLF` has arrived. `indexOf` scans the channel's
+ * already-buffered bytes without consuming them, and `awaitContent(min)` both
+ * waits for the next byte and folds the channel's flush buffer into the buffer
+ * that scan reads.
+ *
+ * @return `true` when a full head is buffered, `false` on EOF.
+ * @throws IOException when the head reaches [MAX_REQUEST_HEAD_BYTES] without a
+ *   terminator — a peer that never finishes its head would otherwise buffer
+ *   without bound.
+ */
+@OptIn(InternalAPI::class)
+private suspend fun ByteReadChannel.awaitRequestHead(): Boolean {
+    while (true) {
+        if (readBuffer.indexOf(HEAD_TERMINATOR) >= 0) return true
+        val buffered = availableForRead
+        if (buffered >= MAX_REQUEST_HEAD_BYTES) {
+            throw IOException("request head reached $MAX_REQUEST_HEAD_BYTES bytes with no CRLF CRLF terminator")
+        }
+        if (!awaitContent(min = buffered + 1)) return false
+    }
+}
+
+/** `CRLF CRLF` — the end of an HTTP/1.x request head. */
+private val HEAD_TERMINATOR = ByteString(CR, LF, CR, LF)
+
+private const val CR: Byte = 0x0D
+private const val LF: Byte = 0x0A
+
+/**
+ * Upper bound on a buffered request head. ktor-http-cio caps a single line at
+ * its own `HTTP_LINE_LIMIT` but not the head as a whole; this bounds the memory
+ * one peer can pin before its head is rejected.
+ */
+private const val MAX_REQUEST_HEAD_BYTES = 64 * 1024
