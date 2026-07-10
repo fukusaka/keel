@@ -446,4 +446,56 @@ class EpollTransportSeamTest {
             transport.awaitPendingFlush()
         }
     }
+
+    // --- coalesced-flush eager run in awaitPendingFlush ---
+
+    /**
+     * Regression test for the coalesced-flush eager run: a caller that reaches
+     * `awaitPendingFlush` while a deferred flush is queued must have that flush
+     * run inline (inside the register lambda) instead of parking for the
+     * deferred runnable to fire on a later drain.
+     *
+     * The canary task is dispatched after `flush()` queues the deferred
+     * runnable and before `awaitPendingFlush` registers. With the eager run
+     * the await resumes synchronously inside the register lambda — before the
+     * canary executes. Without it (pre-fix) the continuation parks, the
+     * deferred runnable drains and resumes it, and the resumed coroutine is
+     * re-dispatched behind the canary — the canary observes execution first.
+     *
+     * The one-EL-tick round-trip this pins was measured as a ~-25% throughput
+     * regression on high-concurrency 100 KB responses (every producer hitting
+     * the backpressure gate paid the extra tick).
+     */
+    @Test
+    fun `awaitPendingFlush runs a queued coalesced flush inline`() = runBlocking {
+        val coalescingLoop = EpollEventLoop(logger, flushCoalescing = true)
+        try {
+            coalescingLoop.start()
+            val fake = FakeNativeSocket().apply {
+                enqueueWrite(fd, WriteResult.Written(4))
+            }
+            val transport = EpollIoTransport(fd, coalescingLoop, DefaultAllocator, fake)
+
+            var canaryRanWhenAwaitReturned = true
+            val job = launch(coalescingLoop) {
+                var canaryRan = false
+                val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
+                transport.write(buf)
+                transport.flush() // coalescing on → defers, flushScheduled = true
+                coalescingLoop.dispatch(EmptyCoroutineContext, Runnable { canaryRan = true })
+                transport.awaitPendingFlush()
+                canaryRanWhenAwaitReturned = canaryRan
+            }
+            withTimeout(2000) { job.join() }
+
+            assertFalse(
+                canaryRanWhenAwaitReturned,
+                "awaitPendingFlush must run the queued coalesced flush inline, not wait one EL tick",
+            )
+            assertEquals(1, fake.writeCalls)
+            fake.assertAllConsumed()
+        } finally {
+            coalescingLoop.close()
+        }
+    }
 }
