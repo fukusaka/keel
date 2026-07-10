@@ -61,47 +61,48 @@ data class HttpResponse(
         /** Creates a 200 OK response with an optional text body. */
         fun ok(body: String? = null, contentType: String = "text/plain"): HttpResponse {
             val bytes = body?.encodeToByteArray()
-            val headers = HttpHeaders.build(RESPONSE_HEADER_COUNT) {
-                add(HttpHeaderName.CONTENT_TYPE, contentType)
-                add(HttpHeaderName.CONTENT_LENGTH, (bytes?.size ?: 0).toString())
-            }
+            val headers = contentHeaders(contentType, bytes?.size ?: 0)
             return HttpResponse(HttpStatus.OK, headers = headers, body = bytes)
         }
 
         /** Creates a 200 OK response with a binary body. */
         fun ok(body: ByteArray, contentType: String = "application/octet-stream"): HttpResponse {
-            val headers = HttpHeaders.build(RESPONSE_HEADER_COUNT) {
-                add(HttpHeaderName.CONTENT_TYPE, contentType)
-                add(HttpHeaderName.CONTENT_LENGTH, body.size.toString())
-            }
+            val headers = contentHeaders(contentType, body.size)
             return HttpResponse(HttpStatus.OK, headers = headers, body = body)
         }
 
         /** Creates a 404 Not Found response with an optional text body. */
         fun notFound(body: String? = null): HttpResponse {
             val bytes = body?.encodeToByteArray()
-            val headers = HttpHeaders.build(RESPONSE_HEADER_COUNT) {
-                add(HttpHeaderName.CONTENT_TYPE, "text/plain")
-                add(HttpHeaderName.CONTENT_LENGTH, (bytes?.size ?: 0).toString())
-            }
+            val headers = contentHeaders("text/plain", bytes?.size ?: 0)
             return HttpResponse(HttpStatus.NOT_FOUND, headers = headers, body = bytes)
         }
 
         /** Creates a response with the given [status] and optional text body. */
         fun of(status: HttpStatus, body: String? = null, contentType: String = "text/plain"): HttpResponse {
             val bytes = body?.encodeToByteArray()
-            val headers = HttpHeaders.build(RESPONSE_HEADER_COUNT) {
-                add(HttpHeaderName.CONTENT_TYPE, contentType)
-                add(HttpHeaderName.CONTENT_LENGTH, (bytes?.size ?: 0).toString())
-            }
+            val headers = contentHeaders(contentType, bytes?.size ?: 0)
             return HttpResponse(status, headers = headers, body = bytes)
         }
 
         /**
-         * Header-field count the factory methods build (`Content-Type` +
-         * `Content-Length`), passed to [HttpHeaders.build] so the unpooled
-         * response headers are sized to exactly two slots.
+         * Builds the `Content-Type` + `Content-Length` header pair every
+         * factory returns. Constructs the [HttpHeaders] directly rather than
+         * through [HttpHeaders.build] so no per-call builder lambda is
+         * allocated — on Kotlin/Native (where escape analysis does not elide
+         * a lambda passed to a non-inline function, unlike the JVM JIT) the
+         * closure was ~18-20 bytes on every response. Pre-sizes to the two
+         * fields it adds.
          */
+        private fun contentHeaders(contentType: String, contentLength: Int): HttpHeaders {
+            val headers = HttpHeaders()
+            headers.reserve(RESPONSE_HEADER_COUNT)
+            headers.add(HttpHeaderName.CONTENT_TYPE, contentType)
+            headers.add(HttpHeaderName.CONTENT_LENGTH, contentLength.toString())
+            return headers
+        }
+
+        /** Header-field count [contentHeaders] adds (`Content-Type` + `Content-Length`). */
         private const val RESPONSE_HEADER_COUNT: Int = 2
     }
 }
