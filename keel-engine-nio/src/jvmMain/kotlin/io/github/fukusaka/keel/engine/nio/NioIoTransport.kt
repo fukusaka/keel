@@ -505,6 +505,20 @@ internal class NioIoTransport(
                     !opened -> cont.cancel()
                     pendingWrites.isEmpty() -> cont.resume(Unit)
                     else -> {
+                        // Mirror of the epoll defer eager-run: when a caller reaches
+                        // this branch, they are about to suspend and pay for a full EL
+                        // tick before the coalesced flush drains. Run the deferred
+                        // flush inline so the caller wakes on this dispatch instead of
+                        // the next one. The `flush()` deferral path is unchanged and
+                        // still coalesces SSE-style rapid emits when no one awaits.
+                        if (flushScheduled) {
+                            flushScheduled = false
+                            val done = performFlush()
+                            if (done && pendingWrites.isEmpty()) {
+                                cont.resume(Unit)
+                                return@Runnable
+                            }
+                        }
                         flushContinuation = cont
                         cont.invokeOnCancellation { flushContinuation = null }
                     }
