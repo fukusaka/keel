@@ -40,6 +40,7 @@ import openssl.keel_openssl_bio_setup
 import openssl.keel_openssl_ctx_load_ca_pem
 import openssl.keel_openssl_ctx_load_pem_cert
 import openssl.keel_openssl_ctx_load_pem_key
+import openssl.keel_openssl_enable_partial_write
 import openssl.keel_openssl_err_string
 import openssl.keel_openssl_set1_host
 import openssl.keel_openssl_set_max_proto_version
@@ -105,6 +106,7 @@ class OpenSslCodecFactory : TlsCodecFactory {
             "SSL_CTX_new failed: ${errorString()}",
             TlsErrorCategory.HANDSHAKE_FAILED,
         )
+        keel_openssl_enable_partial_write(ctx)
 
         loadCertificates(ctx, config)
         configureTrust(ctx, config)

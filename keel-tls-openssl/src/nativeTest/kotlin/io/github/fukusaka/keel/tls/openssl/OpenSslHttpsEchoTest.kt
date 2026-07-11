@@ -96,6 +96,49 @@ class OpenSslHttpsEchoTest {
         }
     }
 
+    @Test
+    fun `HTTPS response spanning multiple TLS records delivers the full body`() = runBlocking {
+        withTimeout(5.seconds) {
+            val factory = OpenSslCodecFactory()
+            val engine = createTestEngine()
+
+            // Larger than one TLS record's plaintext ceiling (RFC 8446 section
+            // 5.1, 16384 bytes) so protect() must be invoked more than once
+            // per response. Regression coverage for a bug where OpenSSL's
+            // default (non-partial-write) SSL_write() contract made the
+            // second record's WANT_WRITE report bytesConsumed=0 for the
+            // *whole* call despite the first record already having been
+            // flushed to the wire, which TlsHandler.processOutbound treated
+            // as an unexpected NEED_WRAP and tore the connection down after
+            // exactly one record (16384 bytes) — silently truncating any
+            // response bigger than that ceiling.
+            val largeBody = "x".repeat(MULTI_RECORD_BODY_SIZE)
+            val response = HttpResponse.ok(largeBody, contentType = "text/plain")
+
+            val server = engine.bindPipeline("127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { channel ->
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("routing", RoutingHandler(mapOf("/large" to { response })))
+            }
+            val port = (server.localAddress as InetSocketAddress).port
+
+            usleep(SERVER_START_DELAY_US)
+
+            val (exitCode, bodySize) = curlHttpsBodySize(port, "/large")
+
+            server.close()
+            factory.close()
+            engine.close()
+
+            assertEquals(0, exitCode, "curl exit code")
+            assertEquals(
+                MULTI_RECORD_BODY_SIZE.toLong(),
+                bodySize,
+                "response body was truncated (expected the full multi-record body)",
+            )
+        }
+    }
+
     /**
      * Forks curl to make an HTTPS request and captures its output.
      *
@@ -141,6 +184,53 @@ class OpenSslHttpsEchoTest {
         Pair(exitCode, output)
     }
 
+    /**
+     * Forks curl and reports the exit code plus the number of bytes actually
+     * received in the response body (via `-o /dev/null -w '%{size_download}'`),
+     * so callers can detect a silently truncated body without paying to
+     * compare the full multi-record payload byte-for-byte.
+     *
+     * @return Pair of (exit code, downloaded body byte count).
+     */
+    private fun curlHttpsBodySize(port: Int, path: String): Pair<Int, Long> = memScoped {
+        val pipeFds = allocArray<IntVar>(2)
+        check(pipe(pipeFds) == 0) { "pipe() failed" }
+        val readFd = pipeFds[0]
+        val writeFd = pipeFds[1]
+
+        val pid = fork()
+        if (pid == 0) {
+            close(readFd)
+            dup2(writeFd, STDOUT_FILENO)
+            close(writeFd)
+            usleep(CURL_START_DELAY_US)
+            execl(
+                "/usr/bin/curl", "curl",
+                "-k", "-s",
+                "--max-time", "5",
+                "--connect-timeout", "3",
+                "-o", "/dev/null",
+                "-w", "%{size_download}",
+                "https://localhost:$port$path",
+                null,
+            )
+            _exit(1)
+        }
+
+        close(writeFd)
+        val output = readAllFromFd(readFd)
+        close(readFd)
+
+        val status = alloc<IntVar>()
+        waitpid(pid, status.ptr, 0)
+        val exited = (status.value and 0x7f) == 0
+        val exitCode = if (exited) (status.value shr 8) and 0xff else -1
+
+        kill(pid, SIGTERM)
+
+        Pair(exitCode, output.trim().toLongOrNull() ?: -1L)
+    }
+
     private fun readAllFromFd(fd: Int): String {
         val buf = ByteArray(READ_BUF_SIZE)
         val sb = StringBuilder()
@@ -158,5 +248,12 @@ class OpenSslHttpsEchoTest {
         private const val READ_BUF_SIZE = 4096
         private const val SERVER_START_DELAY_US = 200_000u
         private const val CURL_START_DELAY_US = 100_000u
+
+        // Comfortably larger than the RFC 8446 section 5.1 TLS plaintext
+        // record ceiling (16384 bytes) so a response forces multiple
+        // protect() calls; matches the benchmark module's /large payload
+        // convention (100 KiB) so this test exercises the same shape that
+        // surfaced the bug.
+        private const val MULTI_RECORD_BODY_SIZE = 100_000
     }
 }
