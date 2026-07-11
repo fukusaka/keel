@@ -3,18 +3,24 @@ import org.gradle.api.tasks.testing.TestDescriptor
 import org.gradle.api.tasks.testing.TestListener
 import org.gradle.api.tasks.testing.TestResult
 
-// Security pin for transitive Jackson on the build classpath: the Dokka Gradle
-// plugin (latest 2.2.0-Beta included) still declares Jackson 2.15.3, which
-// carries known CVEs. Force the CVE-fixed floor; the Jackson BOM aligns the
-// rest of the family (annotations / dataformat-xml / module-kotlin) to match.
+// Security pin for transitive Jackson from the Dokka Gradle plugin (latest
+// 2.2.0-Beta included), which declares Jackson 2.15.3 with known CVEs. Jackson
+// loads in two places and each needs its own pin: the root build classpath
+// (plugin JVM, this block) and the Dokka Generator worker classpath (the
+// project-level dokka*Resolver~internal configurations, constrained after the
+// plugins block below — a buildscript block is evaluated before the script body,
+// so the two cannot share one constant). databind and core are pinned explicitly
+// as the advisory-flagged artifacts; the Jackson BOM aligns the rest of the
+// family (annotations / dataformat-xml / module-kotlin) to match.
 // Build-tool only — never shipped in any keel artifact.
 buildscript {
+    val jacksonCveFloor = "2.22.1"
     dependencies {
         constraints {
-            classpath("com.fasterxml.jackson.core:jackson-databind:2.22.1") {
+            classpath("com.fasterxml.jackson.core:jackson-databind:$jacksonCveFloor") {
                 because("CVE-fixed floor for Jackson pulled in by the Dokka Gradle plugin")
             }
-            classpath("com.fasterxml.jackson.core:jackson-core:2.22.1") {
+            classpath("com.fasterxml.jackson.core:jackson-core:$jacksonCveFloor") {
                 because("CVE-fixed floor for Jackson pulled in by the Dokka Gradle plugin")
             }
         }
@@ -40,6 +46,36 @@ plugins.withType<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnPlugin> {
         resolution("js-yaml", "4.2.0")
         resolution("serialize-javascript", "7.0.6")
         resolution("diff", "8.0.3")
+    }
+}
+
+// Security pin for the Dokka Generator worker classpath: the generator runs in
+// a worker JVM whose classpath comes from the project-level
+// dokka*Resolver~internal configurations (root and every documented subproject),
+// NOT the buildscript classpath pinned above — without this block the worker
+// would still load the CVE-carrying Jackson 2.15.3 that dokka-core declares.
+// Same floor and rationale as the buildscript block above. The resolver
+// configurations are resolvable-only and reject declared constraints, so the
+// constraints go on the declarable dokkaHtml* buckets they extend from.
+// The lazy configurations.matching form is required here (and in the SwiftExport
+// block below): the plugin creates these configurations after this top-level
+// action runs, so the eager `dependencies { constraints { add("<name>", ...) } }`
+// form would not find them.
+val jacksonCveFloor = "2.22.1"
+allprojects {
+    configurations.matching {
+        it.name.startsWith("dokkaHtml") && !it.name.endsWith("~internal")
+    }.configureEach {
+        listOf(
+            "com.fasterxml.jackson.core:jackson-databind:$jacksonCveFloor",
+            "com.fasterxml.jackson.core:jackson-core:$jacksonCveFloor",
+        ).forEach { coordinate ->
+            dependencyConstraints.add(
+                this@allprojects.dependencies.constraints.create(coordinate) {
+                    because("CVE-fixed floor for Jackson on the Dokka Generator worker classpath")
+                },
+            )
+        }
     }
 }
 
