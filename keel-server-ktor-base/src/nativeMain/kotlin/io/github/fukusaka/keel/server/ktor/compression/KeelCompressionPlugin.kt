@@ -82,6 +82,15 @@ import io.ktor.utils.io.ByteReadChannel
  * source set. ktor's stock `Compression(mode = Mode.All)` already covers
  * both directions on JVM.
  *
+ * **Test strategy**: the configuration surface — encoder registration,
+ * priorities, and the `Accept-Encoding` content-negotiation choice — is
+ * unit-tested directly by `KeelCompressionConfigTest` and `KeelContentEncodersTest`
+ * (no Ktor app needed). The plugin's install / request-decompression /
+ * response-compression wiring only runs inside a Ktor call pipeline, which needs
+ * a Ktor test application (`ktor-server-test-host`, not a dependency here); that
+ * end-to-end gzip/deflate negotiation is exercised by the `ktor-keel-*` /
+ * `ktor-cio-keel-*` engine paths in the benchmark and engine integration tests.
+ *
  * @see KeelCompressionConfig
  * @see KeelGZipEncoder
  * @see KeelDeflateEncoder

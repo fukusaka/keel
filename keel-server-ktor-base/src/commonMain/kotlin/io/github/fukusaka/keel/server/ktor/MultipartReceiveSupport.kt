@@ -28,6 +28,13 @@ import kotlinx.coroutines.Dispatchers
  * interceptors — including this one — receive [MultiPartData] as `subject`, not
  * [ByteReadChannel], so the `subject as? ByteReadChannel` guard returns early. This
  * interceptor is a no-op on JVM.
+ *
+ * **Test strategy**: no standalone contract test. The transform is a receive-
+ * pipeline interceptor whose behaviour only manifests when a real request body
+ * is routed through `call.receiveMultipart()`, which needs a Ktor engine + call.
+ * That end-to-end path is covered by `keel-server-ktor`'s
+ * `KeelEngineMultipartTest`; a standalone test would re-stage the same engine
+ * call.
  */
 @OptIn(InternalAPI::class)
 internal fun ApplicationReceivePipeline.installMultipartTransform() {
