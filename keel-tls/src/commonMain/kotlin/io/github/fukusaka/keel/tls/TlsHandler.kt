@@ -19,6 +19,10 @@ import io.github.fukusaka.keel.pipeline.TimerHandle
  *
  * **Outbound** ([onWrite]): receives plaintext from application handlers,
  * calls [TlsCodec.protect] to encrypt, and propagates ciphertext to HEAD.
+ * Takes ownership of and releases the incoming plaintext buffer once fully
+ * consumed — callers (e.g. [io.github.fukusaka.keel.codec.http.HttpResponseEncoder])
+ * hand it off via a fire-and-forget `propagateWrite` and do not retain or
+ * release it themselves.
  *
  * **Handshake**: driven automatically. When [unprotect] returns [TlsResult.NEED_WRAP],
  * the handler calls [protect] to produce the handshake response and flushes it.
