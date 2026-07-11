@@ -43,6 +43,24 @@ plugins.withType<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnPlugin> {
     }
 }
 
+// Security pin for the SwiftExport worker classpath: KGP's swift-export-embeddable
+// (2.3.20, latest) declares opentelemetry-api 1.41.0, which carries a known CVE.
+// keel never runs Swift export, but every KMP subproject exposes this resolvable
+// configuration and it lands in the dependency graph. Constrain to the CVE-fixed
+// floor, reusing the version-catalog OpenTelemetry version (same line as the
+// shipped observability module). Build-tool only — never shipped in keel artifacts.
+subprojects {
+    configurations.matching { it.name == "swiftExportClasspathResolvable" }.configureEach {
+        dependencyConstraints.add(
+            this@subprojects.dependencies.constraints.create(
+                "io.opentelemetry:opentelemetry-api:${libs.versions.opentelemetry.get()}",
+            ) {
+                because("CVE-fixed floor for OpenTelemetry pulled in by KGP swift-export-embeddable")
+            },
+        )
+    }
+}
+
 // Shorten package names in Dokka navigation sidebar.
 // customAssets only injects into root index.html; subpages need the script
 // in scripts/ directory alongside navigation-loader.js.
