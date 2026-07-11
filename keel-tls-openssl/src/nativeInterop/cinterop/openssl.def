@@ -152,6 +152,27 @@ static int keel_openssl_set_max_proto_version(SSL_CTX *ctx, int version) {
 }
 
 // ============================================================
+// Partial-write mode (SSL_CTX_set_mode is a macro)
+// ============================================================
+//
+// keel's BIO backs onto a single fixed-size ciphertext IoBuf (one TLS
+// record's worth). Without SSL_MODE_ENABLE_PARTIAL_WRITE, SSL_write()
+// requires the *entire* input to be written before reporting success: if a
+// plaintext write larger than one record internally fragments into
+// multiple records and the BIO runs out of room on the second one,
+// SSL_write() reports the *whole* call as WANT_WRITE with zero bytes
+// consumed — even though the first record was already flushed to the
+// wire — which the caller (TlsHandler.processOutbound) cannot distinguish
+// from a genuine stall and treats as a protocol error mid-response,
+// silently truncating any response bigger than 16384 bytes. Enabling
+// partial-write makes SSL_write() report success (a positive return) for
+// however much it actually wrote, matching write(2) semantics and the
+// multi-call encoding loop TlsHandler already implements.
+static void keel_openssl_enable_partial_write(SSL_CTX *ctx) {
+    SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE);
+}
+
+// ============================================================
 // ALPN helpers
 // ============================================================
 
