@@ -10,6 +10,21 @@ plugins {
     alias(libs.plugins.detekt)
 }
 
+// Security pins for transitive npm deps of the Kotlin/JS build / test toolchain
+// (webpack bundler + mocha runner). These never ship in any keel artifact and
+// run only at build time on trusted inputs, but the pins clear the Dependabot
+// advisories against kotlin-js-store/yarn.lock. Forced via Yarn resolutions
+// because the KGP-managed toolchain otherwise pins the vulnerable versions
+// exactly (kotlinUpgradeYarnLock alone is a no-op).
+plugins.withType<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnPlugin> {
+    the<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnRootExtension>().apply {
+        resolution("brace-expansion", "2.0.3")
+        resolution("js-yaml", "4.2.0")
+        resolution("serialize-javascript", "7.0.6")
+        resolution("diff", "8.0.3")
+    }
+}
+
 // Shorten package names in Dokka navigation sidebar.
 // customAssets only injects into root index.html; subpages need the script
 // in scripts/ directory alongside navigation-loader.js.
