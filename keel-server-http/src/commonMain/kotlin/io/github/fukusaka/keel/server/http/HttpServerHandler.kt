@@ -163,9 +163,17 @@ internal class HttpServerHandler(
      * requests — HTTP/1.1 is serial per connection, so the list holds at
      * most one node. Cancelling it on [onInactive] tears down any handler
      * still running when the peer disconnects.
+     *
+     * The channel's `ioDispatcher` (the owning EventLoop) is folded in
+     * once here — it is constant for the connection's life — so the
+     * per-request `launch` sites need no explicit dispatcher argument.
+     * `launch(dispatcher) { }` re-combines the scope context with the
+     * dispatcher into a fresh [kotlin.coroutines.CombinedContext] on every
+     * request; folding it once per connection removes that per-request
+     * allocation while keeping the exact same EventLoop-thread affinity.
      */
     private val connectionScope: CoroutineScope =
-        scope + Job(scope.coroutineContext[Job])
+        scope + Job(scope.coroutineContext[Job]) + channel.ioDispatcher
 
     /** The call currently consuming body chunks, or null between requests. */
     private var inFlight: Http1Call? = null
@@ -226,7 +234,7 @@ internal class HttpServerHandler(
      * that response is tagged `Connection: close`.
      */
     fun requestDrain() {
-        connectionScope.launch(channel.ioDispatcher) {
+        connectionScope.launch {
             draining = true
             val active = inFlight
             if (active == null) {
@@ -292,7 +300,7 @@ internal class HttpServerHandler(
         )
         if (draining) call.markConnectionClose()
         inFlight = call
-        connectionScope.launch(ctx.channel.ioDispatcher) {
+        connectionScope.launch {
             try {
                 dispatch(call, resolution)
                 // The 500 guard does not apply to an upgrade: a successful
