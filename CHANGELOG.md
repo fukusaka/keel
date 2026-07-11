@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- `engine-netty`: bump Netty `4.2.12.Final` → `4.2.15.Final`, clearing the Dependabot advisories on the netty codec / handler modules transitively pulled in via `netty-all` (#915)
+- `observability-opentelemetry`: bump OpenTelemetry `1.45.0` → `1.62.0` (#915)
+
 ### Added
 
 - `codec-http`: `HttpHeaders.build(expectedEntries) { }` overload that pre-sizes header storage to a known field count. The unpooled response path (`HttpResponse.ok` / `of` / `notFound`) uses it so a typical two-header response sizes its slot array and string store to 2 entries instead of the 8-slot default, cutting ~168 bytes/response (#908)
