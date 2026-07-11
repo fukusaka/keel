@@ -29,6 +29,12 @@ import kotlinx.coroutines.CoroutineScope
  * Implementations are expected to honour [KeelApplicationEngine.Configuration.applicationDispatcher]
  * for the actual `pipeline.execute(call)` call to give applications a hook
  * for offloading blocking handlers off the EventLoop.
+ *
+ * **Test strategy**: no standalone contract test. This is a single-method
+ * functional interface (the seam between the engine accept loop and a codec-
+ * specific handler); it has no behaviour of its own to pin. Its concrete
+ * implementations (`keel-server-ktor` / `keel-server-ktor-cio`) are exercised
+ * by those modules' engine integration tests.
  */
 public fun interface KtorConnectionHandler {
     /**

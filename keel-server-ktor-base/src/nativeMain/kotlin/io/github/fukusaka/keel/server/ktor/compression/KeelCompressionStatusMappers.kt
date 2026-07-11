@@ -37,6 +37,14 @@ import io.ktor.server.response.respond
  * exception types live in `keel-codec-http` so a single mapper covers
  * both the Ktor plugin path and the `HttpRequestDecompressionHandler`
  * codec path.
+ *
+ * **Test strategy**: no standalone contract test. The mapping is registered as
+ * `StatusPagesConfig` exception handlers, only reachable by throwing the
+ * exceptions through an installed `StatusPages` plugin — which needs a Ktor
+ * test application (`ktor-server-test-host`, not a dependency of this module).
+ * The exceptions themselves are unit-tested where they are raised
+ * (`keel-codec-http`'s `HttpRequestDecompressionHandlerTest`), and the mapping
+ * is exercised through the engine integration tests that install this mapper.
  */
 public fun StatusPagesConfig.installKeelCompressionStatusMappers() {
     exception<RequestDecompressionLimitException> { call, cause ->

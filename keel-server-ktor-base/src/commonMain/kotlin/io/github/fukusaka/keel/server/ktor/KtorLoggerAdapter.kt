@@ -13,6 +13,13 @@ import io.ktor.util.logging.Logger as KtorLogger
  * Level checks delegate to [KtorLogger.isTraceEnabled] and
  * [KtorLogger.isDebugEnabled]. INFO/WARN/ERROR are always enabled
  * because Ktor's Logger does not expose level checks above DEBUG.
+ *
+ * **Test strategy**: no standalone contract test. [KtorLogger] is
+ * `expect`-typed to the platform logger (`org.slf4j.Logger` on JVM), so a
+ * recording fake would have to implement the whole platform surface — a
+ * disproportionate harness for a passthrough adapter. The delegation is
+ * exercised whenever keel logs through a real `ApplicationEnvironment.log`
+ * in the engine integration tests.
  */
 public class KtorLoggerAdapter(
     private val ktor: KtorLogger,
