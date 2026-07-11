@@ -132,6 +132,26 @@ kotlin {
     }
 }
 
+// Security pin for a transitive Jackson brought in by the JVM reference
+// benchmark servers: io.vertx:vertx-core 5.0.8 declares jackson-databind /
+// jackson-core 2.15.3, which carries the Dependabot advisories (databind
+// CVE < 2.18.8, core CVE <= 2.18.5). spring-boot 3.5.12's jackson-bom already
+// upgrades the resolved version to 2.19.4; this constraint makes that
+// security floor explicit so the advisory is cleared and cannot silently
+// regress if the bom alignment changes. Scoped to jvmMainImplementation
+// because Jackson only reaches the -Pbenchmark reference servers (spring /
+// vertx) — it is NOT a dependency of any published keel library module.
+dependencies {
+    constraints {
+        "jvmMainImplementation"("com.fasterxml.jackson.core:jackson-databind:2.19.4") {
+            because("CVE-fixed floor for the transitive Jackson pulled by vertx / spring benchmark servers")
+        }
+        "jvmMainImplementation"("com.fasterxml.jackson.core:jackson-core:2.19.4") {
+            because("CVE-fixed floor for the transitive Jackson pulled by vertx / spring benchmark servers")
+        }
+    }
+}
+
 tasks.register<JavaExec>("run") {
     description = "Run benchmark server (--engine=keel|keel-netty|cio|ktor-netty|spring|vertx)"
     mainClass.set("io.github.fukusaka.keel.benchmark.JvmMainKt")
