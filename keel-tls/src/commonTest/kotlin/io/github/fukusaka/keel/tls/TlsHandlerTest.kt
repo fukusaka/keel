@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.tls
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.DuplexHandler
@@ -724,5 +725,35 @@ class TlsHandlerTest {
 
         pipeline.notifyRead(allocBuf(byteArrayOf(1)))
         assertTrue(inactive)
+    }
+
+    // --- Outbound plaintext buffer ownership ---
+
+    /**
+     * Pins the ownership contract for [TlsHandler.onWrite]'s `msg` parameter:
+     * the caller hands over an [IoBuf] and does not retain it past the call
+     * (matching [io.github.fukusaka.keel.codec.http.HttpResponseEncoder]'s
+     * `ctx.propagateWrite(content.content)` — fire-and-forget, no follow-up
+     * release of its own), so [TlsHandler] must be the one to release it once
+     * [processOutbound] has fully consumed it. A real caller with this exact
+     * shape (`respondFromBytes`) leaked 100 KB of Netty-pooled direct memory
+     * per HTTPS response before this was fixed, reproduced as
+     * `ResourceLeakDetector` warnings and a ~16x throughput collapse under
+     * concurrent load.
+     */
+    @Test
+    fun `onWrite releases the plaintext buffer once fully consumed`() {
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val trackedTransport = TestIoTransport(allocator = tracker)
+        val trackedChannel = object : AbstractPipelinedChannel(trackedTransport, logger) {}
+        val handler = TlsHandler(MockTlsCodec())
+        trackedChannel.pipeline.addLast("tls", handler)
+
+        val plain = tracker.allocate(5)
+        plain.writeByteArray("hello".encodeToByteArray(), 0, 5)
+        trackedChannel.pipeline.requestWrite(plain)
+
+        trackedTransport.written.forEach { it.release() }
+        tracker.assertNoLeaks("TlsHandler.onWrite must release the plaintext buffer it fully consumed")
     }
 }

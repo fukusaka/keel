@@ -19,6 +19,10 @@ import io.github.fukusaka.keel.pipeline.TimerHandle
  *
  * **Outbound** ([onWrite]): receives plaintext from application handlers,
  * calls [TlsCodec.protect] to encrypt, and propagates ciphertext to HEAD.
+ * Takes ownership of and releases the incoming plaintext buffer once fully
+ * consumed — callers (e.g. [io.github.fukusaka.keel.codec.http.HttpResponseEncoder])
+ * hand it off via a fire-and-forget `propagateWrite` and do not retain or
+ * release it themselves.
  *
  * **Handshake**: driven automatically. When [unprotect] returns [TlsResult.NEED_WRAP],
  * the handler calls [protect] to produce the handshake response and flushes it.
@@ -254,12 +258,21 @@ class TlsHandler(
             ctx.propagateWrite(msg)
             return
         }
-        processOutbound(ctx, msg)
-        // Do not release msg here. Outbound buffers follow the "caller manages
-        // lifecycle" model: the original owner (e.g. BufferedSuspendSink) releases
-        // the buffer after sink.write() returns. Releasing here would cause
-        // double-release when the caller also releases, corrupting pooled buffer
-        // state (ByteBuffer.limit not restored → IndexOutOfBoundsException).
+        // msg is fully consumed by processOutbound (read into fresh ciphertext
+        // buffers, never itself propagated downstream) and this handler is its
+        // last consumer, so it must be released here regardless of which
+        // internal exit path processOutbound took (full drain, BUFFER_OVERFLOW,
+        // CLOSED, or an unexpected-status error). No current caller (e.g.
+        // HttpResponseEncoder's `ctx.propagateWrite(content.content)`) retains
+        // or releases msg after handing it off — assuming otherwise silently
+        // leaked the plaintext buffer on every TLS write (confirmed via
+        // ResourceLeakDetector on the Netty backend, ~100 KB/response with
+        // pooled ByteBuf allocators).
+        try {
+            processOutbound(ctx, msg)
+        } finally {
+            msg.release()
+        }
     }
 
     private fun processOutbound(ctx: PipelineHandlerContext, plainBuf: IoBuf) {
