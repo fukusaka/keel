@@ -50,6 +50,17 @@ import kotlin.time.TimeSource
  * retry, and re-applies `SO_RCVTIMEO` with the reduced value — a
  * signal storm cannot extend the bound beyond the caller's
  * requested [Duration].
+ *
+ * ## Test strategy
+ *
+ * No standalone self-test. Unlike the scripted fakes ([FakeNativeSocket] /
+ * [FakeNativeSocketOps], which are pinned by their own contract tests), this
+ * is a real-syscall helper with no in-memory invariant to break silently: its
+ * correctness is the actual connect / read / write behaviour, which the ~20
+ * engine integration tests that drive a server against it exercise directly —
+ * a regression (truncated write, mis-handled EOF / timeout / EINTR) fails those
+ * tests as a wrong server observation. A standalone test would only re-run the
+ * same syscalls against a throwaway listener, duplicating that coverage.
  */
 @OptIn(ExperimentalForeignApi::class)
 public object PosixRawClient {
