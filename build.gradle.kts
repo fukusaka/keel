@@ -3,6 +3,24 @@ import org.gradle.api.tasks.testing.TestDescriptor
 import org.gradle.api.tasks.testing.TestListener
 import org.gradle.api.tasks.testing.TestResult
 
+// Security pin for transitive Jackson on the build classpath: the Dokka Gradle
+// plugin (latest 2.2.0-Beta included) still declares Jackson 2.15.3, which
+// carries known CVEs. Force the CVE-fixed floor; the Jackson BOM aligns the
+// rest of the family (annotations / dataformat-xml / module-kotlin) to match.
+// Build-tool only — never shipped in any keel artifact.
+buildscript {
+    dependencies {
+        constraints {
+            classpath("com.fasterxml.jackson.core:jackson-databind:2.22.1") {
+                because("CVE-fixed floor for Jackson pulled in by the Dokka Gradle plugin")
+            }
+            classpath("com.fasterxml.jackson.core:jackson-core:2.22.1") {
+                because("CVE-fixed floor for Jackson pulled in by the Dokka Gradle plugin")
+            }
+        }
+    }
+}
+
 plugins {
     alias(libs.plugins.kotlin.multiplatform) apply false
     alias(libs.plugins.kotlin.jvm) apply false
