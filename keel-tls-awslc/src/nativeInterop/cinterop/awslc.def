@@ -135,6 +135,24 @@ static int keel_awslc_set_max_proto_version(SSL_CTX *ctx, int version) {
 }
 
 // ============================================================
+// Partial-write mode (SSL_CTX_set_mode is a macro)
+// ============================================================
+//
+// Same rationale as keel_openssl_enable_partial_write: keel's BIO backs
+// onto a single fixed-size ciphertext IoBuf (one TLS record's worth).
+// Without SSL_MODE_ENABLE_PARTIAL_WRITE, SSL_write() requires the entire
+// input to be written before reporting success, so a plaintext write
+// larger than one record makes the whole call report WANT_WRITE with zero
+// bytes consumed once the BIO runs out of room on the second record — even
+// though the first record already reached the wire — which
+// TlsHandler.processOutbound cannot distinguish from a genuine stall and
+// treats as a protocol error, silently truncating responses over 16384
+// bytes. AWS-LC is API-compatible with OpenSSL here.
+static void keel_awslc_enable_partial_write(SSL_CTX *ctx) {
+    SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE);
+}
+
+// ============================================================
 // ALPN helpers
 // ============================================================
 

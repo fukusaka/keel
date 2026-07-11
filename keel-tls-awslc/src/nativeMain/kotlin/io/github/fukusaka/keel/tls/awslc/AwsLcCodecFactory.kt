@@ -23,6 +23,7 @@ import awslc.keel_awslc_bio_setup
 import awslc.keel_awslc_ctx_load_ca_pem
 import awslc.keel_awslc_ctx_load_pem_cert
 import awslc.keel_awslc_ctx_load_pem_key
+import awslc.keel_awslc_enable_partial_write
 import awslc.keel_awslc_err_string
 import awslc.keel_awslc_set1_host
 import awslc.keel_awslc_set_max_proto_version
@@ -102,6 +103,7 @@ class AwsLcCodecFactory : TlsCodecFactory {
             "SSL_CTX_new failed: ${errorString()}",
             TlsErrorCategory.HANDSHAKE_FAILED,
         )
+        keel_awslc_enable_partial_write(ctx)
 
         loadCertificates(ctx, config)
         configureTrust(ctx, config)
