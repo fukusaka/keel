@@ -45,7 +45,7 @@ class TestIoTransportTest {
         assertEquals(3, tracker.outstandingCount)
         transport.close()
         // Released exactly once each; a `retain` in write() would leave this at 3.
-        assertEquals(0, tracker.outstandingCount)
+        tracker.assertNoLeaks()
     }
 
     @Test
@@ -57,18 +57,22 @@ class TestIoTransportTest {
         transport.close()
         assertTrue(transport.closed)
         assertEquals(0, transport.written.size)
-        assertEquals(0, tracker.outstandingCount)
+        tracker.assertNoLeaks()
     }
 
     @Test
-    fun `close is idempotent and does not double-release`() {
+    fun `a second close is a safe no-op`() {
+        // close() clears `written` after releasing, so a second close cannot
+        // reach the release loop and double-release is structurally prevented;
+        // this pins that the second call is nonetheless safe — it does not
+        // throw, keeps `closed` true, and leaves the refcount balanced.
         val tracker = TrackingAllocator(DefaultAllocator)
         val transport = TestIoTransport(tracker)
         transport.write(tracker.allocate(8))
         transport.close()
         transport.close()
         assertTrue(transport.closed)
-        assertEquals(0, tracker.outstandingCount)
+        tracker.assertNoLeaks()
     }
 
     @Test
@@ -99,7 +103,7 @@ class TestIoTransportTest {
         val transport = TestIoTransport(tracker)
         transport.write(tracker.allocate(8))
         transport.releaseWritten()
-        assertEquals(0, tracker.outstandingCount)
+        tracker.assertNoLeaks()
         assertEquals(0, transport.written.size)
         // releaseWritten must not drive AbstractIoTransport's lifecycle.
         assertFalse(transport.closed)
