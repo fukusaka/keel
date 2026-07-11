@@ -145,6 +145,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io`: eliminate per-carve `Int` / `Long` autoboxing on the pooled `allocate()` hot path by making `ChunkViewFactory` a `fun interface` instead of a Kotlin function type, so `byteOffset` / `length` / `handle` stay primitive (was ~20% of per-allocation heap pressure; affects JVM `PooledDirectAllocator` and Native `SlabAllocator`) (#913)
 - **BREAKING** (`tls`): the JSSE / OpenSSL / AWS-LC clients now verify the server
   certificate hostname by default (matching `serverName`); previously a chain-valid
   certificate for any name was accepted. A name mismatch now aborts the handshake — set

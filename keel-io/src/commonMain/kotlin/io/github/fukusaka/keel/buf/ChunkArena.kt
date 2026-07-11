@@ -5,8 +5,17 @@ package io.github.fukusaka.keel.buf
  * offset, carrying the run-binding `(pooledChunk, handle)` — a `NativeIoBuf`
  * pointer view on Native, a `DirectIoBuf` `slice()` on JVM.
  */
-internal typealias ChunkViewFactory =
-    (backing: IoBuf, byteOffset: Int, length: Int, pooledChunk: PooledChunk, handle: Long) -> IoBuf
+internal fun interface ChunkViewFactory {
+    /**
+     * Builds the view. Declared as a `fun interface` (not a Kotlin function
+     * type) so the `Int` / `Long` arguments stay primitive at the call site:
+     * a `(..., Int, ..., Long) -> IoBuf` function type compiles to
+     * `Function5<Any, ...>` and autoboxes `byteOffset` / `length` / `handle`
+     * on every carve — i.e. on the pooled `allocate()` hot path. The named-method
+     * SAM interface keeps them unboxed.
+     */
+    fun create(backing: IoBuf, byteOffset: Int, length: Int, pooledChunk: PooledChunk, handle: Long): IoBuf
+}
 
 /**
  * The chunk back-end for a [PooledAllocator]: a list of [PooledChunk]s that
@@ -227,7 +236,7 @@ internal class ChunkArena(
     private fun makeView(pc: PooledChunk, handle: Long, classSize: Int): IoBuf {
         val byteOffset = pc.poolChunk.byteOffset(handle)
         pc.retainForCarve()
-        return newChunkView(pc.backing, byteOffset, classSize, pc, handle)
+        return newChunkView.create(pc.backing, byteOffset, classSize, pc, handle)
     }
 
     /**
