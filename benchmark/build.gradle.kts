@@ -180,6 +180,18 @@ tasks.register<JavaExec>("run") {
 tasks.register("writeClasspath") {
     val jvmCompilation = kotlin.jvm().compilations["main"]
     dependsOn(jvmCompilation.compileTaskProvider)
+    // Without these, Gradle has no real inputs to compare and treats the
+    // task as up-to-date forever once the output file exists — including
+    // across a `-Ptls` toggle. `-Ptls` conditionally adds the
+    // `keel-tls-jsse` dependency to jvmMain below, which changes
+    // runtimeDependencyFiles; without inputs.property("tls", ...) that
+    // change alone doesn't invalidate the cache either, so a classpath
+    // written without `-Ptls` silently keeps missing the JSSE jar on a
+    // later `-Ptls`-enabled run, breaking JVM HTTPS benchmarks.
+    inputs.files(jvmCompilation.output.allOutputs)
+    inputs.files(jvmCompilation.runtimeDependencyFiles)
+    inputs.property("tls", providers.gradleProperty("tls").isPresent)
+    inputs.property("tlsBackend", providers.gradleProperty("tls-backend").getOrElse(""))
     val outputFile = layout.buildDirectory.file("benchmark-classpath.txt")
     outputs.file(outputFile)
     val repoRoot = rootProject.projectDir.absolutePath
