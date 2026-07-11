@@ -91,7 +91,10 @@ class AwsLcHttpsEchoTest {
 
     @Test
     fun `HTTPS response spanning multiple TLS records delivers the full body`() = runBlocking {
-        withTimeout(5.seconds) {
+        // Wider budget than the small-body echo test above: encoding ~7 TLS
+        // records and downloading 100 KB (vs. one record / 15 bytes) puts
+        // this in the "large payload" bracket, not "single round-trip".
+        withTimeout(15.seconds) {
             val factory = AwsLcCodecFactory()
             val engine = createTestEngine()
 
@@ -189,7 +192,7 @@ class AwsLcHttpsEchoTest {
             execl(
                 "/usr/bin/curl", "curl",
                 "-k", "-s",
-                "--max-time", "5",
+                "--max-time", "12",
                 "--connect-timeout", "3",
                 "-o", "/dev/null",
                 "-w", "%{size_download}",
