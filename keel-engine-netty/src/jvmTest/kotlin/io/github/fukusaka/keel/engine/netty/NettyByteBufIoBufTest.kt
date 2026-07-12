@@ -1,6 +1,8 @@
 package io.github.fukusaka.keel.engine.netty
 
+import io.github.fukusaka.keel.buf.NoOpLifecycleListener
 import io.netty.buffer.ByteBufAllocator
+import io.netty.util.concurrent.FastThreadLocalThread
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -240,5 +242,93 @@ class NettyByteBufIoBufTest {
         assertEquals(2.toByte(), buf.readByte())
         assertEquals(3.toByte(), buf.readByte())
         buf.release()
+    }
+
+    // --- borrow / borrowInbound (pooled wrapper path) ---
+
+    @Test
+    fun `borrowInbound derives indices identically to wrapInbound`() {
+        val byteBuf = ByteBufAllocator.DEFAULT.directBuffer(16, 16)
+        byteBuf.writeBytes(byteArrayOf(1, 2, 3))
+        byteBuf.readerIndex(0)
+        val buf = NettyByteBufIoBuf.borrowInbound(byteBuf)
+        assertEquals(0, buf.readerIndex)
+        assertEquals(3, buf.writerIndex)
+        assertEquals(16, buf.capacity)
+        assertEquals(1.toByte(), buf.readByte())
+        assertEquals(2.toByte(), buf.readByte())
+        assertEquals(3.toByte(), buf.readByte())
+        buf.release()
+    }
+
+    @Test
+    fun `borrow resets indices even when the underlying wrapper object is reused`() {
+        val first = ByteBufAllocator.DEFAULT.directBuffer(8, 8)
+        val a = NettyByteBufIoBuf.borrow(first, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = NoOpLifecycleListener)
+        a.writeByteArray(byteArrayOf(9, 9, 9), 0, 3)
+        assertEquals(3, a.writerIndex)
+        assertTrue(a.release()) // refCnt 1 -> 0, wrapper (if pooled) returns to RECYCLER
+
+        val second = ByteBufAllocator.DEFAULT.directBuffer(4, 4)
+        val b = NettyByteBufIoBuf.borrow(second, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = NoOpLifecycleListener)
+        // A recycled wrapper must never leak state from its previous binding.
+        assertEquals(0, b.readerIndex)
+        assertEquals(0, b.writerIndex)
+        assertEquals(4, b.capacity)
+        b.release()
+    }
+
+    @Test
+    fun `borrow reuses a previously released wrapper instance on a FastThreadLocalThread`() {
+        // io.netty.util.Recycler#get() only pools on an
+        // io.netty.util.concurrent.FastThreadLocalThread — on any other
+        // JVM thread (e.g. the JUnit runner thread) it unconditionally
+        // returns a fresh, unpooled instance regardless of iteration
+        // count (see Recycler.java's get(): it checks
+        // FastThreadLocalThread.currentThreadWillCleanupFastThreadLocals()
+        // before consulting the thread-local pool). Netty's own
+        // EventLoopGroup threads are always FastThreadLocalThread
+        // (DefaultThreadFactory.newThread()), so this test runs the
+        // borrow/release loop on one to exercise the real production
+        // pooling path. Recycler also samples new-handle creation
+        // (default ratio=8: only 1-in-8 first-time allocations on an
+        // empty pool become poolable, by design, to avoid growing the
+        // pool from a short allocation burst) — enough cycles are looped
+        // for the ratio gate to open. The exact ratio (default 8) is an
+        // internal Netty tuning constant, not part of its public
+        // contract, so BORROW_RELEASE_CYCLES is set an order of
+        // magnitude higher than the documented default to keep this
+        // assertion deterministic-in-practice even if a future Netty
+        // version changes the ratio.
+        var reused = false
+        val thread = FastThreadLocalThread {
+            val seen = mutableListOf<NettyByteBufIoBuf>()
+            repeat(BORROW_RELEASE_CYCLES) {
+                val byteBuf = ByteBufAllocator.DEFAULT.directBuffer(8, 8)
+                val buf = NettyByteBufIoBuf.borrow(byteBuf, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = NoOpLifecycleListener)
+                seen += buf
+                buf.release()
+            }
+            reused = seen.toSet().size < seen.size
+        }
+        thread.start()
+        thread.join(THREAD_JOIN_TIMEOUT_MS)
+        assertFalse(thread.isAlive, "borrow/release loop did not finish within ${THREAD_JOIN_TIMEOUT_MS}ms")
+        assertTrue(reused, "expected at least one wrapper object reuse across $BORROW_RELEASE_CYCLES borrow/release cycles on a FastThreadLocalThread")
+    }
+
+    @Test
+    fun `directly constructed instances are not recycled on release`() {
+        // NettyByteBufIoBuf(byteBuf) (no recycleHandle) must not be pushed
+        // to the shared RECYCLER — retainedSlice() results and test-only
+        // constructions can outlive or diverge from the pool's assumptions.
+        val byteBuf = ByteBufAllocator.DEFAULT.directBuffer(8, 8)
+        val direct = NettyByteBufIoBuf(byteBuf)
+        assertTrue(direct.release()) // must not throw even though recycleHandle is null
+    }
+
+    private companion object {
+        private const val THREAD_JOIN_TIMEOUT_MS = 5_000L
+        private const val BORROW_RELEASE_CYCLES = 256
     }
 }
