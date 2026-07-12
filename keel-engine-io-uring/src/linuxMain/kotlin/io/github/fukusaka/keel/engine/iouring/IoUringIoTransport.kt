@@ -20,6 +20,7 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import io.github.fukusaka.keel.pipeline.PendingWriteSnapshotPool
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -739,6 +740,14 @@ internal class IoUringIoTransport(
     /** Per-connection I/O statistics for adaptive mode selection. */
     internal val stats = ConnectionStats()
 
+    /**
+     * Free-list for the [ArrayList]<[PendingWrite]> ownership snapshots taken
+     * before an async writev/sendmsg completion transfers buffer release
+     * responsibility away from [pendingWrites]. See [PendingWriteSnapshotPool]
+     * KDoc for why a fixed-size double-buffer is unsafe here.
+     */
+    private val pendingWriteSnapshotPool = PendingWriteSnapshotPool()
+
     // Per-flush tracking for stats recording.
     private var flushHadEagain = false
     private var flushBytesWritten = 0L
@@ -892,7 +901,7 @@ internal class IoUringIoTransport(
         if (alreadySentInSplit > 0) {
             updatePendingBytes(-alreadySentInSplit)
         }
-        submitAsyncWritevRemainder(ArrayList(pendingWrites), splitIndex, alreadySentInSplit)
+        submitAsyncWritevRemainder(pendingWriteSnapshotPool.borrow(pendingWrites), splitIndex, alreadySentInSplit)
         return false
     }
 
@@ -1074,7 +1083,7 @@ internal class IoUringIoTransport(
     private fun submitAsyncWritev() {
         val count = pendingWrites.size
         val totalBytes = pendingWrites.sumOf { it.length }
-        val writes = ArrayList(pendingWrites) // snapshot before clear
+        val writes = pendingWriteSnapshotPool.borrow(pendingWrites) // snapshot before clear
 
         val iovecs: kotlinx.cinterop.CPointer<io_uring.iovec>
         memScoped {
@@ -1085,7 +1094,11 @@ internal class IoUringIoTransport(
                 lens[i] = pw.length.convert()
             }
             iovecs = io_uring.keel_alloc_iovec(bases.reinterpret(), lens.reinterpret(), count)
-                ?: error("keel_alloc_iovec failed (OOM)")
+                ?: run {
+                    for (pw in writes) pw.buf.release()
+                    pendingWriteSnapshotPool.recycle(writes)
+                    error("keel_alloc_iovec failed (OOM)")
+                }
         }
 
         fixedOpSubmitted()
@@ -1103,6 +1116,7 @@ internal class IoUringIoTransport(
                     "async writev CQE failed: sqeFd=$sqeFd res=$res (${errnoMessage(-res)})"
                 }
                 for (pw in writes) pw.buf.release()
+                pendingWriteSnapshotPool.recycle(writes)
                 onAsyncFlushDone()
                 fireReadClosedOnce()
                 return@submitWritevCallback
@@ -1110,6 +1124,7 @@ internal class IoUringIoTransport(
             val writtenBytes = res
             if (writtenBytes >= totalBytes) {
                 for (pw in writes) pw.buf.release()
+                pendingWriteSnapshotPool.recycle(writes)
                 onAsyncFlushDone()
             } else {
                 // Partial writev: release fully-written, retry remainder sequentially.
@@ -1126,9 +1141,12 @@ internal class IoUringIoTransport(
                 }
                 if (splitIndex < 0) {
                     // All buffers fully written (shouldn't happen, but safe)
+                    pendingWriteSnapshotPool.recycle(writes)
                     onAsyncFlushDone()
                 } else {
                     // Send remaining buffers sequentially via SEND chain.
+                    // Ownership of `writes` transfers to submitAsyncWritevRemainder,
+                    // which recycles it once the chain completes.
                     submitAsyncWritevRemainder(writes, splitIndex, writtenBytes - consumed)
                 }
             }
@@ -1143,7 +1161,9 @@ internal class IoUringIoTransport(
      * [onAsyncFlushDone] is called after the last buffer completes.
      */
     private fun submitAsyncWritevRemainder(
-        writes: List<PendingWrite>, splitIndex: Int, alreadySent: Int,
+        writes: ArrayList<PendingWrite>,
+        splitIndex: Int,
+        alreadySent: Int,
     ) {
         val pw = writes[splitIndex]
         val offset = pw.offset + alreadySent.coerceAtLeast(0)
@@ -1152,6 +1172,7 @@ internal class IoUringIoTransport(
             // Send remaining buffers after the split point.
             val nextIndex = splitIndex + 1
             if (nextIndex >= writes.size) {
+                pendingWriteSnapshotPool.recycle(writes)
                 onAsyncFlushDone()
             } else {
                 submitAsyncWritevRemainderFrom(writes, nextIndex)
@@ -1163,8 +1184,9 @@ internal class IoUringIoTransport(
      * Sends buffers from [startIndex] to end sequentially.
      * Each buffer starts after the previous completes.
      */
-    private fun submitAsyncWritevRemainderFrom(writes: List<PendingWrite>, startIndex: Int) {
+    private fun submitAsyncWritevRemainderFrom(writes: ArrayList<PendingWrite>, startIndex: Int) {
         if (startIndex >= writes.size) {
+            pendingWriteSnapshotPool.recycle(writes)
             onAsyncFlushDone()
             return
         }
@@ -1296,7 +1318,7 @@ internal class IoUringIoTransport(
         }
 
         // Gather: build iovec + msghdr, submit SENDMSG_ZC.
-        val writes = ArrayList(pendingWrites)
+        val writes = pendingWriteSnapshotPool.borrow(pendingWrites)
         val count = writes.size
 
         memScoped {
@@ -1307,9 +1329,18 @@ internal class IoUringIoTransport(
                 lens[i] = pw.length.convert()
             }
             val iovecs = io_uring.keel_alloc_iovec(bases.reinterpret(), lens.reinterpret(), count)
-                ?: error("keel_alloc_iovec failed (OOM)")
+                ?: run {
+                    for (pw in writes) pw.buf.release()
+                    pendingWriteSnapshotPool.recycle(writes)
+                    error("keel_alloc_iovec failed (OOM)")
+                }
             val msghdr = io_uring.keel_alloc_msghdr(iovecs, count)
-                ?: run { io_uring.keel_free_iovec(iovecs); error("keel_alloc_msghdr failed (OOM)") }
+                ?: run {
+                    io_uring.keel_free_iovec(iovecs)
+                    for (pw in writes) pw.buf.release()
+                    pendingWriteSnapshotPool.recycle(writes)
+                    error("keel_alloc_msghdr failed (OOM)")
+                }
 
             fixedOpSubmitted()
             eventLoop.submitSendmsgZcCallback(sqeFd, msghdr, MSG_NOSIGNAL.convert(), fixedFile = useFixedFile) { res ->
@@ -1317,6 +1348,7 @@ internal class IoUringIoTransport(
                 io_uring.keel_free_msghdr(msghdr)
                 io_uring.keel_free_iovec(iovecs)
                 for (pw in writes) pw.buf.release()
+                pendingWriteSnapshotPool.recycle(writes)
                 // Surface SENDMSG_ZC errors (EPIPE / ECONNRESET / etc.) — without
                 // this, a broken stream silently completed the flush from the
                 // pipeline's perspective, leaving the orphaned transport alive
