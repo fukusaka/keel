@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
+import io.github.fukusaka.keel.pipeline.PendingWriteSnapshotPool
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.suspendCancellableCoroutine
 import io.netty.buffer.ByteBuf
@@ -368,6 +369,16 @@ internal class NettyIoTransport(
     private var flushScheduled: Boolean = false
 
     /**
+     * Reuses the `ArrayList<PendingWrite>` ownership-snapshot [flush] takes
+     * before handing it to Netty's async completion listener, instead of
+     * allocating a fresh list on every call. See
+     * [PendingWriteSnapshotPool]'s KDoc for why a fixed-size double-buffer
+     * isn't safe here (multiple flush generations can be in flight under
+     * backpressure). Only accessed on the EventLoop thread.
+     */
+    private val pendingWriteSnapshotPool = PendingWriteSnapshotPool()
+
+    /**
      * Queues all pending writes into Netty's outbound buffer via
      * [write][NettyNativeChannel.write] and schedules a single
      * `Channel.flush()` on the next `EventLoop.execute` iteration. If a
@@ -387,8 +398,11 @@ internal class NettyIoTransport(
         val size = pendingWrites.size
         if (size == 0) return true
 
-        // Transfer ownership for release in callback.
-        val writes = ArrayList(pendingWrites)
+        // Transfer ownership for release in callback. Borrowed from
+        // pendingWriteSnapshotPool instead of a fresh ArrayList — recycled
+        // back once this snapshot's last reference (the sync release path
+        // below, the async listener, or the catch block) is done with it.
+        val writes = pendingWriteSnapshotPool.borrow(pendingWrites)
         pendingWrites.clear()
         val totalBytes = writes.sumOf { it.length }
 
@@ -442,16 +456,19 @@ internal class NettyIoTransport(
                 lastFuture.addListener {
                     for (pw in writes) pw.buf.release()
                     updatePendingBytes(-totalBytes)
+                    pendingWriteSnapshotPool.recycle(writes)
                     callback?.invoke()
                 }
             } else {
                 for (pw in writes) pw.buf.release()
                 updatePendingBytes(-totalBytes)
+                pendingWriteSnapshotPool.recycle(writes)
             }
         } catch (e: Exception) {
             // Release all buffers on write failure (e.g. channel already closed).
             for (pw in writes) pw.buf.release()
             updatePendingBytes(-totalBytes)
+            pendingWriteSnapshotPool.recycle(writes)
             throw e
         }
 
