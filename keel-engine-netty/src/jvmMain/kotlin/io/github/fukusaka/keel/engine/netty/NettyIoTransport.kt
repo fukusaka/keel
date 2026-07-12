@@ -23,6 +23,8 @@ import io.netty.channel.socket.ChannelInputShutdownEvent
 import io.netty.channel.socket.ChannelInputShutdownReadComplete
 import io.netty.channel.socket.DuplexChannel
 import io.netty.handler.ssl.SslContext
+import io.netty.util.concurrent.Future
+import io.netty.util.concurrent.GenericFutureListener
 import kotlin.coroutines.resume
 import io.netty.channel.Channel as NettyNativeChannel
 
@@ -379,6 +381,64 @@ internal class NettyIoTransport(
     private val pendingWriteSnapshotPool = PendingWriteSnapshotPool()
 
     /**
+     * Reusable [GenericFutureListener] for [flush]'s write-completion
+     * callback, borrowed from [flushListenerPool] instead of a fresh Kotlin
+     * lambda per call. A lambda literal that captures `writes`/`totalBytes`/
+     * `callback` (all of which differ per flush) cannot be a singleton — the
+     * Kotlin compiler allocates a new closure object on every `addListener {
+     * ... }` call. Holding that state in mutable fields instead lets the
+     * listener object itself be pooled.
+     *
+     * Not a fixed-size pool, for the same reason [pendingWriteSnapshotPool]
+     * isn't: under backpressure (a slow peer), multiple `flush()`
+     * generations can have listeners outstanding simultaneously — the
+     * earlier one's [ChannelFuture] hasn't completed when a later `flush()`
+     * borrows another. [flushListenerPool] only accessed on the EventLoop
+     * thread, matching [pendingWriteSnapshotPool].
+     */
+    private inner class FlushCompletionListener : GenericFutureListener<Future<Void>> {
+        lateinit var writes: ArrayList<PendingWrite>
+        var totalBytes: Int = 0
+        var callback: (() -> Unit)? = null
+
+        override fun operationComplete(future: Future<Void>) {
+            for (pw in writes) pw.buf.release()
+            updatePendingBytes(-totalBytes)
+            pendingWriteSnapshotPool.recycle(writes)
+            flushListenerPool.addLast(this)
+            // Clear before invoking: matches pendingWriteSnapshotPool.recycle's
+            // discipline of dropping references before an instance re-enters
+            // the free list, so a recycled-but-idle listener doesn't keep
+            // whatever `callback` closes over reachable for the rest of the
+            // transport's lifetime. Captured to a local first so a reentrant
+            // flush() borrowing this same instance during the invoke() below
+            // (setting a fresh `callback`) can't be undone by this clear.
+            val cb = callback
+            callback = null
+            cb?.invoke()
+        }
+    }
+
+    private val flushListenerPool = ArrayDeque<FlushCompletionListener>()
+
+    /**
+     * Returns a [FlushCompletionListener] (reused from [flushListenerPool],
+     * or freshly allocated if none is free) populated with this flush
+     * cycle's state.
+     */
+    private fun borrowFlushListener(
+        writes: ArrayList<PendingWrite>,
+        totalBytes: Int,
+        callback: (() -> Unit)?,
+    ): FlushCompletionListener {
+        val listener = flushListenerPool.removeLastOrNull() ?: FlushCompletionListener()
+        listener.writes = writes
+        listener.totalBytes = totalBytes
+        listener.callback = callback
+        return listener
+    }
+
+    /**
      * Queues all pending writes into Netty's outbound buffer via
      * [write][NettyNativeChannel.write] and schedules a single
      * `Channel.flush()` on the next `EventLoop.execute` iteration. If a
@@ -453,12 +513,7 @@ internal class NettyIoTransport(
                 // cancels the timer, a partial drain refreshes it. A synchronously
                 // completed write (fast peer) skips arming entirely.
                 if (!lastFuture.isDone) armWriteIdleTimeout()
-                lastFuture.addListener {
-                    for (pw in writes) pw.buf.release()
-                    updatePendingBytes(-totalBytes)
-                    pendingWriteSnapshotPool.recycle(writes)
-                    callback?.invoke()
-                }
+                lastFuture.addListener(borrowFlushListener(writes, totalBytes, callback))
             } else {
                 for (pw in writes) pw.buf.release()
                 updatePendingBytes(-totalBytes)
