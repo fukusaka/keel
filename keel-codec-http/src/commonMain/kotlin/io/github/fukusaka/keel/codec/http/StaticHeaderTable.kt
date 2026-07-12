@@ -28,20 +28,22 @@ package io.github.fukusaka.keel.codec.http
  *   BigQuery analysis with a >5 % per-name value-frequency threshold
  *   (https://github.com/quicwg/base-drafts/wiki/QPACK-Static-Table).
  *   Indices 0..98 (0-based per RFC 9204).
- * - **HTTP/1.1 extension (Title-Case)** (~80 entries): provisional
- *   H1 hot-path preset before an empirical wire-frequency study runs.
- *   Three categories: (a) HPACK + QPACK concrete-value non-pseudo
- *   entries Title-Cased for H1 wire convention (filtered to drop
- *   H2/H3 pseudo-headers and name-only sentinels), (b) H1-specific
+ * - **HTTP/1.1 extension (Title-Case)** (~88 entries): H1 hot-path
+ *   preset. Three categories: (a) HPACK + QPACK concrete-value
+ *   non-pseudo entries Title-Cased for H1 wire convention (filtered to
+ *   drop H2/H3 pseudo-headers and name-only sentinels), (b) H1-specific
  *   hop-by-hop / framing / cache-busting pairs absent from QPACK by
  *   design (RFC 9110 §7.6.1, RFC 9112 §6, RFC 9111 §5.2), and
  *   (c) production-frequent variants observed on the H1 wire (browser
  *   default `Accept`, Content-Type charset spacing / case variants,
- *   `X-Frame-Options: DENY` uppercase, etc.) — pragmatic preset
- *   pending BigQuery confirmation in a follow-up PR. Title-Case
- *   matches the H1 wire convention preserved by Netty
- *   `DefaultHttpHeaders` and OkHttp `Headers`, so the [tryInternAt]
- *   exact-case compare hits H1 application input.
+ *   `X-Frame-Options: DENY` uppercase, etc.) — empirically confirmed
+ *   against a public BigQuery HTTP Archive crawl (>5% per-name
+ *   value-frequency threshold, the same methodology QPACK's own static
+ *   table was built with; keel-codec-http/scripts/bigquery-l7-stage3/RESULTS.md
+ *   has the full per-entry results). Title-Case matches the H1 wire
+ *   convention preserved by Netty `DefaultHttpHeaders` and OkHttp
+ *   `Headers`, so the [tryInternAt] exact-case compare hits H1
+ *   application input.
  *
  * **Why H1 hot path needs separate Title-Case entries**:
  * [tryInternAt] uses exact-case name compare to preserve the
@@ -53,13 +55,12 @@ package io.github.fukusaka.keel.codec.http
  * indexed-entry path. The H1 extension Title-Cases the HPACK + QPACK
  * concrete-value pairs (filtered to drop pseudo-headers and name-only
  * sentinels), the H1-specific hop-by-hop / framing / cache-busting set,
- * and the production-frequent preset to cover the H1 hot path. A
- * BigQuery follow-up PR will refine the production-frequent set with
- * empirical wire-frequency data.
+ * and the production-frequent preset to cover the H1 hot path, now
+ * empirically confirmed against BigQuery HTTP Archive data.
  *
  * **Layout**: a hash-bucket structure with [BUCKET_COUNT] buckets
- * and a low-bit mask (§46.12 mixing audit picked mask as the
- * empirical optimum for the `31 * h + c` polynomial family). Two
+ * and a low-bit mask (an audit of the mixing behavior picked this mask as
+ * the empirical optimum for the `31 * h + c` polynomial family). Two
  * choices that differ from [HttpHeaders]:
  *
  * 1. **Hashed by `(name, value)` combined** (not name-only) via
@@ -70,12 +71,17 @@ package io.github.fukusaka.keel.codec.http
  *    into a different bucket.
  * 2. **`BUCKET_COUNT = 256`** (vs HttpHeaders' 64). The
  *    `StaticHeaderTableBucketCountAudit` measured chain depth at
- *    32 / 64 / 128 / 256 / 512 on this table's 242 entries and picked
- *    256 as the smallest where max chain walk stops dropping (max =
- *    6 at both 256 and 512). 1 KB `bucketHead` is trivial for a
- *    process-wide singleton.
+ *    32 / 64 / 128 / 256 / 512 on the table's original 242 entries and
+ *    picked 256 as the smallest where max chain walk stops dropping
+ *    (max = 6 at both 256 and 512). The table now has 248 entries
+ *    (6 entries added by the 2026-07-12 BigQuery confirmation, category
+ *    (c) above); [StaticHeaderTableBucketDepthTest] reconfirms the max
+ *    ≤ 12 soft cap on the current entry set. 1 KB `bucketHead` is
+ *    trivial for a process-wide singleton.
  *
- * Result: avg chain depth 0.95, max 6, p99 6. `String.hashCode()` is
+ * Result: avg chain depth 0.95, max 6, p99 6 (as measured on the
+ * original 242-entry set; unchanged in shape after the 6-entry addition
+ * per [StaticHeaderTableBucketDepthTest]). `String.hashCode()` is
  * cached on the JVM so the combine cost is one multiply on the
  * [HttpHeaders.add] hot path. The `e.hashLower == nameHashLower` int
  * compare in [tryInternAt] short-circuits non-matching entries early;
@@ -440,28 +446,53 @@ internal object StaticHeaderTable {
         // Note: `Content-Length: 0` is already covered by QPACK 4
         // Title-Case above; no duplicate entry here.
 
-        // --- (c) Production-frequent H1 preset (pending BigQuery confirmation) ---
-        // Selected by inspection of common framework / browser defaults.
-        // Will be reviewed / refined by the BigQuery follow-up PR.
+        // --- (c) Production-frequent H1 preset (BigQuery-confirmed 2026-07-12) ---
+        // Empirically verified against HTTP Archive's public BigQuery dataset
+        // (httparchive.crawl.requests, 2024-06-01 crawl, desktop, root pages,
+        // HTTP/1.1), replaying the QPACK static-table methodology (>5%
+        // per-name value-frequency threshold). Query scope: request headers
+        // on `type="html"` document navigations, response headers on
+        // `type IN ("html","css","script")` (cost-bounded; `xhr`/`fetch`/
+        // `json`-typed resources were out of scope). Full per-entry results:
+        // keel-codec-http/scripts/bigquery-l7-stage3/RESULTS.md.
 
-        // Browser default Accept (Chrome / Firefox H1 navigation request)
-        h1("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-        h1("Accept", "application/json") // REST client default
+        // Browser default Accept (Chrome / Firefox H1 navigation request).
+        // Confirmed 50.72% — but the value itself was stale (pre-AVIF/WebP/
+        // signed-exchange Chrome default); replaced with the current one.
+        h1(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng," +
+                "*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        )
+        h1("Accept", "application/json") // REST client default; inconclusive (XHR-context, out of query scope), kept
+        h1("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8") // 37.71%, new
 
-        // Accept-Encoding short forms (HPACK 16 / QPACK 31 cover the longer ones)
-        h1("Accept-Encoding", "gzip")
+        // Accept-Encoding: bare "gzip" was not observed >5% (HPACK 16 /
+        // QPACK 31 already cover the shorter modern forms); replaced with
+        // the empirically dominant modern value (93.14%, not covered by
+        // either HPACK/QPACK entry).
+        h1("Accept-Encoding", "gzip, deflate, br, zstd")
 
-        // Cache-Control bare (QPACK has `public, max-age=31536000` only)
+        // Cache-Control bare (QPACK has `public, max-age=31536000` only).
+        // Below the 5% threshold at the canonical Title-Case name in this
+        // query's scope (only the mixed-case `Cache-control` variant
+        // crossed it) — kept: an unused structural intern-table slot costs
+        // near nothing (this table is a process-wide singleton, ~1 KB
+        // total), and the scope (html/css/script only, one crawl date)
+        // doesn't rule out these being common elsewhere.
         h1("Cache-Control", "private")
         h1("Cache-Control", "public")
 
-        // Content-Encoding deflate (QPACK has only gzip / br)
+        // Content-Encoding deflate (QPACK has only gzip / br). Same
+        // below-threshold-in-scope disposition as Cache-Control above — kept.
         h1("Content-Encoding", "deflate")
 
         // Content-Type charset spacing + UTF-8 uppercase variants
         // (QPACK 52/54 cover `text/html; charset=utf-8` lowercase and
         //  `text/plain;charset=utf-8` without space; production sends
-        //  many other shapes)
+        //  many other shapes). text/html entries confirmed (6.4% / 5.24%);
+        // the charset variants below are inconclusive (out of query scope,
+        // not disproven) and kept for the same reason as Cache-Control.
         h1("Content-Type", "text/html")
         h1("Content-Type", "text/html; charset=UTF-8")
         h1("Content-Type", "text/plain; charset=utf-8") // with space
@@ -469,23 +500,29 @@ internal object StaticHeaderTable {
         h1("Content-Type", "application/json; charset=utf-8")
         h1("Content-Type", "application/json; charset=UTF-8")
         h1("Content-Type", "application/octet-stream")
+        h1("Content-Type", "application/javascript; charset=utf-8") // 5.67%, new
+        h1("Content-Type", "text/javascript") // 5.36%, new
 
         // Vary: Accept-Encoding (Title-Case value — Apache / nginx /
-        // CloudFront emit Title-Case on the wire; QPACK 59 uses lowercase)
+        // CloudFront emit Title-Case on the wire; QPACK 59 uses lowercase).
+        // Confirmed 78.7%.
         h1("Vary", "Accept-Encoding")
+        h1("Vary", "Accept-Encoding,User-Agent") // 10.95%, new
 
         // X-Frame-Options uppercase values (Spring Boot / Express /
         // Rails / MDN docs use uppercase even though QPACK 97/98
-        // normalized to lowercase)
+        // normalized to lowercase). Confirmed 7.4% / 79.58%.
         h1("X-Frame-Options", "DENY")
         h1("X-Frame-Options", "SAMEORIGIN")
 
         // X-XSS-Protection — real wire uses `XSS` uppercase even though
         // the canonical Title-Case form is `X-Xss-Protection` (already
-        // covered by QPACK 62 Title-Case)
+        // covered by QPACK 62 Title-Case). Confirmed 78.45%.
         h1("X-XSS-Protection", "1; mode=block")
+        h1("X-XSS-Protection", "0") // 9.85%, new
+        h1("X-XSS-Protection", "1") // 7.06%, new
 
-        // === End of H1 extension; BigQuery follow-up PR refines below ===
+        // === End of H1 extension ===
 
         byIndex = entries.toTypedArray()
         bucketNext = IntArray(byIndex.size)
@@ -497,8 +534,8 @@ internal object StaticHeaderTable {
         // max depth 31 in an earlier revision). Combining the value
         // hash spreads each variant into its own bucket: the
         // verification test now sees max depth ~5-7 instead of 31.
-        // Mask formula matches the §46.12 audit (low-bit mask is the
-        // empirical optimum for the 31*h+c polynomial family).
+        // Mask formula matches the class KDoc's mixing audit (low-bit mask
+        // is the empirical optimum for the 31*h+c polynomial family).
         for (i in byIndex.indices) {
             val e = byIndex[i]
             val bucket = bucketOf(combinedHash(e.hashLower, e.value))
@@ -631,8 +668,8 @@ internal object StaticHeaderTable {
      * resulting per-bucket chain depths. Used by the
      * `StaticHeaderTableBucketCountAudit` to compare `BUCKET=32 /
      * 64 / 128 / 256 / 512` for this table specifically (rather than
-     * relying on the HttpHeaders §46.12 audit which assumed a small
-     * per-request name-only-hashed table).
+     * relying on [HttpHeaders]'s own bucket-count audit, which assumed a
+     * small per-request name-only-hashed table).
      */
     internal fun hypotheticalBucketDepths(hypotheticalBucketCount: Int): IntArray {
         require(hypotheticalBucketCount > 0 && (hypotheticalBucketCount and (hypotheticalBucketCount - 1)) == 0) {
@@ -651,8 +688,9 @@ internal object StaticHeaderTable {
     /**
      * Number of hash buckets. Chosen by
      * `StaticHeaderTableBucketCountAudit` which measured chain
-     * depth at 32 / 64 / 128 / 256 / 512 on the current 242-entry
-     * table with the `(name, value)` combined hash:
+     * depth at 32 / 64 / 128 / 256 / 512 on the table's original
+     * 242-entry set (now 248 after the 2026-07-12 BigQuery
+     * confirmation) with the `(name, value)` combined hash:
      *
      *   BUCKET   avg    max    p99    empty   load%   memory
      *   32       7.56   16     16     0       100.0%  128 B

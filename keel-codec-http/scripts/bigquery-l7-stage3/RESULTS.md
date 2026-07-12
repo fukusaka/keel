@@ -92,12 +92,30 @@ for this preset.
 - `Cache-Control: public` (Title-Case exact)
 - `Content-Encoding: deflate` (Title-Case exact)
 
-These four should be reconsidered, but the removal call is not automatic —
 `Cache-Control`/`Content-Encoding` Title-Case may still be legitimately rare
 in this specific 2024-06-01/desktop/html+css+script slice while being common
 elsewhere (e.g. a different crawl date, or resource types outside this
 query's scope). A structural intern-table entry has near-zero runtime cost
 per unused slot (`StaticHeaderTable` is a process-wide singleton, ~1 KB total
-for the whole 242-entry table), so keeping an unconfirmed entry costs little; removing a genuinely
-common one costs a real interning opportunity. Bias toward caution before
-deleting.
+for the whole 248-entry table), so keeping an unconfirmed entry costs little; removing a genuinely
+common one costs a real interning opportunity. **Disposition: kept, not
+removed** (bias toward caution) — only the bare `Accept-Encoding: gzip` entry
+was replaced (superseded by the empirically dominant modern value), the
+other three sub-threshold entries stay in the table unchanged.
+
+## Applied to `StaticHeaderTable.kt` (2026-07-12)
+
+- **Replaced (stale)**: `Accept` entry #1's value (modern Chrome default,
+  50.72%); `Accept-Encoding: gzip` bare (superseded by `gzip, deflate, br,
+  zstd`, 93.14%, not covered by the existing HPACK 16 / QPACK 31 entries)
+- **Added (6 new candidates)**: `Accept: image/avif,image/webp,image/apng,
+  image/svg+xml,image/*,*/*;q=0.8` (37.71%); `Content-Type: application/
+  javascript; charset=utf-8` (5.67%); `Content-Type: text/javascript`
+  (5.36%); `Vary: Accept-Encoding,User-Agent` (10.95%); `X-XSS-Protection: 0`
+  (9.85%); `X-XSS-Protection: 1` (7.06%)
+- **Kept unchanged (below threshold in this scope, but not disproven)**:
+  `Cache-Control: private`/`public`, `Content-Encoding: deflate`, and the
+  five inconclusive `Content-Type` charset variants (entries #9-13) — see
+  the disposition note above
+- Table grew from 242 to 248 entries; `StaticHeaderTableBucketDepthTest`
+  reconfirms the max chain depth stays within the ≤ 12 soft cap
