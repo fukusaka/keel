@@ -224,7 +224,16 @@ class TlsHandler(
     /**
      * Saves unconsumed input bytes to accumulate buffer for the next onRead.
      *
-     * Relocates the remaining bytes into a fresh accumulate buffer, right-
+     * If [input] is already the accumulate buffer (a prior call right-sized
+     * it, or [mergeWithAccumulate] just appended into its reserved headroom),
+     * this is a no-op — the buffer is already exactly what the next
+     * [mergeWithAccumulate] call should see, so re-allocating and re-copying
+     * it here would defeat the whole point of right-sizing: for a record
+     * spanning N reads, every one of those N calls would otherwise allocate
+     * and copy again, undoing the "allocated once" guarantee.
+     *
+     * Otherwise (first short read for this record, `accumulate` was `null`),
+     * relocates the remaining bytes into a fresh accumulate buffer, right-
      * sized to the full TLS record length when the 5-byte record header is
      * already present (see [recordSizeIfKnown]). Without this, a codec that
      * reports zero bytes consumed on a short record (e.g. JSSE's
@@ -234,9 +243,6 @@ class TlsHandler(
      * [mergeWithAccumulate] on every one of those reads — right-sizing here
      * means the buffer is allocated once and each subsequent read appends
      * into already-reserved headroom instead.
-     *
-     * If [input] was already the accumulate buffer, it is released once its
-     * unconsumed tail has been moved.
      */
     private fun saveAccumulate(ctx: PipelineHandlerContext, input: IoBuf) {
         val remaining = input.readableBytes
@@ -244,16 +250,12 @@ class TlsHandler(
             releaseAccumulate()
             return
         }
+        if (input === accumulate) return
         // Relocate the unconsumed bytes into a fresh accumulate buffer.
         // copyTo advances both input.readerIndex and acc.writerIndex.
         val allocSize = recordSizeIfKnown(input, remaining) ?: remaining
         val acc = ctx.allocator.allocate(allocSize)
         input.copyTo(acc, remaining)
-        if (input === accumulate) {
-            // input was the previous accumulate buffer — release it now
-            // that its unconsumed tail has been relocated into acc.
-            input.release()
-        }
         accumulate = acc
     }
 

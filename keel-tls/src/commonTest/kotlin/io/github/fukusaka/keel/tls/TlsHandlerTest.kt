@@ -858,6 +858,84 @@ class TlsHandlerTest {
         )
     }
 
+    /**
+     * Pins that [TlsHandler.saveAccumulate] does not re-allocate on every
+     * `NEED_MORE_INPUT` for a record spanning 3+ reads — only the first
+     * short read (before the accumulate buffer exists) should allocate; once
+     * `input === accumulate`, later short reads are a no-op (the buffer is
+     * already right-sized and [TlsHandler.mergeWithAccumulate] already
+     * appended into its headroom). A prior version of this fix allocated
+     * and re-copied on every intermediate read regardless, silently
+     * defeating the right-sizing optimization for any record split across
+     * more than two reads — undetected by the 2-read test above.
+     */
+    @Test
+    fun `saveAccumulate does not reallocate on intermediate reads of a record spanning 3 or more reads`() {
+        val spy = SizeRecordingAllocator(DefaultAllocator)
+        val spyTransport = TestIoTransport(allocator = spy)
+        val spyChannel = object : AbstractPipelinedChannel(spyTransport, logger) {}
+        val handler = TlsHandler(JsseLikeMockCodec())
+        spyChannel.pipeline.addLast("tls", handler)
+        val recorder = RecordingHandler()
+        spyChannel.pipeline.addAfter("tls", "recorder", recorder)
+
+        val plain = "hello world!".encodeToByteArray() // 12-byte payload -> 17-byte record.
+        val record = fakeRecord(plain)
+
+        // Three reads, none of which alone completes the 17-byte record:
+        // header (5B) + 1B payload, then 2 more bytes, then the rest.
+        spyChannel.pipeline.notifyRead(allocBuf(record.copyOfRange(0, 6)))
+        spyChannel.pipeline.notifyRead(allocBuf(record.copyOfRange(6, 8)))
+        spyChannel.pipeline.notifyRead(allocBuf(record.copyOfRange(8, 17)))
+
+        assertEquals(1, recorder.reads.size, "the complete record must decrypt once all three reads arrive")
+        assertEquals("hello world!", recorder.reads[0].decodeToString())
+        assertEquals(
+            listOf(17),
+            spy.allocatedSizes.filter { it != TlsHandler.TLS_PLAINTEXT_BUF_SIZE_DEFAULT },
+            "only the first short read (6B, header known) should allocate the accumulate buffer, " +
+                "sized to the full 17-byte record — the second short read (2B, input already the " +
+                "accumulate buffer) must not trigger a second allocation",
+        )
+    }
+
+    /**
+     * Pins [TlsHandler.recordSizeIfKnown]'s header parsing at a non-zero
+     * `readerIndex`: when one `onRead` delivers a complete record followed
+     * by the start of a partial one, [TlsHandler.processInbound]'s loop
+     * consumes the complete record first, leaving `input.readerIndex`
+     * pointing at the partial record's header — not at absolute offset 0
+     * of the buffer.
+     */
+    @Test
+    fun `saveAccumulate right-sizes correctly when the partial record follows a complete one in the same read`() {
+        val spy = SizeRecordingAllocator(DefaultAllocator)
+        val spyTransport = TestIoTransport(allocator = spy)
+        val spyChannel = object : AbstractPipelinedChannel(spyTransport, logger) {}
+        val handler = TlsHandler(JsseLikeMockCodec())
+        spyChannel.pipeline.addLast("tls", handler)
+        val recorder = RecordingHandler()
+        spyChannel.pipeline.addAfter("tls", "recorder", recorder)
+
+        val recordA = fakeRecord("first".encodeToByteArray()) // 10-byte record.
+        val recordB = fakeRecord("hello world!".encodeToByteArray()) // 17-byte record.
+
+        // One read: complete record A, followed by the header + 3 bytes of
+        // record B's payload (short of B's full 17 bytes).
+        spyChannel.pipeline.notifyRead(allocBuf(recordA + recordB.copyOfRange(0, 8)))
+        spyChannel.pipeline.notifyRead(allocBuf(recordB.copyOfRange(8, 17)))
+
+        assertEquals(2, recorder.reads.size)
+        assertEquals("first", recorder.reads[0].decodeToString())
+        assertEquals("hello world!", recorder.reads[1].decodeToString())
+        assertEquals(
+            listOf(17),
+            spy.allocatedSizes.filter { it != TlsHandler.TLS_PLAINTEXT_BUF_SIZE_DEFAULT },
+            "record B's accumulate buffer must be right-sized to 17 even though its header sits at " +
+                "a non-zero offset within the shared input buffer (after record A was consumed)",
+        )
+    }
+
     @Test
     fun `saveAccumulate falls back to remaining-only sizing when the header itself is incomplete`() {
         val spy = SizeRecordingAllocator(DefaultAllocator)
