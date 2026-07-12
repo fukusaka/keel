@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.http
 
+import io.github.fukusaka.keel.buf.EmptyIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.IoBufChunks
 import io.github.fukusaka.keel.buf.IoBufMutableChunks
@@ -708,8 +709,10 @@ internal class Http1Call(
     ) {
         markResponded()
         ctx.propagateWrite(decorate(head))
-        block(Http1ResponseBodySink(ctx))
-        ctx.propagateWriteAndFlush(HttpBodyEnd.EMPTY)
+        val sink = Http1ResponseBodySink(ctx)
+        block(sink)
+        val end = if (sink.trailers.isEmpty) HttpBodyEnd.EMPTY else HttpBodyEnd(EmptyIoBuf, sink.trailers)
+        ctx.propagateWriteAndFlush(end)
     }
 
     /**
@@ -764,6 +767,8 @@ internal class Http1Call(
 private class Http1ResponseBodySink(
     private val ctx: PipelineHandlerContext,
 ) : HttpResponseBodySink {
+
+    override var trailers: HttpHeaders = HttpHeaders.EMPTY
 
     override suspend fun write(chunk: IoBuf) {
         // Runs on the handler coroutine, already on the EventLoop thread.
