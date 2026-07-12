@@ -776,13 +776,38 @@ private class Http1ResponseBodySink(
     // on as "no headers." Mirrors HttpResponseHead.headers' own default.
     override var trailers: HttpHeaders = HttpHeaders()
 
+    // One wrapper reused across every chunk of this response instead of a
+    // fresh HttpBody(chunk) per write (L5-b). Safe because the outbound
+    // pipeline dispatch chain (propagateWriteAndFlush -> invokeOnWrite ->
+    // handler.onWrite) runs synchronously end-to-end: HttpResponseEncoder /
+    // CompressionHandler read `.content` and forward or release the inner
+    // IoBuf, never the HttpBody wrapper itself, so nothing retains this
+    // instance past the write() call that set it. The sink is per-response
+    // and respondStream() drives writes serially, so there is never a
+    // concurrent in-flight write to alias.
+    private val reusableChunk = ReusableHttpBody()
+
     override suspend fun write(chunk: IoBuf) {
         // Runs on the handler coroutine, already on the EventLoop thread.
-        ctx.propagateWriteAndFlush(HttpBody(chunk))
+        reusableChunk.content = chunk
+        ctx.propagateWriteAndFlush(reusableChunk)
         if (!ctx.channel.isWritable) {
             ctx.channel.awaitFlushComplete()
         }
     }
+}
+
+/**
+ * [HttpBody] backed by a mutable field instead of a constructor `val`, so
+ * [Http1ResponseBodySink] can reuse one instance across every chunk of a
+ * streamed response. See [Http1ResponseBodySink.reusableChunk] for the
+ * synchronous-dispatch invariant that makes this safe — this type must
+ * never be held by a caller across a suspension point or handed to any
+ * consumer that retains the wrapper (as opposed to just its [content])
+ * beyond a single synchronous pipeline pass.
+ */
+private class ReusableHttpBody : HttpBody(EmptyIoBuf) {
+    override var content: IoBuf = EmptyIoBuf
 }
 
 /** Case-insensitive equality tolerant of a null receiver (an absent header). */

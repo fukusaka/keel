@@ -154,6 +154,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `server-http`, `codec-http`: `Http1ResponseBodySink.write` reuses one `HttpBody` wrapper across every chunk of a streamed response instead of allocating a fresh one per chunk (~24B/chunk). `HttpBody.content` is now `open` so the reusable wrapper can back it with a mutable field; behaviour and public API are unchanged (#925)
 - `io`: eliminate per-carve `Int` / `Long` autoboxing on the pooled `allocate()` hot path by making `ChunkViewFactory` a `fun interface` instead of a Kotlin function type, so `byteOffset` / `length` / `handle` stay primitive (was ~20% of per-allocation heap pressure; affects JVM `PooledDirectAllocator` and Native `SlabAllocator`) (#913)
 - **BREAKING** (`tls`): the JSSE / OpenSSL / AWS-LC clients now verify the server
   certificate hostname by default (matching `serverName`); previously a chain-valid
