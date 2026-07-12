@@ -43,7 +43,7 @@ import io.netty.buffer.PooledByteBufAllocator
  * **Lifecycle listener wiring** (pluggability item 12 B2.5 step 2):
  * [lifecycleListener] is propagated to every [NettyByteBufIoBuf] this
  * allocator produces, including buffers wrapped through
- * [NettyByteBufIoBuf.wrapInbound] from the engine's inbound zero-copy
+ * [NettyByteBufIoBuf.borrowInbound] from the engine's inbound zero-copy
  * read path. `NettyEngine` reads the listener from the user-passed
  * `config.allocator.lifecycleListener` when constructing per-EventLoop
  * allocators, so a single listener installed on the user's
@@ -58,9 +58,11 @@ class NettyByteBufAllocator(
 
     override fun allocate(capacity: Int): IoBuf {
         val byteBuf = byteBufAllocator.directBuffer(capacity, capacity)
-        val buf = NettyByteBufIoBuf(byteBuf, lifecycleListener = lifecycleListener)
-        lifecycleListener.onAllocated(buf)
-        return buf
+        // Pooled wrapper object (NettyByteBufIoBuf.borrow), not a fresh
+        // construction — see that method's KDoc for why recycling is
+        // safe even though this allocator instance can be shared across
+        // multiple EventLoop threads (createChild() returns `this`).
+        return NettyByteBufIoBuf.borrow(byteBuf, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = lifecycleListener)
     }
 
     override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? = null

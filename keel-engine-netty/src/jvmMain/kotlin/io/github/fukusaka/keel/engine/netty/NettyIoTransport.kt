@@ -36,11 +36,11 @@ import io.netty.channel.Channel as NettyNativeChannel
  * **Read path**: Netty delivers data asynchronously via [channelRead]
  * before the user provides a buffer. When the inbound [ByteBuf] has a
  * single NIO backing (`nioBufferCount() == 1`), the transport wraps
- * it via [NettyByteBufIoBuf.wrapInbound] — zero copy + engine-direct
- * (1 allocation per receive, mirrors the engine-direct
- * `DispatchDataIoBuf` path on the NWConnection engine). Pool pressure
- * is shifted to Netty's arena. Composite buffers
- * (`nioBufferCount() > 1`) fall back to the allocate-and-copy path.
+ * it via [NettyByteBufIoBuf.borrowInbound] — zero copy + engine-direct,
+ * pooled (mirrors the engine-direct `DispatchDataIoBuf` path on the
+ * NWConnection engine). Pool pressure is shifted to Netty's arena.
+ * Composite buffers (`nioBufferCount() > 1`) fall back to the
+ * allocate-and-copy path.
  *
  * **auto-read**: Pipeline mode uses `autoRead = true` (Netty delivers data
  * continuously). Coroutine mode starts with `autoRead = false` and switches
@@ -201,9 +201,9 @@ internal class NettyIoTransport(
      *
      * **Zero-copy path**: when the inbound [ByteBuf] is backed by a
      * single NIO [ByteBuffer] (`nioBufferCount() == 1`), the transport
-     * wraps it directly via [NettyByteBufIoBuf.wrapInbound] (engine-direct,
-     * 1 allocation per receive). Ownership of the Netty [ByteBuf] is
-     * transferred to the wrapping `IoBuf`; the pooled buffer is
+     * wraps it directly via [NettyByteBufIoBuf.borrowInbound]
+     * (engine-direct, pooled wrapper). Ownership of the Netty [ByteBuf]
+     * is transferred to the wrapping `IoBuf`; the pooled buffer is
      * returned to Netty's arena when the keel pipeline releases the
      * `IoBuf`. No memory copy occurs.
      *
@@ -240,12 +240,15 @@ internal class NettyIoTransport(
             if (byteBuf.nioBufferCount() == 1) {
                 // Engine-direct zero-copy wrap: ownership of byteBuf
                 // transfers to the wrapper; refcount-zero release frees
-                // the pooled ByteBuf inline. Forward the allocator's
-                // BufferAllocatorLifecycleListener so this inbound
-                // engine-direct IoBuf fires the same onAllocated /
+                // the pooled ByteBuf inline and returns this wrapper
+                // object to NettyByteBufIoBuf's own Recycler pool
+                // (borrowInbound, not wrapInbound — avoids a fresh
+                // wrapper allocation per receive). Forward the
+                // allocator's BufferAllocatorLifecycleListener so this
+                // inbound engine-direct IoBuf fires the same onAllocated /
                 // onReleased channel as the write-side allocate() path
                 // (pluggability item 12 B2.5 step 2).
-                val buf = NettyByteBufIoBuf.wrapInbound(byteBuf, allocator.lifecycleListener)
+                val buf = NettyByteBufIoBuf.borrowInbound(byteBuf, allocator.lifecycleListener)
                 try {
                     onRead?.invoke(buf)
                 } catch (t: Throwable) {
