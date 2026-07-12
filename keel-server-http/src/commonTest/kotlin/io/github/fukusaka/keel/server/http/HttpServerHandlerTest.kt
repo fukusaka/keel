@@ -593,6 +593,40 @@ class HttpServerHandlerTest {
     }
 
     @Test
+    fun `respondStream emits many chunks in order with distinct content (wrapper reuse regression)`() {
+        // Http1ResponseBodySink reuses one HttpBody wrapper across every
+        // chunk of a response (L5-b) instead of allocating a fresh one per
+        // write. Five distinguishable chunks with no shared substrings
+        // guard against a reuse bug aliasing/overwriting an earlier
+        // chunk's content before the encoder has consumed it.
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/stream") { call ->
+                    call.respondStream(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(HttpHeaderName.TRANSFER_ENCODING to "chunked"),
+                        ),
+                    ) { sink ->
+                        sink.write(bufOf("uno"))
+                        sink.write(bufOf("dos"))
+                        sink.write(bufOf("tres"))
+                        sink.write(bufOf("cuatro"))
+                        sink.write(bufOf("cinco"))
+                    }
+                }
+            },
+        )
+
+        feedGet("/stream")
+
+        val text = responseText()
+        val order = listOf("uno", "dos", "tres", "cuatro", "cinco").map { text.indexOf(it) }
+        assertTrue(order.all { it >= 0 }, "every chunk must appear: $text")
+        assertTrue(order == order.sorted(), "chunks must appear in write order: $text")
+    }
+
+    @Test
     fun `respondStream sink trailers are emitted after the terminal chunk when chunked`() {
         install(
             Router().apply {

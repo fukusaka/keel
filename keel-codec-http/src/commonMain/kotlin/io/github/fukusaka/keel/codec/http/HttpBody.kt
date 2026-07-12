@@ -17,10 +17,15 @@ import io.github.fukusaka.keel.buf.Releasable
  *
  * Open so [HttpBodyEnd] can extend it, allowing downstream handlers
  * to type-dispatch on the common supertype for both mid-body and
- * terminal chunks.
+ * terminal chunks. [content] is `open` so a response-emit-only subclass
+ * can back it with a mutable field and reuse one wrapper instance across
+ * a synchronous outbound pipeline dispatch, instead of allocating a
+ * fresh [HttpBody] per chunk — safe only where nothing downstream
+ * retains the wrapper itself beyond that dispatch (inbound consumers
+ * that hold a [HttpBody] across calls must not use such a subclass).
  */
 open class HttpBody(
-    val content: IoBuf,
+    open val content: IoBuf,
 ) : HttpMessage, Releasable {
 
     /** Releases the owned [content] buffer. */

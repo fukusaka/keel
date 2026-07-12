@@ -79,6 +79,49 @@ class CompressionHandlerTest {
     }
 
     @Test
+    fun `handleBody reads content synchronously so a reused HttpBody wrapper is safe`() {
+        // keel-server-http's Http1ResponseBodySink (L5-b) reuses one HttpBody
+        // wrapper across every chunk of a streamed response instead of
+        // allocating a fresh one per write, relying on handleBody reading
+        // `.content` synchronously within onWrite and never retaining the
+        // wrapper itself. Drive the SAME wrapper instance through two
+        // onWrite calls with different content in between — the encoded
+        // output for each call must reflect only that call's bytes, proving
+        // handleBody doesn't alias a later reassignment into an earlier
+        // chunk's encoded output.
+        val state = ChainState()
+        val handler = CompressionHandler(registry, DefaultAllocator)
+        val ctx = TestCtx(state)
+
+        handler.onRead(
+            ctx,
+            HttpRequestHead(HttpMethod.GET, "/x", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") }),
+        )
+        handler.onWrite(
+            ctx,
+            HttpResponseHead(
+                status = HttpStatus(200),
+                headers = HttpHeaders().apply { add("Content-Type", "text/plain") },
+            ),
+        )
+
+        val wrapper = MutableTestHttpBody(bufOf("uno"))
+        handler.onWrite(ctx, wrapper)
+        val afterFirst = state.writes.filterIsInstance<HttpBody>().filter { it !is HttpBodyEnd }
+        val firstEncoded = afterFirst.joinToString("") { ioBufAsString(it.content) }
+
+        wrapper.content = bufOf("dos")
+        handler.onWrite(ctx, wrapper)
+        val afterSecond = state.writes.filterIsInstance<HttpBody>().filter { it !is HttpBodyEnd }
+        val secondEncoded = afterSecond.drop(afterFirst.size).joinToString("") { ioBufAsString(it.content) }
+
+        handler.onWrite(ctx, HttpBodyEnd.EMPTY)
+
+        assertTrue(firstEncoded.startsWith("UNO"), "first chunk must encode 'uno', got: $firstEncoded")
+        assertTrue(secondEncoded.startsWith("DOS"), "second chunk must encode 'dos' (not aliased to the first), got: $secondEncoded")
+    }
+
+    @Test
     fun `an aggregated compressed response is emitted as a chunked stream`() {
         // A compressed aggregated HttpResponse is converted to the streaming
         // chunked path (matches nginx / Netty / Ktor dynamic compression):
@@ -850,6 +893,11 @@ class CompressionHandlerTest {
             }
             override fun close() {}
         }
+    }
+
+    /** [HttpBody] with a mutable [content], mirroring keel-server-http's `ReusableHttpBody`. */
+    private class MutableTestHttpBody(initial: IoBuf) : HttpBody(initial) {
+        override var content: IoBuf = initial
     }
 
     private class ChainState {
