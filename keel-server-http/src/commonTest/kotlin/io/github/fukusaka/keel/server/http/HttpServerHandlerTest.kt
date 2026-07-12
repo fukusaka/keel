@@ -593,7 +593,7 @@ class HttpServerHandlerTest {
     }
 
     @Test
-    fun `respondStream emits many chunks in order with distinct content, guarding wrapper reuse`() {
+    fun `respondStream emits many distinct chunks in order under wrapper reuse`() {
         // Http1ResponseBodySink reuses one HttpBody wrapper across every
         // chunk of a response (L5-b) instead of allocating a fresh one per
         // write. Five distinguishable chunks with no shared substrings
