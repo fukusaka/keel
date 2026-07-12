@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `server-http`: `HttpResponseBodySink.trailers: HttpHeaders` lets `respondStream` emit trailer header fields after the terminal chunk of a chunked-encoding response (RFC 7230 §4.1.2). Setting it on a `Content-Length` response is silently ignored (#924)
 - `codec-http`: `HttpHeaders.build(expectedEntries) { }` overload that pre-sizes header storage to a known field count. The unpooled response path (`HttpResponse.ok` / `of` / `notFound`) uses it so a typical two-header response sizes its slot array and string store to 2 entries instead of the 8-slot default, cutting ~168 bytes/response (#908)
 - `core`: `IoEngineConfig.flushCoalescing: Boolean = true` — the opt-out for the per-tick flush coalescing added by #894 / #895 / #896 / #897. When left at the default the write path collapses per-frame `requestFlush` calls into one gathered send (the ~4-7x SSE / chunked-streaming speedup). Set to `false` to make every `flush()` issue its send immediately for latency-sensitive workloads (real-time protocols, financial tickers). Honoured by the nwconnection, nodejs, netty, and nio engines; the kqueue / epoll / io_uring engines still send per frame regardless and treat the field as a no-op. (#898)
 
