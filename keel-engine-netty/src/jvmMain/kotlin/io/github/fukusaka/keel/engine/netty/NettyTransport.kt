@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.netty
 
 import io.netty.channel.Channel
 import io.netty.channel.EventLoopGroup
+import io.netty.channel.MultiThreadIoEventLoopGroup
 import io.netty.channel.ServerChannel
 import io.netty.channel.epoll.Epoll
 import io.netty.channel.epoll.EpollDomainSocketChannel
@@ -22,6 +23,11 @@ import io.netty.channel.socket.nio.NioServerDomainSocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.channel.socket.nio.NioSocketChannel
 import io.netty.channel.unix.DomainSocketAddress
+import io.netty.channel.uring.IoUringDomainSocketChannel
+import io.netty.channel.uring.IoUringIoHandler
+import io.netty.channel.uring.IoUringServerDomainSocketChannel
+import io.netty.channel.uring.IoUringServerSocketChannel
+import io.netty.channel.uring.IoUringSocketChannel
 import java.net.SocketAddress
 import java.net.UnixDomainSocketAddress
 
@@ -44,6 +50,7 @@ import java.net.UnixDomainSocketAddress
  * |-----------|---------------------------|-------|
  * | [Epoll]   | `channelInactive` / `ChannelInputShutdownEvent` fires | JNI calls `epoll_ctl(EPOLLIN \| EPOLLRDHUP)` directly |
  * | [KQueue]  | `channelInactive` / `ChannelInputShutdownEvent` fires | JNI calls `kevent(EVFILT_READ)` directly, observes `EV_EOF` |
+ * | [IoUring] | `channelInactive` / `ChannelInputShutdownEvent` fires | Schedules a `POLLRDHUP` `IORING_OP_POLL_ADD` on channel-active independent of the read path (`AbstractIoUringChannel.schedulePollRdHup` / `autoReadCleared` only cancels outstanding reads, not the RDHUP poll — confirmed by reading Netty 4.2.15.Final's `io.netty.channel.uring` sources) |
  * | [Nio]     | no callback fires (3 s timeout) | Java NIO `Selector` only requests `POLLIN`; without `OP_READ` registered, the kernel never delivers the event |
  *
  * The Java NIO `Selector` cannot detect peer FIN without an `OP_READ`
@@ -55,10 +62,12 @@ import java.net.UnixDomainSocketAddress
  * fully closed (`POLLHUP` from kernel auto-delivery, which fires only
  * on bidirectional close).
  *
- * The native transports ([Epoll] on Linux, [KQueue] on macOS / BSD)
- * bypass this constraint by issuing `epoll_ctl` / `kevent` syscalls
- * directly through JNI, requesting `EPOLLRDHUP` / observing `EV_EOF`
- * regardless of the keel-side `readEnabled` state.
+ * The native transports ([Epoll] on Linux, [KQueue] on macOS / BSD,
+ * [IoUring] on Linux) bypass this constraint by requesting `EPOLLRDHUP` /
+ * `POLLRDHUP` / observing `EV_EOF` regardless of the keel-side
+ * `readEnabled` state, whether through direct JNI `epoll_ctl` / `kevent`
+ * calls ([Epoll] / [KQueue]) or a dedicated `IORING_OP_POLL_ADD`
+ * submission independent of read SQEs ([IoUring]).
  *
  * @see Auto for the selection logic.
  */
@@ -86,7 +95,7 @@ sealed interface NettyTransport {
      * Each Netty transport accepts a different `SocketAddress` subtype for
      * Unix-domain socket operations:
      * - [Nio]: [java.net.UnixDomainSocketAddress] (JDK type, filesystem-only)
-     * - [Epoll] / [KQueue]: [io.netty.channel.unix.DomainSocketAddress]
+     * - [Epoll] / [KQueue] / [IoUring]: [io.netty.channel.unix.DomainSocketAddress]
      *   (Netty's path-only address, abstract namespace not supported)
      *
      * Both representations carry only the filesystem path, so translation
@@ -151,6 +160,48 @@ sealed interface NettyTransport {
             check(io.netty.channel.kqueue.KQueue.isAvailable()) {
                 "NettyTransport.KQueue requires macOS / BSD + the netty-transport-native-kqueue classifier on the classpath. " +
                     "Cause: ${io.netty.channel.kqueue.KQueue.unavailabilityCause()}"
+            }
+        }
+    }
+
+    /**
+     * Linux io_uring transport. Merged into Netty mainline as of 4.2 (package
+     * `io.netty.channel.uring`, no longer the separate incubator artifact
+     * `io.netty.incubator.channel.uring` / `netty-incubator-transport-native-io_uring`)
+     * — bundled by `netty-all`'s own POM (`netty-transport-classes-io_uring`
+     * compile dependency, `netty-transport-native-io_uring` runtime
+     * dependency per Linux arch classifier), so no extra dependency is
+     * needed beyond what [Epoll] already requires.
+     *
+     * Uses Netty's newer unified [IoHandler][io.netty.channel.IoHandler] /
+     * [MultiThreadIoEventLoopGroup] model rather than a dedicated
+     * `IoUringEventLoopGroup` subclass (which doesn't exist in this API —
+     * unlike [Epoll] / [KQueue], which still construct their own
+     * `EventLoopGroup` subtype directly).
+     *
+     * Not selected by [Auto]: io_uring requires a newer kernel (5.1+
+     * minimum, full feature parity ~5.6+) than [Epoll] needs, and Netty's
+     * io_uring channel path has different performance characteristics
+     * that haven't been benchmarked against [Epoll] for keel's workload
+     * shape. Available as an explicit opt-in transport, matching how
+     * `keel-engine-io-uring` (the Kotlin/Native cinterop engine) is
+     * likewise opt-in rather than a default.
+     *
+     * Available iff [io.netty.channel.uring.IoUring.isAvailable].
+     */
+    object IoUring : NettyTransport {
+        override val name: String = "io_uring"
+        override fun newEventLoopGroup(threads: Int): EventLoopGroup =
+            MultiThreadIoEventLoopGroup(threads, IoUringIoHandler.newFactory())
+        override fun serverSocketChannelClass() = IoUringServerSocketChannel::class.java
+        override fun socketChannelClass(): Class<out SocketChannel> = IoUringSocketChannel::class.java
+        override fun serverDomainSocketChannelClass() = IoUringServerDomainSocketChannel::class.java
+        override fun domainSocketChannelClass(): Class<out Channel> = IoUringDomainSocketChannel::class.java
+        override fun newUdsAddress(path: String): SocketAddress = DomainSocketAddress(path)
+        override fun requireAvailable() {
+            check(io.netty.channel.uring.IoUring.isAvailable()) {
+                "NettyTransport.IoUring requires Linux 5.1+ (kernel io_uring support) + the netty-transport-native-io_uring classifier on the classpath. " +
+                    "Cause: ${io.netty.channel.uring.IoUring.unavailabilityCause()}"
             }
         }
     }
