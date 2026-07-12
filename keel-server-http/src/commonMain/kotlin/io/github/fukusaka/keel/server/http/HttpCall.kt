@@ -187,6 +187,25 @@ public interface HttpResponseBodySink {
      * touch it after this call returns.
      */
     public suspend fun write(chunk: IoBuf)
+
+    /**
+     * Trailer header fields emitted after the terminal chunk (RFC 7230
+     * §4.1.2). Settable at any point before [HttpCall.respondStream]'s
+     * block returns — the last value assigned wins. Defaults to an empty
+     * [HttpHeaders] (no trailers, today's behavior); implementations must
+     * default to a fresh instance rather than the shared
+     * [HttpHeaders.EMPTY] singleton, since this is a mutable `var` and a
+     * caller may mutate it in place instead of reassigning.
+     *
+     * Only takes effect when the response head passed to [respondStream]
+     * declared `Transfer-Encoding: chunked`. For a `Content-Length`
+     * response the codec has no trailer framing and this is silently
+     * ignored — RFC 7230 forbids trailers outside chunked encoding, so
+     * pairing a chunked head with trailers is the caller's
+     * responsibility (mirrors [HttpCall.queryParameters]'s existing
+     * "sanitizing is the application's responsibility" pattern).
+     */
+    public var trailers: HttpHeaders
 }
 
 /**

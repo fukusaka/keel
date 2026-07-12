@@ -593,6 +593,95 @@ class HttpServerHandlerTest {
     }
 
     @Test
+    fun `respondStream sink trailers are emitted after the terminal chunk when chunked`() {
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/stream") { call ->
+                    call.respondStream(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(HttpHeaderName.TRANSFER_ENCODING to "chunked"),
+                        ),
+                    ) { sink ->
+                        sink.write(bufOf("alpha"))
+                        sink.trailers = HttpHeaders.of("X-Checksum" to "abc123")
+                    }
+                }
+            },
+        )
+
+        feedGet("/stream")
+
+        val text = responseText()
+        assertTrue(text.contains("alpha"), "chunk body: $text")
+        // Terminal "0\r\n" chunk followed by the trailer field, then the
+        // final CRLF that ends the message (RFC 7230 §4.1.2).
+        assertTrue(
+            text.contains("0\r\nX-Checksum: abc123\r\n\r\n"),
+            "trailer must follow the terminal zero-length chunk: $text",
+        )
+    }
+
+    @Test
+    fun `respondStream sink trailers default does not alias the shared HttpHeaders EMPTY singleton`() {
+        // sink.trailers is a mutable var backed by HttpHeaders.add()/set().
+        // If the default were the shared HttpHeaders.EMPTY singleton, a
+        // caller mutating in place instead of reassigning (idiomatic
+        // elsewhere in this codebase) would corrupt "no headers" for every
+        // other call site relying on HttpHeaders.EMPTY.
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/stream") { call ->
+                    call.respondStream(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(HttpHeaderName.TRANSFER_ENCODING to "chunked"),
+                        ),
+                    ) { sink ->
+                        sink.write(bufOf("alpha"))
+                        sink.trailers.add("X-Checksum", "abc123")
+                    }
+                }
+            },
+        )
+
+        feedGet("/stream")
+
+        assertTrue(HttpHeaders.EMPTY.isEmpty, "HttpHeaders.EMPTY must stay empty after in-place sink.trailers mutation")
+    }
+
+    @Test
+    fun `respondStream sink trailers are silently dropped for a Content-Length response`() {
+        // RFC 7230 §4.1.2 restricts trailers to chunked encoding — the
+        // codec's FIXED-mode encoder path (`encodeContentFixed`) has no
+        // trailer framing at all, so setting `trailers` on a
+        // Content-Length response must not corrupt or extend the wire
+        // output. Pairing a chunked head with trailers is the caller's
+        // responsibility (see [HttpResponseBodySink.trailers] KDoc).
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/stream") { call ->
+                    call.respondStream(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(HttpHeaderName.CONTENT_LENGTH to "5"),
+                        ),
+                    ) { sink ->
+                        sink.write(bufOf("alpha"))
+                        sink.trailers = HttpHeaders.of("X-Checksum" to "abc123")
+                    }
+                }
+            },
+        )
+
+        feedGet("/stream")
+
+        val text = responseText()
+        assertTrue(text.endsWith("alpha"), "body must end exactly at Content-Length, no trailer leak: $text")
+        assertFalse(text.contains("X-Checksum"), "trailer must not appear on a Content-Length response: $text")
+    }
+
+    @Test
     fun `respondStream sink gates writes on isWritable backpressure`() {
         // Two chunks; the channel is pinned `not writable` for the whole
         // request. Each `sink.write` call must therefore observe

@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.http
 
+import io.github.fukusaka.keel.buf.EmptyIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.IoBufChunks
 import io.github.fukusaka.keel.buf.IoBufMutableChunks
@@ -708,8 +709,10 @@ internal class Http1Call(
     ) {
         markResponded()
         ctx.propagateWrite(decorate(head))
-        block(Http1ResponseBodySink(ctx))
-        ctx.propagateWriteAndFlush(HttpBodyEnd.EMPTY)
+        val sink = Http1ResponseBodySink(ctx)
+        block(sink)
+        val end = if (sink.trailers.isEmpty) HttpBodyEnd.EMPTY else HttpBodyEnd(EmptyIoBuf, sink.trailers)
+        ctx.propagateWriteAndFlush(end)
     }
 
     /**
@@ -764,6 +767,14 @@ internal class Http1Call(
 private class Http1ResponseBodySink(
     private val ctx: PipelineHandlerContext,
 ) : HttpResponseBodySink {
+
+    // A fresh instance, not the shared HttpHeaders.EMPTY singleton — trailers
+    // is a mutable var exposing HttpHeaders.add()/set(), and a caller that
+    // mutates in place (idiomatic elsewhere in this codebase, e.g.
+    // HttpResponse.contentHeaders()) rather than reassigning would otherwise
+    // corrupt the process-wide EMPTY sentinel every other call site relies
+    // on as "no headers." Mirrors HttpResponseHead.headers' own default.
+    override var trailers: HttpHeaders = HttpHeaders()
 
     override suspend fun write(chunk: IoBuf) {
         // Runs on the handler coroutine, already on the EventLoop thread.
