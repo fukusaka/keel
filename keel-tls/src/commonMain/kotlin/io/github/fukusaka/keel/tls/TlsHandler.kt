@@ -224,8 +224,18 @@ class TlsHandler(
     /**
      * Saves unconsumed input bytes to accumulate buffer for the next onRead.
      *
-     * Relocates the remaining bytes into a fresh accumulate buffer. If
-     * [input] was already the accumulate buffer, it is released once its
+     * Relocates the remaining bytes into a fresh accumulate buffer, right-
+     * sized to the full TLS record length when the 5-byte record header is
+     * already present (see [recordSizeIfKnown]). Without this, a codec that
+     * reports zero bytes consumed on a short record (e.g. JSSE's
+     * `SSLEngine.unwrap()` on `BUFFER_UNDERFLOW`, unlike the native
+     * BIO-callback codecs which always drain what they are given) causes a
+     * record spanning N reads to be grown and fully re-copied by
+     * [mergeWithAccumulate] on every one of those reads — right-sizing here
+     * means the buffer is allocated once and each subsequent read appends
+     * into already-reserved headroom instead.
+     *
+     * If [input] was already the accumulate buffer, it is released once its
      * unconsumed tail has been moved.
      */
     private fun saveAccumulate(ctx: PipelineHandlerContext, input: IoBuf) {
@@ -236,7 +246,8 @@ class TlsHandler(
         }
         // Relocate the unconsumed bytes into a fresh accumulate buffer.
         // copyTo advances both input.readerIndex and acc.writerIndex.
-        val acc = ctx.allocator.allocate(remaining)
+        val allocSize = recordSizeIfKnown(input, remaining) ?: remaining
+        val acc = ctx.allocator.allocate(allocSize)
         input.copyTo(acc, remaining)
         if (input === accumulate) {
             // input was the previous accumulate buffer — release it now
@@ -244,6 +255,32 @@ class TlsHandler(
             input.release()
         }
         accumulate = acc
+    }
+
+    /**
+     * Parses the 5-byte TLS record header (RFC 8446 §5.1: `type`[1] +
+     * `legacy_record_version`[2] + `length`[2], big-endian) at [input]'s
+     * current reader position to compute the full on-wire record size
+     * (header + ciphertext payload).
+     *
+     * Returns `null` when the header itself is not fully available yet
+     * ([remaining] < 5), when the declared payload length exceeds the
+     * maximum realistic ciphertext record ([TLS_CIPHERTEXT_BUF_SIZE], which
+     * already covers TLS 1.3 AEAD and TLS 1.2 CBC+HMAC overhead) — treated
+     * as implausible/malformed input and left for [TlsCodec.unprotect] to
+     * reject during actual parsing rather than driving an allocation size
+     * here, or when the computed total does not exceed what is already
+     * available (right-sizing has nothing to add in that case).
+     */
+    private fun recordSizeIfKnown(input: IoBuf, remaining: Int): Int? {
+        if (remaining < TLS_RECORD_HEADER_SIZE) return null
+        val base = input.readerIndex
+        val payloadLength =
+            ((input.getByte(base + 3).toInt() and 0xFF) shl 8) or
+                (input.getByte(base + 4).toInt() and 0xFF)
+        if (payloadLength > TLS_CIPHERTEXT_BUF_SIZE - TLS_RECORD_HEADER_SIZE) return null
+        val total = TLS_RECORD_HEADER_SIZE + payloadLength
+        return total.takeIf { it > remaining }
     }
 
     private fun releaseAccumulate() {
@@ -614,6 +651,14 @@ class TlsHandler(
          * `TLS_RECORD_BUF_SIZE` KDoc above for the full derivation.
          */
         private const val TLS_CIPHERTEXT_BUF_SIZE = 17 * 1024
+
+        /**
+         * TLS record header size (RFC 8446 §5.1): `type`[1] +
+         * `legacy_record_version`[2] + `length`[2]. Used by
+         * [recordSizeIfKnown] to right-size the accumulate buffer once the
+         * header (and thus the full record length) is known.
+         */
+        private const val TLS_RECORD_HEADER_SIZE = 5
 
         // `maxCount` hint for the plaintext size class — passed to
         // [io.github.fukusaka.keel.buf.BufferAllocator.hintSizeClass] at

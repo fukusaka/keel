@@ -756,4 +756,135 @@ class TlsHandlerTest {
         trackedTransport.written.forEach { it.release() }
         tracker.assertNoLeaks("TlsHandler.onWrite must release the plaintext buffer it fully consumed")
     }
+
+    // --- Accumulate buffer right-sizing ---
+
+    /**
+     * Mock TlsCodec simulating JSSE's `SSLEngine.unwrap()` `BUFFER_UNDERFLOW`
+     * contract: returns [TlsResult.NEED_MORE_INPUT] with `bytesConsumed=0`
+     * (no partial consumption) whenever fewer bytes than a full TLS record —
+     * the same 5-byte header ([TlsHandler]'s private `TLS_RECORD_HEADER_SIZE`)
+     * + declared payload length wire format [TlsHandler.recordSizeIfKnown]
+     * parses — are available. Unlike [MockTlsCodec] and the native
+     * BIO-callback codecs (which always drain everything they are handed
+     * before reporting NEED_MORE_INPUT), this mirrors the codec shape that
+     * actually exercises [TlsHandler]'s accumulate path.
+     */
+    private class JsseLikeMockCodec(private val xorKey: Byte = 0x42) : TlsCodec {
+        override var isHandshakeComplete: Boolean = true
+        override val negotiatedProtocol: String? = "http/1.1"
+        override val peerCertificates: List<ByteArray> = emptyList()
+
+        override fun unprotect(ciphertext: IoBuf, plaintext: IoBuf): TlsCodecResult {
+            val readable = ciphertext.readableBytes
+            if (readable < RECORD_HEADER_SIZE) return TlsCodecResult(TlsResult.NEED_MORE_INPUT, 0, 0)
+            val base = ciphertext.readerIndex
+            val length = ((ciphertext.getByte(base + 3).toInt() and 0xFF) shl 8) or
+                (ciphertext.getByte(base + 4).toInt() and 0xFF)
+            val total = RECORD_HEADER_SIZE + length
+            if (readable < total) return TlsCodecResult(TlsResult.NEED_MORE_INPUT, 0, 0)
+            var produced = 0
+            for (i in RECORD_HEADER_SIZE until total) {
+                plaintext.writeByte((ciphertext.getByte(base + i).toInt() xor xorKey.toInt()).toByte())
+                produced++
+            }
+            return TlsCodecResult(TlsResult.OK, total, produced)
+        }
+
+        override fun protect(plaintext: IoBuf, ciphertext: IoBuf): TlsCodecResult =
+            TlsCodecResult(TlsResult.OK, plaintext.readableBytes, 0)
+
+        override fun close() {}
+
+        private companion object {
+            const val RECORD_HEADER_SIZE = 5
+        }
+    }
+
+    /** Records the [capacity] passed to every [allocate] call, delegating the actual work. */
+    private class SizeRecordingAllocator(delegate: BufferAllocator) : BufferAllocator by delegate {
+        val allocatedSizes = mutableListOf<Int>()
+        private val delegate = delegate
+
+        override fun allocate(capacity: Int): IoBuf {
+            allocatedSizes.add(capacity)
+            return delegate.allocate(capacity)
+        }
+    }
+
+    /**
+     * Builds a fake TLS record: 5-byte header (type=0x17, version=0x0303,
+     * big-endian length) + XOR-"encrypted" [plaintext] (matching
+     * [JsseLikeMockCodec.unprotect]'s XOR "decryption").
+     */
+    private fun fakeRecord(plaintext: ByteArray): ByteArray {
+        val header = byteArrayOf(0x17, 0x03, 0x03, (plaintext.size shr 8).toByte(), (plaintext.size and 0xFF).toByte())
+        return header + xorBytes(plaintext)
+    }
+
+    @Test
+    fun `saveAccumulate right-sizes to the full record length once the header is known`() {
+        val spy = SizeRecordingAllocator(DefaultAllocator)
+        val spyTransport = TestIoTransport(allocator = spy)
+        val spyChannel = object : AbstractPipelinedChannel(spyTransport, logger) {}
+        val handler = TlsHandler(JsseLikeMockCodec())
+        spyChannel.pipeline.addLast("tls", handler)
+        val recorder = RecordingHandler()
+        spyChannel.pipeline.addAfter("tls", "recorder", recorder)
+
+        val plain = "hello world!".encodeToByteArray() // 12-byte payload -> 17-byte record.
+        val record = fakeRecord(plain)
+
+        // First read: header (5B) + 3B of payload — well short of the full
+        // 17-byte record. Without right-sizing, saveAccumulate would
+        // allocate exactly 8 bytes here.
+        spyChannel.pipeline.notifyRead(allocBuf(record.copyOfRange(0, 8)))
+        // Second read: the remaining 9 bytes. Without right-sizing,
+        // mergeWithAccumulate would have to grow-and-recopy the first 8
+        // bytes into a new 17-byte buffer here (a second accumulate-path
+        // allocation). With right-sizing, the first allocation already
+        // reserved room for all 17 bytes, so this read only appends.
+        spyChannel.pipeline.notifyRead(allocBuf(record.copyOfRange(8, 17)))
+
+        assertEquals(1, recorder.reads.size, "the complete record must decrypt once both reads arrive")
+        assertEquals("hello world!", recorder.reads[0].decodeToString())
+        assertEquals(
+            listOf(17),
+            spy.allocatedSizes.filter { it != TlsHandler.TLS_PLAINTEXT_BUF_SIZE_DEFAULT },
+            "the accumulate buffer must be allocated once, sized to the full 17-byte record " +
+                "(5-byte header + 12-byte payload) parsed from the header on the first short read — " +
+                "not to the 8 bytes available at that point, and not grown again on the second read " +
+                "(plaintextBufferSize allocations for the per-loop plainBuf are filtered out)",
+        )
+    }
+
+    @Test
+    fun `saveAccumulate falls back to remaining-only sizing when the header itself is incomplete`() {
+        val spy = SizeRecordingAllocator(DefaultAllocator)
+        val spyTransport = TestIoTransport(allocator = spy)
+        val spyChannel = object : AbstractPipelinedChannel(spyTransport, logger) {}
+        val handler = TlsHandler(JsseLikeMockCodec())
+        spyChannel.pipeline.addLast("tls", handler)
+        val recorder = RecordingHandler()
+        spyChannel.pipeline.addAfter("tls", "recorder", recorder)
+
+        val plain = "hi".encodeToByteArray() // 2-byte payload -> 7-byte record.
+        val record = fakeRecord(plain)
+
+        // First read: only 3 bytes — shorter than the 5-byte header itself,
+        // so the record length cannot be determined yet.
+        spyChannel.pipeline.notifyRead(allocBuf(record.copyOfRange(0, 3)))
+        spyChannel.pipeline.notifyRead(allocBuf(record.copyOfRange(3, 7)))
+
+        assertEquals(1, recorder.reads.size)
+        assertEquals("hi", recorder.reads[0].decodeToString())
+        assertEquals(
+            listOf(3, 7),
+            spy.allocatedSizes.filter { it != TlsHandler.TLS_PLAINTEXT_BUF_SIZE_DEFAULT },
+            "with fewer than 5 bytes on the first read, the header cannot be parsed yet — " +
+                "saveAccumulate falls back to allocating exactly what's available (3), then " +
+                "mergeWithAccumulate must grow-and-recopy to 7 once the rest arrives " +
+                "(plaintextBufferSize allocations for the per-loop plainBuf are filtered out)",
+        )
+    }
 }
