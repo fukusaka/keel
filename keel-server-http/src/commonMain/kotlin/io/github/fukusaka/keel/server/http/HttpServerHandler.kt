@@ -768,7 +768,13 @@ private class Http1ResponseBodySink(
     private val ctx: PipelineHandlerContext,
 ) : HttpResponseBodySink {
 
-    override var trailers: HttpHeaders = HttpHeaders.EMPTY
+    // A fresh instance, not the shared HttpHeaders.EMPTY singleton — trailers
+    // is a mutable var exposing HttpHeaders.add()/set(), and a caller that
+    // mutates in place (idiomatic elsewhere in this codebase, e.g.
+    // HttpResponse.contentHeaders()) rather than reassigning would otherwise
+    // corrupt the process-wide EMPTY sentinel every other call site relies
+    // on as "no headers." Mirrors HttpResponseHead.headers' own default.
+    override var trailers: HttpHeaders = HttpHeaders()
 
     override suspend fun write(chunk: IoBuf) {
         // Runs on the handler coroutine, already on the EventLoop thread.

@@ -623,6 +623,34 @@ class HttpServerHandlerTest {
     }
 
     @Test
+    fun `respondStream sink trailers default does not alias the shared HttpHeaders EMPTY singleton`() {
+        // sink.trailers is a mutable var backed by HttpHeaders.add()/set().
+        // If the default were the shared HttpHeaders.EMPTY singleton, a
+        // caller mutating in place instead of reassigning (idiomatic
+        // elsewhere in this codebase) would corrupt "no headers" for every
+        // other call site relying on HttpHeaders.EMPTY.
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/stream") { call ->
+                    call.respondStream(
+                        HttpResponseHead(
+                            status = HttpStatus.OK,
+                            headers = HttpHeaders.of(HttpHeaderName.TRANSFER_ENCODING to "chunked"),
+                        ),
+                    ) { sink ->
+                        sink.write(bufOf("alpha"))
+                        sink.trailers.add("X-Checksum", "abc123")
+                    }
+                }
+            },
+        )
+
+        feedGet("/stream")
+
+        assertTrue(HttpHeaders.EMPTY.isEmpty, "HttpHeaders.EMPTY must stay empty after in-place sink.trailers mutation")
+    }
+
+    @Test
     fun `respondStream sink trailers are silently dropped for a Content-Length response`() {
         // RFC 7230 §4.1.2 restricts trailers to chunked encoding — the
         // codec's FIXED-mode encoder path (`encodeContentFixed`) has no

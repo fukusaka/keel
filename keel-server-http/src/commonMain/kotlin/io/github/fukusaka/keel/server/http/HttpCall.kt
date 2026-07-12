@@ -191,8 +191,11 @@ public interface HttpResponseBodySink {
     /**
      * Trailer header fields emitted after the terminal chunk (RFC 7230
      * §4.1.2). Settable at any point before [HttpCall.respondStream]'s
-     * block returns — the last value assigned wins. Defaults to
-     * [HttpHeaders.EMPTY] (no trailers, today's behavior).
+     * block returns — the last value assigned wins. Defaults to an empty
+     * [HttpHeaders] (no trailers, today's behavior); implementations must
+     * default to a fresh instance rather than the shared
+     * [HttpHeaders.EMPTY] singleton, since this is a mutable `var` and a
+     * caller may mutate it in place instead of reassigning.
      *
      * Only takes effect when the response head passed to [respondStream]
      * declared `Transfer-Encoding: chunked`. For a `Content-Length`
