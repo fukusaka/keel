@@ -26,9 +26,9 @@ import kotlin.test.Test
  *   default `Accept`, `Accept-Encoding: gzip, deflate, br`,
  *   `Content-Type: text/html; charset=utf-8`, `Cache-Control:
  *   no-cache`, `X-Frame-Options: DENY` (uppercase), `Vary:
- *   Accept-Encoding` (Title-Case value), etc. The BigQuery follow-up
- *   PR will refine the category (c) production-frequent set based on
- *   empirical HTTP Archive frequency data.
+ *   Accept-Encoding` (Title-Case value), etc. Category (c)
+ *   production-frequent set is now empirically confirmed against
+ *   HTTP Archive BigQuery data (2026-07-12).
  */
 // @Ignore: one-time measurement (no functional assertion) — a decision
 // aid that caught no regression, so it is not run in the gate / CI; kept
@@ -82,7 +82,7 @@ class HttpHeadersStaticInternBenchmark {
         // Browser-original (10) — most have unique values
         h.add("Host", "api.example.com")
         h.add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/605.1.15")
-        h.add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8") // INTERN HIT
+        h.add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7") // INTERN HIT
         h.add("Accept-Language", "en-US,en;q=0.9")
         h.add("Accept-Encoding", "gzip, deflate, br") // INTERN HIT
         h.add("Connection", "keep-alive") // INTERN HIT
