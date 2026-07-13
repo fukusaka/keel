@@ -195,6 +195,33 @@ class IoUringPipelinedServerTest {
     }
 
     @Test
+    fun `bindPipeline echoes with a custom SQ and CQ ring size`() {
+        // Exercises the real kernel's IORING_SETUP_CQSIZE path (cqSize > 0) and
+        // the startup IORING_FEAT_NODROP assert against a real ring — the seam
+        // test covers the plumbing, this proves the kernel accepts the config.
+        val engine = IoUringEngine(
+            config = testConfig(),
+            capabilities = detectCaps(),
+            ringSize = 2048,
+            cqSize = 8192,
+        )
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("echo", EchoHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = rawConnect(port)
+        try {
+            rawWrite(clientFd, "hello")
+            assertEquals("hello", rawRead(clientFd, 5))
+        } finally {
+            close(clientFd)
+            server.close()
+            runBlocking { engine.close() }
+        }
+    }
+
+    @Test
     fun `pipelined echo works with multishotRecv disabled - single-shot buffer-select fallback`() {
         // Exercises the single-shot recv fallback (the read mode used on a
         // kernel with a provided buffer ring but no IORING_RECV_MULTISHOT)

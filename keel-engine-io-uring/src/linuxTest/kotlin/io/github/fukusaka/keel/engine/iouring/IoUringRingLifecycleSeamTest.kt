@@ -33,12 +33,14 @@ class IoUringRingLifecycleSeamTest {
         ring: FakeIoUringRing,
         capabilities: IoUringCapabilities = IoUringCapabilities(),
         ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
+        cqSize: Int = 0,
         block: (IoUringEventLoop) -> Unit,
     ) {
         val el = IoUringEventLoop(
             logger,
             capabilities = capabilities,
             ringSize = ringSize,
+            cqSize = cqSize,
             syscallOps = FakeIoUringSyscallOps(),
             ioUringRing = ring,
         )
@@ -58,7 +60,7 @@ class IoUringRingLifecycleSeamTest {
         withEventLoop(fake) { el ->
             val ex = assertFailsWith<IllegalStateException> { el.initRing() }
             assertTrue(
-                ex.message!!.contains("io_uring_queue_init() failed"),
+                ex.message!!.contains("io_uring_queue_init_params() failed"),
                 "message should mention queue_init failure, got: ${ex.message}",
             )
         }
@@ -89,6 +91,29 @@ class IoUringRingLifecycleSeamTest {
         withEventLoop(fake, ringSize = 16) { el ->
             el.initRing()
             assertEquals(16, fake.lastQueueInitEntries)
+        }
+    }
+
+    @Test
+    fun `initRing passes the configured CQ size to queueInit`() {
+        val fake = FakeIoUringRing()
+        withEventLoop(fake, ringSize = 16, cqSize = 64) { el ->
+            el.initRing()
+            assertEquals(64, fake.lastQueueInitCqEntries, "cqSize must reach io_uring_queue_init_params")
+        }
+    }
+
+    @Test
+    fun `initRing fails fast when the kernel lacks IORING_FEAT_NODROP`() {
+        // A kernel that reports no NODROP feature would silently drop CQEs on
+        // CQ-ring overflow; keel refuses to run rather than lose completions.
+        val fake = FakeIoUringRing().apply { scriptedFeatures = 0u }
+        withEventLoop(fake) { el ->
+            val ex = assertFailsWith<IllegalStateException> { el.initRing() }
+            assertTrue(
+                ex.message!!.contains("IORING_FEAT_NODROP"),
+                "message should name the missing feature, got: ${ex.message}",
+            )
         }
     }
 
