@@ -2,7 +2,9 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.InetSocketAddress
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.logging.LogLevel
@@ -113,45 +115,83 @@ class IoUringPipelinedServerTest {
     }
 
     @Test
-    fun `SEND_ZC delivers every buffer of a multi-write flush`() {
-        // Regression: submitAsyncSendZcChain indexed the LIVE pendingWrites
-        // list, but flush() clears pendingWrites the moment flushSendZc()
-        // returns. Only the first buffer (read synchronously before the
-        // clear) was sent; every later buffer in the async chain saw an empty
-        // list, was silently dropped, and its IoBuf leaked. A multi-buffer
-        // response (HTTP header + body — the /large shape) therefore delivered
-        // only its first buffer and the peer stalled until timeout. Pin full
-        // delivery: both buffers batched into one flush must arrive.
+    fun `SEND_ZC delivers a small multi-buffer flush without truncation or leak`() {
+        // Minimal reproduction of the chain-drop bug: two tiny buffers in one
+        // flush. Exercises submitAsyncSendZcChain advancing past index 0.
+        runMultiBufferSendZcResponse(bodySize = 32)
+    }
+
+    @Test
+    fun `SEND_ZC delivers a large multi-buffer response without truncation or leak`() {
+        // The real /large shape: a small header buffer + a 100 KB body buffer
+        // in one flush. Adds coverage the tiny-buffer case cannot: the 100 KB
+        // send is split across CQEs (partial send → recursive resubmit inside
+        // submitAsyncSendZcSequential), so this pins both the multi-buffer
+        // chain and the partial-send remainder path end to end.
+        runMultiBufferSendZcResponse(bodySize = 100_000)
+    }
+
+    /**
+     * Drives a two-buffer (header + [bodySize]-byte body) response through the
+     * pipelined io_uring server under [IoMode.SEND_ZC] and asserts the client
+     * receives every byte and no buffer leaks.
+     *
+     * Regression: submitAsyncSendZcChain indexed the LIVE pendingWrites list,
+     * but flush() clears pendingWrites the moment flushSendZc() returns. Only
+     * the first buffer (read synchronously before the clear) was sent; every
+     * later buffer in the async chain saw an empty list, was silently dropped,
+     * and its IoBuf leaked. A multi-buffer response (HTTP header + body — the
+     * /large shape) therefore delivered only its header and the peer stalled
+     * until timeout. Pins both full delivery and zero leak.
+     */
+    private fun runMultiBufferSendZcResponse(bodySize: Int) {
         val caps = detectCaps()
         if (!caps.sendZc) return
+        // Track buffers allocated through the channel allocator so a dropped
+        // (never-released) buffer surfaces as a non-zero outstanding count.
+        val tracking = TrackingAllocator(DefaultAllocator)
         val engine = IoUringEngine(
-            config = testConfig(),
+            config = IoEngineConfig(loggerFactory = PrintLogger.Factory(LogLevel.DEBUG), allocator = tracking),
             writeModeSelector = IoModeSelectors.SEND_ZC,
             capabilities = caps,
         )
         val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
-            channel.pipeline.addLast("two", TwoBufferResponseHandler())
+            channel.pipeline.addLast("two", TwoBufferResponseHandler(bodySize))
         }
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = rawConnect(port)
         try {
             rawWrite(clientFd, "go")
-            val expected = TwoBufferResponseHandler.FIRST + TwoBufferResponseHandler.SECOND
-            // rawReadUpTo returns whatever arrived by the deadline, so the
-            // pre-fix path (second buffer dropped) fails the assertion instead
-            // of hanging the test forever.
-            val got = PosixRawClient.rawReadUpTo(clientFd, expected.length + 16, 5.seconds)
+            val header = TwoBufferResponseHandler.HEADER
+            val total = header.length + bodySize
+            // rawReadBytes returns a short array on the deadline instead of
+            // hanging, so the pre-fix path (dropped body buffer) fails the
+            // length assertion rather than blocking the test forever.
+            val got = PosixRawClient.rawReadBytes(clientFd, total, 10.seconds)
             assertEquals(
-                expected, got,
+                total, got.size,
                 "SEND_ZC must deliver every buffer batched into one flush " +
                     "(a short read means the async send chain dropped a later buffer)",
             )
+            assertEquals(
+                header, got.decodeToString(0, header.length),
+                "the header buffer must arrive intact and first",
+            )
+            assertEquals(bodyByteAt(0), got[header.length], "first body byte")
+            assertEquals(bodyByteAt(bodySize - 1), got[total - 1], "last body byte")
         } finally {
             close(clientFd)
             server.close()
             runBlocking { engine.close() }
         }
+        // engine.close() joins the EventLoop pthreads, so every send
+        // completion has fired and released its buffer by now; a buffer the
+        // chain dropped would still be outstanding.
+        assertEquals(
+            0, tracking.outstandingCount,
+            "SEND_ZC must release every buffer of a multi-write flush (non-zero = leaked drop)",
+        )
     }
 
     @Test
@@ -579,16 +619,21 @@ private class EchoHandler : InboundHandler {
     }
 }
 
+/** Deterministic body byte pattern, shared by the writer and the assertion. */
+private fun bodyByteAt(i: Int): Byte = (i % 251).toByte()
+
 /**
- * On each request, writes two distinct allocator-owned buffers and then a
- * single flush — a faithful stand-in for an HTTP response's separate header
- * and body buffers (the /large shape) without pulling in the HTTP codec.
+ * On each request, writes a small header buffer and a [bodySize]-byte body
+ * buffer, then a single flush — a faithful stand-in for an HTTP response's
+ * separate header and body buffers (the /large shape) without pulling in the
+ * HTTP codec.
  *
  * The two writes accumulate as two `PendingWrite` entries drained by one
  * `flush()`, exercising the multi-buffer async send chain that the SEND_ZC
- * live-list bug truncated.
+ * live-list bug truncated. A large [bodySize] additionally forces a partial
+ * send (kernel send buffer < body), exercising the chain's remainder path.
  */
-private class TwoBufferResponseHandler : InboundHandler {
+private class TwoBufferResponseHandler(private val bodySize: Int) : InboundHandler {
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (msg !is IoBuf) {
             ctx.propagateRead(msg)
@@ -596,17 +641,16 @@ private class TwoBufferResponseHandler : InboundHandler {
         }
         // Consume the request; this handler does not echo.
         msg.release()
-        val first = FIRST.encodeToByteArray()
-        val second = SECOND.encodeToByteArray()
-        val a = ctx.allocator.allocate(first.size).also { it.writeByteArray(first, 0, first.size) }
-        val b = ctx.allocator.allocate(second.size).also { it.writeByteArray(second, 0, second.size) }
+        val header = HEADER.encodeToByteArray()
+        val body = ByteArray(bodySize) { bodyByteAt(it) }
+        val a = ctx.allocator.allocate(header.size).also { it.writeByteArray(header, 0, header.size) }
+        val b = ctx.allocator.allocate(body.size).also { it.writeByteArray(body, 0, body.size) }
         ctx.propagateWrite(a)
         ctx.propagateWrite(b)
         ctx.propagateFlush()
     }
 
     companion object {
-        const val FIRST = "HEADER-PART-0123456789"
-        const val SECOND = "BODY-PART-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        const val HEADER = "HEADER-PART-0123456789"
     }
 }
