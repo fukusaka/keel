@@ -50,11 +50,7 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
-import platform.posix.EAGAIN
-import platform.posix.EWOULDBLOCK
 import platform.posix.MSG_NOSIGNAL
-import platform.posix.errno
-import posix_socket.keel_writev
 
 /**
  * io_uring [IoTransport] implementation for Linux.
@@ -824,10 +820,15 @@ internal class IoUringIoTransport(
     }
 
     /**
-     * Gather write via `keel_writev()` for multiple pending writes.
+     * Gather write via [NativeSocket.writev] for multiple pending writes.
      *
-     * On partial write, releases fully-written buffers and submits
-     * the remainder as an async SEND chain via [submitAsyncWritevRemainder].
+     * On partial write, releases fully-written buffers and submits the
+     * remainder as an async SEND chain via [submitAsyncWritevRemainder]; on a
+     * full `EAGAIN` (nothing written) submits all buffers via
+     * [submitAsyncSendChain]. Routing through the [nativeSocket] seam (the
+     * same one epoll / kqueue already use) makes both branches
+     * seam-testable — the raw `keel_writev` call this replaced was invisible
+     * to `FakeNativeSocket`.
      */
     private fun flushDirectSendGather(): Boolean {
         val totalBytes = pendingWrites.sumOf { it.length }
@@ -841,34 +842,38 @@ internal class IoUringIoTransport(
                 bases[i] = (pw.buf.unsafePointer + pw.offset)!!
                 lens[i] = pw.length.convert()
             }
-            val n = keel_writev(fd, bases.reinterpret(), lens.reinterpret(), count)
-            if (n < 0) {
-                val err = errno
-                if (err == EAGAIN || err == EWOULDBLOCK) {
-                    // Nothing written — submit all as async chain.
+            writtenBytes = when (val result = nativeSocket.writev(fd, bases, lens, count)) {
+                WriteResult.WouldBlock -> {
+                    // Nothing written — submit all as an async SEND chain.
+                    // Snapshot pendingWrites: flush() clears it the moment this
+                    // returns, but the chain iterates the buffers across CQE
+                    // callbacks (the same ownership-snapshot contract the
+                    // partial-writev remainder path uses).
                     flushHadEagain = true
                     asyncFlushPending = true
                     asyncPendingFlushBytes += totalBytes
-                    submitAsyncSendChain(0)
+                    submitAsyncSendChain(pendingWriteSnapshotPool.borrow(pendingWrites), 0)
                     return false
                 }
-                // Unrecoverable error (EPIPE after peer RST, ECONNRESET, EBADF,
-                // etc.). Surface to the pipeline via fireReadClosedOnce so the
-                // channel tears down — the previous "release and return true"
-                // path was silent from the pipeline's perspective, leaving the
-                // orphaned transport alive and the upstream codec convinced
-                // its bytes had landed. Same canonical pattern as
-                // flushDirectSendSingle's `if (fatalError) fireReadClosedOnce()`
-                // and the four async write callbacks fixed in PR #746.
-                eventLoop.logger.warn {
-                    "writev() failed: fd=$fd ${errnoMessage(err)} (totalBytes=$totalBytes)"
+                is WriteResult.Failed -> {
+                    // Unrecoverable error (EPIPE after peer RST, ECONNRESET, EBADF,
+                    // etc.). Surface to the pipeline via fireReadClosedOnce so the
+                    // channel tears down — the previous "release and return true"
+                    // path was silent from the pipeline's perspective, leaving the
+                    // orphaned transport alive and the upstream codec convinced
+                    // its bytes had landed. Same canonical pattern as
+                    // flushDirectSendSingle's `if (fatalError) fireReadClosedOnce()`
+                    // and the four async write callbacks fixed in PR #746.
+                    eventLoop.logger.warn {
+                        "writev() failed: fd=$fd ${errnoMessage(result.errno)} (totalBytes=$totalBytes)"
+                    }
+                    for (pw in pendingWrites) pw.buf.release()
+                    updatePendingBytes(-totalBytes)
+                    fireReadClosedOnce()
+                    return true
                 }
-                for (pw in pendingWrites) pw.buf.release()
-                updatePendingBytes(-totalBytes)
-                fireReadClosedOnce()
-                return true
+                is WriteResult.Written -> result.bytes
             }
-            writtenBytes = n.toInt()
         }
 
         flushBytesWritten += writtenBytes
@@ -971,14 +976,22 @@ internal class IoUringIoTransport(
     }
 
     /**
-     * Submits remaining [pendingWrites] from [startIndex] as a sequential
-     * async SEND chain.
+     * Submits [writes] from [startIndex] as a sequential async SEND chain.
      *
-     * Called when [flushSingleFireAndForget] encounters EAGAIN. Buffers are
-     * sent one at a time in order: the next buffer is submitted only after
-     * the current one fully completes via CQE callback chaining. This
-     * guarantees TCP byte-stream order even with partial sends (io_uring
-     * CQEs for concurrent SQEs on the same fd do not guarantee completion order).
+     * Called from [flushDirectSendGather] on a full `EAGAIN`. [writes] is a
+     * snapshot borrowed from [pendingWriteSnapshotPool] because `flush()`
+     * clears `pendingWrites` the moment the gather returns, while this chain
+     * advances asynchronously across CQE callbacks; the snapshot is recycled
+     * when the chain drains. Buffers are sent one at a time in order: the next
+     * buffer is submitted only after the current one fully completes via CQE
+     * callback chaining. This guarantees TCP byte-stream order even with
+     * partial sends (io_uring CQEs for concurrent SQEs on the same fd do not
+     * guarantee completion order).
+     *
+     * `asyncPendingFlushBytes` is credited once at the call site with the full
+     * total (matching every other flush path); this chain must NOT add per
+     * buffer or the count double-charges and [onAsyncFlushDone] over-decrements
+     * the pending-bytes backpressure counter.
      *
      * **Future optimization**: `IOSQE_IO_LINK` (Linux 5.3+) could submit
      * all SQEs in one batch while preserving order. However, partial sends
@@ -987,15 +1000,15 @@ internal class IoUringIoTransport(
      *
      * [onFlushComplete] is invoked after the last buffer completes.
      */
-    private fun submitAsyncSendChain(startIndex: Int) {
-        if (startIndex >= pendingWrites.size) {
+    private fun submitAsyncSendChain(writes: ArrayList<PendingWrite>, startIndex: Int) {
+        if (startIndex >= writes.size) {
+            pendingWriteSnapshotPool.recycle(writes)
             onAsyncFlushDone()
             return
         }
-        val pw = pendingWrites[startIndex]
-        asyncPendingFlushBytes += pw.length
+        val pw = writes[startIndex]
         submitAsyncSendSequential(pw.buf, pw.offset, pw.length) {
-            submitAsyncSendChain(startIndex + 1)
+            submitAsyncSendChain(writes, startIndex + 1)
         }
     }
 
