@@ -78,6 +78,9 @@ WRK_CONNS=${BENCH_WRK_CONNS:-100}
 WRK_DURATION=${BENCH_WRK_DURATION:-10s}
 GC_CAPTURE=${BENCH_GC_CAPTURE:-0}
 TLS_BACKEND="${BENCH_TLS:-}"
+CLIENT_HOST="$BENCH_CLIENT_HOST"
+SERVER_IP="${BENCH_SERVER_IP:-$REMOTE_HOST}"
+REACH_TIMEOUT=${BENCH_REACH_TIMEOUT:-5}
 
 # Probe remote OS once so we know which Native binaries exist.
 REMOTE_OS="${BENCH_REMOTE_OS:-$(ssh -n "$REMOTE_HOST" 'uname' 2>/dev/null || echo unknown)}"
@@ -195,6 +198,29 @@ cat <<HEADER
    client  = ${BENCH_CLIENT_HOST}
    runs    = ${RUNS}   shuffle = ${SHUFFLE}   gc capture = ${GC_CAPTURE}
 HEADER
+
+# Pre-flight: verify the client can route to SERVER_IP before starting a
+# potentially multi-hour sweep. A wrong-subnet BENCH_SERVER_IP makes every
+# wrk connection time out and every cell come back empty (2026-07-06 lost a
+# 4 h+ sweep this way). One ICMP probe here fails fast; the per-engine
+# bench-remote.sh calls then skip their own probe via the exported flag.
+if [ "${BENCH_SKIP_REACHABILITY_CHECK:-0}" != 1 ]; then
+    if ssh -n "$CLIENT_HOST" "
+            if command -v timeout >/dev/null 2>&1; then
+                timeout ${REACH_TIMEOUT} ping -c 1 ${SERVER_IP}
+            else
+                ping -c 1 ${SERVER_IP}
+            fi" >/dev/null 2>&1; then
+        export BENCH_SKIP_REACHABILITY_CHECK=1
+    else
+        echo "ERROR: client ${CLIENT_HOST} cannot reach server IP ${SERVER_IP} (ICMP probe failed)." >&2
+        echo "       Every wrk connection would time out; the whole sweep would return empty cells." >&2
+        echo "       Verify BENCH_SERVER_IP=${SERVER_IP} is on a subnet the client can route to" >&2
+        echo "       (\`ssh ${CLIENT_HOST} ping -c1 ${SERVER_IP}\`), or set" >&2
+        echo "       BENCH_SKIP_REACHABILITY_CHECK=1 to bypass (e.g. an ICMP-filtered link)." >&2
+        exit 1
+    fi
+fi
 
 if [ "$GC_CAPTURE" = 1 ]; then
     printf '   %-32s %12s   %-9s  %-9s   %-22s\n' \
