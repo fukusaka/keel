@@ -126,6 +126,8 @@ CPU_CAPTURE=${BENCH_CPU_CAPTURE:-0}
 # and the wrk client host — see bench-temp.sh. Sourced after SCRIPT_DIR below.
 TEMP_CAPTURE=${BENCH_TEMP_CAPTURE:-0}
 READY_TIMEOUT=${BENCH_READY_TIMEOUT:-60}
+# Pre-flight: seconds to wait for the client -> SERVER_IP ICMP probe below.
+REACH_TIMEOUT=${BENCH_REACH_TIMEOUT:-5}
 
 # Raw jstat samples land alongside other bench artifacts so
 # `bench-snapshot.sh` can pick them up. `bench-keel.sh` writes results
@@ -191,6 +193,44 @@ run_wrk() {
             ;;
     esac
 }
+
+# --- Pre-flight: client can route to the server IP ---
+#
+# The wrk URL targets SERVER_IP (BENCH_SERVER_IP, default BENCH_REMOTE_HOST).
+# If the client host has no route to that IP — e.g. SERVER_IP names an
+# interface on a subnet the client cannot reach — every wrk connection times
+# out and each run emits an empty result line. A full multi-engine sweep can
+# burn hours before that is noticed (2026-07-06: a wrong-subnet BENCH_SERVER_IP
+# wasted a 4 h+ real-network sweep, every rps/p50/p99 cell empty). One ICMP
+# probe from the client catches the routing failure in seconds. It runs before
+# the server is even started (ICMP targets the host, not the bench port).
+#
+# ICMP-filtered networks can false-positive; set BENCH_SKIP_REACHABILITY_CHECK=1
+# to bypass. The batch wrapper (bench-remote-keel.sh) runs this once up front
+# and sets that flag so the per-engine calls skip the redundant probe.
+check_client_can_reach_server() {
+    # `timeout` bounds a possible ICMP-filter hang uniformly across client OSes
+    # (avoids the ping -W seconds-vs-milliseconds portability trap). A routing
+    # failure returns non-zero well before REACH_TIMEOUT regardless.
+    ssh -n "$CLIENT_HOST" "
+        if command -v timeout >/dev/null 2>&1; then
+            timeout ${REACH_TIMEOUT} ping -c 1 ${SERVER_IP}
+        else
+            ping -c 1 ${SERVER_IP}
+        fi
+    " >/dev/null 2>&1
+}
+
+if [ "${BENCH_SKIP_REACHABILITY_CHECK:-0}" != 1 ]; then
+    if ! check_client_can_reach_server; then
+        echo "ERROR: client ${CLIENT_HOST} cannot reach server IP ${SERVER_IP} (ICMP probe failed)." >&2
+        echo "       wrk would time out on every connection and produce empty results." >&2
+        echo "       Verify BENCH_SERVER_IP=${SERVER_IP} is on a subnet the client can route to" >&2
+        echo "       (\`ssh ${CLIENT_HOST} ping -c1 ${SERVER_IP}\`), or set" >&2
+        echo "       BENCH_SKIP_REACHABILITY_CHECK=1 to bypass (e.g. an ICMP-filtered link)." >&2
+        exit 1
+    fi
+fi
 
 # --- Server lifecycle on the remote host ---
 
