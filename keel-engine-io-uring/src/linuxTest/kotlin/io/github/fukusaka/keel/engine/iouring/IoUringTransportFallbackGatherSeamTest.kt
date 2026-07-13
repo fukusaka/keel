@@ -63,6 +63,7 @@ class IoUringTransportFallbackGatherSeamTest {
         } finally {
             bufRing.close()
             el.close()
+            fake.dispose()
         }
     }
 
