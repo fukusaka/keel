@@ -97,6 +97,21 @@ internal interface IoUringRing {
     fun getSqe(ring: CPointer<io_uring>): CPointer<io_uring_sqe>?
 
     /**
+     * Submits all queued SQEs to the kernel **without waiting** for any
+     * completion (`io_uring_submit`).
+     *
+     * Used to drain the submission ring when [getSqe] returns `null` (SQ ring
+     * full): submitting the queued SQEs hands the entries back to userspace so
+     * a retried [getSqe] succeeds. A full SQ ring always has queued SQEs to
+     * flush, so one submit frees slots unless the kernel itself cannot accept
+     * any (e.g. a full CQ ring returning `-EBUSY`) — a genuinely wedged state.
+     *
+     * @return the number of SQEs submitted (`>= 0`) on success; a negative
+     *   `-errno` on failure (e.g. `-EBUSY` when the CQ ring is full).
+     */
+    fun submit(ring: CPointer<io_uring>): Int
+
+    /**
      * Submits all queued SQEs and blocks until at least [minComplete]
      * CQEs are available, in a single `io_uring_enter` syscall, via
      * `io_uring_submit_and_wait`.
