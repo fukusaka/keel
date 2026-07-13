@@ -7,6 +7,7 @@ import io_uring.io_uring_get_sqe
 import io_uring.io_uring_queue_exit
 import io_uring.io_uring_queue_init
 import io_uring.io_uring_sqe
+import io_uring.io_uring_submit
 import io_uring.io_uring_submit_and_wait
 import io_uring.keel_cqe_has_more
 import io_uring.keel_submit_and_wait_timeout
@@ -43,6 +44,9 @@ internal object PosixIoUringRing : IoUringRing {
 
     override fun getSqe(ring: CPointer<io_uring>): CPointer<io_uring_sqe>? =
         io_uring_get_sqe(ring)
+
+    override fun submit(ring: CPointer<io_uring>): Int =
+        io_uring_submit(ring)
 
     override fun submitAndWait(ring: CPointer<io_uring>, minComplete: Int): Int =
         io_uring_submit_and_wait(ring, minComplete.toUInt())

@@ -60,8 +60,21 @@ class IoUringSqeSeamTest {
     }
 
     @Test
-    fun `submitCallback throws when the SQ ring is full`() {
+    fun `submitCallback drains the SQ ring and retries when it is full`() {
+        // acquireSqe: getSqe null -> submit-drain -> retry succeeds.
         val fake = FakeIoUringRing().apply { scriptSqRingFull() }
+        withEventLoop(fake) { el ->
+            val slot = el.submitCallback(prepare = { }, onCqe = { _, _ -> })
+            assertTrue(slot >= 0, "after a submit-drain the retried getSqe must serve the op, got $slot")
+            assertEquals(1, fake.submitCalls, "exactly one submit-drain on a full ring")
+        }
+    }
+
+    @Test
+    fun `submitCallback throws once when the ring is still full after a drain`() {
+        // Both getSqe calls (initial + post-drain retry) find the ring full:
+        // a wedged kernel. acquireSqe throws after one bounded drain — no spin.
+        val fake = FakeIoUringRing().apply { scriptSqRingFull(); scriptSqRingFull() }
         withEventLoop(fake) { el ->
             val ex = assertFailsWith<IllegalStateException> {
                 el.submitCallback(prepare = { }, onCqe = { _, _ -> })
@@ -70,6 +83,7 @@ class IoUringSqeSeamTest {
                 ex.message!!.contains("io_uring SQ ring full"),
                 "message should mention the full SQ ring, got: ${ex.message}",
             )
+            assertEquals(1, fake.submitCalls, "single bounded drain attempt — no retry loop")
         }
     }
 
@@ -85,13 +99,12 @@ class IoUringSqeSeamTest {
     }
 
     @Test
-    fun `submitMultishot throws when the SQ ring is full`() {
+    fun `submitMultishot drains the SQ ring and retries when it is full`() {
         val fake = FakeIoUringRing().apply { scriptSqRingFull() }
         withEventLoop(fake) { el ->
-            val ex = assertFailsWith<IllegalStateException> {
-                el.submitMultishot(prepare = { }, onCqe = { _, _ -> })
-            }
-            assertTrue(ex.message!!.contains("io_uring SQ ring full"), "got: ${ex.message}")
+            val slot = el.submitMultishot(prepare = { }, onCqe = { _, _ -> })
+            assertTrue(slot >= 0, "after a submit-drain the retried getSqe must serve the multishot op, got $slot")
+            assertEquals(1, fake.submitCalls, "exactly one submit-drain on a full ring")
         }
     }
 
@@ -155,21 +168,16 @@ class IoUringSqeSeamTest {
     // --- submitMultishotRecv SQ-ring-full coverage ---
 
     @Test
-    fun `submitMultishotRecv throws when the SQ ring is full`() {
-        // Parallel to the submitCallback / submitMultishot SQ-ring-full
-        // tests: the recv-specific multishot variant goes through the same
-        // getSqe ?: error("...") gate. Pin it explicitly so a future
-        // refactor that touches the recv submit cannot drop the gate
-        // without the seam catching it.
+    fun `submitMultishotRecv drains the SQ ring and retries when it is full`() {
+        // Parallel to the submitCallback / submitMultishot coverage: the
+        // recv-specific multishot variant goes through the same acquireSqe
+        // submit-drain path. Pin it explicitly so a future refactor that
+        // touches the recv submit cannot drop the drain without the seam
+        // catching it.
         val fake = FakeIoUringRing().apply { scriptSqRingFull() }
         withEventLoop(fake) { el ->
-            val ex = assertFailsWith<IllegalStateException> {
-                el.submitMultishotRecv(fd = 5, bgid = 0) { _, _ -> }
-            }
-            assertTrue(
-                ex.message!!.contains("io_uring SQ ring full"),
-                "message should mention the full SQ ring, got: ${ex.message}",
-            )
+            el.submitMultishotRecv(fd = 5, bgid = 0) { _, _ -> }
+            assertEquals(1, fake.submitCalls, "the recv submit drains once on a full ring, matching submitCallback")
         }
     }
 

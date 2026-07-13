@@ -74,6 +74,7 @@ class IoUringTransportWriteErrorSeamTest {
         } finally {
             bufRing.close()
             el.close()
+            fake.dispose()
         }
     }
 
@@ -212,6 +213,7 @@ class IoUringTransportWriteErrorSeamTest {
         } finally {
             bufRing.close()
             el.close()
+            ring.dispose()
         }
     }
 }

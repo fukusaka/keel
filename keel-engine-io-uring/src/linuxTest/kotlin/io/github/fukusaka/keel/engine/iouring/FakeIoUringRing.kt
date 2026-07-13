@@ -51,6 +51,10 @@ internal class FakeIoUringRing : IoUringRing {
     var submitAndWaitCalls: Int = 0
         private set
 
+    /** Number of [submit] (submit-without-wait, the SQ-full drain path) calls. */
+    var submitCalls: Int = 0
+        private set
+
     /**
      * Total number of CQEs successfully drained via [nextCqe] (empty
      * queue returns do not count). Lets a companion
@@ -78,6 +82,7 @@ internal class FakeIoUringRing : IoUringRing {
 
     private val queueInitResults = ArrayDeque<Int>()
     private val getSqeResults = ArrayDeque<Boolean>()
+    private val submitResults = ArrayDeque<Int>()
     private val submitAndWaitResults = ArrayDeque<Int>()
 
     /** Scripts the next [queueInit] call to fail with [errno] (encoded `-errno`). */
@@ -231,6 +236,11 @@ internal class FakeIoUringRing : IoUringRing {
         getSqeCalls++
         val full = getSqeResults.removeFirstOrNull() == false
         return if (full) null else scratchSqe.ptr
+    }
+
+    override fun submit(ring: CPointer<io_uring>): Int {
+        submitCalls++
+        return submitResults.removeFirstOrNull() ?: 0
     }
 
     override fun submitAndWait(ring: CPointer<io_uring>, minComplete: Int): Int {

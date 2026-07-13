@@ -57,6 +57,7 @@ class IoUringTransportFlushSnapshotPoolSeamTest {
         } finally {
             bufRing.close()
             el.close()
+            fake.dispose()
         }
     }
 

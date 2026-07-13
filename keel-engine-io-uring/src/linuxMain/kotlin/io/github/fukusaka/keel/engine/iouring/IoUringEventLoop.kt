@@ -242,6 +242,38 @@ internal class IoUringEventLoop(
     }
 
     /**
+     * Returns a fresh SQE, draining the submission ring once if it is full.
+     *
+     * On a full SQ ring [IoUringRing.getSqe] returns `null`. Rather than fail
+     * the whole flush (which stranded the caller's half-set-up state — a
+     * leaked ownership snapshot, an over-counted in-flight op, a stuck
+     * `asyncFlushPending`), submit the queued SQEs to the kernel via
+     * [IoUringRing.submit] to hand their ring entries back, then retry `getSqe`
+     * **exactly once**. A full ring always has queued SQEs to flush, so the
+     * single retry succeeds unless the kernel refuses the submit outright — the
+     * one realistic case being `io_uring_submit` returning `-EBUSY` because the
+     * CQ ring is full, which is CQ back-pressure that this call cannot relieve
+     * (only the loop's next CQE drain can). This is a single retry, never a
+     * loop: on a still-full ring it fails fast with the bounded `error` below
+     * rather than spinning. That residual `-EBUSY` case is a pre-existing hole
+     * (the previous fail-fast died identically); reaping CQEs before erroring
+     * is a possible future hardening tracked separately, not a regression here.
+     *
+     * Must be called on the EventLoop thread.
+     *
+     * @throws IllegalStateException only when the ring is still full after a
+     *   drain (the kernel refused the submit, e.g. a full CQ ring — bounded, no
+     *   spin).
+     */
+    private fun acquireSqe(): CPointer<io_uring_sqe> {
+        ioUringRing.getSqe(ring.ptr)?.let { return it }
+        // SQ ring full: flush queued SQEs to free their entries, then retry once.
+        ioUringRing.submit(ring.ptr)
+        return ioUringRing.getSqe(ring.ptr)
+            ?: error("io_uring SQ ring full after submit-drain (size=$ringSize)")
+    }
+
+    /**
      * Completes a SEND_ZC slot by resuming the continuation or invoking the callback.
      *
      * Checks [contSlots] first (suspend path), then [sendZcCallbacks] (fire-and-forget).
@@ -506,8 +538,7 @@ internal class IoUringEventLoop(
                 // Remaining hot-path allocations: [prepare] lambda (always, captures fd/ptr/size)
                 // and the invokeOnCancellation lambda (always, captures userData). Eliminated only
                 // by replacing the generic lambda API with typed methods (submitAccept, submitCallback).
-                val sqe = ioUringRing.getSqe(ring.ptr)
-                    ?: error("io_uring SQ ring full (size=$ringSize)")
+                val sqe = acquireSqe()
                 prepare(sqe)
                 val slot = acquireSlot()
                 contSlots[slot] = cont
@@ -543,8 +574,7 @@ internal class IoUringEventLoop(
                     // If cancelled before this Runnable ran, skip SQE submission:
                     // the caller will receive CancellationException without any in-flight SQE.
                     if (!cont.isActive) return@Runnable
-                    val sqe = ioUringRing.getSqe(ring.ptr)
-                        ?: error("io_uring SQ ring full (size=$ringSize)")
+                    val sqe = acquireSqe()
                     prepare(sqe)
                     val slot = acquireSlot()
                     contSlots[slot] = cont
@@ -577,8 +607,7 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
-        val sqe = ioUringRing.getSqe(ring.ptr)
-            ?: error("io_uring SQ ring full (size=$ringSize)")
+        val sqe = acquireSqe()
         keel_prep_send_zc(sqe, fd, buf, len, flags, 0u)
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
@@ -601,8 +630,7 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
-        val sqe = ioUringRing.getSqe(ring.ptr)
-            ?: error("io_uring SQ ring full (size=$ringSize)")
+        val sqe = acquireSqe()
         keel_prep_send_zc_fixed(sqe, fd, buf, len, flags, 0u, bufIndex.toUInt())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
@@ -628,8 +656,7 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
-        val sqe = ioUringRing.getSqe(ring.ptr)
-            ?: error("io_uring SQ ring full (size=$ringSize)")
+        val sqe = acquireSqe()
         keel_prep_sendmsg_zc(sqe, fd, msghdr, flags)
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
@@ -673,8 +700,7 @@ internal class IoUringEventLoop(
     internal suspend fun submitAccept(serverFd: Int): Int {
         if (!inEventLoop()) return submitAndAwait { sqe -> io_uring_prep_accept(sqe, serverFd, null, null, 0) }
         return suspendCancellableCoroutine { cont ->
-            val sqe = ioUringRing.getSqe(ring.ptr)
-                ?: error("io_uring SQ ring full (size=$ringSize)")
+            val sqe = acquireSqe()
             io_uring_prep_accept(sqe, serverFd, null, null, 0)
             submitSqe(sqe, cont)
         }
@@ -725,8 +751,7 @@ internal class IoUringEventLoop(
         prepare: (CPointer<io_uring_sqe>) -> Unit,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
-        val sqe = ioUringRing.getSqe(ring.ptr)
-            ?: error("io_uring SQ ring full (size=$ringSize)")
+        val sqe = acquireSqe()
         prepare(sqe)
         val slot = acquireSlot()
         callbackSlots[slot] = onCqe
@@ -759,8 +784,7 @@ internal class IoUringEventLoop(
         prepare: (CPointer<io_uring_sqe>) -> Unit,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
-        val sqe = ioUringRing.getSqe(ring.ptr)
-            ?: error("io_uring SQ ring full (size=$ringSize)")
+        val sqe = acquireSqe()
         prepare(sqe)
         val slot = acquireSlot()
         callbackSlots[slot] = onCqe
@@ -848,8 +872,7 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
-        val sqe = ioUringRing.getSqe(ring.ptr)
-            ?: error("io_uring SQ ring full (size=$ringSize)")
+        val sqe = acquireSqe()
         keel_prep_recv_multishot(sqe, fd, bgid.toUShort())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
@@ -889,8 +912,7 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
-        val sqe = ioUringRing.getSqe(ring.ptr)
-            ?: error("io_uring SQ ring full (size=$ringSize)")
+        val sqe = acquireSqe()
         keel_prep_recv_buf_select(sqe, fd, len.toUInt(), bgid.toUShort())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
@@ -928,8 +950,7 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
-        val sqe = ioUringRing.getSqe(ring.ptr)
-            ?: error("io_uring SQ ring full (size=$ringSize)")
+        val sqe = acquireSqe()
         keel_prep_recv(sqe, fd, buf, len.toUInt())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
         val slot = acquireSlot()
