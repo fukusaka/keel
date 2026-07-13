@@ -22,6 +22,7 @@ import platform.posix.close
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Covers the direct-allocated multishot accept path
@@ -109,6 +110,48 @@ class IoUringPipelinedServerTest {
             "writeModeSelector = SEND_ZC must reach bindPipeline transports " +
                 "(0 zero-copy dispatches means the engine selector was ignored)",
         )
+    }
+
+    @Test
+    fun `SEND_ZC delivers every buffer of a multi-write flush`() {
+        // Regression: submitAsyncSendZcChain indexed the LIVE pendingWrites
+        // list, but flush() clears pendingWrites the moment flushSendZc()
+        // returns. Only the first buffer (read synchronously before the
+        // clear) was sent; every later buffer in the async chain saw an empty
+        // list, was silently dropped, and its IoBuf leaked. A multi-buffer
+        // response (HTTP header + body — the /large shape) therefore delivered
+        // only its first buffer and the peer stalled until timeout. Pin full
+        // delivery: both buffers batched into one flush must arrive.
+        val caps = detectCaps()
+        if (!caps.sendZc) return
+        val engine = IoUringEngine(
+            config = testConfig(),
+            writeModeSelector = IoModeSelectors.SEND_ZC,
+            capabilities = caps,
+        )
+        val server = engine.bindPipeline("127.0.0.1", 0, BindConfig()) { channel ->
+            channel.pipeline.addLast("two", TwoBufferResponseHandler())
+        }
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = rawConnect(port)
+        try {
+            rawWrite(clientFd, "go")
+            val expected = TwoBufferResponseHandler.FIRST + TwoBufferResponseHandler.SECOND
+            // rawReadUpTo returns whatever arrived by the deadline, so the
+            // pre-fix path (second buffer dropped) fails the assertion instead
+            // of hanging the test forever.
+            val got = PosixRawClient.rawReadUpTo(clientFd, expected.length + 16, 5.seconds)
+            assertEquals(
+                expected, got,
+                "SEND_ZC must deliver every buffer batched into one flush " +
+                    "(a short read means the async send chain dropped a later buffer)",
+            )
+        } finally {
+            close(clientFd)
+            server.close()
+            runBlocking { engine.close() }
+        }
     }
 
     @Test
@@ -533,5 +576,37 @@ private class EchoHandler : InboundHandler {
         } else {
             ctx.propagateRead(msg)
         }
+    }
+}
+
+/**
+ * On each request, writes two distinct allocator-owned buffers and then a
+ * single flush — a faithful stand-in for an HTTP response's separate header
+ * and body buffers (the /large shape) without pulling in the HTTP codec.
+ *
+ * The two writes accumulate as two `PendingWrite` entries drained by one
+ * `flush()`, exercising the multi-buffer async send chain that the SEND_ZC
+ * live-list bug truncated.
+ */
+private class TwoBufferResponseHandler : InboundHandler {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+        if (msg !is IoBuf) {
+            ctx.propagateRead(msg)
+            return
+        }
+        // Consume the request; this handler does not echo.
+        msg.release()
+        val first = FIRST.encodeToByteArray()
+        val second = SECOND.encodeToByteArray()
+        val a = ctx.allocator.allocate(first.size).also { it.writeByteArray(first, 0, first.size) }
+        val b = ctx.allocator.allocate(second.size).also { it.writeByteArray(second, 0, second.size) }
+        ctx.propagateWrite(a)
+        ctx.propagateWrite(b)
+        ctx.propagateFlush()
+    }
+
+    companion object {
+        const val FIRST = "HEADER-PART-0123456789"
+        const val SECOND = "BODY-PART-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     }
 }
