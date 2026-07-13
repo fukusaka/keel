@@ -73,7 +73,6 @@ internal class FakeIoUringRing : IoUringRing {
     var lastSetupFlagsArgs: SetupFlagsArgs? = null
         private set
 
-    /** `entries` argument of the most recent [queueInit] call, or `-1` if never called. */
     /** `cqEntries` argument of the most recent [queueInit] call, or `-1` if never called. */
     var lastQueueInitCqEntries: Int = -1
         private set
@@ -85,6 +84,7 @@ internal class FakeIoUringRing : IoUringRing {
      */
     var scriptedFeatures: UInt = 0xFFFFFFFFu
 
+    /** `entries` argument of the most recent [queueInit] call, or `-1` if never called. */
     var lastQueueInitEntries: Int = -1
         private set
 
