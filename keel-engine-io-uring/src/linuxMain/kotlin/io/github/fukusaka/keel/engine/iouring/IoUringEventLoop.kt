@@ -250,15 +250,20 @@ internal class IoUringEventLoop(
      * `asyncFlushPending`), submit the queued SQEs to the kernel via
      * [IoUringRing.submit] to hand their ring entries back, then retry `getSqe`
      * **exactly once**. A full ring always has queued SQEs to flush, so the
-     * single retry succeeds unless the kernel cannot accept any SQE at all
-     * (e.g. a full CQ ring → `-EBUSY`) — a genuinely wedged engine, where the
-     * bounded `error` below is the correct fatal outcome. This is a single
-     * retry, never a loop: there is no unbounded spin.
+     * single retry succeeds unless the kernel refuses the submit outright — the
+     * one realistic case being `io_uring_submit` returning `-EBUSY` because the
+     * CQ ring is full, which is CQ back-pressure that this call cannot relieve
+     * (only the loop's next CQE drain can). This is a single retry, never a
+     * loop: on a still-full ring it fails fast with the bounded `error` below
+     * rather than spinning. That residual `-EBUSY` case is a pre-existing hole
+     * (the previous fail-fast died identically); reaping CQEs before erroring
+     * is a possible future hardening tracked separately, not a regression here.
      *
      * Must be called on the EventLoop thread.
      *
      * @throws IllegalStateException only when the ring is still full after a
-     *   drain (the kernel cannot accept SQEs — fatal).
+     *   drain (the kernel refused the submit, e.g. a full CQ ring — bounded, no
+     *   spin).
      */
     private fun acquireSqe(): CPointer<io_uring_sqe> {
         ioUringRing.getSqe(ring.ptr)?.let { return it }
