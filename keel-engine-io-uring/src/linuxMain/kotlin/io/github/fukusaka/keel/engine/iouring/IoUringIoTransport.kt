@@ -1207,23 +1207,29 @@ internal class IoUringIoTransport(
     private fun flushSendZc() {
         asyncFlushPending = true
         asyncPendingFlushBytes += pendingWrites.sumOf { it.length }
-        submitAsyncSendZcChain(0)
+        // Snapshot before submitting: flush() clears pendingWrites the moment
+        // this returns, but the chain advances asynchronously across CQE
+        // callbacks and must keep iterating the buffers captured here (the
+        // same ownership-snapshot contract the writev remainder path uses).
+        submitAsyncSendZcChain(pendingWriteSnapshotPool.borrow(pendingWrites), 0)
     }
 
     /**
-     * Submits [pendingWrites] from [index] as sequential SEND_ZC SQEs.
+     * Submits [writes] from [index] as sequential SEND_ZC SQEs.
      *
      * Each buffer is sent after the previous fully completes, preserving
-     * TCP byte-stream order. [onAsyncFlushDone] is called after the last buffer.
+     * TCP byte-stream order. [onAsyncFlushDone] is called after the last buffer
+     * and the snapshot is recycled.
      */
-    private fun submitAsyncSendZcChain(index: Int) {
-        if (index >= pendingWrites.size) {
+    private fun submitAsyncSendZcChain(writes: ArrayList<PendingWrite>, index: Int) {
+        if (index >= writes.size) {
+            pendingWriteSnapshotPool.recycle(writes)
             onAsyncFlushDone()
             return
         }
-        val pw = pendingWrites[index]
+        val pw = writes[index]
         submitAsyncSendZcSequential(pw.buf, pw.offset, pw.length) {
-            submitAsyncSendZcChain(index + 1)
+            submitAsyncSendZcChain(writes, index + 1)
         }
     }
 
