@@ -284,6 +284,34 @@ internal class IoUringEventLoop(
     }
 
     /**
+     * Acquires an SQE for an already-reserved [slot], handing the slot back if
+     * the SQ ring cannot yield one (still full after a drain).
+     *
+     * Every submit helper reserves its continuation/callback slot **before**
+     * calling this and prepares + finalises the SQE (`io_uring_sqe_set_data64`)
+     * only once both are held. That ordering is a correctness requirement, not a
+     * style choice: the sole step that can throw at the ring/slot capacity
+     * boundary is [acquireSlot], and it must run before any SQE is taken.
+     * Otherwise an [acquireSlot] failure between `getSqe` and
+     * `io_uring_sqe_set_data64` would strand an SQE in the ring with an unset
+     * (stale) `user_data`; the next `io_uring_submit_and_wait` would flush it to
+     * the kernel and route its CQE to whatever slot the stale `user_data` names —
+     * resuming the wrong continuation / releasing a live slot (a cross-connection
+     * use-after-free). Reserving the slot first, and releasing it here if the SQE
+     * cannot be obtained, makes every capacity-boundary failure leave the ring
+     * untouched.
+     *
+     * Must be called on the EventLoop thread.
+     */
+    private fun acquireSqeForSlot(slot: Int): CPointer<io_uring_sqe> =
+        try {
+            acquireSqe()
+        } catch (t: Throwable) {
+            releaseSlot(slot)
+            throw t
+        }
+
+    /**
      * Completes a SEND_ZC slot by resuming the continuation or invoking the callback.
      *
      * Checks [contSlots] first (suspend path), then [sendZcCallbacks] (fire-and-forget).
@@ -569,9 +597,9 @@ internal class IoUringEventLoop(
                 // Remaining hot-path allocations: [prepare] lambda (always, captures fd/ptr/size)
                 // and the invokeOnCancellation lambda (always, captures userData). Eliminated only
                 // by replacing the generic lambda API with typed methods (submitAccept, submitCallback).
-                val sqe = acquireSqe()
-                prepare(sqe)
                 val slot = acquireSlot()
+                val sqe = acquireSqeForSlot(slot)
+                prepare(sqe)
                 contSlots[slot] = cont
                 val userData = slot.toULong() + SLOT_BASE
                 io_uring_sqe_set_data64(sqe, userData)
@@ -605,9 +633,9 @@ internal class IoUringEventLoop(
                     // If cancelled before this Runnable ran, skip SQE submission:
                     // the caller will receive CancellationException without any in-flight SQE.
                     if (!cont.isActive) return@Runnable
-                    val sqe = acquireSqe()
-                    prepare(sqe)
                     val slot = acquireSlot()
+                    val sqe = acquireSqeForSlot(slot)
+                    prepare(sqe)
                     contSlots[slot] = cont
                     val userData = slot.toULong() + SLOT_BASE
                     io_uring_sqe_set_data64(sqe, userData)
@@ -638,10 +666,10 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
-        val sqe = acquireSqe()
+        val slot = acquireSlot()
+        val sqe = acquireSqeForSlot(slot)
         keel_prep_send_zc(sqe, fd, buf, len, flags, 0u)
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
-        val slot = acquireSlot()
         sendZcCallbacks[slot] = onComplete
         sendZcPendingResult[slot] = SEND_ZC_UNUSED + 1
         val userData = slot.toULong() + SLOT_BASE
@@ -661,10 +689,10 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
-        val sqe = acquireSqe()
+        val slot = acquireSlot()
+        val sqe = acquireSqeForSlot(slot)
         keel_prep_send_zc_fixed(sqe, fd, buf, len, flags, 0u, bufIndex.toUInt())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
-        val slot = acquireSlot()
         sendZcCallbacks[slot] = onComplete
         sendZcPendingResult[slot] = SEND_ZC_UNUSED + 1
         val userData = slot.toULong() + SLOT_BASE
@@ -687,10 +715,10 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
-        val sqe = acquireSqe()
+        val slot = acquireSlot()
+        val sqe = acquireSqeForSlot(slot)
         keel_prep_sendmsg_zc(sqe, fd, msghdr, flags)
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
-        val slot = acquireSlot()
         sendZcCallbacks[slot] = onComplete
         sendZcPendingResult[slot] = SEND_ZC_UNUSED + 1
         val userData = slot.toULong() + SLOT_BASE
@@ -731,16 +759,19 @@ internal class IoUringEventLoop(
     internal suspend fun submitAccept(serverFd: Int): Int {
         if (!inEventLoop()) return submitAndAwait { sqe -> io_uring_prep_accept(sqe, serverFd, null, null, 0) }
         return suspendCancellableCoroutine { cont ->
-            val sqe = acquireSqe()
+            val slot = acquireSlot()
+            val sqe = acquireSqeForSlot(slot)
             io_uring_prep_accept(sqe, serverFd, null, null, 0)
-            submitSqe(sqe, cont)
+            submitSqe(sqe, cont, slot)
         }
     }
 
     /**
-     * Common fast-path SQE submission: assigns a slot, stores the continuation,
-     * and sets user_data. Called after the SQE is already prepared by
-     * [submitAccept].
+     * Common fast-path SQE submission: stores the continuation in the
+     * caller-reserved [slot] and sets user_data. Called after the SQE is already
+     * prepared by [submitAccept], which reserves [slot] before acquiring the SQE
+     * (see [acquireSqeForSlot]) so a slot-pool exhaustion never strands a
+     * prepared SQE with stale user_data.
      *
      * **No invokeOnCancellation**: The typed API methods are used on the hot
      * path (read/write/flush) where cancellation is handled by `Channel.close()`
@@ -751,8 +782,7 @@ internal class IoUringEventLoop(
      *
      * Must be called on the EventLoop thread only.
      */
-    private fun submitSqe(sqe: CPointer<io_uring_sqe>, cont: CancellableContinuation<Int>) {
-        val slot = acquireSlot()
+    private fun submitSqe(sqe: CPointer<io_uring_sqe>, cont: CancellableContinuation<Int>, slot: Int) {
         contSlots[slot] = cont
         val userData = slot.toULong() + SLOT_BASE
         io_uring_sqe_set_data64(sqe, userData)
@@ -782,9 +812,9 @@ internal class IoUringEventLoop(
         prepare: (CPointer<io_uring_sqe>) -> Unit,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
-        val sqe = acquireSqe()
-        prepare(sqe)
         val slot = acquireSlot()
+        val sqe = acquireSqeForSlot(slot)
+        prepare(sqe)
         callbackSlots[slot] = onCqe
         val userData = slot.toULong() + SLOT_BASE
         io_uring_sqe_set_data64(sqe, userData)
@@ -815,9 +845,9 @@ internal class IoUringEventLoop(
         prepare: (CPointer<io_uring_sqe>) -> Unit,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
-        val sqe = acquireSqe()
-        prepare(sqe)
         val slot = acquireSlot()
+        val sqe = acquireSqeForSlot(slot)
+        prepare(sqe)
         callbackSlots[slot] = onCqe
         val userData = slot.toULong() + SLOT_BASE
         io_uring_sqe_set_data64(sqe, userData)
@@ -903,10 +933,10 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
-        val sqe = acquireSqe()
+        val slot = acquireSlot()
+        val sqe = acquireSqeForSlot(slot)
         keel_prep_recv_multishot(sqe, fd, bgid.toUShort())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
-        val slot = acquireSlot()
         callbackSlots[slot] = onCqe
         val userData = slot.toULong() + SLOT_BASE
         io_uring_sqe_set_data64(sqe, userData)
@@ -943,10 +973,10 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
-        val sqe = acquireSqe()
+        val slot = acquireSlot()
+        val sqe = acquireSqeForSlot(slot)
         keel_prep_recv_buf_select(sqe, fd, len.toUInt(), bgid.toUShort())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
-        val slot = acquireSlot()
         callbackSlots[slot] = onCqe
         val userData = slot.toULong() + SLOT_BASE
         io_uring_sqe_set_data64(sqe, userData)
@@ -981,10 +1011,10 @@ internal class IoUringEventLoop(
         fixedFile: Boolean = false,
         onCqe: (res: Int, flags: UInt) -> Unit,
     ): Int {
-        val sqe = acquireSqe()
+        val slot = acquireSlot()
+        val sqe = acquireSqeForSlot(slot)
         keel_prep_recv(sqe, fd, buf, len.toUInt())
         if (fixedFile) keel_sqe_set_fixed_file(sqe)
-        val slot = acquireSlot()
         callbackSlots[slot] = onCqe
         val userData = slot.toULong() + SLOT_BASE
         io_uring_sqe_set_data64(sqe, userData)
@@ -1372,11 +1402,15 @@ internal class IoUringEventLoop(
         /**
          * Default SQE ring size. Must be a power of 2 (io_uring requirement).
          *
-         * The wakeup SQE permanently occupies 1 slot, so the effective maximum
-         * number of concurrent in-flight I/O operations is `ringSize - 1 = 1023`.
-         * Because [flush] awaits the CQE before returning, each connection has at
-         * most 1 in-flight SQE at a time, supporting up to ~1023 concurrent connections.
-         * Exceeding this limit causes [IoUringRing.getSqe] to return null → error.
+         * The continuation/callback slot pool is also `ringSize`, and the wakeup
+         * SQE consumes one ring entry, so the effective maximum number of
+         * concurrent in-flight I/O operations is ~`ringSize - 1 = 1023`. Because
+         * [flush] awaits the CQE before returning, each connection has at most 1
+         * in-flight SQE at a time, supporting up to ~1023 concurrent connections.
+         * Exceeding the slot pool makes [acquireSlot] fail fast (the submit
+         * helpers reserve the slot before the SQE — see [acquireSqeForSlot] — so
+         * exhaustion throws before any SQE is taken); exceeding the un-submitted
+         * SQ-ring depth in one batch makes [acquireSqe] drain-and-retry.
          *
          * Memory: `ringSize × 12 bytes` for the slot pool (contSlots + freeSlots),
          * i.e. ~12 KB at the default size.

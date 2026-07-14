@@ -33,9 +33,14 @@ class IoUringSqeSeamTest {
      * Builds an [IoUringEventLoop] backed by [ring], runs [block], then
      * tears the loop down and frees the fake's scratch-SQE arena.
      */
-    private fun withEventLoop(ring: FakeIoUringRing, block: (IoUringEventLoop) -> Unit) {
+    private fun withEventLoop(
+        ring: FakeIoUringRing,
+        ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
+        block: (IoUringEventLoop) -> Unit,
+    ) {
         val el = IoUringEventLoop(
             logger,
+            ringSize = ringSize,
             syscallOps = FakeIoUringSyscallOps(),
             ioUringRing = ring,
         )
@@ -84,6 +89,36 @@ class IoUringSqeSeamTest {
                 "message should mention the full SQ ring, got: ${ex.message}",
             )
             assertEquals(1, fake.submitCalls, "single bounded drain attempt — no retry loop")
+        }
+    }
+
+    @Test
+    fun `submitCallback fails fast on slot exhaustion without taking an SQE`() {
+        // Regression: the submit helpers reserve the continuation/callback slot
+        // BEFORE acquiring the SQE. If the slot pool is exhausted, acquireSlot
+        // must throw before any getSqe — otherwise a prepared SQE would be left
+        // in the ring with an unset (stale) user_data and flushed to the kernel,
+        // routing its CQE to the wrong slot. Pin that no getSqe happens once the
+        // pool is drained (before the fix, acquireSqe/getSqe ran, then acquireSlot
+        // threw, leaving the half-prepared SQE — so getSqeCalls would be 3 here).
+        val fake = FakeIoUringRing()
+        withEventLoop(fake, ringSize = 2) { el ->
+            el.submitCallback(prepare = { }, onCqe = { _, _ -> })
+            el.submitCallback(prepare = { }, onCqe = { _, _ -> })
+            assertEquals(2, fake.getSqeCalls, "two slots consumed, two SQEs taken")
+
+            val ex = assertFailsWith<IllegalStateException> {
+                el.submitCallback(prepare = { }, onCqe = { _, _ -> })
+            }
+            assertTrue(
+                ex.message!!.contains("slot pool exhausted"),
+                "message should name the exhausted slot pool, got: ${ex.message}",
+            )
+            assertEquals(
+                2,
+                fake.getSqeCalls,
+                "slot exhaustion must throw before acquireSqe — no SQE taken for the failed op",
+            )
         }
     }
 
