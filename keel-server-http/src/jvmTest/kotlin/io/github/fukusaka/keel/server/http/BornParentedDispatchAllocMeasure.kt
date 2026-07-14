@@ -89,6 +89,16 @@ class BornParentedDispatchAllocMeasure {
         }
     }
 
+    // NOTE: the L4-big SuspendLambda hoist (reusing one per-connection dispatch
+    // body vs a fresh per-request capturing lambda) is NOT guarded by a microbench
+    // here: a synthetic fresh-lambda loop is defeated by JIT escape analysis
+    // (the un-escaping lambda is scalarised away, measuring ~0 B/op), so it cannot
+    // reliably show the reduction. The real evidence is the JFR allocation-by-site
+    // profile of server-http-nio /hello, where the per-request SuspendLambda drops
+    // from `HttpServerHandler$onRequestHead$1` 46 B/req to `$dispatchBody$1` 23 B/req
+    // (only the unavoidable state-machine copy remains) — see
+    // benchmark/results-summary/2026-07-14-l4big-alloc-real-el-dispatcher.md.
+
     @Test
     fun `born-parented dispatch allocates substantially less than launch for a sync body`() {
         val warmup = 20_000
