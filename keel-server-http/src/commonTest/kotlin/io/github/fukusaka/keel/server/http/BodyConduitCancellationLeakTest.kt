@@ -43,6 +43,8 @@ class BodyConduitCancellationLeakTest {
                 ThrowingHandlerContext,
                 QueryParameters.EMPTY,
                 emptyMap(),
+                resolution = RouteResolution.Unmatched,
+                isUpgrade = false,
             )
             val content = tracker.allocate(4).apply {
                 writeByteArray(byteArrayOf(1, 2, 3, 4), 0, 4)
