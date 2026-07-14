@@ -56,11 +56,11 @@ internal const val HTTP_SERVER_HANDLER_NAME: String = "http-server"
  * [headerLimits] is the matching DoS guard for header parsing
  * (currently `maxHeaderCount`); see [HttpHeaderLimitsConfig].
  */
-// Param count grows by one per new pipeline phase (codec / dispatch /
-// hooks). 8 is detekt's project-wide threshold; the install function
-// is `internal` and called from exactly one site (`KeelHttpServer.start`)
-// so suppressing is bounded. The planned DSL pluggable redesign will
-// collapse these into a single `HttpServerPipelineConfig` bundle.
+// Param count is capped by [pipelineInstallers]: new pipeline-level
+// extensions (compression, future metrics / rate-limit / 3rd-party plugins)
+// register through that hook rather than adding a parameter here, so the
+// count no longer grows per feature. The function is `internal` and called
+// from exactly one site (`KeelHttpServer.start`), so suppressing is bounded.
 @Suppress("LongParameterList")
 internal fun PipelinedChannel.installHttpServerPipeline(
     router: Router,
@@ -73,7 +73,7 @@ internal fun PipelinedChannel.installHttpServerPipeline(
     headerTimeoutMillis: Long = 0,
     requestTimeoutMillis: Long = 0,
     minBodyRateBytesPerSec: Long = 0,
-    compression: io.github.fukusaka.keel.server.http.dsl.CompressionPipelineConfig? = null,
+    pipelineInstallers: List<PipelineInstaller> = emptyList(),
 ) {
     addHttp1ServerCodec(
         aggregateBody = false,
@@ -82,18 +82,14 @@ internal fun PipelinedChannel.installHttpServerPipeline(
         requestTimeoutMillis = requestTimeoutMillis,
         minBodyRateBytesPerSec = minBodyRateBytesPerSec,
     )
-    // Compression handlers sit between the codec (decoder/encoder) and
-    // HttpServerHandler so they can intercept HttpRequestHead / HttpBody
-    // (inbound, for `Content-Encoding`) and HttpResponseHead / HttpBody
-    // (outbound, for `Accept-Encoding`) before the encoder serialises to
-    // wire bytes. Either branch is a no-op when its config is absent.
-    if (compression != null) {
-        compression.installRequestDecoder(allocator)?.let { handler ->
-            pipeline.addLast("request-decompression", handler)
-        }
-        if (compression.hasResponseEncoder) {
-            pipeline.addLast("compression", compression.installResponseEncoder(allocator))
-        }
+    // Pipeline installers sit between the codec (decoder/encoder) and
+    // HttpServerHandler so their handlers can intercept HttpRequestHead /
+    // HttpBody (inbound) and HttpResponseHead / HttpBody (outbound) before the
+    // encoder serialises to wire bytes. They run in registration order — the
+    // built-in `compression { }` DSL registers one installer here. See
+    // [PipelineInstaller].
+    for (installer in pipelineInstallers) {
+        installer.install(pipeline, allocator)
     }
     pipeline.addLast(
         HTTP_SERVER_HANDLER_NAME,

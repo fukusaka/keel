@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.server.http.FilesystemAssetSource
 import io.github.fukusaka.keel.server.http.HttpCall
 import io.github.fukusaka.keel.server.http.KeelHttpServer
 import io.github.fukusaka.keel.server.http.Middleware
+import io.github.fukusaka.keel.server.http.PipelineInstaller
 import io.github.fukusaka.keel.server.http.QueryParameterConfig
 import io.github.fukusaka.keel.server.http.RouteHandler
 import io.github.fukusaka.keel.server.http.RoutePredicate
@@ -48,6 +49,10 @@ public class KeelHttpServerBuilder internal constructor() {
     private val middlewares = mutableListOf<Middleware>()
     private var notFoundHandler: RouteHandler? = null
     private val exceptionMappers = mutableListOf<ExceptionMapper>()
+    private val pipelineInstallers = mutableListOf<PipelineInstaller>()
+
+    // Guards a second `compression { }` call; `compression` registers a
+    // pipeline installer rather than storing a dedicated config.
     private var compressionConfig: CompressionPipelineConfig? = null
 
     /**
@@ -373,8 +378,28 @@ public class KeelHttpServerBuilder internal constructor() {
      */
     public fun compression(configure: CompressionBuilder.() -> Unit) {
         check(compressionConfig == null) { "compression is already configured" }
-        val builder = CompressionBuilder().apply(configure)
-        compressionConfig = builder.build()
+        val config = CompressionBuilder().apply(configure).build()
+        compressionConfig = config
+        if (config == null) return
+        installPipeline { pipeline, allocator ->
+            config.installRequestDecoder(allocator)?.let { handler ->
+                pipeline.addLast("request-decompression", handler)
+            }
+            if (config.hasResponseEncoder) {
+                pipeline.addLast("compression", config.installResponseEncoder(allocator))
+            }
+        }
+    }
+
+    /**
+     * Registers a wire-level [PipelineInstaller] to run when each connection's
+     * pipeline is built, after the HTTP codec and before the terminal request
+     * handler. Installers run in registration order. This is the extension
+     * point new pipeline-level features register through (the built-in
+     * `compression { }` uses it); [Middleware] is the per-call counterpart.
+     */
+    public fun installPipeline(installer: PipelineInstaller) {
+        pipelineInstallers.add(installer)
     }
 
     internal fun build(engine: StreamEngine): KeelHttpServer =
@@ -389,7 +414,7 @@ public class KeelHttpServerBuilder internal constructor() {
             router,
             middlewares.toList(),
             ErrorHandlers(notFoundHandler, exceptionMappers.toList()),
-            compressionConfig,
+            pipelineInstallers.toList(),
         )
 }
 
