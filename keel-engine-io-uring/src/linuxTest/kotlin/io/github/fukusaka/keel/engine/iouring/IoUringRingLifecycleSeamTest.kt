@@ -114,6 +114,10 @@ class IoUringRingLifecycleSeamTest {
                 ex.message!!.contains("IORING_FEAT_NODROP"),
                 "message should name the missing feature, got: ${ex.message}",
             )
+            // queueInit succeeded (ring created) before the assert threw, so the
+            // fail-fast path must tear the ring down — otherwise the fd + mmap
+            // leak (ringInitialized stays false, so close() skips the exit).
+            assertEquals(1, fake.queueExitCalls, "the created ring must be exited on the NODROP fail-fast path")
         }
     }
 

@@ -368,9 +368,15 @@ internal class IoUringEventLoop(
             // stranding the corresponding I/O. NODROP is unconditional on Linux
             // 5.5+ and keel requires 5.6+, so this only fires on a broken /
             // patched kernel — fail fast rather than run with silent data loss.
-            check(features.value and keel_feat_nodrop() != 0u) {
-                "io_uring kernel lacks IORING_FEAT_NODROP (features=0x${features.value.toString(16)}); " +
-                    "keel requires it (Linux 5.5+) so CQ-ring overflow backlogs instead of dropping completions"
+            if (features.value and keel_feat_nodrop() == 0u) {
+                // queueInit already created + mmap'd the ring above; tear it down
+                // before aborting so this fail-fast path doesn't leak the fd + mmap
+                // ([ringInitialized] is still false, so [close]'s teardown skips it).
+                ioUringRing.queueExit(ring.ptr)
+                error(
+                    "io_uring kernel lacks IORING_FEAT_NODROP (features=0x${features.value.toString(16)}); " +
+                        "keel requires it (Linux 5.5+) so CQ-ring overflow backlogs instead of dropping completions",
+                )
             }
         }
         ringInitialized = true
