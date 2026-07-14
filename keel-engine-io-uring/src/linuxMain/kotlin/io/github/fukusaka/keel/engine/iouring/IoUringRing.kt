@@ -4,6 +4,7 @@ import io_uring.io_uring
 import io_uring.io_uring_sqe
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.UIntVar
 
 /**
  * Semantic abstraction over the io_uring ring itself — its lifecycle
@@ -68,14 +69,25 @@ internal interface IoUringRing {
     fun setupFlags(coopTaskrun: Boolean, singleIssuer: Boolean, deferTaskrun: Boolean): UInt
 
     /**
-     * Creates and memory-maps the io_uring ring of [entries] SQE slots
-     * into [ring] via `io_uring_queue_init`, applying [flags].
+     * Creates and memory-maps the io_uring ring via
+     * `io_uring_queue_init_params`, applying [flags].
      *
+     * @param sqEntries SQE (submission) ring size (power of 2).
+     * @param cqEntries CQE (completion) ring size when `> 0` (sets
+     *   `IORING_SETUP_CQSIZE`); `0` leaves the kernel default of `2 * sqEntries`.
+     * @param outFeatures receives the kernel-negotiated `params.features` bitset
+     *   on success (used for the `IORING_FEAT_NODROP` assert). Untouched on failure.
      * @return `0` on success; negative `-errno` on failure (e.g. `-EPERM`
      *   when `io_uring` is restricted, `-ENOMEM` under memory pressure,
-     *   `-EINVAL` for an unsupported flag combination).
+     *   `-EINVAL` for an unsupported flag combination or `cqEntries < sqEntries`).
      */
-    fun queueInit(entries: Int, ring: CPointer<io_uring>, flags: UInt): Int
+    fun queueInit(
+        sqEntries: Int,
+        cqEntries: Int,
+        ring: CPointer<io_uring>,
+        flags: UInt,
+        outFeatures: CPointer<UIntVar>,
+    ): Int
 
     /**
      * Unmaps and tears down the io_uring ring via `io_uring_queue_exit`.

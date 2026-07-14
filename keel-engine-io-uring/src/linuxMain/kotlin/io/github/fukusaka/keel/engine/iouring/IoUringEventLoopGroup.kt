@@ -58,6 +58,7 @@ internal class IoUringEventLoopGroup(
     allocator: BufferAllocator,
     capabilities: IoUringCapabilities = IoUringCapabilities(),
     ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
+    cqSize: Int = 0,
     val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     idleTimeoutMillis: Long = 0,
     /**
@@ -96,7 +97,9 @@ internal class IoUringEventLoopGroup(
     /** Number of EventLoop threads in this group. */
     val size: Int = size
 
-    private val loops = Array(size) { IoUringEventLoop(logger, capabilities, ringSize, idleTimeoutMillis = idleTimeoutMillis) }
+    private val loops = Array(size) {
+        IoUringEventLoop(logger, capabilities, ringSize, cqSize, idleTimeoutMillis = idleTimeoutMillis)
+    }
     private val allocators = Array(size) { allocator.createChild() }
     private val bufferRings: Array<ProvidedBufferRing?> = if (capabilities.providedBufferRing) {
         Array(size) { i ->

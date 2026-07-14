@@ -21,6 +21,7 @@ import io_uring.keel_register_ring_fd
 import io_uring.keel_ring_fd
 import io_uring.keel_sqe_set_fixed_file
 import io_uring.keel_unregister_napi
+import io_uring.keel_feat_nodrop
 import io_uring.keel_unregister_ring_fd
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ByteVar
@@ -30,6 +31,8 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
 import kotlinx.cinterop.pointed
@@ -145,6 +148,13 @@ internal class IoUringEventLoop(
     internal val logger: Logger,
     private val capabilities: IoUringCapabilities = IoUringCapabilities(),
     private val ringSize: Int = DEFAULT_RING_SIZE,
+    /**
+     * CQE (completion) ring size. `0` (default) leaves the kernel default of
+     * `2 * ringSize`; a positive value sets `IORING_SETUP_CQSIZE` so the CQ ring
+     * can absorb more completions before overflow (relevant to multishot-heavy
+     * or high-fan-out workloads). Must be a power of 2 `>= ringSize` when set.
+     */
+    private val cqSize: Int = 0,
     private val syscallOps: IoUringSyscallOps = PosixIoUringSyscallOps,
     private val ioUringRing: IoUringRing = PosixIoUringRing,
     /**
@@ -346,8 +356,29 @@ internal class IoUringEventLoop(
             singleIssuer = capabilities.singleIssuer,
             deferTaskrun = capabilities.deferTaskrun,
         )
-        val ret = ioUringRing.queueInit(ringSize, ring.ptr, flags)
-        check(ret == 0) { "io_uring_queue_init() failed: $ret (flags=0x${flags.toString(16)})" }
+        memScoped {
+            val features = alloc<UIntVar>()
+            val ret = ioUringRing.queueInit(ringSize, cqSize, ring.ptr, flags, features.ptr)
+            check(ret == 0) {
+                "io_uring_queue_init_params() failed: $ret (flags=0x${flags.toString(16)}, cqSize=$cqSize)"
+            }
+            // Assert the kernel backlogs (never drops) CQEs on CQ-ring overflow.
+            // keel relies on this to guarantee no completion is lost under a
+            // completion burst; without it an overflow would silently drop CQEs,
+            // stranding the corresponding I/O. NODROP is unconditional on Linux
+            // 5.5+ and keel requires 5.6+, so this only fires on a broken /
+            // patched kernel — fail fast rather than run with silent data loss.
+            if (features.value and keel_feat_nodrop() == 0u) {
+                // queueInit already created + mmap'd the ring above; tear it down
+                // before aborting so this fail-fast path doesn't leak the fd + mmap
+                // ([ringInitialized] is still false, so [close]'s teardown skips it).
+                ioUringRing.queueExit(ring.ptr)
+                error(
+                    "io_uring kernel lacks IORING_FEAT_NODROP (features=0x${features.value.toString(16)}); " +
+                        "keel requires it (Linux 5.5+) so CQ-ring overflow backlogs instead of dropping completions",
+                )
+            }
+        }
         ringInitialized = true
     }
 

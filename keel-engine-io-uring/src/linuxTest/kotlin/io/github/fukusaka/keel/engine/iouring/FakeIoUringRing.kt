@@ -6,7 +6,10 @@ import kotlinx.cinterop.Arena
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.UIntVar
+import kotlinx.cinterop.value
 
 /**
  * In-memory [IoUringRing] that lets tests script the ring setup outcome
@@ -69,6 +72,17 @@ internal class FakeIoUringRing : IoUringRing {
     /** Arguments of the most recent [setupFlags] call, or `null` if never called. */
     var lastSetupFlagsArgs: SetupFlagsArgs? = null
         private set
+
+    /** `cqEntries` argument of the most recent [queueInit] call, or `-1` if never called. */
+    var lastQueueInitCqEntries: Int = -1
+        private set
+
+    /**
+     * Feature bitset written to `outFeatures` on a successful [queueInit].
+     * Defaults to all bits set (so the engine's `IORING_FEAT_NODROP` assert
+     * passes); set to a value without the NODROP bit to exercise the fail-fast.
+     */
+    var scriptedFeatures: UInt = 0xFFFFFFFFu
 
     /** `entries` argument of the most recent [queueInit] call, or `-1` if never called. */
     var lastQueueInitEntries: Int = -1
@@ -221,11 +235,20 @@ internal class FakeIoUringRing : IoUringRing {
         return flags
     }
 
-    override fun queueInit(entries: Int, ring: CPointer<io_uring>, flags: UInt): Int {
+    override fun queueInit(
+        sqEntries: Int,
+        cqEntries: Int,
+        ring: CPointer<io_uring>,
+        flags: UInt,
+        outFeatures: CPointer<UIntVar>,
+    ): Int {
         queueInitCalls++
-        lastQueueInitEntries = entries
+        lastQueueInitEntries = sqEntries
+        lastQueueInitCqEntries = cqEntries
         lastQueueInitFlags = flags
-        return queueInitResults.removeFirstOrNull() ?: 0
+        val rc = queueInitResults.removeFirstOrNull() ?: 0
+        if (rc == 0) outFeatures.pointed.value = scriptedFeatures
+        return rc
     }
 
     override fun queueExit(ring: CPointer<io_uring>) {

@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `engine-io-uring`: `IoUringEngine(ringSize, cqSize)` configures the SQE and CQE ring sizes per EventLoop (Netty-parity); `cqSize` sets `IORING_SETUP_CQSIZE` so the CQ ring absorbs more completions before overflow on multishot-heavy / high-fan-out workloads, defaults unchanged (1024 SQ, kernel-default 2× CQ). Ring init now also asserts `IORING_FEAT_NODROP`, failing fast on a kernel that would silently drop completions on CQ-ring overflow (#938)
 - `engine-netty`: `NettyTransport.IoUring` — an opt-in transport using Netty 4.2's mainline `io.netty.channel.uring` (Linux 5.1+, no extra dependency beyond `netty-all`, which already declares it). Not selected by `NettyTransport.Auto` (which still prefers `Epoll` on Linux); construct `NettyEngine(nettyTransport = NettyTransport.IoUring)` explicitly to opt in (#931)
 - `server-http`: `HttpResponseBodySink.trailers: HttpHeaders` lets `respondStream` emit trailer header fields after the terminal chunk of a chunked-encoding response (RFC 7230 §4.1.2). Setting it on a `Content-Length` response is silently ignored (#924)
 - `codec-http`: `HttpHeaders.build(expectedEntries) { }` overload that pre-sizes header storage to a known field count. The unpooled response path (`HttpResponse.ok` / `of` / `notFound`) uses it so a typical two-header response sizes its slot array and string store to 2 entries instead of the 8-slot default, cutting ~168 bytes/response (#908)

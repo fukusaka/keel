@@ -369,10 +369,47 @@ static int keel_kernel_version_minor(void) {
 #ifndef IORING_SETUP_DEFER_TASKRUN
 #define IORING_SETUP_DEFER_TASKRUN (1U << 13)
 #endif
+#ifndef IORING_SETUP_CQSIZE
+#define IORING_SETUP_CQSIZE (1U << 3)
+#endif
+#ifndef IORING_FEAT_NODROP
+#define IORING_FEAT_NODROP (1U << 1)
+#endif
 
 static unsigned int keel_setup_coop_taskrun(void) { return IORING_SETUP_COOP_TASKRUN; }
 static unsigned int keel_setup_single_issuer(void) { return IORING_SETUP_SINGLE_ISSUER; }
 static unsigned int keel_setup_defer_taskrun(void) { return IORING_SETUP_DEFER_TASKRUN; }
+
+/* IORING_FEAT_NODROP: kernel backlogs (never drops) CQEs on CQ-ring overflow
+ * (Linux 5.5+). keel asserts this at startup — see keel_queue_init_params. */
+static unsigned int keel_feat_nodrop(void) { return IORING_FEAT_NODROP; }
+
+/* Ring init via io_uring_queue_init_params so the caller can (a) size the CQ
+ * ring independently of the SQ ring (IORING_SETUP_CQSIZE, cq_entries > 0) and
+ * (b) read back the negotiated feature flags for the NODROP assert. Builds the
+ * params struct on the stack so the Kotlin seam needs no struct-field cinterop.
+ *
+ *   sq_entries   — SQ ring entries (power of 2)
+ *   cq_entries   — CQ ring entries when > 0 (sets IORING_SETUP_CQSIZE);
+ *                  0 leaves the kernel default (2x sq_entries)
+ *   flags        — IORING_SETUP_* flags assembled by the caller
+ *   out_features — receives params.features on success (may be NULL)
+ * Returns 0 on success or a negative -errno. */
+static int keel_queue_init_params(struct io_uring *ring, unsigned int sq_entries,
+                                  unsigned int cq_entries, unsigned int flags,
+                                  unsigned int *out_features) {
+    struct io_uring_params p = {0};
+    p.flags = flags;
+    if (cq_entries > 0) {
+        p.flags |= IORING_SETUP_CQSIZE;
+        p.cq_entries = cq_entries;
+    }
+    int rc = io_uring_queue_init_params(sq_entries, ring, &p);
+    if (rc == 0 && out_features) {
+        *out_features = p.features;
+    }
+    return rc;
+}
 
 /* ====================================================================
  * MSG_RING opcode (Linux 5.18+)

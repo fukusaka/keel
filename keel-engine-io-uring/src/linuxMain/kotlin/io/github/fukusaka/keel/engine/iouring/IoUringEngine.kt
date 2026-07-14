@@ -134,6 +134,19 @@ class IoUringEngine(
     registeredBufferSlotCount: Int = IoUringEventLoopGroup.DEFAULT_REGISTERED_BUFFER_SLOT_COUNT,
     registeredBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     bufferRingSlotCount: Int = ProvidedBufferRing.DEFAULT_BUFFER_COUNT,
+    /**
+     * SQE (submission) ring size per EventLoop (power of 2). Defaults to
+     * [IoUringEventLoop.DEFAULT_RING_SIZE]. Raise it for very high fan-out
+     * workloads that prepare many SQEs per loop tick.
+     */
+    ringSize: Int = IoUringEventLoop.DEFAULT_RING_SIZE,
+    /**
+     * CQE (completion) ring size per EventLoop. `0` (default) leaves the kernel
+     * default of `2 * ringSize`; a positive power-of-2 `>= ringSize` sets
+     * `IORING_SETUP_CQSIZE` so the CQ ring absorbs more completions before
+     * overflow (useful for multishot-heavy or high-completion-rate workloads).
+     */
+    cqSize: Int = 0,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
@@ -176,7 +189,7 @@ class IoUringEngine(
             )
         }
 
-        bossLoop = IoUringEventLoop(config.loggerFactory.logger("IoUringEventLoop"), defaultCaps)
+        bossLoop = IoUringEventLoop(config.loggerFactory.logger("IoUringEventLoop"), defaultCaps, ringSize, cqSize)
 
         // Refine sendZc via opcode probe if auto-detecting.
         val refinedCaps = if (capabilities != null) {
@@ -209,6 +222,8 @@ class IoUringEngine(
             logger = config.loggerFactory.logger("IoUringEventLoop"),
             allocator = config.allocator,
             capabilities = resolvedCapabilities,
+            ringSize = ringSize,
+            cqSize = cqSize,
             readBufferSize = config.readBufferSize,
             idleTimeoutMillis = config.idleTimeoutMillis,
             registeredBufferStrategy = registeredBufferStrategy,

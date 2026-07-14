@@ -5,7 +5,7 @@ import io_uring.io_uring_cqe_get_data64
 import io_uring.io_uring_cqe_seen
 import io_uring.io_uring_get_sqe
 import io_uring.io_uring_queue_exit
-import io_uring.io_uring_queue_init
+import io_uring.keel_queue_init_params
 import io_uring.io_uring_sqe
 import io_uring.io_uring_submit
 import io_uring.io_uring_submit_and_wait
@@ -17,6 +17,7 @@ import io_uring.keel_setup_defer_taskrun
 import io_uring.keel_setup_single_issuer
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.pointed
 
 /**
@@ -35,8 +36,14 @@ internal object PosixIoUringRing : IoUringRing {
         return flags
     }
 
-    override fun queueInit(entries: Int, ring: CPointer<io_uring>, flags: UInt): Int =
-        io_uring_queue_init(entries.toUInt(), ring, flags)
+    override fun queueInit(
+        sqEntries: Int,
+        cqEntries: Int,
+        ring: CPointer<io_uring>,
+        flags: UInt,
+        outFeatures: CPointer<UIntVar>,
+    ): Int =
+        keel_queue_init_params(ring, sqEntries.toUInt(), cqEntries.toUInt(), flags, outFeatures)
 
     override fun queueExit(ring: CPointer<io_uring>) {
         io_uring_queue_exit(ring)
