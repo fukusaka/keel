@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.native.posix
 
+import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IpAddress
-import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.UnixSocketAddress
@@ -24,16 +24,18 @@ import kotlinx.cinterop.usePinned
 import platform.posix.AF_INET
 import platform.posix.AF_INET6
 import platform.posix.AF_UNIX
+import platform.posix.EINPROGRESS
+import platform.posix.EINTR
 import platform.posix.FD_CLOEXEC
 import platform.posix.F_GETFD
 import platform.posix.F_GETFL
 import platform.posix.F_SETFD
 import platform.posix.F_SETFL
 import platform.posix.INADDR_ANY
+import platform.posix.IPPROTO_TCP
 import platform.posix.O_NONBLOCK
 import platform.posix.SOCK_STREAM
 import platform.posix.SOL_SOCKET
-import platform.posix.IPPROTO_TCP
 import platform.posix.SO_ERROR
 import platform.posix.SO_KEEPALIVE
 import platform.posix.SO_RCVBUF
@@ -42,8 +44,6 @@ import platform.posix.SO_REUSEPORT
 import platform.posix.SO_SNDBUF
 import platform.posix.TCP_NODELAY
 import platform.posix.bind
-import platform.posix.EINPROGRESS
-import platform.posix.EINTR
 import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.getpeername
@@ -56,16 +56,16 @@ import platform.posix.sockaddr_in6
 import platform.posix.sockaddr_storage
 import platform.posix.socket
 import posix_socket.keel_bind_un
-import posix_socket.keel_set_nosigpipe
 import posix_socket.keel_connect_un
 import posix_socket.keel_extract_sockaddr_in6_addr
 import posix_socket.keel_fill_sockaddr_in6_addr
 import posix_socket.keel_fill_sockaddr_un
 import posix_socket.keel_htonl
+import posix_socket.keel_inet_ntop
 import posix_socket.keel_init_sockaddr_in
 import posix_socket.keel_init_sockaddr_in6
-import posix_socket.keel_inet_ntop
 import posix_socket.keel_ntohs
+import posix_socket.keel_set_nosigpipe
 import posix_socket.keel_sockaddr_family
 import posix_socket.keel_sockaddr_in6_port
 import posix_socket.keel_sockaddr_in6_scope
@@ -207,7 +207,9 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
         val rc = errBuf.usePinned { errPinned ->
             uintArrayOf(sizeOf<IntVar>().toUInt()).usePinned { lenPinned ->
                 getsockopt(
-                    fd, SOL_SOCKET, SO_ERROR,
+                    fd,
+                    SOL_SOCKET,
+                    SO_ERROR,
                     errPinned.addressOf(0),
                     lenPinned.addressOf(0).reinterpret(),
                 )
@@ -296,16 +298,28 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
     override fun setSocketOption(fd: Int, option: SocketOption) {
         when (option) {
             is SocketOption.TcpNoDelay -> setsockoptInt(
-                fd, IPPROTO_TCP, TCP_NODELAY, if (option.enabled) 1 else 0,
+                fd,
+                IPPROTO_TCP,
+                TCP_NODELAY,
+                if (option.enabled) 1 else 0,
             )
             is SocketOption.KeepAlive -> setsockoptInt(
-                fd, SOL_SOCKET, SO_KEEPALIVE, if (option.enabled) 1 else 0,
+                fd,
+                SOL_SOCKET,
+                SO_KEEPALIVE,
+                if (option.enabled) 1 else 0,
             )
             is SocketOption.ReceiveBufferSize -> setsockoptInt(
-                fd, SOL_SOCKET, SO_RCVBUF, option.bytes,
+                fd,
+                SOL_SOCKET,
+                SO_RCVBUF,
+                option.bytes,
             )
             is SocketOption.SendBufferSize -> setsockoptInt(
-                fd, SOL_SOCKET, SO_SNDBUF, option.bytes,
+                fd,
+                SOL_SOCKET,
+                SO_SNDBUF,
+                option.bytes,
             )
         }
     }
@@ -325,7 +339,11 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
             setsockopt(fd, level, optname, pinned.addressOf(0), sizeOf<IntVar>().convert())
         }
         if (rc != 0) {
-            logger.warn { "setsockopt(fd=$fd, level=$level, optname=$optname, value=$value) failed: ${errnoMessage(errno)}" }
+            logger.warn {
+                "setsockopt(fd=$fd, level=$level, optname=$optname, value=$value) failed: ${errnoMessage(
+                    errno,
+                )}"
+            }
         }
     }
 
@@ -362,8 +380,10 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
                 val outBuf = UByteArray(capacity)
                 val copied = outBuf.usePinned { pinned ->
                     keel_sockaddr_un_copy_path(
-                        storage.ptr, addrlen,
-                        pinned.addressOf(0), capacity,
+                        storage.ptr,
+                        addrlen,
+                        pinned.addressOf(0),
+                        capacity,
                     )
                 }
                 val path = when {
@@ -491,8 +511,11 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
             // EINTR handling matches PosixNativeSocket.connect — see the
             // POSIX rationale in NativeSocket.connect KDoc. keel_connect_un
             // does not retry internally (same reason).
-            if (err == EINPROGRESS || err == EINTR) ConnectResult.InProgress
-            else ConnectResult.Failed(err)
+            if (err == EINPROGRESS || err == EINTR) {
+                ConnectResult.InProgress
+            } else {
+                ConnectResult.Failed(err)
+            }
         }
     }
 

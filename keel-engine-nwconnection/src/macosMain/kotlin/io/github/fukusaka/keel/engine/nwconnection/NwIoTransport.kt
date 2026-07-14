@@ -14,11 +14,8 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.delay
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.COpaquePointer
-import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -31,6 +28,8 @@ import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.delay
 import nwconnection.keel_nw_dispatch_data_release
 import nwconnection.keel_nw_read_async
 import nwconnection.keel_nw_shutdown_output
@@ -705,6 +704,7 @@ internal class NwIoTransport(
 
     companion object {
         private const val AWAIT_CLOSED_POLL_MS = 10L
+
         /** Safety timeout for awaitClosed() to prevent infinite loop if dispatch callback never fires. */
         private const val AWAIT_CLOSED_TIMEOUT_MS = 5000L
 
@@ -714,7 +714,8 @@ internal class NwIoTransport(
                 len: UInt,
                 isComplete: Int,
                 error: Int,
-                ctx: COpaquePointer? ->
+                ctx: COpaquePointer?,
+            ->
             val ref = checkNotNull(ctx) { "read callback ctx is null" }.asStableRef<ReadContext>()
             val readCtx = ref.get()
             ref.dispose()

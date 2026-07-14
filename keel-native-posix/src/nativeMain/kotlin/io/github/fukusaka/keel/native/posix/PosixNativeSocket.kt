@@ -44,8 +44,11 @@ public object PosixNativeSocket : NativeSocket {
             n == 0L -> ReadResult.Eof
             else -> {
                 val err = errno
-                if (err == EAGAIN || err == EWOULDBLOCK) ReadResult.WouldBlock
-                else ReadResult.Failed(err)
+                if (err == EAGAIN || err == EWOULDBLOCK) {
+                    ReadResult.WouldBlock
+                } else {
+                    ReadResult.Failed(err)
+                }
             }
         }
     }
@@ -89,8 +92,11 @@ public object PosixNativeSocket : NativeSocket {
             }
             else -> {
                 val err = errno
-                if (err == EAGAIN || err == EWOULDBLOCK) AcceptResult.WouldBlock
-                else AcceptResult.Failed(err)
+                if (err == EAGAIN || err == EWOULDBLOCK) {
+                    AcceptResult.WouldBlock
+                } else {
+                    AcceptResult.Failed(err)
+                }
             }
         }
     }
@@ -106,8 +112,11 @@ public object PosixNativeSocket : NativeSocket {
                 // signal interrupts connect(2) (see `keel_connect` KDoc in the
                 // cinterop def). Callers then wait for write-readiness and call
                 // `getsockopt(SO_ERROR)` — identical to the non-blocking flow.
-                if (err == EINPROGRESS || err == EINTR) ConnectResult.InProgress
-                else ConnectResult.Failed(err)
+                if (err == EINPROGRESS || err == EINTR) {
+                    ConnectResult.InProgress
+                } else {
+                    ConnectResult.Failed(err)
+                }
             }
         }
     }
@@ -140,8 +149,11 @@ public object PosixNativeSocket : NativeSocket {
         n == 0L -> WriteResult.Failed(0)
         else -> {
             val err = errno
-            if (err == EAGAIN || err == EWOULDBLOCK) WriteResult.WouldBlock
-            else WriteResult.Failed(err)
+            if (err == EAGAIN || err == EWOULDBLOCK) {
+                WriteResult.WouldBlock
+            } else {
+                WriteResult.Failed(err)
+            }
         }
     }
 }
