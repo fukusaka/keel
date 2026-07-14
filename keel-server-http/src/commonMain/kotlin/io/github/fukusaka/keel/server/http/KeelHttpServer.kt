@@ -59,7 +59,7 @@ public class KeelHttpServer internal constructor(
     private val router: Router,
     private val middlewares: List<Middleware>,
     private val errorHandlers: ErrorHandlers,
-    private val compressionConfig: io.github.fukusaka.keel.server.http.dsl.CompressionPipelineConfig? = null,
+    private val pipelineInstallers: List<PipelineInstaller> = emptyList(),
 ) {
 
     /**
@@ -114,7 +114,7 @@ public class KeelHttpServer internal constructor(
                 minBodyRateBytesPerSec = minBodyRateBytesPerSec,
                 scope = scope,
                 connections = connections,
-                compression = compressionConfig,
+                pipelineInstallers = pipelineInstallers,
             )
         }
         run = ServerRun(server, scope, connections)
