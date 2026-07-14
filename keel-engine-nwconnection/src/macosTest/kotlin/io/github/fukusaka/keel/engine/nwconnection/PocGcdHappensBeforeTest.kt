@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.nwconnection
 
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -62,7 +63,23 @@ import platform.darwin.DISPATCH_TIME_FOREVER
  * exactly 0 across all iterations. Any non-zero result is direct evidence
  * that NWConnection-based engines need explicit `@Volatile` / `AtomicInt`
  * coverage on every cross-block-visible field.
+ *
+ * **Conclusion (verified).** K/N honours GCD happens-before on a serial queue:
+ * the serial-queue tests observe 0 mismatches and the concurrent positive
+ * control fires, confirming the SwiftNIO-style "queue identity + plain mutable
+ * state" model is safe from Kotlin/Native. The question this PoC answers is
+ * settled — hence the `@Ignore` below (kept for on-demand re-verification, not
+ * run per-CI).
  */
+// CI-demoted (2026-07-14): each test floods GCD with 100-200K dispatch_async block
+// pairs and then blocks on dispatch_group_wait(FOREVER). On a loaded shared macOS
+// CI runner the drain stalls until the ~25min job timeout — a raw native wait that
+// Kotlin's withTimeout cannot interrupt. Observed hanging ~22min on a CI macos-latest
+// runner during an unrelated PR, then passing on re-run; local runs drain in seconds.
+// This is one-time Kotlin/Native memory-model verification (conclusion above), not a
+// per-CI regression guard, so it is ignored out of the gate. Re-run locally on demand:
+//   ./gradlew :keel-engine-nwconnection:macosArm64Test --tests '*PocGcdHappensBeforeTest'
+@Ignore
 @OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)
 class PocGcdHappensBeforeTest {
 
