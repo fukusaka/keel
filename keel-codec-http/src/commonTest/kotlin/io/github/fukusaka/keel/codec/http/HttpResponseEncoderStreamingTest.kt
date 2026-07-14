@@ -2,9 +2,11 @@ package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.OutboundHandler
 import io.github.fukusaka.keel.pipeline.Pipeline
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
@@ -41,6 +43,13 @@ class HttpResponseEncoderStreamingTest {
     private fun IoBuf.readString(): String {
         val bytes = ByteArray(readableBytes)
         readByteArray(bytes, 0, bytes.size)
+        return bytes.decodeToString()
+    }
+
+    /** Reads the readable bytes without advancing [readerIndex] (safe for shared buffers). */
+    private fun IoBuf.peekString(): String {
+        val bytes = ByteArray(readableBytes)
+        for (i in bytes.indices) bytes[i] = getByte(readerIndex + i)
         return bytes.decodeToString()
     }
 
@@ -183,12 +192,125 @@ class HttpResponseEncoderStreamingTest {
 
         // No errors should reach the inbound pipeline.
         assertEquals(emptyList(), errorCollector.errors)
-        // Concatenate every transport write before reading (readString
-        // consumes the IoBuf), then assert the terminator is the very
-        // last byte sequence and that every chunk round-tripped.
-        val wire = transport.written.joinToString("") { it.readString() }
+        // Concatenate every transport write. Read non-destructively: the
+        // per-chunk "\r\n" suffix is served from a single shared constant
+        // buffer, so it appears as the same instance in multiple `written`
+        // entries — a consuming read would drain it on the first and see it
+        // empty thereafter. The real transport reads each write via an
+        // absolute (offset, length) snapshot without advancing the cursor,
+        // so this peek faithfully mirrors the wire.
+        val wire = transport.written.joinToString("") { it.peekString() }
         assertTrue(wire.endsWith("0\r\n\r\n"), "expected terminator at end of wire output")
         assertEquals(frameCount, "5\r\nhello\r\n".toRegex().findAll(wire).count())
+    }
+
+    @Test
+    fun `chunked framing survives a cursor-consuming downstream like TlsHandler`() {
+        // Regression for the shared per-chunk "\r\n" suffix constant: a
+        // downstream that reads via the buffer's cursor (readByteArray advances
+        // readerIndex) and then releases — exactly how TlsHandler consumes
+        // plaintext before encrypting — leaves the shared constant drained. If
+        // the encoder did not reset the constant's readerIndex per emit, the
+        // second chunk onward would present an empty suffix and the "\r\n"
+        // would vanish from the wire (broken chunk framing over HTTPS).
+        val captured = StringBuilder()
+        val consumer = object : OutboundHandler {
+            override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
+                if (msg !is IoBuf) {
+                    ctx.propagateWrite(msg)
+                    return
+                }
+                val bytes = ByteArray(msg.readableBytes)
+                msg.readByteArray(bytes, 0, bytes.size) // consume via cursor, like TLS
+                captured.append(bytes.decodeToString())
+                msg.release()
+            }
+        }
+        val pipeline = channel.pipeline
+        // Placed toward HEAD of the encoder so it receives the encoder's
+        // outbound framing writes before they would reach the transport.
+        pipeline.addLast("tls-like", consumer)
+        pipeline.addLast("encoder", HttpResponseEncoder())
+
+        val head = HttpResponseHead(
+            status = HttpStatus.OK,
+            headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+        )
+        pipeline.requestWrite(head)
+        val frameCount = 5
+        repeat(frameCount) { pipeline.requestWrite(HttpBody(bufOf("hello"))) }
+        pipeline.requestWrite(HttpBodyEnd.EMPTY)
+
+        val wire = captured.toString()
+        assertEquals(
+            frameCount,
+            "5\r\nhello\r\n".toRegex().findAll(wire).count(),
+            "every chunk must keep its trailing CRLF after a cursor-consuming downstream",
+        )
+        assertTrue(wire.endsWith("0\r\n\r\n"), "expected terminator at end of wire output")
+    }
+
+    @Test
+    fun `reusable chunk suffix constant is released on connection close`() {
+        // The encoder holds the shared "\r\n" suffix constant in a field for
+        // the connection's lifetime. onInactive must release that reference or
+        // every closed chunked connection leaks one pooled buffer.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val trackedTransport = TestIoTransport(allocator = tracker)
+        val trackedChannel = object : AbstractPipelinedChannel(trackedTransport, PrintLogger("leak")) {}
+        val pipeline = trackedChannel.pipeline
+        // Take ownership of every framing write and release it immediately,
+        // like a real transport — leaving only the encoder's own field
+        // reference to the suffix constant outstanding.
+        val releaser = object : OutboundHandler {
+            override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
+                if (msg is IoBuf) msg.release() else ctx.propagateWrite(msg)
+            }
+        }
+        pipeline.addLast("releaser", releaser)
+        pipeline.addLast("encoder", HttpResponseEncoder())
+
+        val head = HttpResponseHead(
+            status = HttpStatus.OK,
+            headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+        )
+        pipeline.requestWrite(head)
+        repeat(3) { pipeline.requestWrite(HttpBody(bufOf("hello"))) }
+        pipeline.requestWrite(HttpBodyEnd.EMPTY)
+
+        pipeline.notifyInactive()
+
+        tracker.assertNoLeaks("chunked suffix constant must be released on connection close")
+    }
+
+    @Test
+    fun `reusable chunk suffix constant is released when the encoder is removed`() {
+        // A WebSocket upgrade removes "encoder" from a still-open pipeline, so
+        // onInactive never reaches the detached encoder — handlerRemoved must
+        // release the suffix constant too, or the upgrade leaks a pooled buffer.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val trackedTransport = TestIoTransport(allocator = tracker)
+        val trackedChannel = object : AbstractPipelinedChannel(trackedTransport, PrintLogger("leak")) {}
+        val pipeline = trackedChannel.pipeline
+        val releaser = object : OutboundHandler {
+            override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
+                if (msg is IoBuf) msg.release() else ctx.propagateWrite(msg)
+            }
+        }
+        pipeline.addLast("releaser", releaser)
+        pipeline.addLast("encoder", HttpResponseEncoder())
+
+        val head = HttpResponseHead(
+            status = HttpStatus.OK,
+            headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+        )
+        pipeline.requestWrite(head)
+        repeat(3) { pipeline.requestWrite(HttpBody(bufOf("hello"))) }
+        pipeline.requestWrite(HttpBodyEnd.EMPTY)
+
+        pipeline.remove("encoder")
+
+        tracker.assertNoLeaks("chunked suffix constant must be released when the encoder is removed")
     }
 
     @Test
