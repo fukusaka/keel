@@ -1277,7 +1277,12 @@ internal class IoUringIoTransport(
                 }
                 val sent = res
                 val remaining = length - sent
-                if (remaining > 0) {
+                // Guard res > 0: res < 0 is handled above, so res here is 0 or positive.
+                // A res == 0 completion on a still-unsent buffer must NOT resubmit the same
+                // SQE — that spins the EventLoop forever (and stalls every connection on it).
+                // Mirror submitAsyncSendSequential's res > 0 guard: treat res == 0 as done
+                // (release + complete), same as a fully-sent buffer.
+                if (remaining > 0 && res > 0) {
                     submitAsyncSendZcSequential(buf, offset + sent, remaining, onComplete)
                 } else {
                     buf.release()
@@ -1301,7 +1306,12 @@ internal class IoUringIoTransport(
                 }
                 val sent = res
                 val remaining = length - sent
-                if (remaining > 0) {
+                // Guard res > 0: res < 0 is handled above, so res here is 0 or positive.
+                // A res == 0 completion on a still-unsent buffer must NOT resubmit the same
+                // SQE — that spins the EventLoop forever (and stalls every connection on it).
+                // Mirror submitAsyncSendSequential's res > 0 guard: treat res == 0 as done
+                // (release + complete), same as a fully-sent buffer.
+                if (remaining > 0 && res > 0) {
                     submitAsyncSendZcSequential(buf, offset + sent, remaining, onComplete)
                 } else {
                     buf.release()
