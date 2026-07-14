@@ -461,8 +461,11 @@ internal class KqueueIoTransport(
                     }
                 }
             }
-            if (eventLoop.inEventLoop()) register.run()
-            else eventLoop.dispatch(EmptyCoroutineContext, register)
+            if (eventLoop.inEventLoop()) {
+                register.run()
+            } else {
+                eventLoop.dispatch(EmptyCoroutineContext, register)
+            }
         }
     }
 

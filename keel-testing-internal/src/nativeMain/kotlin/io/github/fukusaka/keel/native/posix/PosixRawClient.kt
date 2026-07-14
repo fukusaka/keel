@@ -1,10 +1,7 @@
 package io.github.fukusaka.keel.native.posix
 
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.convert
 import kotlinx.cinterop.usePinned
 import platform.posix.AF_INET
 import platform.posix.EINTR

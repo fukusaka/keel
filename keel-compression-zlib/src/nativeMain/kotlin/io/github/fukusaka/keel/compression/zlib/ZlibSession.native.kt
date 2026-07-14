@@ -257,6 +257,10 @@ private class NativeZlibEncoderSession(
      * with no room left in its window); without that break the loop would
      * call `step` indefinitely.
      */
+    // The deflate loop is an inherently branchy state machine (per-status
+    // handling + the progress backstop); splitting it would scatter the
+    // termination contract and hurt readability rather than help.
+    @Suppress("CyclomaticComplexMethod")
     private fun drive(input: IoBuf?, output: IoBuf, flag: Int, isFinish: Boolean): CodecStatus {
         while (output.writableBytes > 0) {
             val inAvail = input?.readableBytes ?: 0
@@ -450,9 +454,8 @@ private class NativeZlibDecoderSession(
         // stream stuck in Z_NEED_DICT — drive() retries set-dictionary every
         // loop, hanging forever. Surface it as a clean DecompressionException.
         if (rc != keel_zlib_status_ok()) {
-            throw DecompressionException(
-                "inflateSetDictionary failed (rc=$rc — wrong dictionary?): ${zlibMessage(keel_zlib_msg(z)?.toKString())}",
-            )
+            val zMsg = zlibMessage(keel_zlib_msg(z)?.toKString())
+            throw DecompressionException("inflateSetDictionary failed (rc=$rc — wrong dictionary?): $zMsg")
         }
     }
 
@@ -463,6 +466,10 @@ private class NativeZlibDecoderSession(
      * backstop in the `OK` branch — a `produced == 0 && consumed == 0` step
      * that would otherwise spin indefinitely.
      */
+    // The inflate loop is an inherently branchy state machine (per-status
+    // handling + set-dictionary retry + the progress backstop); splitting it
+    // would scatter the termination contract and hurt readability.
+    @Suppress("CyclomaticComplexMethod")
     private fun drive(input: IoBuf?, output: IoBuf): CodecStatus {
         while (output.writableBytes > 0) {
             val inAvail = input?.readableBytes ?: 0
@@ -481,8 +488,10 @@ private class NativeZlibDecoderSession(
             }
             when (rc) {
                 keel_zlib_status_stream_end() -> return CodecStatus.NEED_INPUT
-                keel_zlib_status_data_error() ->
-                    throw DecompressionException("inflate data error (rc=$rc): ${zlibMessage(keel_zlib_msg(z)?.toKString())}")
+                keel_zlib_status_data_error() -> {
+                    val zMsg = zlibMessage(keel_zlib_msg(z)?.toKString())
+                    throw DecompressionException("inflate data error (rc=$rc): $zMsg")
+                }
                 keel_zlib_status_need_dict() -> {
                     // A zlib stream that used a preset dictionary signals
                     // Z_NEED_DICT once the header's Adler-32 is read; apply the

@@ -2,8 +2,6 @@ package io.github.fukusaka.keel.server.ktor.compression
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.compression.CodecStatus
-import io.github.fukusaka.keel.compression.Decoder as KeelDecoder
-import io.github.fukusaka.keel.compression.Encoder as KeelEncoder
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import io.github.fukusaka.keel.compression.zlib.GzipCodec
 import io.ktor.util.ContentEncoder
@@ -17,6 +15,8 @@ import io.ktor.utils.io.writer
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
 import kotlin.coroutines.CoroutineContext
+import io.github.fukusaka.keel.compression.Decoder as KeelDecoder
+import io.github.fukusaka.keel.compression.Encoder as KeelEncoder
 
 /**
  * Native-only [ContentEncoder] implementations backed by `keel-compression-zlib`.

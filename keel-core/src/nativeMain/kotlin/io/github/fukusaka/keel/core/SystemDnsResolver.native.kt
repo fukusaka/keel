@@ -72,7 +72,10 @@ actual object SystemDnsResolver : DnsResolver {
     // getaddrinfo(3) call must run off the caller's dispatcher, but there is no injection
     // seam. Tests and custom resolvers substitute at the DnsResolver interface level
     // (via IoEngineConfig.resolver) rather than swapping the dispatcher here.
-    @Suppress("InjectDispatcher")
+    // TooGenericExceptionThrown: a getaddrinfo() failure has no dedicated keel
+    // exception; RuntimeException surfaces the gai_strerror message and matches
+    // the DnsResolver contract (callers treat resolution failure generically).
+    @Suppress("InjectDispatcher", "TooGenericExceptionThrown")
     private suspend fun doLookup(hostname: String, hints: ResolveHints): ResolverResult =
         withContext(Dispatchers.Default) {
             memScoped {

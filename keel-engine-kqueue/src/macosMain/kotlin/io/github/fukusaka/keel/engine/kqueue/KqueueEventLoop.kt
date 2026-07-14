@@ -161,6 +161,7 @@ internal class KqueueEventLoop(
         check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
     }
     private val registrations = LongObjectMap<Registration>()
+
     // Callback registrations for pipeline (non-suspend) I/O.
     // Separated from coroutine registrations to avoid sealed-class overhead.
     // Listener interface (instead of `() -> Unit`) lets each `IoTransport`
@@ -218,12 +219,14 @@ internal class KqueueEventLoop(
     }
 
     private val wakeupFds = IntArray(2) // [readFd, writeFd]
+
     // Cached byte arrays to avoid per-wakeup allocation.
     // wakeup() is called once per dispatch/register, so reuse matters.
     private val wakeupWriteBuf = byteArrayOf(1)
     private val wakeupReadBuf = ByteArray(WAKEUP_DRAIN_SIZE)
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
     private val threadPtr = arena.alloc<pthread_tVar>()
+
     @kotlin.concurrent.Volatile
     private var eventLoopThread: pthread_t? = null
 
@@ -381,7 +384,8 @@ internal class KqueueEventLoop(
     fun start() {
         val ref = StableRef.create(this)
         val rc = pthread_create(
-            threadPtr.ptr, null,
+            threadPtr.ptr,
+            null,
             staticCFunction { arg ->
                 val el = arg!!.asStableRef<KqueueEventLoop>().get()
                 el.loop()

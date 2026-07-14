@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.native.posix
 
+import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IpAddress
-import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.UnixSocketAddress
