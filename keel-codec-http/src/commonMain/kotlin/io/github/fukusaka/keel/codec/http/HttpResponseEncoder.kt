@@ -80,12 +80,20 @@ class HttpResponseEncoder : DuplexHandler {
     // non-HEAD.
     private val pendingMethods = ArrayDeque<HttpMethod>()
 
-    // Per-encoder scratch buffer for chunk framing. Hex header (max 10B)
-    // and CRLF suffix (2B) are written at successive offsets so that
-    // deferred-flush pending IoBuf views don't alias each other.
-    // Reset to offset 0 when the chunked response ends.
+    // Per-encoder scratch buffer for chunk framing. The variable "{hex}\r\n"
+    // header is written at successive offsets so that deferred-flush pending
+    // IoBuf views don't alias each other. Reset to offset 0 when the chunked
+    // response ends.
     private val chunkFramingScratch = ByteArray(CHUNK_FRAMING_SCRATCH_SIZE)
     private var chunkFramingOffset = 0
+
+    // Reusable "\r\n" chunk-data suffix. The suffix is the same two bytes on
+    // every chunk, so a single per-encoder constant is retained per emit and
+    // released by the downstream consumer after taking each write, instead of
+    // allocating a fresh framing view per chunk. Lazily created on the first
+    // chunked emit and released on teardown ([onInactive] and [handlerRemoved]).
+    // See [chunkCrlfSuffix] for why the reader cursor is reset per emit.
+    private var chunkCrlfConstant: IoBuf? = null
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (msg is HttpRequestHead) pendingMethods.addLast(msg.method)
@@ -100,6 +108,28 @@ class HttpResponseEncoder : DuplexHandler {
             is HttpBody -> encodeContentMsg(ctx, msg, last = false)
             else -> ctx.propagateWrite(msg)
         }
+    }
+
+    override fun onInactive(ctx: PipelineHandlerContext) {
+        // Peer-FIN / EOF / idle-timeout teardown.
+        releaseChunkCrlfConstant()
+        ctx.propagateInactive()
+    }
+
+    override fun handlerRemoved(ctx: PipelineHandlerContext) {
+        // Detach teardown: the HTTP codec is removed from a still-open pipeline
+        // (e.g. a WebSocket upgrade removes "encoder"), so onInactive never
+        // reaches this handler. Release here too, mirroring CompressionHandler.
+        releaseChunkCrlfConstant()
+    }
+
+    // Release the encoder's own reference to the reusable chunk-suffix constant.
+    // In-flight writes retain their own references, so the backing memory
+    // outlives this call until those flushes complete. Idempotent: cleared to
+    // null so onInactive + handlerRemoved (either order) do not double-release.
+    private fun releaseChunkCrlfConstant() {
+        chunkCrlfConstant?.release()
+        chunkCrlfConstant = null
     }
 
     private fun encodeAndPropagate(ctx: PipelineHandlerContext, response: HttpResponse) {
@@ -267,13 +297,13 @@ class HttpResponseEncoder : DuplexHandler {
         val payloadSize = content.content.readableBytes
         if (payloadSize > 0) {
             // Emit: "{hex-size}\r\n" + payload + "\r\n"
-            // Chunk header and CRLF suffix are written into the per-encoder
-            // scratch buffer at successive offsets, then wrapped as IoBuf
-            // views via wrapBytes. This avoids per-chunk allocator.allocate()
-            // overhead (DirectByteBuffer + Cleaner on JVM, nativeHeap on Native).
+            // The variable "{hex-size}\r\n" header is written into the
+            // per-encoder scratch buffer and wrapped as an IoBuf view (avoiding
+            // per-chunk allocator.allocate() overhead); the constant "\r\n"
+            // suffix is served from a single reusable per-encoder buffer.
             ctx.propagateWrite(emitChunkFraming(ctx, payloadSize))
             ctx.propagateWrite(content.content)
-            ctx.propagateWrite(emitCrlfFromScratch(ctx))
+            ctx.propagateWrite(chunkCrlfSuffix(ctx))
         } else {
             content.content.release()
         }
@@ -320,23 +350,35 @@ class HttpResponseEncoder : DuplexHandler {
     }
 
     /**
-     * Writes "\r\n" (chunk data suffix) into the scratch buffer.
+     * Returns the reusable "\r\n" chunk-data suffix, retained for one write.
      *
-     * Falls back to a freshly allocated [IoBuf] when scratch is exhausted;
-     * see [emitChunkFraming] for the rationale on not resetting [chunkFramingOffset].
+     * The suffix is a compile-time constant, so a single per-encoder
+     * [chunkCrlfConstant] backs every chunk instead of a fresh framing view.
+     * It is lazily allocated on the first chunked emit and [retained][IoBuf.retain]
+     * here to balance the release the downstream consumer performs after taking
+     * the write ([onInactive] releases the encoder's own reference).
+     *
+     * The [readerIndex][IoBuf.readerIndex] is reset before each emit because
+     * some consumers read via the buffer's cursor rather than an absolute
+     * snapshot: the plain transport snapshots `(readerIndex, readableBytes)` at
+     * enqueue and never advances the cursor, but [io.github.fukusaka.keel.tls]'s
+     * `TlsHandler` advances `readerIndex` as it encrypts and then releases the
+     * buffer. Resetting keeps the shared instance fully readable for the next
+     * chunk; it is safe because every emit is synchronously snapshotted or
+     * consumed within its `propagateWrite` before the next emit runs, so no two
+     * emits observe the constant's cursor at once.
      */
-    private fun emitCrlfFromScratch(ctx: PipelineHandlerContext): IoBuf {
-        if (chunkFramingOffset + CRLF_SIZE > chunkFramingScratch.size) {
-            val buf = ctx.allocator.allocate(CRLF_SIZE)
-            buf.writeByte(CR)
-            buf.writeByte(LF)
-            return buf
+    private fun chunkCrlfSuffix(ctx: PipelineHandlerContext): IoBuf {
+        val existing = chunkCrlfConstant
+        if (existing != null) {
+            existing.readerIndex = 0
+            return existing.retain()
         }
-        val start = chunkFramingOffset
-        chunkFramingScratch[start] = CR
-        chunkFramingScratch[start + 1] = LF
-        chunkFramingOffset = start + CRLF_SIZE
-        return wrapScratch(ctx, start, CRLF_SIZE)
+        val created = ctx.allocator.allocate(CRLF_SIZE)
+        created.writeByte(CR)
+        created.writeByte(LF)
+        chunkCrlfConstant = created
+        return created.retain()
     }
 
     /**
@@ -496,9 +538,10 @@ class HttpResponseEncoder : DuplexHandler {
         private const val DIRECT_BODY_THRESHOLD = 8192
 
         /**
-         * Per-encoder scratch buffer for chunk framing bytes. Each chunk
-         * consumes up to 12 bytes (8 hex digits + "\r\n" + "\r\n" suffix).
-         * 256 bytes covers ~21 chunks before overflow fallback.
+         * Per-encoder scratch buffer for chunk framing headers. Each chunk
+         * consumes up to 10 bytes (8 hex digits + "\r\n"); the "\r\n" suffix
+         * is served from a separate reusable constant, not this scratch.
+         * 256 bytes covers ~25 chunks before overflow fallback.
          */
         private const val CHUNK_FRAMING_SCRATCH_SIZE = 256
 
