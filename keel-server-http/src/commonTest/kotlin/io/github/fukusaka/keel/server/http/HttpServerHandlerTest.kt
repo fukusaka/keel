@@ -20,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -901,6 +902,46 @@ class HttpServerHandlerTest {
             transport.resumeReadsCount,
             "discardUnconsumedBody must reset state silently, never resumeReads on close",
         )
+    }
+
+    @Test
+    fun `a suspended born-parented handler is cancelled when the connection goes inactive`() {
+        // The dispatch runs via startCoroutineUninterceptedOrReturn with a
+        // completion carrying connectionScope's context, so the handler coroutine
+        // is NOT registered as a Job child of connectionScope. This pins that
+        // onInactive's connectionScope.cancel() still tears a *suspended* handler
+        // down — through the suspension point's own cancellation registration on
+        // the context's Job — which is the property the whole technique hinges on.
+        val proceed = CompletableDeferred<Unit>()
+        var cancelled = false
+        var completedNormally = false
+        install(
+            Router().apply {
+                register(HttpMethod.GET, "/hang") { _ ->
+                    try {
+                        proceed.await() // suspends here, parked on connectionScope's Job
+                        completedNormally = true
+                    } catch (e: CancellationException) {
+                        cancelled = true
+                        throw e
+                    }
+                }
+            },
+        )
+
+        feedGet("/hang")
+        assertFalse(completedNormally, "the handler must still be suspended, not done")
+        assertFalse(cancelled, "not yet cancelled while the connection is live")
+
+        // Peer disconnects mid-request: transport.onReadClosed → pipeline.notifyInactive().
+        channel.pipeline.notifyInactive()
+
+        assertTrue(
+            cancelled,
+            "connectionScope.cancel() from onInactive must cancel the suspended born-parented handler",
+        )
+        assertFalse(completedNormally, "a cancelled handler must not complete normally")
+        assertFalse(proceed.isCompleted, "the deferred was never completed — the handler was cancelled, not resumed")
     }
 
     @Test
