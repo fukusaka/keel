@@ -225,6 +225,46 @@ internal class HttpServerHandler(
      */
     private var draining: Boolean = false
 
+    /**
+     * The request handler body, run per request via
+     * `startCoroutineUninterceptedOrReturn(dispatchCompletion)` in [onRequestHead].
+     * Allocated **once per connection** and reused: it reads the current call from
+     * [inFlight] (HTTP/1.1 keep-alive is serial, so exactly one request is in
+     * flight when it runs) rather than capturing per-request state in a fresh
+     * closure. That keeps the SuspendLambda off the per-request allocation path —
+     * only the coroutine's own state-machine copy, which any `suspend` invocation
+     * needs, remains per request. The `try/finally` lives here so the exactly-once
+     * pooled `head.headers.release()` runs once whether the handler completes
+     * synchronously, throws, or suspends-then-resumes.
+     */
+    private val dispatchBody: suspend () -> Unit = {
+        val call = checkNotNull(inFlight) { "dispatchBody run with no in-flight call" }
+        try {
+            dispatch(call, call.resolution)
+            // The 500 guard does not apply to an upgrade: a successful upgrade
+            // takes over the connection (sends `101`, swaps the pipeline codec)
+            // without going through `call.respond`, so `responded` stays false.
+            if (!call.isUpgrade && !call.responded) {
+                call.ctx.propagateWriteAndFlush(INTERNAL_ERROR_RESPONSE)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            handleException(call.ctx, call, e, call.isUpgrade)
+        } finally {
+            // The handler is done — stop feeding it body chunks and drain
+            // anything that arrived but was never consumed.
+            if (inFlight === call) inFlight = null
+            call.discardUnconsumedBody()
+            // Return the pooled request headers; the response has been written so
+            // no further reads of the head are valid. Runs exactly once per request.
+            call.head.headers.release()
+            // Draining: the request has been answered, so close the keep-alive
+            // connection now (the response already carried `Connection: close`).
+            if (draining) channel.close()
+        }
+    }
+
     /** This connection's registry shard, joined on [onActive]. */
     private var shard: Shard? = null
 
@@ -333,72 +373,44 @@ internal class HttpServerHandler(
             ctx,
             queryParameters,
             match?.pathParameters ?: emptyMap(),
+            resolution = resolution,
+            isUpgrade = isUpgrade,
             varyOnAccept = match?.varyOnAccept == true,
         )
         if (draining) call.markConnectionClose()
         inFlight = call
-        // Born-parented inline dispatch: run the handler on the EventLoop thread
-        // this call already runs on, rather than through `connectionScope.launch`.
-        // A handler that completes synchronously (no suspension — the /hello
-        // shape) returns without allocating any `StandaloneCoroutine` /
-        // `DispatchedContinuation` / `ChildHandleNode` / EL dispatch task
-        // (measured -111 B/req on the NIO EventLoop dispatcher). One that
-        // suspends is carried by [dispatchCompletion]'s context (connectionScope's
-        // Job + EL dispatcher): the suspension point intercepts through that
-        // dispatcher (so it resumes on the EventLoop thread) and registers its
-        // cancellation on that Job (so [onInactive]'s `connectionScope.cancel()`
-        // still tears it down). The `try/finally` stays inside the handler body,
-        // so its cleanup — the exactly-once pooled `head.headers.release()` in
-        // particular — runs exactly once whether the handler completes
+        // Born-parented inline dispatch: run the reusable per-connection
+        // [dispatchBody] on the EventLoop thread this call already runs on, rather
+        // than through `connectionScope.launch`. A body that completes
+        // synchronously (no suspension — the /hello shape) returns without
+        // allocating any `StandaloneCoroutine` / `DispatchedContinuation` /
+        // `ChildHandleNode` / EL dispatch task (measured -111 B/req on the NIO
+        // EventLoop dispatcher); reusing [dispatchBody] keeps its SuspendLambda off
+        // the per-request path as well (only the state-machine copy any `suspend`
+        // invocation needs remains). One that suspends is carried by
+        // [dispatchCompletion]'s context (connectionScope's Job + EL dispatcher):
+        // the suspension point intercepts through that dispatcher (so it resumes on
+        // the EventLoop thread) and registers its cancellation on that Job (so
+        // [onInactive]'s `connectionScope.cancel()` still tears it down). The
+        // `try/finally` lives in [dispatchBody], so the exactly-once pooled
+        // `head.headers.release()` runs once whether the body completes
         // synchronously, throws, or suspends-then-resumes.
-        val handler: suspend () -> Unit = {
-            try {
-                dispatch(call, resolution)
-                // The 500 guard does not apply to an upgrade: a successful
-                // upgrade takes over the connection (sends `101`, swaps the
-                // pipeline codec) without going through `call.respond`, so
-                // `responded` stays false by design.
-                if (!isUpgrade && !call.responded) {
-                    ctx.propagateWriteAndFlush(INTERNAL_ERROR_RESPONSE)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                handleException(ctx, call, e, isUpgrade)
-            } finally {
-                // The handler is done — stop feeding it body chunks and
-                // drain anything that arrived but was never consumed.
-                if (inFlight === call) inFlight = null
-                call.discardUnconsumedBody()
-                // Return the pooled request headers; the response has
-                // been written so no further reads of `head.headers`
-                // are valid. The `finally` runs exactly once per
-                // request, so the pool only sees one matching `release`
-                // per `borrow` on the decoder side.
-                head.headers.release()
-                // Draining: the request has been answered, so close the
-                // keep-alive connection now (the response already carried
-                // `Connection: close`). Runs even on cancellation.
-                if (draining) channel.close()
-            }
-        }
         // The intrinsic returns `Unit` on synchronous completion or
-        // COROUTINE_SUSPENDED when the handler suspended (the suspended handler
-        // then completes on its own via [dispatchCompletion]) — neither return
-        // needs action. A synchronously *thrown* outcome, however, unwinds to
-        // here rather than through [dispatchCompletion] (which only runs after a
-        // suspension), so mirror what `connectionScope.launch` did at its
-        // coroutine boundary and keep the two completion routes symmetric with
-        // [dispatchCompletion]: absorb a cancellation (the handler re-throws it
-        // after its `finally` has already run — it must not reach the pipeline
-        // tail), and cancel the connection on any other residual throwable (the
-        // handler body's own `catch` handles ordinary handler errors, so this is
-        // only reached if that `catch` / `finally` itself threw).
+        // COROUTINE_SUSPENDED when the body suspended (which then completes on its
+        // own via [dispatchCompletion]) — neither return needs action. A
+        // synchronously *thrown* outcome unwinds to here rather than through
+        // [dispatchCompletion] (which only runs after a suspension), so mirror what
+        // `connectionScope.launch` did at its boundary and keep the two completion
+        // routes symmetric: absorb a cancellation (the body re-throws it after its
+        // `finally` has already run — it must not reach the pipeline tail), and
+        // cancel the connection on any other residual throwable (the body's own
+        // `catch` handles ordinary handler errors, so this is only reached if that
+        // `catch` / `finally` itself threw).
         try {
-            handler.startCoroutineUninterceptedOrReturn(dispatchCompletion)
+            dispatchBody.startCoroutineUninterceptedOrReturn(dispatchCompletion)
         } catch (ignore: CancellationException) {
             // Absorbed as coroutine cancellation, exactly as connectionScope.launch
-            // did at its boundary: the handler's finally has already run, and the
+            // did at its boundary: the body's finally has already run, and the
             // cancellation must not surface to the pipeline tail.
         } catch (e: Throwable) {
             connectionScope.cancel(CancellationException("request handler completion failed", e))
@@ -580,10 +592,18 @@ internal class HttpServerHandler(
  * both run on the EventLoop thread, so the conduit needs no locking.
  */
 internal class Http1Call(
-    private val head: HttpRequestHead,
-    private val ctx: PipelineHandlerContext,
+    // `internal` (not `private`) so [HttpServerHandler]'s per-connection reusable
+    // dispatch body can read this call's request head / pipeline context / route
+    // resolution / upgrade flag off the in-flight call instead of capturing them
+    // in a fresh per-request closure (the L4-big SuspendLambda de-alloc).
+    internal val head: HttpRequestHead,
+    internal val ctx: PipelineHandlerContext,
     override val queryParameters: QueryParameters,
     override val pathParameters: Map<String, String>,
+    /** The route resolution that produced this call, consumed by the dispatch body. */
+    internal val resolution: RouteResolution,
+    /** True when this request is a protocol upgrade (see [HttpServerHandler.onRequestHead]). */
+    internal val isUpgrade: Boolean,
     /**
      * When true, the matched route negotiates on `Accept` (router R-5), so
      * this call's response is tagged `Vary: Accept` (RFC 9110 §12.5.5) for
