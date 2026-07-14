@@ -27,6 +27,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.intrinsics.startCoroutineUninterceptedOrReturn
 import kotlin.coroutines.resume
 import kotlin.reflect.KClass
 
@@ -176,6 +179,37 @@ internal class HttpServerHandler(
     private val connectionScope: CoroutineScope =
         scope + Job(scope.coroutineContext[Job]) + channel.ioDispatcher
 
+    /**
+     * Completion for the born-parented inline request dispatch in
+     * [onRequestHead]. Its [context] is [connectionScope]'s — the per-connection
+     * [Job] plus the EventLoop dispatcher — so a handler started with
+     * `startCoroutineUninterceptedOrReturn(this)` is born correctly parented and
+     * EL-dispatched: a synchronously-completing handler runs inline on the
+     * EventLoop thread with no `StandaloneCoroutine` / `DispatchedContinuation` /
+     * `ChildHandleNode` / EL dispatch task allocated, while one that suspends is
+     * still resumed on the EventLoop thread (the suspension point intercepts via
+     * this context's dispatcher) and torn down by [onInactive]'s
+     * `connectionScope.cancel()` (the suspension point registers its cancellation
+     * handler on this context's [Job]).
+     *
+     * [resumeWith] runs only when a handler completed by *suspending* and later
+     * finished — the synchronous path never invokes it. The handler body owns its
+     * own `try/catch(Throwable)`, so ordinary handler errors are handled there and
+     * never reach here; [resumeWith] mirrors `launch`'s uncaught-exception path
+     * for the residual case where the body's `catch`/`finally` itself throws:
+     * a [CancellationException] (the expected shape on disconnect) is swallowed,
+     * anything else cancels the connection so the failure is not silently dropped.
+     */
+    private val dispatchCompletion: Continuation<Unit> = object : Continuation<Unit> {
+        override val context: CoroutineContext = connectionScope.coroutineContext
+
+        override fun resumeWith(result: Result<Unit>) {
+            val cause = result.exceptionOrNull() ?: return
+            if (cause is CancellationException) return
+            connectionScope.cancel(CancellationException("request handler completion failed", cause))
+        }
+    }
+
     /** The call currently consuming body chunks, or null between requests. */
     private var inFlight: Http1Call? = null
 
@@ -301,7 +335,21 @@ internal class HttpServerHandler(
         )
         if (draining) call.markConnectionClose()
         inFlight = call
-        connectionScope.launch {
+        // Born-parented inline dispatch: run the handler on the EventLoop thread
+        // this call already runs on, rather than through `connectionScope.launch`.
+        // A handler that completes synchronously (no suspension — the /hello
+        // shape) returns without allocating any `StandaloneCoroutine` /
+        // `DispatchedContinuation` / `ChildHandleNode` / EL dispatch task
+        // (measured -111 B/req on the NIO EventLoop dispatcher). One that
+        // suspends is carried by [dispatchCompletion]'s context (connectionScope's
+        // Job + EL dispatcher): the suspension point intercepts through that
+        // dispatcher (so it resumes on the EventLoop thread) and registers its
+        // cancellation on that Job (so [onInactive]'s `connectionScope.cancel()`
+        // still tears it down). The `try/finally` stays inside the handler body,
+        // so its cleanup — the exactly-once pooled `head.headers.release()` in
+        // particular — runs exactly once whether the handler completes
+        // synchronously, throws, or suspends-then-resumes.
+        val handler: suspend () -> Unit = {
             try {
                 dispatch(call, resolution)
                 // The 500 guard does not apply to an upgrade: a successful
@@ -323,9 +371,8 @@ internal class HttpServerHandler(
                 // Return the pooled request headers; the response has
                 // been written so no further reads of `head.headers`
                 // are valid. The `finally` runs exactly once per
-                // request (one per `launch`), so the pool only sees
-                // one matching `release` per `borrow` on the decoder
-                // side.
+                // request, so the pool only sees one matching `release`
+                // per `borrow` on the decoder side.
                 head.headers.release()
                 // Draining: the request has been answered, so close the
                 // keep-alive connection now (the response already carried
@@ -333,6 +380,10 @@ internal class HttpServerHandler(
                 if (draining) channel.close()
             }
         }
+        // Return value is Unit on synchronous completion or COROUTINE_SUSPENDED
+        // when the handler suspended; both need no further action here (a
+        // suspended handler completes on its own via [dispatchCompletion]).
+        handler.startCoroutineUninterceptedOrReturn(dispatchCompletion)
     }
 
     /**
