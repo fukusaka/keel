@@ -284,6 +284,36 @@ class HttpResponseEncoderStreamingTest {
     }
 
     @Test
+    fun `reusable chunk suffix constant is released when the encoder is removed`() {
+        // A WebSocket upgrade removes "encoder" from a still-open pipeline, so
+        // onInactive never reaches the detached encoder — handlerRemoved must
+        // release the suffix constant too, or the upgrade leaks a pooled buffer.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val trackedTransport = TestIoTransport(allocator = tracker)
+        val trackedChannel = object : AbstractPipelinedChannel(trackedTransport, PrintLogger("leak")) {}
+        val pipeline = trackedChannel.pipeline
+        val releaser = object : OutboundHandler {
+            override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
+                if (msg is IoBuf) msg.release() else ctx.propagateWrite(msg)
+            }
+        }
+        pipeline.addLast("releaser", releaser)
+        pipeline.addLast("encoder", HttpResponseEncoder())
+
+        val head = HttpResponseHead(
+            status = HttpStatus.OK,
+            headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+        )
+        pipeline.requestWrite(head)
+        repeat(3) { pipeline.requestWrite(HttpBody(bufOf("hello"))) }
+        pipeline.requestWrite(HttpBodyEnd.EMPTY)
+
+        pipeline.remove("encoder")
+
+        tracker.assertNoLeaks("chunked suffix constant must be released when the encoder is removed")
+    }
+
+    @Test
     fun `chunked with trailers writes final 0 CRLF trailers CRLF`() {
         val pipeline = createEncoderPipeline()
         val head = HttpResponseHead(
