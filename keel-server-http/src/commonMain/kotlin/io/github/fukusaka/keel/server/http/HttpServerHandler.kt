@@ -193,12 +193,14 @@ internal class HttpServerHandler(
      * handler on this context's [Job]).
      *
      * [resumeWith] runs only when a handler completed by *suspending* and later
-     * finished — the synchronous path never invokes it. The handler body owns its
-     * own `try/catch(Throwable)`, so ordinary handler errors are handled there and
-     * never reach here; [resumeWith] mirrors `launch`'s uncaught-exception path
-     * for the residual case where the body's `catch`/`finally` itself throws:
-     * a [CancellationException] (the expected shape on disconnect) is swallowed,
-     * anything else cancels the connection so the failure is not silently dropped.
+     * finished — the synchronous path never invokes it (a synchronously-thrown
+     * outcome unwinds to the [onRequestHead] call site, which handles it
+     * symmetrically). The handler body owns its own `try/catch(Throwable)`, so
+     * ordinary handler errors are handled there and never reach here; [resumeWith]
+     * mirrors `launch`'s coroutine boundary for the residual case where the body's
+     * `catch`/`finally` itself throws: a [CancellationException] (the expected
+     * shape on disconnect) is swallowed, and anything else cancels the connection —
+     * a visible effect — rather than the failure being lost.
      */
     private val dispatchCompletion: Continuation<Unit> = object : Continuation<Unit> {
         override val context: CoroutineContext = connectionScope.coroutineContext
@@ -380,10 +382,27 @@ internal class HttpServerHandler(
                 if (draining) channel.close()
             }
         }
-        // Return value is Unit on synchronous completion or COROUTINE_SUSPENDED
-        // when the handler suspended; both need no further action here (a
-        // suspended handler completes on its own via [dispatchCompletion]).
-        handler.startCoroutineUninterceptedOrReturn(dispatchCompletion)
+        // The intrinsic returns `Unit` on synchronous completion or
+        // COROUTINE_SUSPENDED when the handler suspended (the suspended handler
+        // then completes on its own via [dispatchCompletion]) — neither return
+        // needs action. A synchronously *thrown* outcome, however, unwinds to
+        // here rather than through [dispatchCompletion] (which only runs after a
+        // suspension), so mirror what `connectionScope.launch` did at its
+        // coroutine boundary and keep the two completion routes symmetric with
+        // [dispatchCompletion]: absorb a cancellation (the handler re-throws it
+        // after its `finally` has already run — it must not reach the pipeline
+        // tail), and cancel the connection on any other residual throwable (the
+        // handler body's own `catch` handles ordinary handler errors, so this is
+        // only reached if that `catch` / `finally` itself threw).
+        try {
+            handler.startCoroutineUninterceptedOrReturn(dispatchCompletion)
+        } catch (ignore: CancellationException) {
+            // Absorbed as coroutine cancellation, exactly as connectionScope.launch
+            // did at its boundary: the handler's finally has already run, and the
+            // cancellation must not surface to the pipeline tail.
+        } catch (e: Throwable) {
+            connectionScope.cancel(CancellationException("request handler completion failed", e))
+        }
     }
 
     /**
