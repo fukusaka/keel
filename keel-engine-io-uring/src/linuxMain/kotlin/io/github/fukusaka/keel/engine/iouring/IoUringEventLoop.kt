@@ -1,3 +1,10 @@
+// ImportOrdering / NoUnusedImports: detekt-formatting's auto-correct does not
+// write fixes for this module's linuxMain metadata source set (only reports),
+// and this file's cinterop imports both trip ktlint's lint-only reference
+// resolution (e.g. `errno` reads as unused though it is used throughout) and
+// are impractical to hand-sort without regression. Suppressed at file scope.
+@file:Suppress("ImportOrdering", "NoUnusedImports")
+
 package io.github.fukusaka.keel.engine.iouring
 
 import io_uring.io_uring
@@ -228,14 +235,17 @@ internal class IoUringEventLoop(
     // IORING_CQE_F_MORE drops, indicating the kernel will produce no more
     // CQEs for that SQE.
     private val contSlots = arrayOfNulls<CancellableContinuation<Int>>(ringSize)
+
     // Callback slots shared by submitMultishot (multishot SQEs) and
     // submitCallback (single-shot fire-and-forget SQEs). The slot is held
     // until IORING_CQE_F_MORE drops — for single-shot SQEs this is always
     // the first (and only) CQE, so the slot is released immediately.
     private val callbackSlots = arrayOfNulls<(Int, UInt) -> Unit>(ringSize)
+
     // SEND_ZC: stores the first CQE result while waiting for the second (notification) CQE.
     // SEND_ZC_UNUSED marks the slot as not in SEND_ZC mode.
     private val sendZcPendingResult = IntArray(ringSize) { SEND_ZC_UNUSED }
+
     // SEND_ZC fire-and-forget: callback invoked with send result after both CQEs arrive.
     // Used by submitSendZcCallback as alternative to contSlots for non-suspend callers.
     private val sendZcCallbacks = arrayOfNulls<(Int) -> Unit>(ringSize)
@@ -521,7 +531,8 @@ internal class IoUringEventLoop(
     fun start() {
         val ref = StableRef.create(this)
         val ret = pthread_create(
-            threadPtr.ptr, null,
+            threadPtr.ptr,
+            null,
             staticCFunction { arg ->
                 val el = arg!!.asStableRef<IoUringEventLoop>().get()
                 el.loop()
@@ -608,11 +619,11 @@ internal class IoUringEventLoop(
                     // must be called from the EventLoop thread only.
                     // If the ring is full, the cancel SQE is silently dropped; the original
                     // SQE will complete on its own and the slot will be released normally.
-                    dispatch(EmptyCoroutineContext, Runnable {
-                        val sqe = ioUringRing.getSqe(ring.ptr) ?: return@Runnable
+                    dispatch(EmptyCoroutineContext) {
+                        val sqe = ioUringRing.getSqe(ring.ptr) ?: return@dispatch
                         io_uring_prep_cancel64(sqe, userData, 0)
                         io_uring_sqe_set_data64(sqe, CANCEL_TOKEN)
-                    })
+                    }
                 }
             } else {
                 // Slow path: dispatch SQE preparation to the EventLoop thread.
@@ -623,16 +634,16 @@ internal class IoUringEventLoop(
                 cont.invokeOnCancellation {
                     val ud = submittedUserData.value
                     if (ud == 0L) return@invokeOnCancellation
-                    dispatch(EmptyCoroutineContext, Runnable {
-                        val sqe = ioUringRing.getSqe(ring.ptr) ?: return@Runnable
+                    dispatch(EmptyCoroutineContext) {
+                        val sqe = ioUringRing.getSqe(ring.ptr) ?: return@dispatch
                         io_uring_prep_cancel64(sqe, ud.toULong(), 0)
                         io_uring_sqe_set_data64(sqe, CANCEL_TOKEN)
-                    })
+                    }
                 }
-                dispatch(EmptyCoroutineContext, Runnable {
+                dispatch(EmptyCoroutineContext) {
                     // If cancelled before this Runnable ran, skip SQE submission:
                     // the caller will receive CancellationException without any in-flight SQE.
-                    if (!cont.isActive) return@Runnable
+                    if (!cont.isActive) return@dispatch
                     val slot = acquireSlot()
                     val sqe = acquireSqeForSlot(slot)
                     prepare(sqe)
@@ -640,7 +651,7 @@ internal class IoUringEventLoop(
                     val userData = slot.toULong() + SLOT_BASE
                     io_uring_sqe_set_data64(sqe, userData)
                     submittedUserData.value = userData.toLong()
-                })
+                }
             }
         }
     }
@@ -662,7 +673,10 @@ internal class IoUringEventLoop(
      * @throws IllegalStateException if the SQ ring is full.
      */
     internal fun submitSendZcCallback(
-        fd: Int, buf: COpaquePointer, len: ULong, flags: Int,
+        fd: Int,
+        buf: COpaquePointer,
+        len: ULong,
+        flags: Int,
         fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
@@ -684,7 +698,10 @@ internal class IoUringEventLoop(
      * via [StaticRegisteredBufferRegistry].
      */
     internal fun submitSendZcFixedCallback(
-        fd: Int, buf: COpaquePointer, len: ULong, flags: Int,
+        fd: Int,
+        buf: COpaquePointer,
+        len: ULong,
+        flags: Int,
         bufIndex: Int,
         fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
@@ -734,7 +751,9 @@ internal class IoUringEventLoop(
      * Must be called on the EventLoop thread only.
      */
     internal fun submitWritevCallback(
-        fd: Int, iovecs: CPointer<iovec>, count: UInt,
+        fd: Int,
+        iovecs: CPointer<iovec>,
+        count: UInt,
         fixedFile: Boolean = false,
         onComplete: (bytesOrError: Int) -> Unit,
     ) {
@@ -1225,6 +1244,9 @@ internal class IoUringEventLoop(
      * @return `true` to continue looping; `false` if `io_uring_submit_and_wait`
      *   returned a fatal (non-`EINTR`) error and the loop must stop.
      */
+    // CyclomaticComplexMethod: the CQE dispatch is a flat switch over io_uring
+    // completion opcodes; flattening it into one loop keeps the ordering explicit.
+    @Suppress("CyclomaticComplexMethod")
     internal fun runIteration(cqe: Cqe): Boolean {
         drainTasks()
 

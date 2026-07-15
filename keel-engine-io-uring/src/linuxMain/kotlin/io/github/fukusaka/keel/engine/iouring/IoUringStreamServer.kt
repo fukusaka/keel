@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.Logger
@@ -17,7 +16,6 @@ import io_uring.keel_cqe_has_more
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.AtomicInt
@@ -53,6 +51,10 @@ import kotlin.coroutines.resumeWithException
  * @param localAddress Bind address of this server channel.
  */
 @OptIn(ExperimentalForeignApi::class)
+// LongParameterList: the server channel wires the accept-side fd, boss/worker
+// loops, bind config, and the injectable native seams together; splitting it
+// would fragment the one-shot accept wiring.
+@Suppress("LongParameterList")
 internal class IoUringStreamServer(
     private val serverFd: Int,
     private val bossLoop: IoUringEventLoop,
@@ -248,7 +250,7 @@ internal class IoUringStreamServer(
         _active = false
         // Drain cleanup on the bossLoop so every multishot-state
         // mutation and ring-scoped call runs on the owning pthread.
-        bossLoop.dispatch(EmptyCoroutineContext, Runnable {
+        bossLoop.dispatch(EmptyCoroutineContext) {
             closeFdSafely(serverFd, logger, "server close")
             if (multishotSlot != -1) {
                 bossLoop.cancelSqe(multishotSlot)
@@ -263,7 +265,6 @@ internal class IoUringStreamServer(
             while (pendingFds.isNotEmpty()) {
                 closeFdSafely(pendingFds.removeFirst(), logger, "server close (pending fd)")
             }
-        })
+        }
     }
-
 }

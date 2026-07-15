@@ -124,6 +124,11 @@ import kotlin.coroutines.CoroutineContext
  *                       footprint is `slotCount × readBufferSize × workerThreads`.
  */
 @OptIn(ExperimentalForeignApi::class)
+// LongParameterList: the constructor bundles the engine config with the
+// io_uring capability / registered-buffer tuning knobs and the injectable
+// native seams (NativeSocket / NativeSocketOps) that tests substitute; the
+// defaults keep the common call site a no-arg construction.
+@Suppress("LongParameterList")
 class IoUringEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
     private val writeModeSelector: IoModeSelector = IoModeSelectors.eagainThreshold(),
@@ -155,6 +160,7 @@ class IoUringEngine(
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
     private val resolvedCapabilities: IoUringCapabilities
     private val bossLoop: IoUringEventLoop
+
     // Internal for the in-tree occupancy measure (linuxTest), which reads
     // the per-EventLoop buffer-ring counters after a graceful close.
     internal val workerGroup: IoUringEventLoopGroup
@@ -255,7 +261,16 @@ class IoUringEngine(
         try {
             logger.debug { "Bound to $address" }
             return IoUringStreamServer(
-                serverFd, bossLoop, workerGroup, address, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
+                serverFd,
+                bossLoop,
+                workerGroup,
+                address,
+                bindConfig,
+                writeModeSelector,
+                resolvedCapabilities,
+                logger,
+                nativeSocket,
+                nativeSocketOps,
             )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
@@ -273,7 +288,16 @@ class IoUringEngine(
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
             return IoUringStreamServer(
-                serverFd, bossLoop, workerGroup, localAddr, bindConfig, writeModeSelector, resolvedCapabilities, logger, nativeSocket, nativeSocketOps,
+                serverFd,
+                bossLoop,
+                workerGroup,
+                localAddr,
+                bindConfig,
+                writeModeSelector,
+                resolvedCapabilities,
+                logger,
+                nativeSocket,
+                nativeSocketOps,
             )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindInet cleanup")
@@ -591,7 +615,10 @@ class IoUringEngine(
         /** Resolves threads=0 to available CPU cores. */
         @OptIn(kotlin.experimental.ExperimentalNativeApi::class)
         private fun resolveThreads(config: IoEngineConfig): Int =
-            if (config.threads > 0) config.threads
-            else kotlin.native.Platform.getAvailableProcessors()
+            if (config.threads > 0) {
+                config.threads
+            } else {
+                kotlin.native.Platform.getAvailableProcessors()
+            }
     }
 }

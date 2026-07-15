@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.Logger
@@ -106,7 +105,10 @@ internal class EpollStreamServer(
                     val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
                     val transport = EpollIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
                     val channel = EpollPipelinedChannel(
-                        transport, logger, remoteAddr, localAddr,
+                        transport,
+                        logger,
+                        remoteAddr,
+                        localAddr,
                     )
                     bindConfig.initializeConnection(channel)
                     return channel

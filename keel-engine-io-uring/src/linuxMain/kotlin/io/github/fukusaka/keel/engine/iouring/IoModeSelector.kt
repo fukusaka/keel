@@ -76,9 +76,10 @@ object IoModeSelectors {
         ratio: Double = 0.1,
         minSamples: Long = 100,
     ) = IoModeSelector { stats ->
-        if (stats.totalFlushes >= minSamples && stats.recentEagainRate > ratio)
+        if (stats.totalFlushes >= minSamples && stats.recentEagainRate > ratio) {
             IoMode.CQE
-        else
+        } else {
             IoMode.FALLBACK_CQE
+        }
     }
 }
