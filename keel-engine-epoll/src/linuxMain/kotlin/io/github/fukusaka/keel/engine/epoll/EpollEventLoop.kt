@@ -163,12 +163,14 @@ internal class EpollEventLoop(
         check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
     }
     private val registrations = LongObjectMap<Registration>()
+
     // Callback registrations for pipeline (non-suspend) I/O.
     // Listener interface (instead of `() -> Unit`) lets each `IoTransport`
     // pass `this` to [registerCallback], avoiding per-call lambda allocation
     // on the read re-arm fast path. Mirrors the `Job : DisposableHandle`
     // precedent from kotlinx.coroutines.
     private val callbackRegistrations = LongObjectMap<FdReadyListener>()
+
     // Tracks the current epoll events per fd. epoll manages fds (not fd+interest
     // pairs), so ADD/MOD must specify all active interest bits at once.
     private val fdEvents = mutableMapOf<Int, Int>()
@@ -224,6 +226,7 @@ internal class EpollEventLoop(
     private val wakeupFd: Int
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
     private val threadPtr = arena.alloc<pthread_tVar>()
+
     @kotlin.concurrent.Volatile
     private var eventLoopThread: pthread_t? = null
 
@@ -376,7 +379,8 @@ internal class EpollEventLoop(
     fun start() {
         val ref = StableRef.create(this)
         val rc = pthread_create(
-            threadPtr.ptr, null,
+            threadPtr.ptr,
+            null,
             staticCFunction { arg ->
                 val el = arg!!.asStableRef<EpollEventLoop>().get()
                 el.loop()

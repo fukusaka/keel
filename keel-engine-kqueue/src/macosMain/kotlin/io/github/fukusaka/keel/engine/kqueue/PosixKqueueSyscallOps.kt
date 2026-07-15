@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
@@ -11,13 +12,12 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.refTo
 import kotlinx.cinterop.usePinned
 import kqueue.keel_ev_set
-import platform.darwin.EV_ADD
-import platform.darwin.EV_DELETE
 import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
+import platform.darwin.EV_ADD
+import platform.darwin.EV_DELETE
 import platform.darwin.kevent
 import platform.darwin.kqueue
-import io.github.fukusaka.keel.native.posix.errnoMessage
 import platform.posix.EAGAIN
 import platform.posix.FD_CLOEXEC
 import platform.posix.F_GETFL
@@ -160,8 +160,13 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
         memScoped {
             val ev = alloc<kevent>()
             keel_ev_set(
-                ev.ptr, fd.convert(), filter.convert(),
-                EV_ADD.convert(), 0u, 0, null,
+                ev.ptr,
+                fd.convert(),
+                filter.convert(),
+                EV_ADD.convert(),
+                0u,
+                0,
+                null,
             )
             val rc = kevent(kqFd, ev.ptr, 1, null, 0, null)
             return if (rc < 0) errno else 0
@@ -172,8 +177,13 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
         memScoped {
             val ev = alloc<kevent>()
             keel_ev_set(
-                ev.ptr, fd.convert(), filter.convert(),
-                EV_DELETE.convert(), 0u, 0, null,
+                ev.ptr,
+                fd.convert(),
+                filter.convert(),
+                EV_DELETE.convert(),
+                0u,
+                0,
+                null,
             )
             val rc = kevent(kqFd, ev.ptr, 1, null, 0, null)
             return if (rc < 0) errno else 0

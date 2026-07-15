@@ -148,7 +148,9 @@ internal object NwTlsParams {
         }
         val key = innerKeyDer.usePinned { pinned ->
             keel_nw_create_private_key(
-                pinned.addressOf(0), innerKeyDer.size.toUInt(), keyType,
+                pinned.addressOf(0),
+                innerKeyDer.size.toUInt(),
+                keyType,
             )
         }
         if (key == null) {

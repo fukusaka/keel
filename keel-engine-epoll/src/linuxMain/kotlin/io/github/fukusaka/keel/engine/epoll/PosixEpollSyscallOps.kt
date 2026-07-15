@@ -1,3 +1,9 @@
+// NoUnusedImports: detekt-formatting (ktlint) false-positives on some
+// cinterop constant imports (e.g. EPOLL_CLOEXEC, used in epoll_create1);
+// its lint-only resolution misses the reference. The import is required to
+// compile.
+@file:Suppress("NoUnusedImports")
+
 package io.github.fukusaka.keel.engine.epoll
 
 import kotlinx.cinterop.ExperimentalForeignApi

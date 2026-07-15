@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketAddress
@@ -172,7 +171,8 @@ internal class NwStreamServer(
 
         // Per-connection serial queue for NWConnection callbacks
         val connQueue = dispatch_queue_create(
-            "io.github.fukusaka.keel.nwconnection.conn", null,
+            "io.github.fukusaka.keel.nwconnection.conn",
+            null,
         )
 
         // Start connection asynchronously and wait for ready state
@@ -180,7 +180,8 @@ internal class NwStreamServer(
             val cbCtx = CallbackContext(cont)
             val ref = StableRef.create(cbCtx)
             keel_nw_start_conn_async(
-                conn, connQueue,
+                conn,
+                connQueue,
                 startCallback,
                 ref.asCPointer(),
             )

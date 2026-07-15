@@ -56,6 +56,7 @@ internal class RingBufferIoBuf(
     // Cached pointer to the buffer slot. Pointer arithmetic (basePtr + bufId * bufferSize)
     // is computed once at construction and on reset(), not on every property access.
     private var ptr: CPointer<ByteVar> = bufferRing.getPointer(bufId)
+
     @UnsafeIoBufApi
     override val unsafePointer: CPointer<ByteVar> get() = ptr
     override val capacity: Int get() = bufferRing.bufferSize

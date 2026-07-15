@@ -8,7 +8,6 @@ import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
-import kotlinx.coroutines.Runnable
 import platform.posix.pthread_cond_destroy
 import platform.posix.pthread_cond_init
 import platform.posix.pthread_cond_signal
@@ -52,6 +51,10 @@ import kotlin.coroutines.EmptyCoroutineContext
  *   allocator segment size.
  */
 @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+// LongParameterList: the group threads the per-loop sizing, capabilities, and
+// registered-buffer tuning to each worker loop it spawns; a config bundle would
+// only move the same fields behind one more indirection.
+@Suppress("LongParameterList")
 internal class IoUringEventLoopGroup(
     size: Int,
     private val logger: Logger,
@@ -103,7 +106,13 @@ internal class IoUringEventLoopGroup(
     private val allocators = Array(size) { allocator.createChild() }
     private val bufferRings: Array<ProvidedBufferRing?> = if (capabilities.providedBufferRing) {
         Array(size) { i ->
-            ProvidedBufferRing(loops[i], logger, bufferCount = bufferRingSlotCount, bufferSize = readBufferSize, bgid = i)
+            ProvidedBufferRing(
+                loops[i],
+                logger,
+                bufferCount = bufferRingSlotCount,
+                bufferSize = readBufferSize,
+                bgid = i,
+            )
         }
     } else {
         arrayOfNulls(size)
@@ -113,6 +122,7 @@ internal class IoUringEventLoopGroup(
     } else {
         arrayOfNulls(size)
     }
+
     // Whether the kernel supports registered buffers (SEND_ZC_FIXED). Captured as a
     // field because the per-EventLoop warmup + enumeration + table construction is
     // deferred to the EventLoop pthread in start(), where `capabilities` (a
@@ -227,7 +237,7 @@ internal class IoUringEventLoopGroup(
 
             val pending = AtomicInt(size)
             for (i in 0 until size) {
-                loops[i].dispatch(EmptyCoroutineContext, Runnable {
+                loops[i].dispatch(EmptyCoroutineContext) {
                     // Warm the per-EventLoop pool and build its registered-buffer table
                     // on the owning pthread, before the kernel registration below. Runs
                     // here (not in the constructor) so the enumerated pool addresses are
@@ -270,7 +280,7 @@ internal class IoUringEventLoopGroup(
                     if (unlockRet != 0) {
                         logger.warn { "pthread_mutex_unlock() failed: ${errnoMessage(unlockRet)}" }
                     }
-                })
+                }
             }
 
             val lockRet = pthread_mutex_lock(mutex.ptr)

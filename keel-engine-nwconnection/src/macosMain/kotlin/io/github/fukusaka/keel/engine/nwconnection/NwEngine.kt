@@ -21,10 +21,7 @@ import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.server.ServerTlsProvider
 import io.github.fukusaka.keel.server.TlsServerConfig
-import io.github.fukusaka.keel.tls.Pkcs8KeyUnwrapper
-import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
-import io.github.fukusaka.keel.tls.asDer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
@@ -168,7 +165,8 @@ class NwEngine(
             listener = lsnr
 
             val listenerQueue = dispatch_queue_create(
-                "io.github.fukusaka.keel.nwconnection.listener", null,
+                "io.github.fukusaka.keel.nwconnection.listener",
+                null,
             )
 
             // Create StreamServer before starting the listener so
@@ -327,7 +325,8 @@ class NwEngine(
 
         try {
             val listenerQueue = dispatch_queue_create(
-                "io.github.fukusaka.keel.nwconnection.pipeline.listener", null,
+                "io.github.fukusaka.keel.nwconnection.pipeline.listener",
+                null,
             )
 
             nw_listener_set_queue(lsnr, listenerQueue)
@@ -368,7 +367,8 @@ class NwEngine(
             nw_listener_set_new_connection_handler(lsnr) { conn ->
                 if (conn != null) {
                     val connQueue = dispatch_queue_create(
-                        "io.github.fukusaka.keel.nwconnection.pipeline.conn", null,
+                        "io.github.fukusaka.keel.nwconnection.pipeline.conn",
+                        null,
                     )
                     nw_connection_set_queue(conn, connQueue)
                     // Fire-and-forget start: nw_connection_receive can be called
@@ -401,7 +401,8 @@ class NwEngine(
             // Generous timeout for listener startup, prevents permanent hang
             // if the dispatch queue or state handler is never delivered.
             val deadline = dispatch_time(
-                DISPATCH_TIME_NOW, BIND_TIMEOUT_NS,
+                DISPATCH_TIME_NOW,
+                BIND_TIMEOUT_NS,
             )
             val waitResult = dispatch_semaphore_wait(sem, deadline)
             check(waitResult == 0L) {
@@ -491,14 +492,16 @@ class NwEngine(
             ?: error("nw_connection_create returned null")
 
         val connQueue = dispatch_queue_create(
-            "io.github.fukusaka.keel.nwconnection.conn", null,
+            "io.github.fukusaka.keel.nwconnection.conn",
+            null,
         )
 
         val rc = suspendCancellableCoroutine<Int> { cont ->
             val cbCtx = CallbackContext(cont)
             val ref = StableRef.create(cbCtx)
             keel_nw_start_conn_async(
-                conn, connQueue,
+                conn,
+                connQueue,
                 startCallback,
                 ref.asCPointer(),
             )
@@ -556,7 +559,8 @@ class NwEngine(
             listener = lsnr
 
             val listenerQueue = dispatch_queue_create(
-                "io.github.fukusaka.keel.nwconnection.listener.unix", null,
+                "io.github.fukusaka.keel.nwconnection.listener.unix",
+                null,
             )
             val serverChannel = NwStreamServer(
                 lsnr,
@@ -620,7 +624,8 @@ class NwEngine(
             ?: error("nw_connection_create returned null")
 
         val connQueue = dispatch_queue_create(
-            "io.github.fukusaka.keel.nwconnection.conn.unix", null,
+            "io.github.fukusaka.keel.nwconnection.conn.unix",
+            null,
         )
 
         val rc = suspendCancellableCoroutine<Int> { cont ->
@@ -670,7 +675,8 @@ class NwEngine(
 
         try {
             val listenerQueue = dispatch_queue_create(
-                "io.github.fukusaka.keel.nwconnection.pipeline.listener.unix", null,
+                "io.github.fukusaka.keel.nwconnection.pipeline.listener.unix",
+                null,
             )
             nw_listener_set_queue(lsnr, listenerQueue)
 
@@ -689,7 +695,8 @@ class NwEngine(
             nw_listener_set_new_connection_handler(lsnr) { conn ->
                 if (conn != null) {
                     val connQueue = dispatch_queue_create(
-                        "io.github.fukusaka.keel.nwconnection.pipeline.conn.unix", null,
+                        "io.github.fukusaka.keel.nwconnection.pipeline.conn.unix",
+                        null,
                     )
                     nw_connection_set_queue(conn, connQueue)
                     nw_connection_start(conn)

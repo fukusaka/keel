@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
@@ -11,7 +11,6 @@ import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
-import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.Arena
@@ -55,7 +54,9 @@ internal class KqueueStreamServer(
     private val workerGroup: KqueueEventLoopGroup,
     override val localAddress: SocketAddress,
     private val bindConfig: BindConfig,
-    private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger("KqueueStreamServer"),
+    private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger(
+        "KqueueStreamServer",
+    ),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
 ) : StreamServer {
@@ -110,9 +111,19 @@ internal class KqueueStreamServer(
                     val workerLoop = workerGroup.next()
                     val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
                     val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
-                    val transport = KqueueIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+                    val transport = KqueueIoTransport(
+                        clientFd,
+                        workerLoop,
+                        workerLoop.allocator,
+                        nativeSocket,
+                        rbs,
+                        ito,
+                    )
                     val channel = KqueuePipelinedChannel(
-                        transport, logger, remoteAddr, localAddr,
+                        transport,
+                        logger,
+                        remoteAddr,
+                        localAddr,
                     )
                     bindConfig.initializeConnection(channel)
                     return channel

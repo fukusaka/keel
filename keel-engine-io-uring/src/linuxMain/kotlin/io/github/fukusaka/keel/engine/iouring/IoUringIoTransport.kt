@@ -1,4 +1,8 @@
 @file:OptIn(UnsafeIoBufApi::class)
+// ImportOrdering: detekt-formatting's auto-correct does not write fixes for
+// this module's linuxMain metadata source set, and this cinterop-heavy import
+// block is impractical to hand-sort without regression. Suppressed at file scope.
+@file:Suppress("ImportOrdering")
 
 package io.github.fukusaka.keel.engine.iouring
 
@@ -74,6 +78,13 @@ import platform.posix.MSG_NOSIGNAL
  * **Thread safety**: all methods must be called on the owning [IoUringEventLoop] thread.
  */
 @OptIn(ExperimentalForeignApi::class)
+// LongParameterList / LargeClass: the transport owns the whole per-connection
+// io_uring lifecycle (fd, event loop, capabilities, write-mode selection,
+// registered buffer / fixed-file / buffer-ring state, native seams). The
+// parameters are the injected collaborators and the size reflects the
+// SQE/CQE submit + completion surface for one connection; splitting it would
+// scatter tightly-coupled ring state.
+@Suppress("LongParameterList", "LargeClass")
 internal class IoUringIoTransport(
     private val fd: Int,
     private val eventLoop: IoUringEventLoop,
@@ -556,7 +567,8 @@ internal class IoUringIoTransport(
                         // (whose setter re-arms on the false→true edge and
                         // sees recvSlot >= 0 once it has) — the recvSlot
                         // guard keeps the single-live-recv invariant.
-                        if (opened && readEnabled && !recvStarved && recvSlot < 0) armRecv()
+                        val canRearmRecv = opened && readEnabled && !recvStarved && recvSlot < 0
+                        if (canRearmRecv) armRecv()
                     }
                     res == -ENOBUFS -> onRecvEnobufs(ring)
                     else -> fireReadClosedOnce()
@@ -783,9 +795,18 @@ internal class IoUringIoTransport(
         val done = try {
             when (mode) {
                 IoMode.FALLBACK_CQE -> flushDirectSend()
-                IoMode.CQE -> { flushCqe(); false }
-                IoMode.SEND_ZC -> { flushSendZc(); false }
-                IoMode.SENDMSG_ZC -> { flushSendmsgZc(); false }
+                IoMode.CQE -> {
+                    flushCqe()
+                    false
+                }
+                IoMode.SEND_ZC -> {
+                    flushSendZc()
+                    false
+                }
+                IoMode.SENDMSG_ZC -> {
+                    flushSendmsgZc()
+                    false
+                }
             }
         } finally {
             stats.recordFlush(flushHadEagain, flushBytesWritten)
@@ -1253,7 +1274,10 @@ internal class IoUringIoTransport(
      * Buffer is released after completion.
      */
     private fun submitAsyncSendZcSequential(
-        buf: IoBuf, offset: Int, length: Int, onComplete: () -> Unit,
+        buf: IoBuf,
+        offset: Int,
+        length: Int,
+        onComplete: () -> Unit,
     ) {
         val ptr = (buf.unsafePointer + offset)!!
         val bufIndex = registeredBufferTable.indexOf(buf.unsafePointer)
@@ -1262,8 +1286,12 @@ internal class IoUringIoTransport(
             eventLoop.sendZcFixedCount++
             fixedOpSubmitted()
             eventLoop.submitSendZcFixedCallback(
-                sqeFd, ptr, length.convert(), MSG_NOSIGNAL,
-                bufIndex = bufIndex, fixedFile = useFixedFile,
+                sqeFd,
+                ptr,
+                length.convert(),
+                MSG_NOSIGNAL,
+                bufIndex = bufIndex,
+                fixedFile = useFixedFile,
             ) { res ->
                 fixedOpCompleted()
                 if (res < 0) {
@@ -1293,7 +1321,13 @@ internal class IoUringIoTransport(
             // Unregistered buffer: use regular SEND_ZC (per-send page pinning).
             eventLoop.sendZcRegularCount++
             fixedOpSubmitted()
-            eventLoop.submitSendZcCallback(sqeFd, ptr, length.convert(), MSG_NOSIGNAL, fixedFile = useFixedFile) { res ->
+            eventLoop.submitSendZcCallback(
+                sqeFd,
+                ptr,
+                length.convert(),
+                MSG_NOSIGNAL,
+                fixedFile = useFixedFile,
+            ) { res ->
                 fixedOpCompleted()
                 if (res < 0) {
                     eventLoop.logger.warn {
@@ -1441,8 +1475,11 @@ internal class IoUringIoTransport(
                     }
                 }
             }
-            if (eventLoop.inEventLoop()) register.run()
-            else eventLoop.dispatch(EmptyCoroutineContext, register)
+            if (eventLoop.inEventLoop()) {
+                register.run()
+            } else {
+                eventLoop.dispatch(EmptyCoroutineContext, register)
+            }
         }
     }
 
@@ -1461,9 +1498,9 @@ internal class IoUringIoTransport(
             // rare races and each enqueue a teardown task; `markTeardownStarted`
             // inside `teardownOnEventLoop` keeps the cleanup idempotent on the
             // EventLoop thread.
-            eventLoop.dispatch(EmptyCoroutineContext, Runnable {
+            eventLoop.dispatch(EmptyCoroutineContext) {
                 teardownOnEventLoop()
-            })
+            }
         }
     }
 
@@ -1524,5 +1561,4 @@ internal class IoUringIoTransport(
             closeFdSafely(fd, eventLoop.logger, "transport teardown")
         }
     }
-
 }

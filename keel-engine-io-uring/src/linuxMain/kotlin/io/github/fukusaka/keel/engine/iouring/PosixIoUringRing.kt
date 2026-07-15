@@ -1,3 +1,8 @@
+// ImportOrdering: detekt-formatting's auto-correct does not write fixes for
+// this module's linuxMain metadata source set, and this cinterop-heavy import
+// block is impractical to hand-sort without regression. Suppressed at file scope.
+@file:Suppress("ImportOrdering")
+
 package io.github.fukusaka.keel.engine.iouring
 
 import io_uring.io_uring

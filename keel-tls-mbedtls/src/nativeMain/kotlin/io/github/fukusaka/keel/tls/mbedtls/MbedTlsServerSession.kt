@@ -168,7 +168,10 @@ internal class MbedTlsServerSession(
         val endpoint = if (isServer) MBEDTLS_SSL_IS_SERVER else MBEDTLS_SSL_IS_CLIENT
         checkMbedTls(
             mbedtls_ssl_config_defaults(
-                conf.ptr, endpoint, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT,
+                conf.ptr,
+                endpoint,
+                MBEDTLS_SSL_TRANSPORT_STREAM,
+                MBEDTLS_SSL_PRESET_DEFAULT,
             ),
             "ssl_config_defaults",
         )

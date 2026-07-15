@@ -142,7 +142,16 @@ class EpollEngine(
             }
 
             logger.debug { "Bound to $address" }
-            return EpollStreamServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket, nativeSocketOps)
+            return EpollStreamServer(
+                serverFd,
+                bossLoop,
+                workerGroup,
+                address,
+                bindConfig,
+                logger,
+                nativeSocket,
+                nativeSocketOps,
+            )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
             throw t
@@ -169,7 +178,16 @@ class EpollEngine(
 
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            return EpollStreamServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger, nativeSocket, nativeSocketOps)
+            return EpollStreamServer(
+                serverFd,
+                bossLoop,
+                workerGroup,
+                localAddr,
+                bindConfig,
+                logger,
+                nativeSocket,
+                nativeSocketOps,
+            )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindInet cleanup")
             throw t
@@ -380,7 +398,10 @@ class EpollEngine(
         /** Resolves threads=0 to available CPU cores. */
         @OptIn(kotlin.experimental.ExperimentalNativeApi::class)
         private fun resolveThreads(config: IoEngineConfig): Int =
-            if (config.threads > 0) config.threads
-            else kotlin.native.Platform.getAvailableProcessors()
+            if (config.threads > 0) {
+                config.threads
+            } else {
+                kotlin.native.Platform.getAvailableProcessors()
+            }
     }
 }

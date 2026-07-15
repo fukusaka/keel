@@ -131,7 +131,9 @@ class KqueueEngine(
 
     private suspend fun bindUnix(address: UnixSocketAddress, bindConfig: BindConfig): StreamServer {
         check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
+        address.requireFilesystemOnly(
+            "KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)",
+        )
 
         val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog)
 
@@ -152,7 +154,16 @@ class KqueueEngine(
             }
 
             logger.debug { "Bound to $address" }
-            return KqueueStreamServer(serverFd, bossLoop, workerGroup, address, bindConfig, logger, nativeSocket, nativeSocketOps)
+            return KqueueStreamServer(
+                serverFd,
+                bossLoop,
+                workerGroup,
+                address,
+                bindConfig,
+                logger,
+                nativeSocket,
+                nativeSocketOps,
+            )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindUnix cleanup")
             throw t
@@ -186,7 +197,16 @@ class KqueueEngine(
 
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            return KqueueStreamServer(serverFd, bossLoop, workerGroup, localAddr, bindConfig, logger, nativeSocket, nativeSocketOps)
+            return KqueueStreamServer(
+                serverFd,
+                bossLoop,
+                workerGroup,
+                localAddr,
+                bindConfig,
+                logger,
+                nativeSocket,
+                nativeSocketOps,
+            )
         } catch (t: Throwable) {
             closeFdSafely(serverFd, logger, "bindInet cleanup")
             throw t
@@ -225,7 +245,9 @@ class KqueueEngine(
         idleTimeoutOverride: Long?,
     ): Channel {
         check(!closed) { "Engine is closed" }
-        address.requireFilesystemOnly("KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)")
+        address.requireFilesystemOnly(
+            "KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)",
+        )
 
         val fd = nativeSocketOps.openUnixClientSocket()
         nativeSocketOps.applySocketOptions(fd, socketOptions)
@@ -412,7 +434,10 @@ class KqueueEngine(
         /** Resolves threads=0 to available CPU cores. */
         @OptIn(kotlin.experimental.ExperimentalNativeApi::class)
         private fun resolveThreads(config: IoEngineConfig): Int =
-            if (config.threads > 0) config.threads
-            else kotlin.native.Platform.getAvailableProcessors()
+            if (config.threads > 0) {
+                config.threads
+            } else {
+                kotlin.native.Platform.getAvailableProcessors()
+            }
     }
 }

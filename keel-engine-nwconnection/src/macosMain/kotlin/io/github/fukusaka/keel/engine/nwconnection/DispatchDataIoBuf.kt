@@ -7,7 +7,6 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.NativePointerAccess
 import io.github.fukusaka.keel.buf.NoOpLifecycleListener
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
-import kotlin.concurrent.atomics.AtomicInt
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.CPointer
@@ -19,6 +18,7 @@ import kotlinx.cinterop.set
 import kotlinx.cinterop.usePinned
 import nwconnection.keel_nw_dispatch_data_release
 import platform.posix.memcpy
+import kotlin.concurrent.atomics.AtomicInt
 
 /**
  * Engine-direct [IoBuf] backed by a single contiguous region of a

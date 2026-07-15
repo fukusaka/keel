@@ -4,8 +4,6 @@ import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
-import kotlin.concurrent.AtomicInt
-import kotlin.concurrent.AtomicReference
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
@@ -15,6 +13,8 @@ import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
+import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
 
 /**
  * [TlsCodecFactory] implementation for Mbed TLS 4.x.
@@ -91,6 +91,12 @@ class MbedTlsCodecFactory : TlsCodecFactory {
     // the integer load is identical in cost.
     private val closed = AtomicInt(0)
 
+    // ArenaLeak: intentional. This arena backs the process-lifetime construct
+    // mutex; PSA Crypto (mbedtls) keeps the crypto subsystem initialised for the
+    // process, so clearing the arena in close() to free the mutex would risk a
+    // use-after-free from a concurrent factory. It is one small bounded
+    // allocation per factory, reclaimed at process exit.
+    @Suppress("ArenaLeak")
     private val arena = Arena()
     private val constructMutex = arena.alloc<pthread_mutex_t>().apply {
         val initRet = pthread_mutex_init(ptr, null)

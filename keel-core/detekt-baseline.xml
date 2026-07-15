@@ -1,7 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<SmellBaseline>
-  <ManuallySuppressedIssues/>
-  <CurrentIssues>
-    <ID>TooGenericExceptionThrown:SystemDnsResolver.native.kt$SystemDnsResolver$throw RuntimeException("getaddrinfo failed for '$hostname': $msg")</ID>
-  </CurrentIssues>
-</SmellBaseline>
