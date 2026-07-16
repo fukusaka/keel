@@ -1,8 +1,3 @@
-// ImportOrdering: detekt-formatting's auto-correct does not write fixes for
-// this module's linuxMain metadata source set, and this cinterop-heavy import
-// block is impractical to hand-sort without regression. Suppressed at file scope.
-@file:Suppress("ImportOrdering")
-
 package io.github.fukusaka.keel.engine.iouring
 
 import io_uring.io_uring
@@ -10,16 +5,16 @@ import io_uring.io_uring_cqe_get_data64
 import io_uring.io_uring_cqe_seen
 import io_uring.io_uring_get_sqe
 import io_uring.io_uring_queue_exit
-import io_uring.keel_queue_init_params
 import io_uring.io_uring_sqe
 import io_uring.io_uring_submit
 import io_uring.io_uring_submit_and_wait
 import io_uring.keel_cqe_has_more
-import io_uring.keel_submit_and_wait_timeout
 import io_uring.keel_peek_cqe
+import io_uring.keel_queue_init_params
 import io_uring.keel_setup_coop_taskrun
 import io_uring.keel_setup_defer_taskrun
 import io_uring.keel_setup_single_issuer
+import io_uring.keel_submit_and_wait_timeout
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.UIntVar

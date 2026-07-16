@@ -1,14 +1,8 @@
 @file:OptIn(UnsafeIoBufApi::class)
-// ImportOrdering: detekt-formatting's auto-correct does not write fixes for
-// this module's linuxMain metadata source set, and this cinterop-heavy import
-// block is impractical to hand-sort without regression. Suppressed at file scope.
-@file:Suppress("ImportOrdering")
 
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.BufferAllocator
-import io_uring.keel_prep_shutdown
-import io_uring.keel_sqe_set_fixed_file
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
@@ -25,24 +19,18 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.PendingWriteSnapshotPool
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Runnable
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.EmptyCoroutineContext
-import kotlin.coroutines.resume
 import io_uring.KEEL_POLLERR
 import io_uring.KEEL_POLLHUP
 import io_uring.KEEL_POLLRDHUP
 import io_uring.io_uring_prep_send
-import io_uring.keel_cqe_get_buf_id
-import io_uring.keel_cqe_has_more
-import io_uring.keel_prep_poll_add
-import platform.posix.ECANCELED
-import platform.posix.ENOBUFS
-import platform.posix.SHUT_WR
 import io_uring.iovec
 import io_uring.keel_alloc_iovec
+import io_uring.keel_cqe_get_buf_id
+import io_uring.keel_cqe_has_more
 import io_uring.keel_free_iovec
+import io_uring.keel_prep_poll_add
+import io_uring.keel_prep_shutdown
+import io_uring.keel_sqe_set_fixed_file
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.COpaquePointerVar
 import kotlinx.cinterop.CPointerVar
@@ -54,7 +42,15 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.posix.ECANCELED
+import platform.posix.ENOBUFS
 import platform.posix.MSG_NOSIGNAL
+import platform.posix.SHUT_WR
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.resume
 
 /**
  * io_uring [IoTransport] implementation for Linux.
