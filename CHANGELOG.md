@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-17
+
+### Documentation
+
+- `readme`: refresh the README (EN + JA) for v0.4.0 — full module catalogue including the
+  server and compression families, a working composite-build install flow, compilable
+  quick-start examples, and measurement-vintage labels on the benchmark tables (#951)
+- `api-docs`: rewrite or add Dokka module docs across twenty modules (including new docs
+  for `keel-server-http` and `keel-server-websocket`) and aggregate the compression
+  modules into the API docs; every claim source-verified (#952)
+- `website`: refresh the documentation site (EN + JA) for v0.4.0 — server/compression
+  coverage, corrected allocator and codec architecture pages, working install and
+  pipeline examples, and the corrected io_uring kernel floor of Linux 5.6 (#953)
+
 ## [0.4.0] - 2026-07-16
 
 ### Added
