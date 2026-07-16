@@ -1,51 +1,5 @@
-// ImportOrdering / NoUnusedImports: detekt-formatting's auto-correct does not
-// write fixes for this module's linuxMain metadata source set (only reports),
-// and this file's cinterop imports both trip ktlint's lint-only reference
-// resolution (e.g. `errno` reads as unused though it is used throughout) and
-// are impractical to hand-sort without regression. Suppressed at file scope.
-@file:Suppress("ImportOrdering", "NoUnusedImports")
-
 package io.github.fukusaka.keel.engine.iouring
 
-import io_uring.io_uring
-import io_uring.io_uring_prep_cancel64
-import io_uring.io_uring_prep_read
-import io_uring.io_uring_prep_accept
-import io_uring.io_uring_prep_writev
-import io_uring.iovec
-import io_uring.io_uring_sqe
-import io_uring.io_uring_sqe_set_data64
-import io_uring.keel_prep_msg_ring
-import io_uring.keel_prep_recv
-import io_uring.keel_prep_recv_buf_select
-import io_uring.keel_prep_recv_multishot
-import io_uring.keel_prep_send_zc
-import io_uring.keel_prep_sendmsg_zc
-import io_uring.keel_prep_send_zc_fixed
-import io_uring.keel_register_iowq_max_workers
-import io_uring.keel_register_napi
-import io_uring.keel_register_ring_fd
-import io_uring.keel_ring_fd
-import io_uring.keel_sqe_set_fixed_file
-import io_uring.keel_unregister_napi
-import io_uring.keel_feat_nodrop
-import io_uring.keel_unregister_ring_fd
-import kotlinx.cinterop.Arena
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.COpaquePointer
-import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.StableRef
-import kotlinx.cinterop.ULongVar
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.UIntVar
-import kotlinx.cinterop.asStableRef
-import kotlinx.cinterop.get
-import kotlinx.cinterop.pointed
-import kotlinx.cinterop.ptr
-import kotlinx.cinterop.staticCFunction
-import kotlinx.cinterop.value
 import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
@@ -54,15 +8,51 @@ import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
+import io_uring.io_uring
+import io_uring.io_uring_prep_accept
+import io_uring.io_uring_prep_cancel64
+import io_uring.io_uring_prep_read
+import io_uring.io_uring_prep_writev
+import io_uring.io_uring_sqe
+import io_uring.io_uring_sqe_set_data64
+import io_uring.iovec
+import io_uring.keel_feat_nodrop
+import io_uring.keel_prep_msg_ring
+import io_uring.keel_prep_recv
+import io_uring.keel_prep_recv_buf_select
+import io_uring.keel_prep_recv_multishot
+import io_uring.keel_prep_send_zc
+import io_uring.keel_prep_send_zc_fixed
+import io_uring.keel_prep_sendmsg_zc
+import io_uring.keel_register_iowq_max_workers
+import io_uring.keel_register_napi
+import io_uring.keel_register_ring_fd
+import io_uring.keel_ring_fd
+import io_uring.keel_sqe_set_fixed_file
+import io_uring.keel_unregister_napi
+import io_uring.keel_unregister_ring_fd
+import kotlinx.cinterop.Arena
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.COpaquePointer
+import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.StableRef
+import kotlinx.cinterop.UIntVar
+import kotlinx.cinterop.ULongVar
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.asStableRef
+import kotlinx.cinterop.get
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.staticCFunction
+import kotlinx.cinterop.value
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.time.TimeSource
 import platform.posix.EAGAIN
 import platform.posix.EINTR
 import platform.posix.ETIME
-import platform.posix.errno
 import platform.posix.pthread_create
 import platform.posix.pthread_equal
 import platform.posix.pthread_join
@@ -74,6 +64,7 @@ import kotlin.concurrent.AtomicLong
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
+import kotlin.time.TimeSource
 
 /**
  * Single-threaded io_uring event loop for Linux, also serving as a [CoroutineDispatcher].
