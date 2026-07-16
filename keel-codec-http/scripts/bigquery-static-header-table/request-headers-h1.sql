@@ -1,4 +1,4 @@
--- L7 Stage 3 BigQuery confirmation — request headers, H1-only.
+-- StaticHeaderTable BigQuery confirmation — request headers, H1-only.
 -- Replicates the QPACK static table methodology (>5% per-name value-frequency
 -- threshold, https://github.com/quicwg/base-drafts/wiki/QPACK-Static-Table)
 -- against the HTTP Archive 2024-06-01 crawl, restricted to HTTP/1.1 traffic,
