@@ -1,4 +1,4 @@
-# L7 Stage 3 BigQuery confirmation — results (2026-07-12)
+# StaticHeaderTable BigQuery confirmation — results (2026-07-12)
 
 Empirical verification of `StaticHeaderTable`'s H1 Title-Case extension category
 (c) "production-frequent provisional preset" (`StaticHeaderTable.kt`, 17 entries,

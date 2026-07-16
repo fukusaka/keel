@@ -1,4 +1,4 @@
--- L7 Stage 3 BigQuery confirmation — response headers, H1-only.
+-- StaticHeaderTable BigQuery confirmation — response headers, H1-only.
 -- Same QPACK-methodology replay as request-headers-h1.sql, for the
 -- response-side candidates in StaticHeaderTable's preset (c): Content-Type
 -- charset spacing/case variants, X-Frame-Options, Cache-Control,
