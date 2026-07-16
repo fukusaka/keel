@@ -1,7 +1,8 @@
-// NoUnusedImports: detekt-formatting (ktlint) false-positives on some
-// cinterop constant imports (e.g. EPOLL_CLOEXEC, used in epoll_create1);
-// its lint-only resolution misses the reference. The import is required to
-// compile.
+// NoUnusedImports: ktlint flags `platform.linux.EPOLL_CLOEXEC` as unused even
+// though it is referenced in `epoll_create1(EPOLL_CLOEXEC)` below — a genuine
+// false positive; removing the import breaks compilation. ktlint rules cannot
+// be suppressed on a single import statement, so the file scope is the
+// narrowest available.
 @file:Suppress("NoUnusedImports")
 
 package io.github.fukusaka.keel.engine.epoll
