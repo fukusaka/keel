@@ -235,8 +235,8 @@ docker run --rm --platform linux/amd64 \
 
 ## Benchmark
 
-> **Measurement vintage**: the tables below were last refreshed in April 2026 on a pre-v0.4.0
-> build. A full re-measurement against v0.4.0 is planned for an upcoming patch release.
+> **Measurement vintage**: the tables below were fully re-measured in July 2026 on v0.4.1
+> (wrk 4t/100c/10s, 3-run median, shuffled order).
 
 ### Setup
 
@@ -275,23 +275,22 @@ AMD Ryzen 9 9950X3D (16 cores / 32 threads), 192 GB RAM, Ubuntu 24.04, Java 21 (
 
 | Server | Req/sec | p50 | p99 |
 |---|---:|---:|---:|
-| rust-bench | 1,319K | 39us | 110us |
-| zig-bench | 1,133K | 42us | 108us |
-| jvm:netty-raw | 877K | 59us | 166us |
-| **native:pipeline-http-epoll** | **870K** | **58us** | **174us** |
-| **native:pipeline-http-io-uring** | **860K** | **59us** | **170us** |
-| jvm:ktor-netty | 845K | 85us | 0.97ms |
-| jvm:spring | 821K | 61us | 216us |
-| **jvm:pipeline-http-nio** | **715K** | **73us** | **1.23ms** |
-| **jvm:ktor-keel-netty** | **677K** | **99us** | **2.88ms** |
-| **native:ktor-keel-epoll** | **589K** | **99us** | **1.93ms** |
-| **jvm:ktor-keel-nio** | **540K** | **106us** | **2.24ms** |
-| go-bench | 536K | 102us | 1.02ms |
-| swift-bench | 527K | 146us | 473us |
-| jvm:vertx | 354K | 275us | 301us |
-| **native:pipeline-http-nodejs** | **151K** | **560us** | **1.67ms** |
-| jvm:ktor-cio | 146K | 572us | 4.40ms |
-| native:ktor-cio | 9K | 10.43ms | 19.94ms |
+| zig-bench | 1,276K | 41us | 82us |
+| rust-bench | 1,223K | 41us | 116us |
+| **jvm:pipeline-http-nio** | **926K** | **55us** | **152us** |
+| **native:pipeline-http-epoll** | **890K** | **57us** | **164us** |
+| **native:pipeline-http-io-uring** | **875K** | **56us** | **179us** |
+| **jvm:ktor-keel-nio** | **827K** | **60us** | **230us** |
+| jvm:netty-raw | 827K | 61us | 192us |
+| jvm:ktor-netty | 816K | 90us | 758us |
+| jvm:spring | 796K | 63us | 241us |
+| **jvm:ktor-keel-netty** | **787K** | **64us** | **384us** |
+| go-bench | 538K | 103us | 1.02ms |
+| **native:ktor-keel-epoll** | **483K** | **113us** | **2.68ms** |
+| jvm:vertx | 339K | 289us | 311us |
+| **native:pipeline-http-nodejs** | **201K** | **484us** | **0.88ms** |
+| jvm:ktor-cio | 133K | 545us | 4.40ms |
+| native:ktor-cio | 9K | 10.47ms | 20.18ms |
 
 ### macOS Apple Silicon
 
@@ -299,32 +298,32 @@ Apple M1 Max (10 cores: 8P + 2E), 64 GB RAM, macOS 15.4, Java 21 (Temurin)
 
 | Server | Req/sec | p50 | p99 |
 |---|---:|---:|---:|
-| rust-bench | 161K | 583us | 0.88ms |
-| **native:pipeline-http-kqueue** | **154K** | **380us** | **4.38ms** |
-| jvm:spring | 150K | 598us | 1.91ms |
-| **jvm:pipeline-http-nio** | **146K** | **410us** | **11.80ms** |
-| go-bench | 141K | 521us | 2.14ms |
-| jvm:netty-raw | 139K | 684us | 0.91ms |
-| zig-bench | 136K | 690us | 0.93ms |
-| jvm:ktor-netty | 132K | 499us | 6.18ms |
-| **jvm:ktor-keel-nio** | **128K** | **410us** | **11.80ms** |
-| jvm:vertx | 112K | 0.86ms | 1.75ms |
-| **native:ktor-keel-kqueue** | **108K** | **588us** | **9.47ms** |
-| swift-bench | 98K | 651us | 23.56ms |
-| **jvm:ktor-keel-netty** | **94K** | **487us** | **41.21ms** |
-| **native:pipeline-http-nodejs** | **71K** | **1.43ms** | **2.32ms** |
-| jvm:ktor-cio | 64K | 1.02ms | 18.20ms |
-| **native:pipeline-http-nwconnection** | **47K** | **1.87ms** | **13.82ms** |
-| native:ktor-cio | 7K | 10.40ms | 130.66ms |
+| jvm:spring | 159K | 414us | 3.96ms |
+| **native:pipeline-http-kqueue** | **158K** | **594us** | **742us** |
+| **jvm:pipeline-http-nio** | **157K** | **602us** | **721us** |
+| rust-bench | 156K | 573us | 0.86ms |
+| **jvm:ktor-keel-nio** | **156K** | **573us** | **1.31ms** |
+| **jvm:ktor-keel-netty** | **151K** | **541us** | **12.65ms** |
+| jvm:netty-raw | 148K | 644us | 776us |
+| zig-bench | 148K | 651us | 752us |
+| go-bench | 146K | 489us | 1.83ms |
+| jvm:ktor-netty | 142K | 480us | 3.64ms |
+| swift-bench | 129K | 505us | 12.88ms |
+| jvm:vertx | 112K | 0.89ms | 1.31ms |
+| **native:ktor-keel-kqueue** | **101K** | **569us** | **5.88ms** |
+| **native:pipeline-http-nodejs** | **95K** | **1.02ms** | **2.06ms** |
+| jvm:ktor-cio | 58K | 1.28ms | 28.72ms |
+| **native:pipeline-http-nwconnection** | **55K** | **1.83ms** | **2.04ms** |
+| native:ktor-cio | 3K | 10.13ms | 410.35ms |
 
 ### HTTPS (Pipeline API, `/hello`)
 
 | Server | TLS Backend | Req/sec | p50 |
 |---|---|---:|---:|
-| **native:pipeline-http-io-uring** (Linux) | OpenSSL | **508K** | **94us** |
-| **native:pipeline-http-epoll** (Linux) | OpenSSL | **490K** | **99us** |
-| **native:pipeline-http-kqueue** (macOS) | OpenSSL | **133K** | **458us** |
-| **jvm:pipeline-http-netty** (macOS) | JSSE/SslHandler | **130K** | **481us** |
+| **native:pipeline-http-io-uring** (Linux) | OpenSSL | **600K** | **69us** |
+| **native:pipeline-http-epoll** (Linux) | OpenSSL | **589K** | **70us** |
+| **native:pipeline-http-kqueue** (macOS) | OpenSSL | **154K** | **576us** |
+| **jvm:pipeline-http-netty** (macOS) | JSSE/SslHandler | **144K** | **630us** |
 
 ### `/large` Response (100 KB)
 
@@ -332,29 +331,29 @@ Pipeline API, wrk 4t/100c/10s, 3-run median:
 
 | Server | macOS M1 | Linux Ryzen 9 |
 |---|---:|---:|
-| **native:pipeline-http-epoll** | — | **121K** |
-| **native:pipeline-http-io-uring** | — | **115K** |
-| **jvm:pipeline-http-nio** | **56K** | **117K** |
-| **jvm:pipeline-http-netty** | **54K** | **109K** |
-| **native:pipeline-http-kqueue** | **44K** | — |
-| **native:pipeline-http-nwconnection** | **25K** | — |
-| **native:pipeline-http-nodejs** | **7K** | — |
+| **native:pipeline-http-io-uring** | — | **393K** |
+| **jvm:pipeline-http-nio** | **62K** | **365K** |
+| **native:pipeline-http-epoll** | — | **357K** |
+| **jvm:pipeline-http-netty** | **61K** | **289K** |
+| **native:pipeline-http-kqueue** | **63K** | — |
+| **native:pipeline-http-nwconnection** | **28K** | — |
+| **native:pipeline-http-nodejs** | **7K** | **10K** |
 
 Ktor Coroutine mode via `keel-server-ktor`, Linux Ryzen 9:
 
 | Server | `/large` Req/sec | Notes |
 |---|---:|---|
-| **jvm:ktor-keel-nio** | **228K** | |
-| **jvm:ktor-keel-netty** | **207K** | zero-copy direct-write path (PR #246) |
-| jvm:netty-raw (reference) | 287K | raw Netty, no framework |
+| **jvm:ktor-keel-netty** | **239K** | |
+| **jvm:ktor-keel-nio** | **113K** | regression vs April (228K) under investigation |
+| jvm:netty-raw (reference) | 273K | raw Netty, no framework |
 
 ### Notes
 
 - All keel engines use fully async I/O with HTTP/1.1 keep-alive.
-- **Pipeline mode** (zero-coroutine push I/O) is the fastest mode — **pipeline-http-epoll** (870K) reaches 66% of Rust on Linux.
-- **Ktor Coroutine mode** (suspend-based) adds coroutine overhead — **ktor-keel-epoll** (589K) is still 65x faster than **ktor-cio**.
-- On `/large` (100KB) via Ktor, **jvm:ktor-keel-nio** reaches **228K req/s** — within 20% of raw Netty.
-- **jvm:ktor-keel-nio** (128K on macOS, 540K on Linux) approaches **jvm:ktor-netty** performance on `/hello`.
+- **Pipeline mode** (zero-coroutine push I/O) is the fastest mode — **jvm:pipeline-http-nio** (926K) and **pipeline-http-epoll** (890K) reach ~73-76% of the fastest native baselines on Linux.
+- **Ktor Coroutine mode** (suspend-based) adds coroutine overhead — **jvm:ktor-keel-nio** (827K) now sits within 11% of Pipeline mode on Linux.
+- On `/large` (100KB) via Ktor, **jvm:ktor-keel-netty** reaches **239K req/s** — within 13% of raw Netty.
+- On macOS the field is NIC/loopback-bound and tightly clustered (155-159K): **pipeline-http-kqueue**, **pipeline-http-nio**, and **ktor-keel-nio** are all within 2% of the fastest server measured.
 
 ---
 
