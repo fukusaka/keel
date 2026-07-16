@@ -13,20 +13,23 @@ keel unifies them behind a single Kotlin Multiplatform interface, giving you the
 
 - **Native-first**: drives epoll, kqueue, and io_uring directly from Kotlin/Native
 - **7 I/O engines**: epoll · kqueue · io_uring · NIO · Netty · NWConnection · Node.js
+- **Standalone HTTP server**: `keel-server-http` — HTTP/1.1 with routing, middleware, static files, trailers, and a builder DSL, independent of Ktor
+- **WebSocket server**: upgrade handshake + permessage-deflate (RFC 7692) with pooled zero-copy frame payloads
 - **TLS**: 4 backends (OpenSSL, Mbed TLS, AWS-LC, JSSE) + listener-level TLS for NWConnection/Node.js
+- **Compression**: gzip/deflate SPI with HTTP content-encoding negotiation for requests and responses
 - **Pipeline mode**: zero-coroutine Pipeline with push-mode I/O for maximum throughput
-- **Codec layer**: HTTP/1.1 and WebSocket built on pure `kotlinx.io` primitives
+- **Codec layer**: HTTP/1.1 and WebSocket as pipeline handlers exchanging pooled `IoBuf` buffers (zero-copy I/O boundary)
 - **Suspend API**: all Coroutine-mode I/O operations are `suspend fun`
 
 ```
   ┌────────────────────────────────────────────┐
-  │         Application / Ktor / :server       │
+  │   Application / keel-server-http / Ktor    │
   └──────────────────┬─────────────────────────┘
                      │
        ┌─────────────┴─────────────┐
        │     Codec (HTTP, WS)      │
        ├───────────────────────────┤
-       │  Pipeline (push)   │
+       │      Pipeline (push)      │
        ├───────────────────────────┤
        │  TLS (OpenSSL│JSSE│...)   │
        └─────────────┬─────────────┘
@@ -53,25 +56,33 @@ keel unifies them behind a single Kotlin Multiplatform interface, giving you the
 
 ```
 keel/
-├── keel-core/                 # StreamEngine / Channel / Server / BindConfig / Logger
-├── keel-io/                   # IoBuf / SuspendSource / SuspendSink / BufferAllocator
-├── keel-native-posix/         # Shared POSIX socket utils for Native engines
-├── keel-engine-epoll/         # linuxX64, linuxArm64 (epoll)
-├── keel-engine-kqueue/        # macosArm64, macosX64 (kqueue)
-├── keel-engine-io-uring/      # linuxX64, linuxArm64 (io_uring, Linux 5.1+)
-├── keel-engine-nio/           # JVM (java.nio.Selector)
-├── keel-engine-netty/         # JVM (Netty 4.2 delegation)
-├── keel-engine-nodejs/        # JS (Node.js net/tls)
-├── keel-engine-nwconnection/  # macosArm64, macosX64 (Network.framework)
-├── keel-tls/                  # TlsConfig / TlsCodecFactory / PemDerConverter / Pkcs8KeyUnwrapper
-├── keel-tls-jsse/             # JVM (JSSE / JDK SSLContext)
-├── keel-tls-openssl/          # Native (OpenSSL cinterop, -Ptls build)
-├── keel-tls-mbedtls/          # Native (Mbed TLS cinterop, -Ptls build)
-├── keel-tls-awslc/            # Native (AWS-LC cinterop, -Ptls build)
-├── keel-tls-nodejs/           # JS (Node.js tls module, -Ptls build)
-├── keel-codec-http/           # HTTP/1.1 parser / writer (RFC 7230/7231)
-├── keel-codec-websocket/      # WebSocket framing (RFC 6455)
-└── keel-server-ktor/          # Ktor server engine adapter
+├── keel-io/                     # IoBuf / chunk-based pooled BufferAllocator / kotlinx-io bridges
+├── keel-core/                   # IoEngine / Channel / StreamServer / Pipeline / DNS resolver
+├── keel-native-posix/           # Shared POSIX socket layer for Native engines
+├── keel-engine-epoll/           # linuxX64, linuxArm64 (epoll)
+├── keel-engine-kqueue/          # macosArm64, macosX64 (kqueue)
+├── keel-engine-io-uring/        # linuxX64, linuxArm64 (io_uring, Linux 5.1+)
+├── keel-engine-nio/             # JVM (java.nio.Selector)
+├── keel-engine-netty/           # JVM (Netty 4.2 delegation)
+├── keel-engine-nodejs/          # JS (Node.js net/tls)
+├── keel-engine-nwconnection/    # macosArm64, macosX64 (Network.framework)
+├── keel-codec-http/             # HTTP/1.1 codec: pipeline handlers, streaming, compression negotiation
+├── keel-codec-websocket/        # WebSocket framing (RFC 6455) + pipeline handlers
+├── keel-compression/            # Compression SPI (gzip / deflate)
+├── keel-compression-zlib/       # zlib backend for the compression SPI
+├── keel-tls/                    # TlsCodec protect/unprotect API, TlsConfig, PEM/DER helpers
+├── keel-tls-jsse/               # JVM (JSSE / JDK SSLContext)
+├── keel-tls-openssl/            # Native (OpenSSL cinterop, -Ptls build)
+├── keel-tls-mbedtls/            # Native (Mbed TLS cinterop, -Ptls build)
+├── keel-tls-awslc/              # Native (AWS-LC cinterop, -Ptls build)
+├── keel-server/                 # Server bootstrap, TLS wiring, server DSL base
+├── keel-server-http/            # Standalone HTTP/1.1 server: routing, middleware, static files, DSL
+├── keel-server-websocket/       # WebSocket server: upgrade, permessage-deflate
+├── keel-server-ktor/            # Ktor server engine adapter
+├── keel-server-ktor-base/       # Shared internals for the Ktor adapters
+├── keel-server-ktor-cio/        # Ktor adapter driving ktor-http-cio on keel sockets
+├── keel-observability-opentelemetry/  # OpenTelemetry binding for allocator stats (JVM)
+└── keel-testing-{internal,engine,server-http}/  # test fixtures
 ```
 
 ---
@@ -93,82 +104,100 @@ keel/
 
 ## Roadmap
 
-### Current
+### Current (v0.4.0)
 
 - 7 I/O engines: epoll, kqueue, io_uring, NIO, Netty, NWConnection, Node.js
-- Pipeline mode: Pipeline with push-mode I/O (all 7 engines)
+- Standalone HTTP/1.1 server (`keel-server-http`): routing, middleware, static files, HTTP trailers, builder DSL with a pluggable pipeline extension point
+- WebSocket server: upgrade handshake, permessage-deflate, pooled zero-copy payloads
 - TLS: 4 backends (OpenSSL, Mbed TLS, AWS-LC, JSSE) + listener-level TLS
-- Per-server configuration (backlog, TLS)
-- Write backpressure with high/low water marks
-- SlabAllocator (Native) + PooledDirectAllocator (JVM) + leak detection
-- EventLoop dispatch, deferred flush, writev batching
+- Compression: gzip/deflate SPI + zlib backend, HTTP content-encoding negotiation
+- io_uring: multishot accept, provided buffer rings, registered buffers, zero-copy send
+- Chunk-based pooled allocator (size classes + chunk arena + sharding) with lifecycle listeners, leak detection, and OpenTelemetry stats binding
+- Pipeline mode with push I/O, write backpressure with high/low water marks
 
 ### Next
 
-- `:server` module (push-based, Ktor-independent native server)
-- `:client` module (HTTP client with connection pooling)
+- HTTP client engine (Ktor `HttpClientEngine` adapter + client codec pair)
 - iOS targets
+- Happy Eyeballs (RFC 8305) connection establishment
 
 ### Future
 
-- UDP transport
-- HTTP/2, gRPC
+- HTTP/2, UDP transport
 - HTTP/3 (QUIC)
+- gRPC
 
 ---
 
 ## Installation
 
-> **Note:** keel is not yet published to Maven Central. Build from source and publish to your local Maven repository.
+> **Note:** keel is not yet published to a Maven repository (publication is planned for v1.0).
+> Until then, consume it from source as a Gradle composite build.
 
 ```bash
 git clone https://github.com/fukusaka/keel.git
-cd keel
-./gradlew publishToMavenLocal
+cd keel && git switch --detach v0.4.0
 ```
-
-Then add the dependency to your project:
 
 ```kotlin
-// build.gradle.kts
-repositories {
-    mavenLocal()
-}
-
-dependencies {
-    // Ktor + keel server engine
-    implementation("io.github.fukusaka.keel:keel-server-ktor:0.3.0")
-    implementation("io.ktor:ktor-server-core:3.4.1")
-
-    // Low-level I/O (without Ktor)
-    implementation("io.github.fukusaka.keel:keel-core:0.3.0")
-
-    // Codecs (optional)
-    implementation("io.github.fukusaka.keel:keel-codec-http:0.3.0")
-    implementation("io.github.fukusaka.keel:keel-codec-websocket:0.3.0")
-}
+// settings.gradle.kts (your project)
+includeBuild("path/to/keel")
 ```
 
-Maven Central publication is planned for a future release.
+```kotlin
+// build.gradle.kts — Gradle substitutes these with the included build's projects
+dependencies {
+    // Ktor + keel server engine
+    implementation("io.github.fukusaka.keel:keel-server-ktor")
+    implementation("io.ktor:ktor-server-core:3.4.1")
+
+    // Standalone HTTP server (without Ktor)
+    implementation("io.github.fukusaka.keel:keel-server-http")
+
+    // Low-level I/O only
+    implementation("io.github.fukusaka.keel:keel-core")
+}
+```
 
 ---
 
 ## Quick Start
 
+### Standalone server (`keel-server-http`)
+
 ```kotlin
+import io.github.fukusaka.keel.engine.nio.NioEngine
+import io.github.fukusaka.keel.server.http.keelHttpServer
+
 fun main() {
-    embeddedServer(Keel, port = 8080) {
+    val server = keelHttpServer(NioEngine()) {
+        connector { port = 8080 }
+        get("/hello") { call -> call.respondText("Hello, world!") }
+    }
+    server.start()
+}
+```
+
+### Ktor adapter (`keel-server-ktor`)
+
+```kotlin
+import io.github.fukusaka.keel.engine.nio.NioEngine
+import io.github.fukusaka.keel.server.ktor.Keel
+
+fun main() {
+    embeddedServer(Keel, configure = {
+        engine = NioEngine()
+        connector { port = 8080 }
+    }) {
         routing {
-            get("/") {
-                call.respondText("Hello from keel!")
-            }
+            get("/") { call.respondText("Hello from keel!") }
         }
     }.start(wait = true)
 }
 ```
 
 ```bash
-./gradlew :sample:run
+./gradlew -Pbenchmark :sample:run
 # → http://localhost:8080/
 ```
 
@@ -205,6 +234,9 @@ docker run --rm --platform linux/amd64 \
 ---
 
 ## Benchmark
+
+> **Measurement vintage**: the tables below were last refreshed in April 2026 on a pre-v0.4.0
+> build. A full re-measurement against v0.4.0 is planned for an upcoming patch release.
 
 ### Setup
 
