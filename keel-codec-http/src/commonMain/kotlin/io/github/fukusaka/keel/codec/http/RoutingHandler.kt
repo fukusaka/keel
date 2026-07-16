@@ -16,11 +16,13 @@ import kotlin.reflect.KClass
  * silently released without propagation; applications that need request body
  * access should insert [HttpBodyAggregator] before this handler.
  *
- * **Typical pipeline setup** (outbound handlers must precede inbound in addLast order
- * so that outbound propagation from this handler reaches them toward HEAD):
+ * **Typical pipeline setup** (decoder before encoder — [HttpResponseEncoder] is a
+ * duplex handler that snoops inbound request heads to suppress HEAD response
+ * bodies, so it must sit after the decoder on the inbound path while still
+ * preceding this handler for outbound propagation):
  * ```
- * pipeline.addLast("encoder", HttpResponseEncoder())
  * pipeline.addLast("decoder", HttpRequestDecoder())
+ * pipeline.addLast("encoder", HttpResponseEncoder())
  * pipeline.addLast("routing", RoutingHandler(mapOf(
  *     "/hello" to { _ -> HttpResponse.ok("Hello, World!") },
  * )))
