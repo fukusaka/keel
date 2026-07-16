@@ -12,14 +12,17 @@ Linux の epoll、macOS の kqueue、JVM の Netty — プラットフォーム�
 
 - **Native ファースト**: epoll・kqueue・io_uring を Kotlin/Native から直接駆動
 - **7 種の I/O エンジン**: epoll・kqueue・io_uring・NIO・Netty・NWConnection・Node.js
+- **スタンドアロン HTTP サーバー**: `keel-server-http` — routing・middleware・static files・trailers・builder DSL を備えた Ktor 非依存の HTTP/1.1 サーバー
+- **WebSocket サーバー**: upgrade ハンドシェイク + permessage-deflate (RFC 7692)、pooled zero-copy frame payload
 - **TLS**: 4 バックエンド (OpenSSL, Mbed TLS, AWS-LC, JSSE) + NWConnection/Node.js リスナーレベル TLS
+- **圧縮**: gzip/deflate SPI + リクエスト/レスポンス両方向の HTTP content-encoding ネゴシエーション
 - **Pipeline モード**: ゼロコルーチンの Pipeline による push-mode I/O で最大スループット
-- **コーデック層**: kotlinx.io プリミティブのみで構成した HTTP/1.1・WebSocket
+- **コーデック層**: pooled `IoBuf` を受け渡す pipeline handler として構成した HTTP/1.1・WebSocket（zero-copy I/O 境界）
 - **suspend API**: Coroutine モードの全 I/O 操作が `suspend fun`
 
 ```
   ┌────────────────────────────────────────────┐
-  │      アプリケーション / Ktor / :server      │
+  │ アプリケーション / keel-server-http / Ktor │
   └──────────────────┬─────────────────────────┘
                      │
        ┌─────────────┴─────────────┐
@@ -53,25 +56,33 @@ Linux の epoll、macOS の kqueue、JVM の Netty — プラットフォーム�
 
 ```
 keel/
-├── keel-core/                 # StreamEngine / Channel / Server / BindConfig / Logger
-├── keel-io/                   # IoBuf / SuspendSource / SuspendSink / BufferAllocator
-├── keel-native-posix/         # Native エンジン共有 POSIX ソケットユーティリティ
-├── keel-engine-epoll/         # linuxX64, linuxArm64 (epoll)
-├── keel-engine-kqueue/        # macosArm64, macosX64 (kqueue)
-├── keel-engine-io-uring/      # linuxX64, linuxArm64 (io_uring, Linux 5.1+)
-├── keel-engine-nio/           # JVM (java.nio.Selector)
-├── keel-engine-netty/         # JVM (Netty 4.2 委譲)
-├── keel-engine-nodejs/        # JS (Node.js net/tls)
-├── keel-engine-nwconnection/  # macosArm64, macosX64 (Network.framework)
-├── keel-tls/                  # TlsConfig / TlsCodecFactory / PemDerConverter / Pkcs8KeyUnwrapper
-├── keel-tls-jsse/             # JVM (JSSE / JDK SSLContext)
-├── keel-tls-openssl/          # Native (OpenSSL cinterop, -Ptls ビルド)
-├── keel-tls-mbedtls/          # Native (Mbed TLS cinterop, -Ptls ビルド)
-├── keel-tls-awslc/            # Native (AWS-LC cinterop, -Ptls ビルド)
-├── keel-tls-nodejs/           # JS (Node.js tls, -Ptls ビルド)
-├── keel-codec-http/           # HTTP/1.1 パーサー／ライター (RFC 7230/7231)
-├── keel-codec-websocket/      # WebSocket フレーミング (RFC 6455)
-└── keel-server-ktor/          # Ktor サーバーエンジンアダプタ
+├── keel-io/                     # IoBuf / chunk ベース pooled BufferAllocator / kotlinx-io ブリッジ
+├── keel-core/                   # IoEngine / Channel / StreamServer / Pipeline / DNS resolver
+├── keel-native-posix/           # Native エンジン共有 POSIX ソケット層
+├── keel-engine-epoll/           # linuxX64, linuxArm64 (epoll)
+├── keel-engine-kqueue/          # macosArm64, macosX64 (kqueue)
+├── keel-engine-io-uring/        # linuxX64, linuxArm64 (io_uring, Linux 5.1+)
+├── keel-engine-nio/             # JVM (java.nio.Selector)
+├── keel-engine-netty/           # JVM (Netty 4.2 委譲)
+├── keel-engine-nodejs/          # JS (Node.js net/tls)
+├── keel-engine-nwconnection/    # macosArm64, macosX64 (Network.framework)
+├── keel-codec-http/             # HTTP/1.1 コーデック: pipeline handler・streaming・圧縮ネゴシエーション
+├── keel-codec-websocket/        # WebSocket フレーミング (RFC 6455) + pipeline handler
+├── keel-compression/            # 圧縮 SPI (gzip / deflate)
+├── keel-compression-zlib/       # 圧縮 SPI の zlib バックエンド
+├── keel-tls/                    # TlsCodec protect/unprotect API・TlsConfig・PEM/DER ヘルパー
+├── keel-tls-jsse/               # JVM (JSSE / JDK SSLContext)
+├── keel-tls-openssl/            # Native (OpenSSL cinterop, -Ptls ビルド)
+├── keel-tls-mbedtls/            # Native (Mbed TLS cinterop, -Ptls ビルド)
+├── keel-tls-awslc/              # Native (AWS-LC cinterop, -Ptls ビルド)
+├── keel-server/                 # サーバー bootstrap・TLS 配線・サーバー DSL 基盤
+├── keel-server-http/            # スタンドアロン HTTP/1.1 サーバー: routing・middleware・static files・DSL
+├── keel-server-websocket/       # WebSocket サーバー: upgrade・permessage-deflate
+├── keel-server-ktor/            # Ktor サーバーエンジンアダプタ
+├── keel-server-ktor-base/       # Ktor アダプタ共有内部実装
+├── keel-server-ktor-cio/        # keel ソケット上で ktor-http-cio を駆動する Ktor アダプタ
+├── keel-observability-opentelemetry/  # allocator stats の OpenTelemetry バインディング (JVM)
+└── keel-testing-{internal,engine,server-http}/  # テストフィクスチャ
 ```
 
 ---
@@ -93,67 +104,67 @@ keel/
 
 ## ロードマップ
 
-### 現在
+### 現在 (v0.4.0)
 
 - 7 種の I/O エンジン: epoll, kqueue, io_uring, NIO, Netty, NWConnection, Node.js
-- Pipeline モード: 全 7 エンジンで Pipeline + push-mode I/O
+- スタンドアロン HTTP/1.1 サーバー (`keel-server-http`): routing・middleware・static files・HTTP trailers・pluggable な pipeline 拡張点を備えた builder DSL
+- WebSocket サーバー: upgrade ハンドシェイク、permessage-deflate、pooled zero-copy payload
 - TLS: 4 バックエンド (OpenSSL, Mbed TLS, AWS-LC, JSSE) + リスナーレベル TLS
-- per-server 設定 (backlog, TLS)
-- Write バックプレッシャー (high/low 水位線)
-- SlabAllocator (Native) + PooledDirectAllocator (JVM) + リーク検出
-- EventLoop dispatch、deferred flush、writev バッチング
+- 圧縮: gzip/deflate SPI + zlib バックエンド、HTTP content-encoding ネゴシエーション
+- io_uring: multishot accept・provided buffer ring・registered buffers・zero-copy send
+- chunk ベース pooled allocator (size class + chunk arena + sharding)、lifecycle listener・リーク検出・OpenTelemetry stats バインディング
+- Pipeline モード (push I/O)、Write バックプレッシャー (high/low 水位線)
 
 ### 次期
 
-- `:server` モジュール (push ベース、Ktor 非依存ネイティブサーバー)
-- `:client` モジュール (コネクションプーリング付き HTTP クライアント)
+- HTTP クライアントエンジン (Ktor `HttpClientEngine` アダプタ + client codec pair)
 - iOS ターゲット
+- Happy Eyeballs (RFC 8305) 接続確立
 
 ### 将来
 
-- UDP トランスポート
-- HTTP/2, gRPC
+- HTTP/2、UDP トランスポート
 - HTTP/3 (QUIC)
+- gRPC
 
 ---
 
 ## インストール
 
-> **注意:** keel はまだ Maven Central に公開されていません。ソースからビルドしてローカル Maven リポジトリに公開して使用してください。
+> **注意:** keel はまだ Maven リポジトリに公開されていません（公開は v1.0 で予定）。
+> それまでは Gradle composite build でソースから利用してください。
 
 ```bash
 git clone https://github.com/fukusaka/keel.git
-cd keel
-./gradlew publishToMavenLocal
+cd keel && git switch --detach v0.4.0
 ```
-
-プロジェクトへの依存関係の追加:
 
 ```kotlin
-// build.gradle.kts
-repositories {
-    mavenLocal()
-}
-
-dependencies {
-    // Ktor + keel サーバーエンジン
-    implementation("io.github.fukusaka.keel:keel-server-ktor:0.3.0")
-    implementation("io.ktor:ktor-server-core:3.4.1")
-
-    // 低レベル I/O（Ktor なし）
-    implementation("io.github.fukusaka.keel:keel-core:0.3.0")
-
-    // コーデック（任意）
-    implementation("io.github.fukusaka.keel:keel-codec-http:0.3.0")
-    implementation("io.github.fukusaka.keel:keel-codec-websocket:0.3.0")
-}
+// settings.gradle.kts（利用側プロジェクト）
+includeBuild("path/to/keel")
 ```
 
-Maven Central への公開は将来のリリースで予定しています。
+```kotlin
+// build.gradle.kts — Gradle が included build のプロジェクトに置換する
+dependencies {
+    // Ktor + keel サーバーエンジン
+    implementation("io.github.fukusaka.keel:keel-server-ktor")
+    implementation("io.ktor:ktor-server-core:3.4.1")
+
+    // スタンドアロン HTTP サーバー（Ktor なし）
+    implementation("io.github.fukusaka.keel:keel-server-http")
+
+    // 低レベル I/O のみ
+    implementation("io.github.fukusaka.keel:keel-core")
+}
+```
 
 ---
 
 ## ベンチマーク
+
+> **計測時期**: 以下の表は v0.4.0 以前のビルドで 2026 年 4 月に最終更新したもの。
+> v0.4.0 での full 再計測は後続の patch リリースで予定。
 
 ### 計測方法
 
