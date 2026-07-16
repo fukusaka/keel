@@ -40,7 +40,7 @@ IoEngine  (config + close)
 アプリケーションは `StreamEngine` を 2 通りの方法で利用できます:
 
 **Coroutine モード** (`engine.bind()` + `server.accept()`)  
-`engine.bind()` は呼び出し元スレッドで同期実行し、`Server` を返します。`server.accept()` は `suspend fun` で、EventLoop が新しい接続を検出するまで suspend し、コルーチンを再開します。接続後は `val buf = channel.read()` がデータ到着まで suspend し、スレッドをブロックせずに逐次的に書けます。Ktor および kotlinx coroutines と自然に統合できます。トレードオフ: `read()` の再開ごとにコルーチンのコンテキストスイッチが発生します。
+`engine.bind()` は `suspend fun` で、`StreamServer` を返します。`server.accept()` は `suspend fun` で、EventLoop が新しい接続を検出するまで suspend し、コルーチンを再開します。接続後は `channel.read(buf)` が呼び出し側の用意した `IoBuf` にデータを読み込み、データ到着まで suspend するため、スレッドをブロックせずに逐次的に書けます。Ktor および kotlinx coroutines と自然に統合できます。トレードオフ: `read()` の再開ごとにコルーチンのコンテキストスイッチが発生します。
 
 **Pipeline モード** (`engine.bindPipeline()`)  
 エンジンが EventLoop スレッド上でハンドラを直接呼び出します — suspend なし、コンテキストスイッチなし。ソケットが読み取り可能になると、EventLoop がデータを `IoBuf` に読み込み、`Pipeline` のインバウンドイベントを発火します: データは TLS → デコーダ → ユーザーハンドラ → エンコーダと EventLoop スレッドを離れることなく同期的に流れます。トレードオフ: ハンドラが EventLoop スレッドをブロックしてはなりません。
@@ -55,7 +55,7 @@ IoEngine  (config + close)
 
 keel は 1 EventLoop につき 1 スレッドで動作します。スレッド数は `IoEngineConfig(threads = N)` で設定します — `0`（デフォルト）は CPU コア数と同数です。
 
-**Coroutine モード**: I/O の準備が整ったとき（epoll、kqueue、NIO、Netty）または完了したとき（io_uring、NWConnection）、EventLoop が中断中のコルーチンを再開します。コルーチンは EventLoop スレッド上で直接実行されます — keel は `channel.ioDispatcher`（および `appDispatcher`）をエンジンの native I/O プリミティブを駆動するスレッドと揃えているため、I/O 通知からコルーチン再開までスレッド間の受け渡しは発生しません（全エンジン共通）。ブロッキング I/O や CPU 負荷の高い処理を行うユーザーハンドラは `withContext(Dispatchers.IO)` / `withContext(Dispatchers.Default)` で明示的にオフロードしてください。
+**Coroutine モード**: I/O の準備が整ったとき（epoll、kqueue、NIO、Netty）または完了したとき（io_uring、NWConnection）、EventLoop が中断中のコルーチンを再開します。コルーチンは EventLoop スレッド上で直接実行されます — keel は `channel.ioDispatcher` をエンジンの native I/O プリミティブを駆動するスレッドと揃えているため、I/O 通知からコルーチン再開までスレッド間の受け渡しは発生しません（全エンジン共通）。ブロッキング I/O や CPU 負荷の高い処理を行うユーザーハンドラは `withContext(Dispatchers.IO)` / `withContext(Dispatchers.Default)` で明示的にオフロードしてください。
 
 **Pipeline モード**: EventLoop がハンドラチェーンを自スレッド上で同期的に呼び出します。コルーチンもスレッド間ディスパッチもなく、すべてのハンドラコードは EventLoop スレッド上で実行されます。
 
@@ -120,9 +120,9 @@ keel の TLS には 2 つの統合モードがあります:
 各 Channel は生涯同じ EventLoop に束縛されます。その Channel に関する I/O イベント・handler 呼び出し・状態変更はすべて同じスレッドで実行されます。Channel レベルの状態にロックを置かないのは意図的な設計であり、スレッド固定の保証によって不要になっています。keel の Channel や Pipeline の実装でロックがないように見えるコードは、偶然ではなく設計によって正しいのです。I/O ホットパスにロックを置くと接続数の増加とともにレイテンシと競合が増大します — スレッド固定はその両方を根本から排除します。
 
 **エンジン非依存コーデック**  
-コーデックモジュールはいずれの `keel-engine-*` モジュールにも依存しません。`keel-codec-websocket` は `kotlinx.io` のみに依存します。`keel-codec-http` はさらに `keel-io`（`SuspendSource` / `SuspendSink` のため）に依存します。どちらもエンジンを知りません。コーデックがエンジン内部に依存していたとすれば、7 つのエンジンそれぞれに固有のコーデック実装が必要になり、ユニットテストにも動作中のエンジンが必要になります。代わりに単一の実装が全エンジンで動作し、テストはエンジンなしのインメモリ `Buffer` に対して実行できます。
+コーデックモジュールはいずれの `keel-engine-*` モジュールにも依存しません。`keel-codec-http` と `keel-codec-websocket` はどちらもエンジン非依存の `keel-io` / `keel-core` 抽象のみに依存します（`keel-codec-http` はさらにコンテンツエンコーディング用の `keel-compression` に依存）。コーデックの I/O 境界は `IoBuf` パイプラインハンドラです: デコーダはプール管理の `IoBuf` を `TypedInboundHandler<IoBuf>` として受け取り、エンコーダは `ctx.propagateWrite` で `IoBuf` を送出します。サスペンド系ヘルパー（`keel-io` の `BufferedSuspendSource` / `BufferedSuspendSink`）は Coroutine モードのパーサ向けの補助レイヤです。どちらのコーデックもエンジンを知りません。コーデックがエンジン内部に依存していたとすれば、7 つのエンジンそれぞれに固有のコーデック実装が必要になり、ユニットテストにも動作中のエンジンが必要になります。代わりに単一の実装が全エンジンで動作し、コーデックのテストはエンジンなしでインメモリ実行できます。
 
-この境界は意図的な設計です: コーデックはリクエスト粒度で動作するため、kotlinx-io の GC 管理 `Buffer` で十分です。エンジンはパケット粒度（recv システムコールごと）で動作するため、`IoBuf` + `BufferAllocator` でアロケーションを完全制御し、I/O ホットパスから GC を排除します。
+バッファ戦略もこのレイヤリングに従います: コーデックの I/O 境界はプール管理の `IoBuf` であり、可変長の蓄積（フレーム再組立、ボディ集約）は伸長する `ByteArray` ではなく keel-io のチャンクベースキャリア（`IoBufAccumulator` / `IoBufChunks`）を通します。kotlinx-io の GC 管理 `Buffer` はコーデック内部のパース用ツールとしてのみ残っています — GC 所有のスクラッチ構造を使うことで、純粋なパースロジックに参照カウントの負担を持ち込まずに済みます。エンジンはパケット粒度（recv システムコールごと）で動作するため、`IoBuf` + `BufferAllocator` でアロケーションを完全制御し、I/O ホットパスから GC を排除します。
 
 **ゼロコピー I/O のためのプラットフォームネイティブメモリ `IoBuf`**  
 `IoBuf` は各ターゲットでプラットフォームネイティブなメモリを使用します: Native では `nativeHeap`、JVM では `ByteBuffer.allocateDirect`、JS では `Int8Array`（V8 管理）。エンジン実装は `IoBuf.unsafePointer`（Native）または `IoBuf.unsafeBuffer`（JVM）を OS の read/write システムコールに直接渡します。I/O ホットパスで OS バッファとアプリケーションヒープ間のコピーが発生しません。ネイティブメモリを使わない場合、JVM は GC 管理ヒープのオブジェクトが再配置される可能性があるため OS に直接アドレスを渡せず、システムコールのたびに一時的なネイティブバッファへのコピーが暗黙的に発生します。

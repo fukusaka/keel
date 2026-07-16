@@ -61,7 +61,7 @@ keel/
 ├── keel-native-posix/           # Shared POSIX socket layer for Native engines
 ├── keel-engine-epoll/           # linuxX64, linuxArm64 (epoll)
 ├── keel-engine-kqueue/          # macosArm64, macosX64 (kqueue)
-├── keel-engine-io-uring/        # linuxX64, linuxArm64 (io_uring, Linux 5.1+)
+├── keel-engine-io-uring/        # linuxX64, linuxArm64 (io_uring, Linux 5.6+)
 ├── keel-engine-nio/             # JVM (java.nio.Selector)
 ├── keel-engine-netty/           # JVM (Netty 4.2 delegation)
 ├── keel-engine-nodejs/          # JS (Node.js net/tls)

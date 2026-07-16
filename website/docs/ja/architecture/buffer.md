@@ -27,7 +27,7 @@ processData(buf)
 buf.release()         // caller 所有、使い終わりで release
 ```
 
-**Netty 経験者向け**: モデルは Netty の `ByteBuf` + `ctx.writeAndFlush(buf)` と同じ — write で transfer、keep したければ `retain()` を先に呼ぶ。差分は cosmetic な点だけ (非 atomic な `refCount`、固定 capacity、platform-native backing)。
+**Netty 経験者向け**: モデルは Netty の `ByteBuf` + `ctx.writeAndFlush(buf)` と同じ — write で transfer、keep したければ `retain()` を先に呼ぶ。差分は cosmetic な点だけ (固定 capacity、KMP target ごとの platform-native backing)。
 
 ## IoBuf の概要
 
@@ -47,60 +47,52 @@ JS の `Int8Array` は GC 管理下にあるが、platform 間の API 一貫性�
 
 ### スレッドセーフティ契約
 
-`IoBuf` の `refCount` は **非 atomic な bare `Int`**（`@Volatile` すら付与しない）として保持されている。`AtomicInteger` や `AtomicIntegerFieldUpdater` を使う Netty `ByteBuf` とは対照的である。
+`IoBuf` のスレッドセーフティ保証は API カテゴリで分かれる — Netty `ByteBuf` と同じ分け方である:
 
-これは oversight ではなく明示的な設計判断で、以下の契約に基づく:
+- **ライフサイクル（`retain()` / `release()` / `close()`）は thread-safe。** 参照カウントは atomic で、更新プロトコルは「現在値を check してから bump する」CAS loop である: 並行更新に負けた retain / release は新しい値で retry し、release 済み buffer を観測した呼び出しはカウントを乱さずに `IllegalStateException` を throw する。参照を保持している thread であれば、どの thread からでも調整なしに retain / release を呼べる。
+- **content アクセス（read\*/write\*、`readerIndex` / `writerIndex`、`clear()`）は thread-safe ではない。** ある瞬間に buffer の content にアクセスできるのは最大 1 thread。content アクセスを別 thread に引き渡すには happens-before edge（EventLoop の `dispatch`、Netty `EventLoop.execute`、NWConnection の `dispatch_queue_async`、channel send 等）が必要で、引き渡し後は受け手 thread が唯一の content アクセス主体になる。
 
-- **buffer の `refCount` 操作は、その時点で buffer を所有している 1 スレッドからのみ行われる**
-
-所有権の単一性は次節の「所有権モデル」で定義する transfer semantics により保証される。所有権移譲が thread 境界を跨ぐ場合、移譲機構自体（EventLoop の `dispatch`、Netty `EventLoop.execute`、NWConnection の `dispatch_queue_async` 等）が **happens-before 関係を提供する** ため、受け手 thread は直前の `refCount` / index 値を正しく観測できる。`@Volatile` や atomic CAS は不要になる。
-
-この契約を支える keel 側の仕組み:
+実際には keel は content アクセスもライフサイクルも channel を所有する EventLoop 上に揃えている:
 
 - 全 engine で `ioDispatcher` を worker EventLoop に統一している。transport 層の操作は必ず EL 上で実行される。
 - push 型 engine（NWConnection / Netty）も `NwConnectionQueueDispatcher` / `NettyEventLoopDispatcher` で EL thread alignment される。`SuspendBridgeHandler` 経由の callback → coroutine resume も同 EL 上で実行される。
 - `Channel.write(buf)` は内部で write queue に積むが、dequeue + flush + release は同一 EL 上で行われる。
 
+atomic なライフサイクルが効くのは、残る off-EL パターンである: 非 EventLoop coroutine から channel を消費する consumer や、別 thread で release する fan-out も、retain / release 自体は正しく動く — 避けるべきは buffer の *content* に別のアクセス主体と並行して触ることだけである。
+
 ### 契約違反が発生する典型ケース
 
-以下のコードは契約を破る:
+ライフサイクル保証は content には及ばない。以下のコードは依然として契約違反である:
 
 ```kotlin
-override fun channelRead(ctx: HandlerContext, msg: Any) {
+override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
     val buf = msg as IoBuf
     coroutineScope.launch(Dispatchers.Default) {
-        // Default thread pool で実行される — EL thread ではない
-        processAsync(buf)     // refCount は非 atomic、race になりうる
-        buf.release()          // release も別 thread から
+        // 下流 handler がまだ buffer に触っているかもしれない間に Default pool で実行:
+        processAsync(buf)     // 並行 content アクセス — data race
+        buf.release()          // release 自体は thread-safe だが race は直らない
     }
 }
 ```
 
-- `withContext(Dispatchers.IO)` で buffer を別 dispatcher に渡して touch する
-- coroutine の suspend 点を跨いで buffer を保持し、resume 先 dispatcher を明示変更する
-- user code が明示的に別 thread へ buffer を受け渡す（例: `ArrayDeque` に積んで別 executor が pull）
+- EventLoop（または下流 handler）がまだアクセスしている buffer を `withContext(Dispatchers.IO)` 側から read / write する
+- happens-before edge なしに plain field / collection 経由で buffer を別 thread に渡す — 受け手は stale な content や書きかけの index を観測しうる
+- 2 thread が同じ buffer に「協調して」書き込む
 
-これらのパターンでは `refCount` の更新が失われる、あるいは別 thread から観測できない可能性がある。症状は Native の segfault、JVM の silent leak / double-free、JS の silent corruption として顕在化する。
+症状は一般的な data race のそれである: 化けた / 古い byte 列、そして Native では並行 free の後に content アクセスが走った場合の segfault。一方で refcount の誤用は今は loud に失敗する: double-release や release 後の retain はカウントを壊さず `IllegalStateException` を throw する。
 
-### Netty が atomic を採用している理由との対比
+### Netty の atomic 方式との対比
 
-Netty `ByteBuf` は cross-thread 共有を安全に許容するために atomic CAS を選択している。keel は hot-path cost を優先して非 atomic を選択した。
+かつての keel は refcount を非 atomic な plain `Int` で保持し、「thread を跨ぐ所有権移譲は必ず happens-before edge に乗る」ことに賭けていた。この賭けは GCD backed の NWConnection engine で外れた: GCD は 1 接続の callback を直列化するが OS worker pthread 間を移動させるため、worker を跨いだ refcount race が HTTPS 負荷時の間欠的な `Buffer already released` クラッシュとして顕在化した。以降 refcount は atomic である — Netty が `AtomicIntegerFieldUpdater` で到達したのと同じ結論である。fetch-and-add のコストが発生するのはライフサイクル遷移時のみで、byte 単位・read 単位では発生しない。
 
 | | keel `IoBuf` | Netty `ByteBuf` |
 |---|---|---|
-| `refCount` | 非 atomic `Int` | `AtomicIntegerFieldUpdater`（CAS） |
-| cross-thread 共有 | 契約違反（EL alignment 前提） | 許容（atomic がガード） |
-| hot-path cost | increment / decrement + 境界 check のみ | CAS loop（x86: `LOCK` prefix、ARM: LL/SC） |
-| 実測コスト | ほぼ 0 | per-op で数 ns × hit 回数 |
-| user 誤用時 | undefined behavior | safe（leak せず壊れもしない） |
+| `refCount` | atomic（`AtomicInt`、CAS loop） | `AtomicIntegerFieldUpdater`（CAS） |
+| cross-thread な retain / release | 参照保持者ならどの thread からでも可 | 可 |
+| cross-thread な content アクセス | 契約違反（happens-before の引き渡しが必要） | 同じ契約 |
+| double-release / release 後の retain | `IllegalStateException` を throw | `IllegalReferenceCountException` を throw |
 
-両者とも defensible な設計で、適用コンテキストの違い（Netty は汎用 Java networking、keel は KMP の薄い I/O layer）に起因する。keel の選択が成立する前提は以下の 3 点である:
-
-1. EL alignment が engine 側で保証される
-2. user handler で blocking I/O を行う場合は `withContext(Dispatchers.IO)` で明示的に退避し、**buffer を持ち越さない**（block 前に release または transfer する）
-3. cross-thread な buffer 共有が必要な use case が現時点で存在しない（Ktor / pipeline / codec が全て EL 上で完結する）
-
-この前提が崩れる use case が現れた場合（例: user が多数の buffer を集約する並列処理を書きたい等）、`IoBuf` に atomic variant を追加する、あるいは Netty `ByteBuf` を直接扱う `keel-engine-netty` 経路に切り替える、といった選択肢がある。
+残る差分は cosmetic である: 固定 capacity（動的 resize なし）と KMP target ごとの platform-native backing。
 
 ### バッファの 3 領域構造
 
@@ -114,7 +106,7 @@ Netty `ByteBuf` は cross-thread 共有を安全に許容するために atomic 
 
 - `readerIndex` は読み取り位置。`readByte()` で進む。
 - `writerIndex` は書き込み位置。`writeByte()` で進む。
-- `compact()` は discardable region を破棄し、writable 領域を回収する。
+- `clear()` は両 index を 0 に reset し、buffer 全体を再び writable にする。`compact()` は存在しない — `IoBuf` は設計上 fixed-capacity であり、byte を詰め直す代わりに、消費済み buffer は pool へ release して新しい buffer を allocate する。
 
 `readableBytes = writerIndex - readerIndex`、`writableBytes = capacity - writerIndex`。Netty `ByteBuf` の index モデルと同等である。
 
@@ -132,7 +124,7 @@ Netty `ByteBuf` は cross-thread 共有を安全に許容するために atomic 
 |---|---|
 | Transport 層の write | `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` |
 | Pipeline 層の write | `ctx.propagateWrite(msg)` |
-| Pipeline 層の inbound 伝播 | `ctx.propagateRead(msg)` / `transport.onRead(buf)` callback |
+| Pipeline 層の inbound 伝播 | `ctx.propagateRead(msg)` / `Pipeline.notifyRead(msg)` |
 | user-event 伝播 | `ctx.propagateUserEvent(evt)` (`evt` が `IoBuf` を含む場合) |
 
 「以降触らない」とは: `readByte` / `writeByte` 不可、`release()` 不可、`readerIndex` / `writerIndex` の inspect も不可。engine もしくは次 handler が使い終わった後に release する。
@@ -167,7 +159,7 @@ buf.release()               // 使い終わったら caller が release
 NWConnection / Netty / Node.js のような push-model engine は、受信データを自分 (engine) の buffer に持っている。そのため caller 側で別 buffer を allocate して貸すのは無駄になる。こうした経路のために `OwnedSuspendSource.readOwned(): IoBuf?` が用意されている:
 
 ```kotlin
-val source: OwnedSuspendSource = channel.asOwnedSuspendSource()
+val source: OwnedSuspendSource = ...     // engine 提供（下記参照）
 val buf = source.readOwned() ?: return   // null は EOF
 // engine が出来合いの buf を渡した、以降 caller が所有
 processData(buf)
@@ -181,7 +173,7 @@ buf.release()                              // 使い終わったら release
 
 `readOwned` は「buffer を return する関数」と思えば良い (受け取る → 使う → release)。実際、下の API 分類では `allocator.allocate(...)` と並んで「新しい参照を返す API」側に分類される。
 
-`OwnedSuspendSource` は engine integration 用 interface で、Ktor / codec 層からは直接見えない。初見 keel 開発者は通常 `Channel.read(buf)` しか扱わないので、zero-copy push-mode read が必要になるまでこの節はスキップして構わない。
+`OwnedSuspendSource` は engine integration 用 interface である — engine は pipeline bridge（`SuspendBridgeHandler` がこれを実装する）経由で露出し、push-model channel では `channel.asBufferedSuspendSource()` が内部でこれを消費する。Ktor / codec 層からは直接見えない。初見 keel 開発者は通常 `Channel.read(buf)` しか扱わないので、zero-copy push-mode read が必要になるまでこの節はスキップして構わない。
 
 ### API 所有権サマリ
 
@@ -191,17 +183,17 @@ buf.release()                              // 使い終わったら release
 |---|---|
 | `Channel.write(buf)` / `IoTransport.write(buf)` / `SuspendSink.write(buf)` | transport、flush 完了後 |
 | `ctx.propagateWrite(msg)` / `ctx.propagateRead(msg)` | 下流 / 上流 handler (最終 consumer) |
-| `transport.onRead(buf)` callback → pipeline HEAD | pipeline chain の最終 handler |
+| `Pipeline.notifyRead(msg)` → pipeline HEAD | pipeline chain の最終 handler |
 | `onRead(ctx, msg)` / `onReadTyped(ctx, msg)` | handler 自身 (慣用的に `try/finally`) |
 
 **非移譲 (caller が参照を保持)**
 
 | API | caller 責任 |
 |---|---|
-| `Channel.read(buf)` / `IoTransport.read(buf)` | buf を allocate した → 使い終わったら release |
+| `Channel.read(buf)` | buf を allocate した → 使い終わったら release |
 | `buf.readByte()` / `writeByte()` / `getByte(i)` / `readByteArray(...)` / `writeByteArray(...)` | buf を所有、index のみ進む |
 | `buf.copyTo(dst, length)` | source も dst も caller 所有 |
-| `buf.compact()` / `clear()` | 所有権不変 |
+| `buf.clear()` | 所有権不変 |
 
 **新しい参照を返す API (caller が所有権を取得)**
 
@@ -236,12 +228,15 @@ N 個の sink に送るなら `N - 1` 個に `retain()` を呼ぶ。Netty 使い
 **(2) 後で使うため保持しておく**
 
 ```kotlin
-class DelayedEcho : InboundHandler<IoBuf> {
+class DelayedEcho : TypedInboundHandler<IoBuf>(IoBuf::class) {
     private var cached: IoBuf? = null
 
     override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
         cached = msg.retain()       // handler 用に +1
         ctx.propagateRead(msg)       // 元参照を下流に移譲
+        // autoRelease (デフォルト true) は同一オブジェクトを propagate した
+        // 場合 release を skip する。handler 自身の参照は上の retain() が
+        // 生かし続ける。
     }
 
     override fun onInactive(ctx: PipelineHandlerContext) {
@@ -302,7 +297,6 @@ suspend fun relay(src: Channel, dst: Channel) {
 | use-after-write | Native で segfault、JVM で invalid data、JS で silent corruption | `channel.write(buf)` 後に buffer を触った (byte 読み、`readerIndex` 確認等) |
 | `retain()` なしの fan-out | 1 回目は成功、2 回目は `readableBytes == 0` か throw | 1 回目の `channel.write` で所有権が移った。2 回目は解放済み buf を受け取る。最後以外は `buf.retain()` |
 | handler が retain なしで msg を field 保存 | 後続 event で use-after-release | 下流で release された msg を handler が stale ref として持っている。保存前に `retain()` |
-| `channel.write` 連鎖で fan-out を期待 | 2 回目以降の write が 0 bytes | `readerIndex` が 1 回目で消費される。readerIndex reset または slice が必要 |
 
 テスト実行時に疑わしい場合、allocator を `TrackingAllocator` で wrap し、終了時に `assertNoLeaks()` を呼ぶことで検出できる（次節参照）。
 
@@ -339,138 +333,124 @@ tracker.assertNoLeaks()  // release 漏れがあれば throw
 
 ## BufferAllocator
 
-`IoBuf` 生成の pluggable interface である。各 engine は platform に応じた既定値を持ち、必要に応じて `IoEngineConfig` で上書き可能である。
+`IoBuf` 生成の pluggable interface である。各 engine は platform に応じた既定値（`defaultAllocator()` 経由）を持ち、必要に応じて `IoEngineConfig` で上書き可能である — 例えば stats counter や lifecycle listener を組み込む場合:
 
 ```kotlin
 val engine = KqueueEngine(
     config = IoEngineConfig(
-        allocator = SlabAllocator(bufferSize = 8192, maxPoolSize = 256),
+        allocator = SlabAllocator(),   // Native の pooled allocator、既定の size-class ladder
     ),
 )
 ```
 
 ### 3 実装の比較
 
-| 実装 | Target | pool 構造 | thread safety |
+| 実装 | Target | pooling | freelist の並行性 |
 |---|---|---|---|
-| `DefaultAllocator` | 全 target | pool なし | stateless |
-| `PooledDirectAllocator` | JVM | size 毎の Treiber stack (lock-free) | `AtomicReference` CAS |
-| `SlabAllocator` | Native | size 毎の `ArrayDeque` (LIFO) | spin-lock (`AtomicReference<Boolean>`) |
+| `DefaultAllocator` | 全 target | なし（毎回 fresh allocation） | stateless |
+| `SlabAllocator` | Native | chunk ベースの `PooledAllocator` | size class 毎の spin-lock + cross-thread 用 MPSC return queue |
+| `PooledDirectAllocator` | JVM | chunk ベースの `PooledAllocator` | size class 毎の mutex（`ReentrantLock`） |
 
-### createForEventLoop の役割
+### createChild() の役割
 
-engine は各 EventLoop 起動時に `allocator.createForEventLoop()` を呼び、per-thread の allocator instance を得る。stateless allocator は `this` を返すが、pooled 系は別 instance を返すことで pool を single thread に閉じ込め、hot path での atomic 操作を不要にする。parent allocator (`IoEngineConfig` に渡した instance) は起動時の size 登録専用で、実際の割り当ては child が担う。
+engine は `allocator.createChild()` を呼び、自身がライフサイクルを管理する child allocator を得る — thread 固定型 engine（epoll / kqueue / NIO / io_uring）では EventLoop thread ごとに 1 つ、per-thread 分割のない engine（NWConnection、Node.js）では engine ごとに 1 つ。pool 系の parent は child ごとに専用の size-class freelist cache を持たせつつ、全 child で parent の chunk arena を共有する。parent は child を追跡し、`close()` で cascade-close する。`IoEngineConfig` に渡した parent instance 自身は hot path での割り当てを行わない。兄弟メソッドの `createUntrackedChild()` は caller 自身が close する child を返す — accepted connection ごとに 1 allocator のような、無制限に増減する population 向けである。
 
 ### `DefaultAllocator`
 
-毎回新規割り当てする stateless 実装。`createDefaultIoBuf(capacity)` を直接呼ぶだけで pool を持たない。`createForEventLoop()` は `this` を返す。test / fallback / JS の既定値として使用する。
+毎回新規割り当てする stateless 実装で pool を持たない。`createChild()` は `this` を返す。test / fallback / JS の既定値として使用する。
 
 - **`wrapBytes`**: `null` を返す（zero-copy wrap 非対応）
-- **`slice`**: copy base。`allocate(length)` で新規 buffer を確保し `copyTo` で内容を複製するため、slice は source から独立する（source を retain しない）
+- **`slice`**: zero-copy。source を retain し、slice 自身の release 時に source を release する `SliceOwner` 付きの platform-native view を返す
 
-### `PooledDirectAllocator` (JVM)
+### chunk ベース pooling（`SlabAllocator` / `PooledDirectAllocator`）
 
-size class 毎に Treiber stack を持ち、lock-free で pool を操作する。stack head は `AtomicReference<DirectIoBuf?>`、pool 内の連結は `IoBuf.nextLink` 経由の intrusive リンクで行う。
+2 つの platform pool は、共通の chunk ベース pool 骨格 `PooledAllocator` の薄い facade である。設計は jemalloc / Netty の定石に従う:
 
-- **allocate**: pool から CAS で pop、miss 時のみ `ByteBuffer.allocateDirect(capacity)` を新規確保。返却する buffer の `memoryOwner` には当該 pool 専用の共有 `PoolOwner` を設定する
-- **release (refCount 0 到達時)**: `PoolOwner` が CAS で stack に push。pool が満杯 (`maxCount` 超) なら push を諦め、backing direct buffer は JVM GC に任せる
-- **`hintSizeClass(byteSize, maxCount)`**: lazy registration。総メモリ予算 (`maxTotalBytes` デフォルト 251 KiB) を超える場合は `maxCount` を自動削減。重複登録は no-op
-- **`createForEventLoop()`**: 親の size class を引き継いだ新 instance を返し、per-pool 上限は `LOCAL_POOL_SLOTS = 8`（親のデフォルト 16 から縮小）
-- **`wrapBytes`**: `ByteBuffer.wrap(bytes, offset, length)` で zero-copy wrap、`DirectIoBuf.wrapExternal` として返す。backing は caller の heap array であり release まで mutate 禁止
-- **`slice`**: `ByteBuffer.duplicate().slice()` で zero-copy、source を retain し、slice 解放時に parent を release する `SliceOwner(source)` を仕込む
+- **size-class ladder**: `allocate` 要求は、それを収容できる最小の size class に **切り上げ**られ（16 byte quantum、倍化ごとに 4 class、内部フラグメンテーションは最悪 ~20–25 %）、その class の freelist から供給される — 事前登録したサイズだけでなく、あらゆる要求サイズが poolable になる。返却 buffer の capacity は class サイズであり、`allocate` の「少なくとも `capacity` byte」という契約を満たす
+- **chunk arena**: pool miss は buffer ごとに platform heap を叩かない。buffer は sharded arena（EventLoop あたりおよそ 1 shard、各 shard は専用 lock で保護）に保持された大きな chunk の部分領域として carve される。arena は 1 つの root allocator の全 child で共有され、carve された buffer の解放はその run を chunk に返す
+- **総 byte 予算**: `maxTotalBytes`（デフォルト 2 MiB）が freelist の保持しうる worst-case byte 数に上限を課す。slot 数は install 時に clamp され、freelist は lazy に埋まるため、実際の常駐量は上限を大きく下回る
+- **大きな allocation は pool を bypass**: 最大 cached class（32 KiB）を超える要求は正確なサイズで確保され、release で解放される。pool には入らない（256 KiB は別の定数で、arena が pooled buffer を carve する chunk のサイズ）
+- **`hintSizeClass(byteSize, maxCount)`** は best-effort な warm-cache hint であり契約ではない: 同一サイズへの重複 hint は no-op で、`maxCount` は予算内に収めるため下方 clamp されうる
 
-### `SlabAllocator` (Native)
+freelist の並行性戦略は platform ごとに異なる。`SlabAllocator`（Native）は size class 毎の spin-lock `ArrayDeque` — EL 固定型 engine は無競合でアクセスするため実質タダ — に加えて、release 時の confinement 判定を行う: 所有 thread（または GCD queue）以外からの release は freelist に触らず、lock-free な MPSC return queue 経由で所有者に返送され、off-EventLoop consumer を安全に保つ。`PooledDirectAllocator`（JVM）は size class 毎に `ReentrantLock` で保護された freelist を使う。かつての lock-free stack 設計は真の並行性（off-EventLoop の `asSource` refill が EventLoop の read path と競合するケース）で ABA-unsafe だったため置き換えられた — 無競合時のコスト差は pool 往復あたり数 ns である。
 
-size class 毎に `ArrayDeque<NativeIoBuf>` を持つ LIFO pool。pool 全体の HashMap を spin-lock (`AtomicReference<Boolean>` による CAS) で保護する。
+ここで名前を挙げた pool 内部（chunk arena、shard、freelist 型）は API ではなく実装詳細として扱うこと: リリース間で調整・再構成される。
 
-- **allocate**: spin-lock 下で `removeLast()`、miss 時のみ `NativeIoBuf(capacity)` を `nativeHeap` から新規確保。返却する buffer の `memoryOwner` には当該 pool 専用の共有 `PoolOwner` を設定する
-- **release (refCount 0 到達時)**: `PoolOwner` が spin-lock 下で `addLast()`。pool が満杯なら backing を `nativeHeap.free` で直接解放
-- **`hintSizeClass(byteSize, maxCount)`**: lazy registration。予算 (`maxTotalBytes` デフォルト 256 KiB) を超える場合は `maxCount` を自動削減。spin-lock 下で重複チェックと挿入を atomic に実施
-- **`createForEventLoop()`**: 親の size class を引き継ぎ per-pool `LOCAL_POOL_SLOTS = 8` を適用した新 instance を返す
-- **`wrapBytes`**: `ByteArray` を pin して `CPointer` を取り、`NativeIoBuf.wrapExternal` として返す。release 時に unpin する `ExternalWrapOwner` を仕込む
-- **`slice`**: pointer 加算による zero-copy。source を retain し、slice 解放時に source を release する
+zero-copy 操作は両 pool が実装する:
 
-### 共通の設計方針
-
-- **pool hit path の cost を最小化**: PooledDirect は CAS のみ、Slab は spin-lock のみ。いずれも heap allocation を発生させない
-- **budget 超過時の graceful degradation**: `maxTotalBytes` を守るため、`hintSizeClass` は自動的に `maxCount` を縮小する
-- **size class 未登録時は fallback**: 登録されていない size を要求すると pool が存在せず、常に fresh allocation になる（機能上は動作、性能は劣化）
+- **`wrapBytes`**: Native では pin した `ByteArray` + `CPointer` の view（release 時に unpin）、JVM では `ByteBuffer.wrap` の view。backing array は caller 所有であり、buffer の release まで mutate 禁止
+- **`slice`**: 両 platform で zero-copy。source を retain し、slice のカウントが 0 に到達した時点で source を release する `SliceOwner` を仕込む
 
 ### io_uring engine の特殊性
 
-io_uring engine の inbound read path のみ `BufferAllocator` を経由せず、kernel 管理の `ProvidedBufferRing` スロットを `RingBufferIoBuf` として露出する。他の read path および全 write path は通常の allocator を通る。
+io_uring engine の inbound read path のみ `BufferAllocator` を経由せず、kernel 管理の `ProvidedBufferRing` スロットを `RingBufferIoBuf` として露出する。他の read path および全 write path は通常の allocator を通る。send 側では追加で、buffer メモリを kernel に事前登録できる — public な engine オプション `RegisteredBufferStrategy` で制御し（デフォルト `STATIC`: 起動時に EventLoop ごとの slot 一式を登録）、登録済みメモリ上のデータを送る zero-copy send は `SEND_ZC_FIXED` として dispatch され（per-send の page pinning を省略）、それ以外は通常の `SEND_ZC` に自動 fallback する。
 
 ## platform 別実装
 
-`IoBuf` interface の具象実装は platform ごとに異なる。いずれも参照カウントは **非 atomic な `Int`**（EventLoop 1 本に閉じる前提）、`writeByte` / `readByte` は単要素のため bounds check を省略し hot path を薄くする、という方針は共通である。bulk 操作にのみ bounds check を行う。
+`IoBuf` interface の具象実装は platform ごとに異なる。keel-io の 3 実装は共通骨格（`AbstractIoBuf`）を共有しており、index ペア・**atomic な refcount**・owner dispatch はそこが担う。`writeByte` / `readByte` は bounds check を省略して hot path を薄く保ち、bulk 操作（array ベースの read/write、`copyTo`）にのみ bounds check を行う。
 
 ### 4 実装の比較
 
-| 実装 | Target | backing storage | `close()` 挙動 | 外部 wrap 対応 |
-|---|---|---|---|---|
-| `DirectIoBuf` | JVM | `ByteBuffer.allocateDirect(capacity)` | no-op（GC 管理） | `wrapExternal(buffer, bytesWritten)` |
-| `NativeIoBuf` | Native | `nativeHeap.allocArray<ByteVar>(capacity)` | `nativeHeap.free` 実行、`freed` flag で idempotent | `wrapExternal(ptr, capacity, bytesWritten, memoryOwner)` |
-| `TypedArrayIoBuf` | JS | `Int8Array(capacity)`（V8 heap） | no-op（GC 管理） | `wrapExternal(array, bytesWritten)` |
-| `RingBufferIoBuf` | io_uring engine | `ProvidedBufferRing` slot（kernel 管理） | slot を leak（`AutoCloseable` 互換用、通常 path は `release()`） | 構造そのものが wrap 専用 |
+| 実装 | Target | backing storage | `close()` 挙動 |
+|---|---|---|---|
+| `DirectIoBuf` | JVM | `ByteBuffer.allocateDirect` または pooled chunk の carved view | refcount を 0 に強制。direct buffer は JVM GC 任せ |
+| `NativeIoBuf` | Native | `nativeHeap.allocArray<ByteVar>` または pooled chunk の carved view | refcount を 0 に強制。所有する heap memory を free（idempotent） |
+| `TypedArrayIoBuf` | JS | `Int8Array(capacity)`（V8 heap） | refcount を 0 に強制。array は V8 GC が回収 |
+| `RingBufferIoBuf` | io_uring engine | `ProvidedBufferRing` slot（kernel 管理） | slot を放棄（`AutoCloseable` 互換用、通常 path は `release()`） |
 
 ### `DirectIoBuf` (JVM)
 
-- **backing storage**: `ByteBuffer.allocateDirect(capacity)` を primary constructor で確保。`capacity` は immutable field
-- **refCount**: bare `Int refCount = 1`（非 atomic）
-- **release path**: `refCount` を decrement し 0 到達時に `memoryOwner.release(this)` を呼ぶ。double-release は `refCount > 0` check で防御
-- **close 挙動**: escape hatch。`refCount = 0` をセットし owner を呼ばない。backing `ByteBuffer` は JVM GC 任せ
+- **backing storage**: 単体の `ByteBuffer.allocateDirect(capacity)`、`PooledDirectAllocator` が carve した pooled chunk の view、または外部から渡された `ByteBuffer`（wrap path）。capacity は構築時に固定
+- **refCount / release path**: `AbstractIoBuf` から継承 — atomic CAS。0 到達時に `owner.release(this)` が backing 戦略（pool 返却、slice parent の release、unpin、GC no-op）を実行する
+- **close 挙動**: escape hatch — atomic CAS で refcount を 0 に強制し owner をスキップ。direct buffer は JVM GC 任せ
 - **`writeByte` / `readByte`**: `buf.put(writerIndex++, value)` / `buf.get(readerIndex++)`、bounds check なし（hot path 薄化）
 - **`writeByteArray` / `readByteArray`**: bounds check あり、`ByteBuffer.put(src, offset, length)` / `get(dst)` 経由で bulk copy
-- **`compact` / `clear`**: `ByteBuffer.compact()` を position/limit を正しく設定して呼び出し、`clear()` は index + position/limit を全 reset
+- **`clear`**: 両 index を reset し、backing `ByteBuffer` の position/limit も巻き戻す（直前の `SocketChannel.write` が残した limit のままだと absolute `put()` が壊れるため）
 - **`copyTo`**: duplicate view を作り `ByteBuffer.put` 経由で転送
-- **engine accessor**: `unsafeBuffer: ByteBuffer` （property + extension）、NIO syscall による zero-copy I/O に使用
-- **`wrapExternal`**: companion factory で pre-allocated `ByteBuffer` を wrap。`writerIndex = bytesWritten` で初期化
+- **engine accessor**: `unsafeBuffer: ByteBuffer`。`@UnsafeIoBufApi` opt-in の背後にあり、NIO syscall による zero-copy I/O に使用
+- **`wrapExternal`**: companion factory で pre-allocated `ByteBuffer` を wrap（`writerIndex = bytesWritten` で初期化）。任意の custom `IoBufOwner` を渡せる — 外部リソース wrap の JVM 側 seam
 
 ### `NativeIoBuf` (Native: Linux / macOS)
 
-- **backing storage**: primary constructor で `nativeHeap.allocArray<ByteVar>(capacity)` を確保し、`memoryOwner` として `HeapOwner` を設定。内部 marker `HeapManagedBacking` を実装しており、owner が「backing free」を buffer 本体に委譲できる
-- **refCount**: bare `Int refCount = 1`（非 atomic）+ `freed: Boolean` flag（二重 free 防止）
-- **release path**: `refCount` decrement、0 で `memoryOwner.release(this)` 呼び出し。default の `HeapOwner` は `HeapManagedBacking.freeHeapBacking()` 経由で `nativeHeap.free(ptr.rawValue)` を実行。**4 impl 中、実メモリ解放を行うのは本 impl のみ**
-- **close 挙動**: escape hatch。`if (!freed)` guard → `freed = true` + `refCount = 0` をセット → owner をスキップし heap backing を直接 free
+- **backing storage**: 単体の `nativeHeap.allocArray<ByteVar>(capacity)`、pooled chunk の carved view、または external / slice view。内部の `ownsMemory` flag が「buffer が native allocation を所有しているか」を記録する（view と wrap は所有しない）
+- **refCount / release path**: `AbstractIoBuf` から継承 — atomic CAS。0 到達時に `owner.release(this)`。所有 heap allocation の場合、`HeapOwner` は buffer 自身の free routine に委譲し、`nativeHeap.free` をちょうど 1 回呼ぶ（`freed` flag が二重 free を防止）。chunk-carved view の場合は代わりに run を chunk に返す。**4 impl 中、実際の native メモリ解放を行うのは本 impl のみ**
+- **close 挙動**: escape hatch — atomic CAS で refcount を 0 に強制し、所有 backing を直接 free（custom owner はスキップ）。idempotent
 - **`writeByte` / `readByte`**: `ptr[writerIndex++] = value` / `ptr[readerIndex++]`、bounds check なし
 - **`writeByteArray` / `readByteArray`**: bounds check あり、pin + `memcpy(ptr + index, src, length)` で bulk copy
-- **`compact`**: `readerIndex == 0` なら no-op、それ以外は `memmove(ptr, ptr + readerIndex, readable)`
 - **`copyTo`**: dest が `NativePointerAccess` (`unsafePointer` を持つ) であれば `memcpy` で直接転送
-- **engine accessor**: `unsafePointer: CPointer<ByteVar>` （interface member）、POSIX syscall (`read(2)` / `write(2)` / `writev(2)`) に使用
-- **`wrapExternal`**: companion factory で raw pointer + capacity + `bytesWritten` + 明示的な `memoryOwner`（pin した `ByteArray` には `ExternalWrapOwner`、parent retain の slice には `SliceOwner` 等）を受ける。`resetForReuse()` で index と `freed` flag を初期化（ptr は保持）し pool 側で再利用可能
+- **engine accessor**: `unsafePointer: CPointer<ByteVar>`。`@UnsafeIoBufApi` opt-in の背後にあり、POSIX syscall (`read(2)` / `write(2)` / `writev(2)`) に使用
+- **外部 wrap**: public な seam はトップレベルの `wrapExternalNativePtr(ptr, length, unpin)` で、外部所有の native memory を wrap し refcount 0 到達時に `unpin` を 1 回呼ぶ。allocator 側の経路（pin する `wrapBytes`、slice）は明示 owner 付きの internal companion factory を使う
 
 ### `TypedArrayIoBuf` (JS)
 
 - **backing storage**: `Int8Array(capacity)` を V8 heap に確保、`capacity = array.length`
-- **refCount**: bare `Int refCount = 1`（JS は single-threaded 前提）
-- **release path**: `refCount` decrement、0 で `memoryOwner.release(this)` 呼び出し
-- **close 挙動**: escape hatch。`refCount = 0` をセットし owner をスキップ。backing `Int8Array` は V8 GC 任せ
-- **`writeByte` / `readByte`**: `buf.asDynamic()[writerIndex++] = value` / `(buf.asDynamic()[readerIndex++] as Int).toByte()`。Kotlin/JS IR mode では typed array の indexing が直接 compile できないため `asDynamic()` で V8 native operation に直結
+- **refCount / release path**: `AbstractIoBuf` から継承 — 他 platform と同じ atomic 契約（JS は single-threaded なので競合はそもそも起きない）。0 到達時に `owner.release(this)`
+- **close 挙動**: escape hatch — refcount を 0 に強制し owner をスキップ。backing `Int8Array` は V8 GC 任せ
+- **`writeByte` / `readByte`**: `base.asDynamic()[writerIndex++] = value` / `(base.asDynamic()[readerIndex++] as Int).toByte()`。Kotlin/JS IR mode では typed array の indexing が直接 compile できないため `asDynamic()` で V8 native operation に直結
 - **`writeByteArray` / `readByteArray`**: bounds check あり、element-wise loop で `asDynamic()` 経由
-- **`compact`**: `Int8Array.copyWithin(0, readerIndex, writerIndex)` で V8 native 実装を利用
 - **`copyTo`**: `destBuf.set(buf.subarray(readerIndex, ...), dest.writerIndex)` で V8 typed-array bulk copy
 - **engine accessor**: `unsafeArray: Int8Array` （property + extension）、Node.js `net.Socket.write` 等に使用
-- **`wrapExternal`**: companion factory で pre-allocated `Int8Array` を wrap、`writerIndex = bytesWritten`。JS heap は GC 管理のため default owner は no-op
+- **`wrapExternal`**: internal companion factory で pre-allocated `Int8Array` を wrap、`writerIndex = bytesWritten`。JS heap は GC 管理のため default owner は no-op
 
 ### `RingBufferIoBuf` (io_uring engine)
 
-他の 3 impl と性格が大きく異なる。**allocator を介さず、kernel 提供の buffer ring slot を直接 `IoBuf` として扱う wrapper 専用** 実装である。
+他の 3 impl と性格が大きく異なる。**allocator を介さず、kernel 提供の buffer ring slot を直接 `IoBuf` として扱う wrapper 専用** 実装である。engine-direct であり、`AbstractIoBuf` を継承せず `IoBuf` を直接実装して backing を自己管理する。
 
 - **backing storage**: `ProvidedBufferRing` の slot。pointer は `bufferRing.getPointer(bufId)` で算出し、コンストラクタで cache（property 毎のアクセスで再計算しない）
-- **refCount**: bare `Int refCount = 1`
+- **refCount**: plain な `Int` — buffer が所有 EventLoop の外に出ないため、ここでは安全
 - **lifecycle**: 新規 `allocate` は存在しない。source 起動時に slot 単位で事前生成され、CQE callback で `reset()`（index と `refCount = 1` を初期化、ptr と bufferRing 設定は保持）して再利用。**hot path での object 生成ゼロ**
-- **release path**: `refCount` を 0 に decrement した時点で `memoryOwner.release(this)` が実行される。default owner は `RingSlotOwner(bufferRing, bufId)` で、slot を ring に返却する
-- **close 挙動**: escape hatch。`refCount = 0` をセットし owner をスキップ。そのため slot は **意図的に leak** する（`AutoCloseable` 互換の最後の砦、通常 path は `release()` 経由）
+- **release path**: `refCount` が 0 に到達した時点で、slot は `ProvidedBufferRing.returnBuffer(bufId)` により ring に直接返却される — `IoBufOwner` dispatch は介在しない
+- **close 挙動**: escape hatch — slot を返却せず `refCount = 0` をセットする。そのため slot は **意図的に放棄** される（`AutoCloseable` 互換の最後の砦、通常 path は `release()` 経由）
 - **`writeByte` / `readByte` / bulk ops**: `NativeIoBuf` と同構造（`ptr[index++]` / `memcpy` / `memmove`）
 - **engine accessor**: `unsafePointer: CPointer<ByteVar>`（`NativePointerAccess` 実装）、`io_uring_prep_recv` 等の SQE 提出に使用
-- **platform-unique**: hot-path allocation が存在しないため、Fixed Buffers / MemoryOwner 基盤が整備されれば直接 zero-copy read path に接続可能
+- **platform-unique**: provided buffer ring の inbound path は CQE ごとの割り当てが皆無。（send 側の registered「fixed」buffer は既に出荷済みの別機構 — 上の allocator 節の io_uring 注記を参照）
 
 ### 共通の設計方針
 
-- **`refCount` は非 atomic**: 全実装で `@Volatile` すら付けない bare `Int`。EL alignment 前提に基づく意図的選択で、cross-thread 共有は契約違反として扱う。根拠と契約違反の症状は「スレッドセーフティ契約」節を参照
+- **keel-io 実装の `refCount` は atomic**: `AbstractIoBuf` が `DirectIoBuf` / `NativeIoBuf` / `TypedArrayIoBuf` に「スレッドセーフティ契約」節の thread-safe なライフサイクルを与える。1 つの EventLoop に閉じた engine-direct 実装（`RingBufferIoBuf` 等）は plain なカウントでも良い
 - **単要素 read/write は bounds-check なし**: hot-path throughput 最大化のための意図的 trade-off。境界越えは caller 責任
 - **bulk 操作のみ bounds-check**: length 引数を受ける `writeByteArray` / `readByteArray` / `copyTo` は明示検査で early failure させる
-- **engine-specific accessor**: 各 impl が platform native memory primitive を `unsafe*` 名で露出。interface には含めない（platform-specific なので common API にできない）
+- **engine-specific accessor**: 各 impl が platform native memory primitive を `unsafe*` 名で露出し、JVM / Native では `@UnsafeIoBufApi` opt-in の背後に置く。interface には含めない（platform-specific なので common API にできない）
 
 ## 大規模 payload の最適化
 
@@ -538,31 +518,32 @@ JVM では GC 圧力差が顕著。full matrix benchmark では `/large` path �
 
 refcount の流れ (誰が `retain` / `release` を呼ぶか) とは直交する次元として、**refcount=0 到達時に backing memory に何が起こるか** — native allocation を free するか、pool に返すか、wrap された外部 array を unpin するか、kernel 管理 slot を返すか、等 — がある。
 
-keel はこれを [`IoBufMemoryOwner`](https://github.com/fukusaka/keel/blob/main/keel-io/src/commonMain/kotlin/io/github/fukusaka/keel/buf/IoBufMemoryOwner.kt) (plain interface) で表現する。各 `IoBuf` は immutable な `val memoryOwner` を持ち、`release()` が refcount=0 到達時に `memoryOwner.release(this)` を 1 回だけ呼ぶ。
+keel はこれを [`IoBufOwner`](https://github.com/fukusaka/keel/blob/main/keel-io/src/commonMain/kotlin/io/github/fukusaka/keel/buf/IoBufOwner.kt) (plain interface) で表現する。keel-io の buffer には生成時に owner が装着され、`IoBuf.release()` が refcount=0 到達時に `owner.release(this)` を 1 回だけ呼ぶ。（`IoBuf.close()` は owner を bypass する — それこそが escape hatch たる所以である。）
 
 ### 戦略一覧
 
 | 戦略 | backing | 追加 state | refcount=0 時の挙動 |
 |---|---|---|---|
-| `HeapOwner` (singleton) | `nativeHeap` / `ByteBuffer.allocateDirect` / `Int8Array` | なし | Native は `nativeHeap.free`、JVM/JS は GC (`HeapManagedBacking` marker 経由) |
-| `PoolOwner` | platform backing、pool が管理 | `returnToPool` lambda | Treiber stack / LIFO slot に戻す |
+| `HeapOwner` (singleton) | `nativeHeap` / `ByteBuffer.allocateDirect` / `Int8Array` | なし | buffer 自身の free routine 経由で解放 — Native は `nativeHeap.free`、GC 管理の JVM/JS backing では no-op |
+| `PoolOwner` | platform backing、pool が管理 | `returnToPool` lambda | buffer を size-class freelist に返却 |
 | `SliceOwner` | 親 `IoBuf` の部分領域 | `parent` ref | `parent.release()` |
-| `ExternalWrapOwner` | caller の pinned `ByteArray` / 事前確保 direct `ByteBuffer` | `unpin` lambda | pin / 外部 hold を解除 |
-| `RingSlotOwner` (engine-io-uring) | `ProvidedBufferRing` kernel slot | `ring`, `bufId` | slot を ring に返却 (`multishot recv` 用) |
-| `FixedBufferOwner` (engine-io-uring、将来) | `io_uring_register_buffers` 登録領域 | `registry`, `bufIndex` | fixed-buffer registry に返却 (`READ_FIXED` / `WRITE_FIXED` 有効化) |
-| `NettyByteBufOwner` (engine-netty、将来) | Netty pooled `ByteBuf` | `nettyBuf` ref | `nettyBuf.release()` に委譲 |
+| `ExternalWrapOwner` | caller の pinned `ByteArray` 等の外部リソース | `unpin` lambda | pin / 外部 hold を解除 |
 
-interface はあえて **sealed でない plain interface**。engine module や外部利用者が keel-io を変更せず独自 owner を追加できる (例: 独自 engine で POSIX 共有メモリ用 `ShmOwner` を導入する、等)。engine が hot path で戦略を識別する必要がある場合 (io_uring が `WRITE_FIXED` vs `WRITE` を選ぶ場合) は、`owner is FixedBufferOwner` の型 check だけで識別 + 戦略固有 state (`bufIndex`) 取得が 1 段で済む。
+この 4 実装は keel-io の `internal` である — keel-io 固有の概念 (pool、slice、外部 wrap) をエンコードするもので、public API には含まれない。`IoBufOwner` interface 自体はあえて **sealed でない plain interface** かつ public: 外部コードが独自戦略を実装し、`IoBufOwner` を受け付ける API に渡せる — 現在は JVM の `DirectIoBuf.wrapExternal`。Native では `wrapExternalNativePtr` が `unpin` lambda を受け取り、内部で `ExternalWrapOwner` に wrap する。
+
+engine-direct な `IoBuf` 実装は owner taxonomy の完全に外側にいる: `RingBufferIoBuf` (engine-io-uring) は kernel 管理 slot を `ProvidedBufferRing` に直接返却し、`NettyByteBufIoBuf` (engine-netty) は wrap した Netty `ByteBuf` 自身の参照カウントに委譲する — どちらも `IoBuf` を直接実装し、`IoBufOwner` なしで backing を自己管理する。
+
+io_uring の registered (fixed) buffer も owner 戦略ではない: engine は public な engine オプション `RegisteredBufferStrategy`（デフォルト `STATIC`）に従って buffer メモリを kernel に事前登録し、write path は buffer の pointer を EventLoop ごとの registry で lookup して `SEND_ZC_FIXED` を選択する — lookup が外れたら通常の zero-copy send に fallback する。この dispatch に owner 型は介在しない。
 
 ### 実用上どこで効くか
 
-通常の caller は意識しない。`allocator.allocate(size)` が backing 対応の owner を装着した `IoBuf` を返し、`buf.release()` が自動的に正しい動作をする。engine も common path では owner を query しない。特殊 path (fixed-buffer io_uring、leak tracking decorator) だけが query する。
+通常の caller は意識しない。`allocator.allocate(size)` が backing 対応の owner を装着した `IoBuf` を返し、`buf.release()` が自動的に正しい動作をする。engine も common path では owner を query しない。
 
 taxonomy の実用価値:
 
-- **Slice 安全性**: `SliceOwner` は parent ref のみを持ち、`bufIndex` は保持しない。したがって slice が誤って `WRITE_FIXED` に流れることは型レベルで不可能 — FIXED I/O を選ぶ型 check が失敗し、自動的に通常 path に落ちる
 - **Pool 返却 path**: `PoolOwner` は pool instance を 1 つだけ保持し、同 pool の全 allocate で使い回される — pool hit path は closure 生成なし
-- **leak detector**: `TrackingAllocator` / `LeakDetectingAllocator` は internal `PoolableIoBuf` interface 経由で owner を wrap することで、すべての release が counting / stack-recording decorator を通ってから実 owner に届く
+- **Slice 安全性**: `SliceOwner` は retain 済みの parent ref のみを持つため、pooled な parent は未解放の slice view がすべて release されてからでないと freelist に戻らない — view が backing より長生きすることはない
+- **leak detector**: `TrackingAllocator` / `LeakDetectingAllocator` は keel-io buffer 型の internal seam 経由で owner を in-place に wrap することで、すべての release が counting / stack-recording decorator を通ってから実 owner に届く。この seam を持たない engine-direct buffer は、別チャネルの `BufferAllocatorLifecycleListener` 観測機構がカバーする
 
 ## 他の buffer API との比較
 
@@ -570,24 +551,24 @@ keel を触る開発者の多くは、他の networking ライブラリで既に
 
 | 特性 | keel `IoBuf` | Netty `ByteBuf` | SwiftNIO `ByteBuffer` | tokio `bytes::Bytes`/`BytesMut` | NIO `ByteBuffer` | kotlinx.io `Buffer` |
 |---|---|---|---|---|---|---|
-| 参照カウント | あり（非 atomic） | あり（atomic） | Swift CoW（値型） | あり（`Arc`、atomic） | なし（GC） | なし（GC） |
+| 参照カウント | あり（atomic） | あり（atomic） | Swift CoW（値型） | あり（`Arc`、atomic） | なし（GC） | なし（GC） |
 | 所有権モデル | transfer | transfer | 値型 + CoW | move（Rust 標準） | 該当なし | 該当なし |
 | reader / writer index | 分離 | 分離 | 分離 | 単一 cursor + `split_to` | `position` / `limit` 共有 | segmented |
 | off-heap memory | あり（JVM/Native） | あり（pooled direct） | N/A（Swift 管理） | N/A（Rust 管理） | option（`allocateDirect`） | なし |
 | 対応 platform | KMP 全 target | JVM | Apple platforms (Swift) | Rust 全 target | JVM | KMP |
 | zero-copy slice | `allocator.slice(...)` | `slice()` / `retainedSlice()` | `slice()` / `readSlice(n)` | `Bytes::slice` / `split_to(n)` | `slice()` | segment reference |
-| compaction | `compact()` | `discardReadBytes()` | `discardReadBytes()` | split で実質代替 | `compact()` | segment rebalance |
+| compaction | 設計上なし（fixed capacity、release + 再 allocate） | `discardReadBytes()` | `discardReadBytes()` | split で実質代替 | `compact()` | segment rebalance |
 
 **design family の観点で整理すると**:
 
-- **keel `IoBuf` / Netty `ByteBuf` / SwiftNIO `ByteBuffer`**: dual-index モデル（reader/writer 分離）+ 参照カウント（または CoW）の family。Netty の設計を基に、SwiftNIO は Swift の value semantics に合わせて CoW に、keel は KMP の single-thread EventLoop 前提で非 atomic に特化
+- **keel `IoBuf` / Netty `ByteBuf` / SwiftNIO `ByteBuffer`**: dual-index モデル（reader/writer 分離）+ 参照カウント（または CoW）の family。Netty の設計を基に、SwiftNIO は Swift の value semantics に合わせて CoW に、keel は KMP に適応 — atomic なライフサイクル、single-thread の content アクセス、固定 capacity
 - **tokio `bytes`**: `Bytes`（immutable、`Arc` による refcount sharing）と `BytesMut`（mutable、exclusive ownership）の 2 型に分離する Rust らしい設計。split 操作が Netty の slice + retain 相当
 - **NIO `ByteBuffer`**: 単一 cursor（`position`/`limit`）+ GC 管理。低レベル primitive だが、`flip()` / `clear()` の mental model が独特
 - **kotlinx.io `Buffer`**: segment 連結リストで GC 管理。`IoBuf` とは補完関係で、コーデック層の高水準 API として併用される
 
 **要点**:
 
-- **Netty 経験者**: mental model は完全一致 — pipeline 層 (handler ↔ handler) も `Channel.write` 境界も同様に ownership transfer。keep したければ `buf.retain()` を write 前に呼ぶ、という流儀も同じ。残りは implementation detail のみ: keel は非 atomic な `refCount` (単一 EventLoop 前提) と固定 capacity (動的 resize 無し)
+- **Netty 経験者**: mental model は完全一致 — pipeline 層 (handler ↔ handler) も `Channel.write` 境界も同様に ownership transfer。keep したければ `buf.retain()` を write 前に呼ぶ、という流儀も同じ。refcount も Netty 同様 atomic。残る違いは固定 capacity (動的 resize 無し) のみ
 - **SwiftNIO 経験者**: API 形状は近い。違いは Swift の値型 + CoW ではなく明示的 `retain` / `release` で、`release()` 忘れが leak になる（SwiftNIO は参照カウントを言語機構に委ねる）
 - **tokio `bytes` 経験者**: `IoBuf` は `BytesMut` に近いが、split による分離ではなく `retain()` で refcount を増やすのが主流
 - **NIO 経験者**: reader と writer の index が分離しているため `flip()` を要しない。代わりに end-of-life で `release()` が必須

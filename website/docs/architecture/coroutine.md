@@ -95,7 +95,7 @@ interface Channel : AutoCloseable {
 
 ## Codec bridge
 
-Coroutine mode integrates with keel's codec layer via `asSuspendSource()` and `asSuspendSink()`. `BufferedSuspendSource` and `BufferedSuspendSink` wrap these for line-oriented and byte-oriented codec access. This is how `keel-codec-http` and `keel-codec-websocket` consume and produce data:
+Coroutine mode integrates with keel's codec layer via `asSuspendSource()` and `asSuspendSink()`. `BufferedSuspendSource` and `BufferedSuspendSink` wrap these for line-oriented and byte-oriented codec access. This is how `keel-codec-http`'s suspending parser helpers, such as `parseRequestHead`, consume data (`keel-codec-websocket` does not use this layer — its codec is built as pipeline handlers):
 
 ```kotlin
 // Codec-layer reading:

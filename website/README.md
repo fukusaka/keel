@@ -14,15 +14,19 @@ website/
 │   ├── architecture/
 │   │   ├── overview.md       # Layer architecture & design philosophy
 │   │   ├── engine-guide.md   # Engine selection guide
-│   │   └── buffer.md         # NativeBuf / BufferAllocator
+│   │   ├── buffer.md         # IoBuf / BufferAllocator
+│   │   ├── pipeline.md       # Pipeline mode
+│   │   ├── coroutine.md      # Coroutine mode
+│   │   └── tls.md            # TLS
 │   ├── codecs/
-│   │   ├── http.md           # :codec-http usage
-│   │   └── websocket.md      # :codec-websocket usage
+│   │   ├── http.md           # keel-codec-http usage
+│   │   └── websocket.md      # keel-codec-websocket usage
+│   ├── server/
+│   │   └── http-server.md    # HTTP server DSL (keel-server-http)
+│   ├── ja/                   # Japanese translations (mirrors the EN doc tree)
 │   └── api/                  # Dokka output integration
 └── src/pages/index.tsx       # Landing page
 ```
-
-Tutorials and How-to guides will be added once the async IoEngine work lands.
 
 ## Documentation Tools
 

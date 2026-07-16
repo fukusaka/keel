@@ -95,7 +95,7 @@ interface Channel : AutoCloseable {
 
 ## コーデックブリッジ
 
-Coroutine モードは `asSuspendSource()` と `asSuspendSink()` でコーデック層と統合します。`BufferedSuspendSource` と `BufferedSuspendSink` はこれらをラップし、行指向・バイト指向のコーデックアクセスを提供します。`keel-codec-http` と `keel-codec-websocket` はこの仕組みでデータを読み書きしています:
+Coroutine モードは `asSuspendSource()` と `asSuspendSink()` でコーデック層と統合します。`BufferedSuspendSource` と `BufferedSuspendSink` はこれらをラップし、行指向・バイト指向のコーデックアクセスを提供します。`keel-codec-http` の suspend ベースのパーサーヘルパー（`parseRequestHead` など）はこの仕組みでデータを読み取ります（`keel-codec-websocket` はこの層を使いません — そのコーデックはパイプラインハンドラとして構築されています）:
 
 ```kotlin
 // コーデック層の読み込み:

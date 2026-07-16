@@ -13,7 +13,7 @@ keel is a Kotlin Multiplatform network I/O engine library. It wraps platform-nat
 | What is keel? | A KMP library that provides a unified `StreamEngine` interface for socket I/O across Linux (epoll, io_uring), macOS (kqueue, NWConnection), JVM (NIO, Netty), and JS (Node.js). |
 | Does keel run on Kotlin/Native? | Yes. keel was built for Kotlin/Native first — epoll, kqueue, io_uring, and NWConnection are all native engines with no JVM dependency. |
 | Can keel be used as a Ktor backend? | Yes. `keel-server-ktor` plugs keel into Ktor as a server engine. You write Ktor routes; keel moves the bytes. |
-| Is keel a web framework? | No. keel is a transport layer — it moves bytes on sockets. Use [Ktor](https://ktor.io) on top for routing, request parsing, and HTTP semantics. |
+| Is keel a web framework? | Not a full-stack one. keel's core is a transport layer — it moves bytes on sockets. On top of it, `keel-server-http` ships a lightweight standalone HTTP server layer with routing, middleware, static files, and error handling (see the [HTTP Server DSL](./server/http-server.md)). [Ktor](https://ktor.io) integration remains available via the `keel-server-ktor` adapter. |
 | Does keel replace Netty? | No. On JVM, `keel-engine-netty` uses Netty as its I/O backend. On Kotlin/Native, Netty does not run at all — keel calls OS syscalls directly. keel and Netty operate at different abstraction levels. |
 
 ## Architecture
@@ -36,21 +36,25 @@ keel's central value is **one `StreamEngine` interface across seven engines**. C
 
 ## Quick Start
 
-keel is not yet published to Maven Central. Build and publish to local Maven first:
+keel is not yet published to a Maven repository (publication is planned for v1.0).
+Consume it from source as a Gradle composite build:
 
 ```bash
 git clone https://github.com/fukusaka/keel.git
-cd keel && ./gradlew publishToMavenLocal
+cd keel && git switch --detach v0.4.0
+```
+
+```kotlin
+// settings.gradle.kts (your project)
+includeBuild("path/to/keel")
 ```
 
 ### Coroutine mode with Ktor
 
 ```kotlin
-// build.gradle.kts
-repositories { mavenLocal() }
-
+// build.gradle.kts — Gradle substitutes these with the included build's projects
 dependencies {
-    implementation("io.github.fukusaka.keel:keel-server-ktor:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-server-ktor")
     implementation("io.ktor:ktor-server-core:3.4.1")
 }
 ```
@@ -80,16 +84,16 @@ Which engine runs depends on which `keel-engine-*` dependency is on the classpat
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.fukusaka.keel:keel-engine-epoll:0.3.0")  // or keel-engine-kqueue, keel-engine-nio, etc.
-    implementation("io.github.fukusaka.keel:keel-codec-http:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-engine-epoll:0.4.0")  // or keel-engine-kqueue, keel-engine-nio, etc.
+    implementation("io.github.fukusaka.keel:keel-codec-http:0.4.0")
 }
 ```
 
 ```kotlin
 val engine = EpollEngine()  // or KqueueEngine, NioEngine, etc.
 engine.bindPipeline("0.0.0.0", 8080) { channel ->
-    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("decoder", HttpRequestDecoder())
+    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("routing", RoutingHandler(mapOf(
         "/hello" to { _ -> HttpResponse.ok("Hello!") },
     )))
@@ -126,7 +130,7 @@ See [Coroutine Mode](./architecture/coroutine.md) and [Pipeline Mode](./architec
 
 | Module | What it provides |
 |---|---|
-| `keel-core` | `StreamEngine`, `Channel`, `Server`, `BindConfig`, `Logger` |
+| `keel-core` | `StreamEngine`, `Channel`, `StreamServer`, `BindConfig`, `Logger` |
 | `keel-io` | `IoBuf`, `SuspendSource`, `SuspendSink`, `BufferAllocator` |
 | `keel-tls` | `TlsConfig`, `TlsCodecFactory`, certificate utilities (TLS protocol primitives; server-side install plumbing lives in `keel-server`) |
 | `keel-native-posix` | Shared POSIX socket utilities (internal use by Native engines) |
@@ -138,7 +142,7 @@ See [Coroutine Mode](./architecture/coroutine.md) and [Pipeline Mode](./architec
 | `keel-engine-nio` | JVM | java.nio.Selector |
 | `keel-engine-netty` | JVM | Netty 4.2 |
 | `keel-engine-epoll` | Linux | epoll |
-| `keel-engine-io-uring` | Linux (kernel 5.1+) | io_uring |
+| `keel-engine-io-uring` | Linux (kernel 5.6+) | io_uring |
 | `keel-engine-kqueue` | macOS | kqueue |
 | `keel-engine-nwconnection` | macOS / iOS (Apple) | Network.framework |
 | `keel-engine-nodejs` | JS (Node.js) | Node.js net/tls |
@@ -156,19 +160,31 @@ See [Coroutine Mode](./architecture/coroutine.md) and [Pipeline Mode](./architec
 
 `keel-engine-netty`, `keel-engine-nwconnection`, and `keel-engine-nodejs` handle TLS without a `keel-tls-*` module.
 
-### Ktor adapter and Codecs
+### Server and Ktor adapters
 
 | Module | What it provides |
 |---|---|
-| `keel-server-ktor` | Ktor server engine adapter |
+| `keel-server` | Shared server-side primitives: accept loop with backoff, graceful shutdown, TLS server configuration |
+| `keel-server-http` | Standalone HTTP/1.1 server (`keelHttpServer { }` DSL) with routing, middleware, static files, compression, and error handling |
+| `keel-server-websocket` | Server-side WebSocket (RFC 6455) endpoints for `keel-server-http`, with optional `permessage-deflate` (RFC 7692) |
+| `keel-server-ktor` | Ktor server engine adapter using keel's own HTTP codec (`keel-codec-http`) |
+| `keel-server-ktor-base` | Codec-agnostic skeleton shared by the Ktor adapters (Ktor lifecycle wiring, accept loop, shutdown) |
+| `keel-server-ktor-cio` | Ktor server engine adapter variant using `ktor-http-cio`'s HTTP parser |
+
+### Codecs and Compression
+
+| Module | What it provides |
+|---|---|
 | `keel-codec-http` | HTTP/1.1 parser / writer (RFC 7230/7231) |
 | `keel-codec-websocket` | WebSocket framing (RFC 6455) |
+| `keel-compression` | Transport-agnostic compression SPI used by HTTP content coding and WebSocket `permessage-deflate` |
+| `keel-compression-zlib` | gzip / deflate backend for the compression SPI |
 
 ## Requirements
 
 - Kotlin 2.3.20+
 - JVM 21+ (JVM targets)
-- Linux 4.5+ (epoll), 5.1+ (io_uring)
+- Linux (epoll); io_uring additionally requires kernel 5.6+
 - macOS 10.14+ (kqueue / NWConnection)
 - TLS (`-Ptls` build): OpenSSL 3.x · Mbed TLS 4.x · AWS-LC
 

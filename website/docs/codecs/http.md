@@ -5,19 +5,22 @@ sidebar_position: 1
 # HTTP/1.1 Codec
 
 The `keel-codec-http` module provides an RFC 7230/7231-compliant HTTP/1.1
-parser and writer. It depends on `keel-io`, `keel-core`, and `kotlinx.io`,
-and works on all supported targets.
+parser and writer. It depends on `keel-io`, `keel-core`, and `keel-compression`
+(the content-encoding SPI consumed by the compression handlers); `kotlinx.io`
+is used internally for parsing. It works on all supported targets.
 
 ## Pipeline Mode
 
 For Pipeline mode servers, add `HttpRequestDecoder` and `HttpResponseEncoder`
-to the channel pipeline. **Outbound messages flow from tail toward head**, so
-the encoder must be added before the decoder and handler:
+to the channel pipeline. **The decoder must be added before the encoder** —
+the encoder is a duplex handler that snoops inbound request heads to suppress
+response bodies for HEAD requests (RFC 9110 §9.3.2), so inbound messages must
+flow through the decoder first and then reach the encoder:
 
 ```kotlin
 engine.bindPipeline("0.0.0.0", 8080) { channel ->
-    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("decoder", HttpRequestDecoder())
+    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("handler", MyHandler())
 }
 ```
@@ -25,10 +28,10 @@ engine.bindPipeline("0.0.0.0", 8080) { channel ->
 The resulting pipeline order is:
 
 ```
-HEAD ↔ encoder ↔ decoder ↔ handler ↔ TAIL
+HEAD ↔ decoder ↔ encoder ↔ handler ↔ TAIL
 
-Inbound:  HEAD → (encoder skipped) → decoder → handler
-Outbound: handler → (decoder skipped) → encoder → HEAD
+Inbound:  HEAD → decoder → encoder (snoops request heads) → handler
+Outbound: handler → encoder → (decoder skipped) → HEAD
 ```
 
 `HttpRequestDecoder` decodes inbound `IoBuf` bytes into a streaming message
@@ -58,8 +61,8 @@ Note: the aggregator buffers the entire body in memory — use streaming for lar
 
 ```kotlin
 engine.bindPipeline("0.0.0.0", 8080) { channel ->
-    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("decoder", HttpRequestDecoder())
+    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("aggregator", HttpBodyAggregator())
     channel.pipeline.addLast("handler", MyHandler())
 }
@@ -89,9 +92,7 @@ import io.github.fukusaka.keel.codec.http.*
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 
 val source = channel.asBufferedSuspendSource()
-val sink = BufferedSuspendSink(
-    channel.asSuspendSink(), channel.allocator, channel.supportsDeferredFlush
-)
+val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator)
 try {
     // Suspend variant — no runBlocking needed
     val head: HttpRequestHead = parseRequestHead(source)
@@ -184,6 +185,20 @@ in the headers or use a factory method (`HttpResponse.ok()`, `HttpResponse.of(st
 | `HttpHeaders` | Case-insensitive store. `add()` / `set()` / `get()` / `getAll()` / `remove()`. `HttpHeaders.EMPTY` singleton |
 | `HttpBodyAggregator` | Pipeline handler: buffers `HttpRequestHead` + `HttpBody` + `HttpBodyEnd` into `HttpRequest` |
 | `HttpMethod` | Case-sensitive token. Constants: `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, etc. |
+
+## Server-Side Handlers
+
+Beyond the core decoder/encoder, the module ships a family of server-side
+pipeline handlers and helpers:
+
+| Type | Notes |
+|---|---|
+| `addHttp1ServerCodec` | `PipelinedChannel` extension that installs the standard HTTP/1.1 server codec chain: decoder (with header limits), optional deadline / rate-floor handlers, encoder, and optional body aggregator |
+| `HttpHeaderLimitsConfig` | Parser limits for request-line / header size and count — oversize requests are rejected |
+| `CompressionHandler` | Response compression (`Content-Encoding`) negotiated against the request's `Accept-Encoding`, backed by a `CompressionRegistry` from `keel-compression` |
+| `HttpRequestDecompressionHandler` | Inbound request-body decompression per `Content-Encoding` |
+| `RequestDeadlineHandler` | Absolute header / whole-request deadlines that force-close slowloris-style peers |
+| `BodyRateFloorHandler` | Recurring minimum body-throughput check that force-closes peers trickling below the floor |
 
 ## Error Handling
 

@@ -13,13 +13,13 @@ KMP プロジェクトでは、通常ターゲットのソースセットごと�
 kotlin {
     sourceSets {
         linuxX64Main.dependencies {
-            implementation("io.github.fukusaka.keel:keel-engine-epoll:0.3.0")
+            implementation("io.github.fukusaka.keel:keel-engine-epoll:0.4.0")
         }
         macosArm64Main.dependencies {
-            implementation("io.github.fukusaka.keel:keel-engine-kqueue:0.3.0")
+            implementation("io.github.fukusaka.keel:keel-engine-kqueue:0.4.0")
         }
         jvmMain.dependencies {
-            implementation("io.github.fukusaka.keel:keel-engine-nio:0.3.0")
+            implementation("io.github.fukusaka.keel:keel-engine-nio:0.4.0")
         }
     }
 }
@@ -52,15 +52,15 @@ kotlin {
 ### io_uring (`keel-engine-io-uring`)
 
 - **ターゲット**: `linuxX64`、`linuxArm64`
-- **使用場面**: Linux 5.1+ カーネルをターゲットにする場合。`/hello` のスループットは epoll と同等だが、大きなレスポンスペイロードでは io_uring のゼロコピー送信（`SEND_ZC`）が有利
-- **要件**: Linux 5.1+（基本）、5.19+（multishot accept）、6.0+（ゼロコピー送信）
+- **使用場面**: Linux 5.6+ カーネルをターゲットにする場合。`/hello` のスループットは epoll と同等だが、大きなレスポンスペイロードでは io_uring のゼロコピー送信（`SEND_ZC`）が有利
+- **要件**: Linux 5.6+（engine 構築時に enforce）、5.19+（multishot accept）、6.0+（ゼロコピー送信）
 - **TLS**: epoll と同じ
 
 ### kqueue (`keel-engine-kqueue`)
 
 - **ターゲット**: `macosArm64`、`macosX64`
 - **使用場面**: macOS サーバーバイナリのビルド、または M1/M2 Mac 上でのローカル開発
-- **TLS**: `keel-tls-openssl` または `keel-tls-mbedtls` と組み合わせ
+- **TLS**: `keel-tls-openssl`、`keel-tls-awslc`、または `keel-tls-mbedtls` と組み合わせ
 
 ### NWConnection (`keel-engine-nwconnection`)
 
@@ -79,9 +79,21 @@ kotlin {
 | プラットフォーム | 推奨 | 代替 | 備考 |
 |----------|-------------|-------------|-------|
 | JVM | Netty | NIO | Netty 依存を避けたい場合は NIO |
-| Linux サーバー | epoll | io_uring | io_uring は Linux 5.1+ 必須。`/large` スループットが重要な場合に選択 |
+| Linux サーバー | epoll | io_uring | io_uring は Linux 5.6+ 必須。`/large` スループットが重要な場合に選択 |
 | macOS サーバー | kqueue | NWConnection | App Store 配布または OS 管理 TLS の場合は NWConnection |
 | Node.js | nodejs | — | |
+
+## エンジン別パフォーマンス
+
+相対的な目安のみを示します — 絶対的なスループットはハードウェアとワークロードに大きく依存します:
+
+- **Pipeline モードはどのエンジンでも最速のモード**です: 接続ごとのコルーチンとその resume コストを I/O パスから排除します。
+- **Linux では epoll と io_uring が同等のスループット**を発揮します。
+- **macOS では kqueue が keel エンジンの中で最速**です。
+- **NWConnection と Node.js は各プラットフォームのネイティブイベントループエンジンより遅い**: どちらも readiness システムコールを直接駆動せず、push 型のプラットフォーム API をラップしているためです。
+- **JVM の NIO と Netty はネイティブエンジンと互角**です（小さなレスポンスでも大きなレスポンスでも）。
+
+絶対値は[リポジトリ README のベンチマーク表](https://github.com/fukusaka/keel#benchmark)を参照してください。表には最終再計測時期を示す計測時期（measurement vintage）の注記が付記されています。
 
 ## 開発ワークフロー
 
