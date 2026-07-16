@@ -6,8 +6,10 @@ Engine modules implement these interfaces; codec and application code depend on 
 ## I/O Engine Interfaces
 
 `IoEngine` is the root interface for all keel I/O engines (lifecycle: `close()`).
-It is also a `CoroutineScope` whose context carries the engine's EventLoop
-dispatcher, so per-connection handlers can be launched directly on the engine.
+It is also a `CoroutineScope` whose context carries a `SupervisorJob` but — by
+documented invariant — **no default dispatcher**: callers launching on the engine
+must pass an explicit dispatcher (typically `channel.ioDispatcher`), otherwise the
+coroutine silently falls back to `Dispatchers.Default`.
 `StreamEngine : IoEngine` extends it with TCP byte-stream operations.
 Engine modules implement `StreamEngine` for each platform:
 
@@ -33,7 +35,7 @@ Application
 - **Zero-copy I/O**: `read(IoBuf)` / `write(IoBuf)` pass `unsafePointer` (Native) or `unsafeBuffer` (JVM) directly to OS syscalls.
 - **Buffer ownership (transfer for writes, non-transfer for reads)**: `write(buf)` takes over the caller's reference and releases it after flush completes — the caller must not touch `buf` after the call. `read(buf)` is the inverse: the caller allocates, the engine fills, the caller releases. To keep a reference alive across a write (e.g., fan-out), call `IoBuf.retain()` before passing the buffer in. See `website/docs/architecture/buffer.md`.
 - **Half-close**: `shutdownOutput()` sends TCP FIN; input remains open.
-- **Codec bridge**: `asSuspendSource()` / `asSuspendSink()` expose the channel as kotlinx-io-compatible streams.
+- **Stream bridge**: `asSuspendSource()` / `asSuspendSink()` expose the channel as keel's own suspending `SuspendSource` / `SuspendSink` streams (IoBuf-based, kotlinx-io independent).
 - **`ioDispatcher`**: returns the engine's EventLoop dispatcher. I/O + processing run on the same thread — no cross-thread dispatch overhead.
 
 ## Pipeline Framework
@@ -100,7 +102,7 @@ per-socket options (TCP_NODELAY, SO_KEEPALIVE, SO_RCVBUF, SO_SNDBUF). `IpAddress
 | `SocketOptions` | `core` | Per-socket options (TCP_NODELAY, SO_KEEPALIVE, buffer sizes) |
 | `DeadlineScheduler` | `pipeline` | EventLoop-local timer for idle/read deadlines (O(1) refresh) |
 | `Pipeline` | `pipeline` | Handler chain interface |
-| `DefaultPipeline` | `pipeline` | Doubly-linked handler chain implementation |
+| `Pipeline` | `pipeline` | Handler chain contract (the doubly-linked implementation is internal) |
 | `PipelinedChannel` | `pipeline` | Channel with attached `Pipeline` |
 | `IoTransport` | `pipeline` | Engine-to-pipeline bridge: read callbacks (`onRead`, `onReadClosed`, `readEnabled`), write/flush, lifecycle (`shutdownOutput`, `awaitClosed`), and properties (`allocator`, `isOpen`, `ioDispatcher`) |
 | `AbstractIoTransport` | `pipeline` | Base `IoTransport` with write buffering, backpressure, and callback initialization |
@@ -119,9 +121,10 @@ creating connections.
 
 # Package io.github.fukusaka.keel.pipeline
 
-`Pipeline`, `DefaultPipeline`, `PipelinedChannel`, `IoTransport`,
+`Pipeline`, `PipelinedChannel`, `IoTransport`,
 `AbstractIoTransport`, `AbstractPipelinedChannel`, `SuspendBridgeHandler`,
-and handler interfaces (`InboundHandler`, `OutboundHandler`, `TypedInboundHandler`).
+and handler types (`InboundHandler` / `OutboundHandler` interfaces and the
+`TypedInboundHandler` abstract base for type-safe message dispatch).
 
 # Package io.github.fukusaka.keel.logging
 

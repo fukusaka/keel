@@ -27,7 +27,8 @@ SHA-1 is implemented in pure Kotlin (RFC 3174). No external cryptography library
 - `WsFrameDecoder` (inbound) accumulates `IoBuf` chunks and emits complete
   `WsFrame` events; partial frames straddling TCP segments resume on the next
   chunk. It validates client masking (`requireClientMasking`, default on per
-  RFC 6455 §5.1), caps per-frame payload length (`maxFramePayloadSize`,
+  RFC 6455 §5.1; control frames are exempt from the check — only data frames
+  are required to be masked), caps per-frame payload length (`maxFramePayloadSize`,
   default 16 MiB, rejected before payload bytes are buffered), and optionally
   decodes data-frame payloads into pooled buffers (`poolDataPayloads` →
   `WsFrame.inboundPayload`) so the receive path avoids a heap `ByteArray`
@@ -41,7 +42,10 @@ SHA-1 is implemented in pure Kotlin (RFC 3174). No external cryptography library
   installs the encoder/decoder pair after the HTTP/1.1 handshake hands the
   connection over to WS framing.
 
-Protocol violations on the pipeline path raise `WsCodecException`.
+On the pipeline decode path, oversized frame lengths (`maxFramePayloadSize`
+exceeded) and unmasked client data frames raise `WsCodecException`; other
+protocol violations (invalid RSV bits, unknown opcodes, malformed control
+frames) raise plain `IllegalArgumentException`.
 
 ## Frame Format
 
@@ -67,8 +71,9 @@ Factory methods cover the common cases: `WsFrame.text` / `binary` /
   `allowRsv1 = true`, the `permessage-deflate` compressed-message marker
   (RFC 7692 §7.2)
 - **Control frames**: must not be fragmented (`fin = true`) and payload ≤ 125 bytes (RFC 6455 §5.5)
-- **Masking**: client-to-server must be masked (decoder-enforced via
-  `requireClientMasking`); server-to-client must not (RFC 6455 §5.3)
+- **Masking**: client-to-server data frames must be masked (decoder-enforced
+  via `requireClientMasking`; control frames are exempt from the check);
+  server-to-client must not be masked (RFC 6455 §5.1)
 - **Close codes**: valid range is 1000–4999; codes 1005, 1006, 1015 (`isReserved`) must not appear on the wire
 - **Extensions**: this module provides the RSV1 / pooled-payload hooks; the
   `permessage-deflate` extension itself (negotiation + compression) is
@@ -85,10 +90,13 @@ Factory methods cover the common cases: `WsFrame.text` / `binary` /
 | `WsCodecException` | Protocol violation on the pipeline decode path |
 
 `IllegalArgumentException` is thrown by the synchronous `parseFrame` /
-`writeFrame` functions and by the `WsFrame` constructor itself for malformed
-input (unknown opcode, invalid RSV bits, oversized or fragmented control
-frames, close codes outside 1000–4999) — constructing an invalid frame
-directly also throws.
+`writeFrame` functions for malformed input (invalid RSV bits, unknown
+opcodes via `WsOpcode.fromCode`, oversized or fragmented control frames).
+The `WsFrame` constructor itself validates only the control-frame
+constraints (`fin = true`, payload ≤ 125 bytes) and pooled-carrier
+exclusivity; RSV bits are validated by `parseFrame` and the decoder, opcode
+mapping by `WsOpcode.fromCode`, and the 1000–4999 close-code range by
+`WsCloseCode`'s own constructor.
 
 # Package io.github.fukusaka.keel.codec.websocket
 

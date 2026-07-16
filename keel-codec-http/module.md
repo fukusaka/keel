@@ -2,8 +2,9 @@
 
 HTTP/1.1 codec — parser, writer, and pipeline handlers (RFC 7230/7231).
 
-Depends on `keel-io` (for `BufferedSuspendSource` / `BufferedSuspendSink`) and `keel-core`
-(for `Pipeline` and `PipelinedChannel`).
+Depends on `keel-io` (for `BufferedSuspendSource` / `BufferedSuspendSink`), `keel-core`
+(for `Pipeline` and `PipelinedChannel`), and `keel-compression` (for the content-encoding
+SPI consumed by the compression handlers); kotlinx-io is used internally for parsing.
 
 ## Two API Styles
 
@@ -20,10 +21,10 @@ with engine channels. Zero-copy: reads directly from `IoBuf` without a `kotlinx.
 
 ```kotlin
 val source = channel.asBufferedSuspendSource()
-val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator, channel.supportsDeferredFlush)
+val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator)
 
-val head: HttpRequestHead = parseRequestHead(source)   // suspend
-writeResponseHead(response, sink)                       // suspend
+val head: HttpRequestHead = parseRequestHead(source)                          // suspend
+writeResponseHead(response.status, response.version, response.headers, sink)  // suspend
 ```
 
 `parseRequestHead` parses only the request line and headers; the body remains
@@ -35,8 +36,10 @@ when only the headers are needed.
 For high-performance HTTP servers, use the pipeline handler chain:
 
 ```
-pipeline.addLast("encoder", HttpResponseEncoder())   // outbound: HttpResponseHead/HttpBody/HttpBodyEnd → IoBuf
 pipeline.addLast("decoder", HttpRequestDecoder())    // inbound:  IoBuf → HttpRequestHead/HttpBody/HttpBodyEnd
+pipeline.addLast("encoder", HttpResponseEncoder())   // outbound: HttpResponseHead/HttpBody/HttpBodyEnd → IoBuf
+                                                     // (decoder first — the encoder snoops inbound request
+                                                     //  heads to suppress HEAD response bodies)
 pipeline.addLast("routing", RoutingHandler(mapOf(
     "/hello" to { _ -> HttpResponse.ok("Hello, World!") },
 )))
@@ -50,8 +53,8 @@ To receive the full request body as `HttpRequest(body: ByteArray?)`, insert
 `HttpBodyAggregator` between decoder and handler:
 
 ```
-pipeline.addLast("encoder", HttpResponseEncoder())
 pipeline.addLast("decoder", HttpRequestDecoder())
+pipeline.addLast("encoder", HttpResponseEncoder())
 pipeline.addLast("aggregator", HttpBodyAggregator())   // HttpRequestHead+Body+BodyEnd → HttpRequest
 pipeline.addLast("handler", MyHandler())
 ```

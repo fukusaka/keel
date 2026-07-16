@@ -48,7 +48,10 @@ An `Int8Array` view is created over the incoming `Buffer`'s `ArrayBuffer`, then
 `IoBuf.unsafeArray.set(srcView)` copies the data in a single native memcpy.
 This copy is unavoidable — the same structural constraint as Netty and NWConnection.
 
-**Pipeline**: `armRead()` is called immediately after pipeline setup.
+**Pipeline**: pipeline setup sets `transport.readEnabled = true`; the
+`readEnabled` setter attaches the `socket.on("data")` listener, switching
+the stream into flowing mode (setting it back to `false` removes the
+listener and Node returns to paused mode).
 
 ```
 socket.on("data", buffer) → IoBuf bulk copy (Int8Array)
@@ -56,7 +59,9 @@ socket.on("data", buffer) → IoBuf bulk copy (Int8Array)
     → handler chain (Decoder → Router → ...)
 ```
 
-**Coroutine**: `armRead()` is called lazily when `ensureBridge()` is called.
+**Coroutine**: `ensureBridge()` installs the coroutine bridge only; reads
+are armed lazily on the first `read()` call, which sets
+`readEnabled = true` and attaches the `socket.on("data")` listener.
 
 ```
 socket.on("data", buffer) → IoBuf bulk copy (Int8Array)
@@ -86,11 +91,17 @@ App: channel.write(buf)        → pipeline.requestWrite(buf) → ... → NodeIo
 App: channel.requestFlush()    → pipeline.requestFlush()    → ... → NodeIoTransport.flush()
 ```
 
-Flush strategy: each pending `IoBuf` is copied to a Node.js `Buffer` via
-`Int8Array.subarray` + `Buffer.from` and sent via `socket.write()`. `flush()`
-always returns `true` — `socket.write()` buffers data internally; no EAGAIN
-handling is needed. Write backpressure is tracked via keel's own high/low
-water marks on pending bytes, independent of Node.js flow control.
+Flush strategy: with `flushCoalescing = true` (default) the transport corks
+the socket (`socket.cork()`) on the first flush of an event-loop tick and
+schedules `socket.uncork()` via `setImmediate`, so Node collapses the batch
+into one gather write (`writev`); with coalescing disabled each write goes
+straight to Node's internal buffer. Within a flush, each pending `IoBuf` is
+copied to a Node.js `Buffer` via `Int8Array.subarray` + `Buffer.from` and
+sent via `socket.write()`. `flush()` always returns `true` —
+`socket.write()` buffers data internally; no EAGAIN handling is needed.
+Write backpressure is tracked via keel's own high/low water marks on pending
+bytes; in addition, `socket.write()` returning `false` and the subsequent
+`'drain'` event drive write-idle detection.
 
 ## TLS Integration
 
@@ -110,8 +121,8 @@ plain `net.Server` and installs a keel `TlsHandler` per connection via
 | Class | Role |
 |-------|------|
 | `NodeEngine` | `StreamEngine` implementation for JS/Node.js |
-| `NodePipelinedChannel` | Unified channel: Pipeline + Coroutine modes. Bridges `socket.on("data")` to keel pipeline |
-| `NodeIoTransport` | `IoTransport` for write/flush via `socket.write()` |
+| `NodePipelinedChannel` | Unified channel: Pipeline + Coroutine modes. Thin subclass over `NodeIoTransport` |
+| `NodeIoTransport` | `IoTransport`: bridges `socket.on("data")` into the keel pipeline; write/flush via `socket.write()` with cork/uncork coalescing |
 | `NodeStreamServer` | Coroutine-mode server: accepts connections into a suspend queue |
 | `Net` | `@JsModule("net")` external declarations |
 | `Tls` | `@JsModule("tls")` external declarations for listener-level TLS |

@@ -8,7 +8,7 @@ Provides both **Pipeline mode** (zero-suspend, callback-driven I/O) and
 
 ## Two I/O Modes
 
-**Pipeline mode** (`bindPipeline`): Network.framework delivers data via `keel_nw_read`
+**Pipeline mode** (`bindPipeline`): Network.framework delivers data via `keel_nw_read_async`
 callbacks. Handlers process data synchronously on the dispatch queue — zero suspend overhead.
 Used for high-performance HTTP servers.
 
@@ -53,18 +53,21 @@ is a **single contiguous region**, the transport wraps it **zero-copy** as a
 drops to zero. Multi-region (fragmented) `dispatch_data_t` falls back to a
 per-region `memcpy` into a pre-allocated buffer.
 
-**Pipeline**: `armRead()` is called immediately after pipeline setup.
+**Pipeline**: pipeline setup sets `transport.readEnabled = true`, arming the
+async read loop via `keel_nw_read_async`.
 
 ```
-keel_nw_read callback → IoBuf wrap (DispatchDataIoBuf; memcpy fallback for multi-region data)
+keel_nw_read_async callback → IoBuf wrap (DispatchDataIoBuf; memcpy fallback for multi-region data)
   → pipeline.notifyRead(buf)
     → handler chain (Decoder → Router → ...)
 ```
 
-**Coroutine**: `armRead()` is called lazily when `ensureBridge()` is called.
+**Coroutine**: `ensureBridge()` installs the coroutine bridge only; reads
+are armed lazily on the first `read()` call, which sets
+`readEnabled = true`.
 
 ```
-keel_nw_read callback → IoBuf wrap (DispatchDataIoBuf; memcpy fallback for multi-region data)
+keel_nw_read_async callback → IoBuf wrap (DispatchDataIoBuf; memcpy fallback for multi-region data)
   → pipeline.notifyRead(buf)
     → SuspendBridgeHandler.onRead() → queue
                                         ↓

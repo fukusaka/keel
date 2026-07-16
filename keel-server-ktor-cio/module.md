@@ -28,8 +28,10 @@ header pool (no-op on JVM).
 ## Usage
 
 ```kotlin
-embeddedServer(KeelCio, port = 8080) {
+embeddedServer(KeelCio, configure = {
     engine = NioEngine()
+    connector { port = 8080 }
+}) {
     routing {
         get("/") { call.respondText("Hello, World!") }
     }

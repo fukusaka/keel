@@ -65,7 +65,9 @@ CQE — no per-read SQE resubmission or buffer allocation.
 
 `RingBufferIoBuf` wrappers are pre-allocated (one per buffer slot) and reused
 via `reset()` on each CQE. When the handler releases the buffer, it is returned
-to the kernel ring for reuse.
+to the kernel ring for reuse. Under ring pressure the consumer may instead
+receive an allocator-owned copy so the slot can return to the ring immediately
+(copy-on-pressure).
 
 The `armRecv()` CQE callback calls `pipeline.notifyRead(buf)` to enter the
 pipeline at HEAD.
@@ -93,8 +95,10 @@ App:                  suspend channel.read(buf) ← IoBuf.copyTo
 ```
 
 **ENOBUFS handling**: when all provided buffers are consumed, the kernel
-terminates the multishot recv with `-ENOBUFS`. The channel re-arms immediately;
-TCP flow control prevents data loss.
+terminates the multishot recv with `-ENOBUFS`. The channel re-arms immediately
+if the ring has buffers available; if the ring is genuinely empty, the re-arm
+is deferred until a buffer is returned (avoiding an ENOBUFS busy-loop). TCP
+flow control prevents data loss either way.
 
 ## Write/Flush Path
 
@@ -126,14 +130,16 @@ App: channel.awaitFlushComplete()
   → transport.awaitPendingFlush()
 ```
 
-`IoTransport.flush()` is fire-and-forget. `IoModeSelector` selects the
-io_uring operation per connection based on `ConnectionStats`:
+`IoTransport.flush()` is fire-and-forget. The adaptive `IoModeSelector` toggles
+between `FALLBACK_CQE` and `CQE` per connection based on `ConnectionStats`; the
+zero-copy modes are manual opt-ins, not part of the adaptive strategies:
 
 | Mode | io_uring operation | Strategy |
 |------|-------------------|----------|
 | `FALLBACK_CQE` | POSIX `send()` → `IORING_OP_SEND` on EAGAIN | Direct syscall first; SQE fallback. Low-latency default |
 | `CQE` | `IORING_OP_SEND` (single) / `IORING_OP_WRITEV` (gather) | All I/O via SQE/CQE. Gather write batches multiple buffers in one SQE |
-| `SEND_ZC` | `IORING_OP_SEND_ZC` | Zero-copy: kernel sends from user-space memory. Two CQEs per send (result + buffer release) |
+| `SEND_ZC` | `IORING_OP_SEND_ZC` | Zero-copy: kernel sends from user-space memory. Two CQEs per send (result + buffer release). Manual selection only |
+| `SENDMSG_ZC` | `IORING_OP_SENDMSG_ZC` | Zero-copy gather send (Linux 6.1+). Manual selection only |
 
 **Partial send handling**: when a send completes partially (`res < len`), the
 remainder is retried via sequential callback chain — each SQE is submitted after
@@ -148,7 +154,7 @@ via `IoModeSelectors.eagainThreshold()`.
 | Class | Role |
 |-------|------|
 | `IoUringEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
-| `IoUringPipelinedChannel` | Unified channel: Pipeline + Coroutine + PushChannel |
+| `IoUringPipelinedChannel` | Unified channel: Pipeline + Coroutine modes |
 | `IoUringPipelinedStreamServer` | Pipeline-mode server (SO_REUSEPORT, multishot accept) |
 | `IoUringStreamServer` | Coroutine-mode server (suspend-based accept) |
 | `IoUringIoTransport` | `IoTransport` for write/flush with adaptive mode selection |
@@ -157,8 +163,8 @@ via `IoModeSelectors.eagainThreshold()`.
 | `ProvidedBufferRing` | Kernel-managed buffer pool for multishot recv |
 | `RingBufferIoBuf` | Zero-allocation `IoBuf` wrapper over provided buffers |
 | `IoUringCapabilities` | Runtime kernel feature detection (multishot, sendZc, etc.) |
-| `KernelVersion` | Parses `/proc/version` for feature gating |
-| `IoMode` | Flush strategy enum: CQE, FALLBACK_CQE, SEND_ZC |
+| `KernelVersion` | Kernel version via `uname(2)` for feature gating |
+| `IoMode` | Flush strategy enum: CQE, FALLBACK_CQE, SEND_ZC, SENDMSG_ZC |
 | `IoModeSelector` | Per-connection strategy selection based on `ConnectionStats` |
 | `ConnectionStats` | Per-connection EAGAIN rate (EMA) for adaptive mode switching |
 | `RegisteredBufferStrategy` | Registered ("fixed") buffer strategy enum, configured via the `IoUringEngine` constructor |
@@ -181,6 +187,7 @@ above the floor degrades behind its own capability gate:
 | Provided buffer ring | 5.19+ | single-shot recv into an allocator-owned buffer, re-armed per CQE |
 | Multishot recv | 6.0+ | single-shot buffer-select recv re-armed per CQE (ring still used) |
 | SEND_ZC | 6.0+ | regular send (opcode-probed; `IoMode.SEND_ZC` is optional) |
+| SENDMSG_ZC | 6.1+ | regular gather send (opcode-probed; `IoMode.SENDMSG_ZC` is optional) |
 
 `IoUringCapabilities` probes the running kernel and selects the appropriate tier.
 
@@ -188,4 +195,4 @@ above the floor degrades behind its own capability gate:
 
 Linux io_uring-based IoEngine with multi-threaded EventLoop, unified Pipeline + Coroutine
 mode via `IoUringPipelinedChannel`, multishot recv with provided buffer ring, and
-adaptive write mode selection (direct send / CQE / SEND_ZC).
+adaptive write mode selection (direct send / CQE, with manual zero-copy send modes).

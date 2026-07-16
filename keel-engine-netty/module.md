@@ -39,8 +39,11 @@ Passing `0` (default) lets Netty choose automatically (`cpu × 2`).
 All `bind`/`connect` operations use `suspendCancellableCoroutine` + `ChannelFuture`
 listeners — no thread blocking occurs.
 
-`autoRead` starts disabled on every accepted/connected channel. It is enabled
-when `ensureBridge()` (Coroutine mode) or `armRead()` (Pipeline mode) is called.
+`autoRead` starts disabled on every accepted/connected channel. Pipeline mode
+arms it via `transport.readEnabled = true` at pipeline setup; Coroutine mode
+arms it lazily on the first `read()` call (which sets `readEnabled = true`).
+`ensureBridge()` installs the coroutine bridge only — it does not start
+reading.
 
 ## Read Path
 
@@ -51,7 +54,9 @@ provides a buffer. When the inbound `ByteBuf` is backed by a single NIO buffer
 the same off-heap memory. Composite buffers (`nioBufferCount() > 1`) fall back
 to an allocate-and-copy path (`ByteBuf.getBytes`).
 
-**Pipeline**: `armRead()` enables `autoRead = true` immediately after pipeline setup.
+**Pipeline**: pipeline setup sets `transport.readEnabled = true`, which
+enables `autoRead` (`armRead` is a private helper invoked from the setter or
+the channel-attach hook, depending on the idle-read policy).
 
 ```
 Netty channelRead(ByteBuf) → IoBuf wrap (borrowInbound; copy fallback for composites)
@@ -59,7 +64,9 @@ Netty channelRead(ByteBuf) → IoBuf wrap (borrowInbound; copy fallback for comp
     → handler chain (Decoder → Router → ...)
 ```
 
-**Coroutine**: `autoRead = true` is enabled lazily when `ensureBridge()` is called.
+**Coroutine**: `ensureBridge()` installs the coroutine bridge only;
+`autoRead` is armed lazily on the first `read()` call, which sets
+`readEnabled = true`.
 
 ```
 Netty channelRead(ByteBuf) → IoBuf wrap (borrowInbound; copy fallback for composites)
@@ -89,9 +96,15 @@ App: channel.write(buf)        → pipeline.requestWrite(buf) → ... → NettyI
 App: channel.requestFlush()    → pipeline.requestFlush()    → ... → NettyIoTransport.flush()
 ```
 
-Flush strategy: all pending writes are batched via `nettyChannel.write(ByteBuf)`, then
-`writeAndFlush` is issued on the last buffer. The `ChannelFuture` completion listener
-releases buffers and signals `onFlushComplete`. `flush()` always returns `false` (async).
+Flush strategy: with `flushCoalescing = true` (the `IoEngineConfig` default)
+all pending writes are batched via `nettyChannel.write(ByteBuf)` and a single
+`Channel.flush()` is scheduled on the Netty event loop for the next tick,
+promoting the whole batch together. With `flushCoalescing = false` (opt-out)
+each buffer is written with `write()` and the last one is issued via
+`writeAndFlush`, sending immediately. The `ChannelFuture` completion listener
+releases buffers and signals `onFlushComplete`. `flush()` returns `true` when
+there are no pending writes and `false` otherwise (the writes complete
+asynchronously).
 
 ## TLS Integration
 
@@ -114,12 +127,14 @@ Supported certificate sources: `TlsCertificateSource.Pem`, `TlsCertificateSource
 | `NettyEngine` | `StreamEngine` implementation. Creates boss + worker EventLoopGroups |
 | `NettyTransport` | Sealed transport selector (`Auto` / `Epoll` / `KQueue` / `IoUring` / `Nio`) — builds the matching `EventLoopGroup` |
 | `NettyByteBufAllocator` | `BufferAllocator` adapter over a Netty `ByteBufAllocator`; usable as `IoEngineConfig.allocator` on JVM engines |
-| `NettyPipelinedChannel` | Unified channel: Pipeline + Coroutine modes. Bridges `channelRead` to keel pipeline |
-| `NettyIoTransport` | `IoTransport` for buffered async writes via `writeAndFlush`. Always async |
+| `NettyPipelinedChannel` | Unified channel: Pipeline + Coroutine modes. Thin delegate over `NettyIoTransport` |
+| `NettyIoTransport` | `IoTransport`: its inbound Netty handler bridges `channelRead` into the keel pipeline; buffered async writes flushed via a coalesced next-tick `Channel.flush()` (default) or `writeAndFlush` (opt-out) |
 | `NettySslInstaller` | `TlsServerInstaller` (in `:keel-server`) that installs Netty `SslHandler` at the transport level |
 | `NettyStreamServer` | Coroutine-mode server: accepts connections into a suspend queue |
 
 # Package io.github.fukusaka.keel.engine.netty
 
-JVM Netty 4.x-based `StreamEngine` with boss/worker `NioEventLoopGroup`, unified Pipeline + Coroutine
-mode via `NettyPipelinedChannel`, and transport-level TLS via `NettySslInstaller`.
+JVM Netty 4.x-based `StreamEngine` with boss/worker `EventLoopGroup`s built by
+the selectable `NettyTransport` (`Auto` resolves to Epoll on Linux / KQueue on
+macOS, with Nio as the fallback), unified Pipeline + Coroutine mode via
+`NettyPipelinedChannel`, and transport-level TLS via `NettySslInstaller`.

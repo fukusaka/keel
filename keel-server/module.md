@@ -4,7 +4,7 @@ Server-side primitives shared between keel's engine adapters and HTTP-family ser
 
 Exposes:
 
-- `ServerConnector` — `(host, port, tls?)` descriptor for a single listen endpoint.
+- `ServerConnector` — `(host, port, backlog, socketOptions, tls?)` descriptor for a single listen endpoint.
 - `AcceptBackoff` — sealed strategy (`Fixed` / `Exponential`) controlling how the accept
   loop pauses on persistent failure (e.g. EMFILE).
 - `acceptLoopWithBackoff` — extension on `StreamServer` that drives `accept()` in a loop

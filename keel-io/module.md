@@ -22,7 +22,8 @@ codec (writeAscii/writeByte) → BufferedSuspendSink → IoBuf → kernel send
 ```
 
 **Reference counting**: buffers start with `refCount = 1`; `retain()`
-increments, `release()` decrements (the `Releasable` contract). When the
+(declared on `IoBuf`) increments, `release()` (the `Releasable` contract)
+decrements. When the
 count reaches zero the buffer's `IoBufOwner` strategy decides what happens
 to the backing — free it, return it to a pool, or release a parent slice.
 Engines may also implement `IoBuf` directly over their own kernel-managed
@@ -93,10 +94,14 @@ EventLoop) instead of hitting the platform heap per buffer; requests above
 the ladder bypass pooling and are allocated at exact size. A total-bytes
 budget caps worst-case cache residency.
 
-Releases from a thread (or GCD queue) other than the owning one are
-classified via a `ConfinementToken` (`installConfinement`) and routed back to
-the owner rather than corrupting the freelist — this keeps off-EventLoop
-consumers (e.g. `asSource` readers) safe.
+Off-thread release safety is platform-specific. The Native `SlabAllocator`
+classifies releases from a thread (or GCD queue) other than the owning one
+via a `ConfinementToken` (`installConfinement`) and routes them back to the
+owner through an MPSC return queue rather than corrupting the freelist —
+keeping off-EventLoop consumers (e.g. `asSource` readers) safe. The JVM
+`PooledDirectAllocator` instead relies on its mutex-locked freelists
+(`MutexFreelist`) for off-thread safety; there `installConfinement` remains
+the interface's no-op default.
 
 ## Observability
 
@@ -144,8 +149,9 @@ one growing `ByteArray`:
 | `SuspendSink` | `suspend write(IoBuf): Int` | Takes ownership of the buffer and queues it; returns bytes written |
 | `OwnedSuspendSource` | `suspend readOwned(): IoBuf?` | Returns an engine-owned `IoBuf` (zero-copy push mode); `null` on EOF |
 
-`BufferedSuspendSource` wraps either source kind and provides `readLine()` /
-`readByte()` / `readFully()` — the primary API for codec parsers. Both modes
+`BufferedSuspendSource` wraps either source kind and provides `readByte()` /
+`readLine()` / `readByteArray(count)` / `readAtMostTo(dest, offset, length)`
+— the primary API for codec parsers. Both modes
 manage a chain of `IoBuf` segments (append at tail, release drained heads,
 never compact):
 

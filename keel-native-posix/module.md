@@ -19,7 +19,7 @@ Two cinterop definitions expose POSIX functions that Kotlin/Native cannot bind d
 
 | Definition | Headers | Provides |
 |-----------|---------|---------|
-| `posix_socket` | `sys/socket.h`, `netinet/in.h`, `arpa/inet.h`, `sys/uio.h`, `string.h` | `keel_inet_pton`, `keel_inet_ntop`, `keel_init_sockaddr_in`, `keel_htons`, `keel_ntohs`, `keel_htonl`, `keel_loopback_addr`, `keel_writev` |
+| `posix_socket` | `sys/socket.h`, `netinet/in.h`, `arpa/inet.h`, `sys/uio.h`, `string.h`, and friends | Byte-order / address helpers (`keel_inet_pton`, `keel_inet_ntop`, `keel_init_sockaddr_in`, `keel_htons`, `keel_ntohs`, `keel_htonl`, `keel_loopback_addr`), gather write (`keel_writev`), EINTR-retry syscall wrappers (`keel_read` / `keel_write` / `keel_accept` / `keel_connect` / `keel_send` / `keel_shutdown`), IPv6 sockaddr and Unix-domain-socket helpers, `keel_errno_message`, `keel_set_nosigpipe` |
 | `posix_inet` (Linux only) | `sys/eventfd.h` | `keel_eventfd_create`, `keel_eventfd_write`, `keel_eventfd_read` — used by `EpollEventLoop` and `IoUringEventLoop` |
 
 **Why wrappers are needed:**
@@ -58,7 +58,7 @@ fails on some Kotlin/Native versions. `getsockopt` and `setsockopt` calls use
 
 | Type | Role |
 |------|------|
-| `NativeSocket` | Interface. Data-path syscalls: `read` / `write` / `writev` / `accept` / `shutdown` / `close`. Sealed `Result` types replace raw errno |
+| `NativeSocket` | Interface. Data-path syscalls (8 methods): `read` / `write` / `writev` / `send` / `accept` / `connect` / `shutdown` / `close`. Sealed `Result` types replace raw errno |
 | `PosixNativeSocket` | Singleton. Production `NativeSocket` impl backed by EINTR-retrying `keel_*` C wrappers |
 | `NativeSocketOps` | Interface. Socket lifecycle: bind / listen, client socket creation, non-blocking connect, address queries, socket options (TCP + Unix domain) |
 | `PosixNativeSocketOps` | Production `NativeSocketOps` impl |
