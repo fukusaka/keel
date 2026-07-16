@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-16
+
 ### Added
 
 - `server-http`: `PipelineInstaller` + `KeelHttpServerBuilder.installPipeline(installer)` — a wire-level extension point that adds handlers to each connection's pipeline (between the HTTP codec and the request handler), run in registration order. The built-in `compression { }` DSL now installs through it, and new pipeline-level features register via this hook instead of adding a `KeelHttpServer` parameter; `Middleware` remains the per-call counterpart (#945)
