@@ -13,13 +13,13 @@ In a KMP project, you typically add a different engine dependency per target sou
 kotlin {
     sourceSets {
         linuxX64Main.dependencies {
-            implementation("io.github.fukusaka.keel:keel-engine-epoll:0.3.0")
+            implementation("io.github.fukusaka.keel:keel-engine-epoll:0.4.0")
         }
         macosArm64Main.dependencies {
-            implementation("io.github.fukusaka.keel:keel-engine-kqueue:0.3.0")
+            implementation("io.github.fukusaka.keel:keel-engine-kqueue:0.4.0")
         }
         jvmMain.dependencies {
-            implementation("io.github.fukusaka.keel:keel-engine-nio:0.3.0")
+            implementation("io.github.fukusaka.keel:keel-engine-nio:0.4.0")
         }
     }
 }
@@ -52,15 +52,15 @@ For constructor parameters and configuration options, see the [API reference](pa
 ### io_uring (`keel-engine-io-uring`)
 
 - **Targets**: `linuxX64`, `linuxArm64`
-- **Use when**: targeting Linux 5.1+ kernels. Throughput is comparable to epoll on `/hello`; the advantage grows with large payloads because io_uring supports zero-copy send (`SEND_ZC`)
-- **Requires**: Linux 5.1+ (basic), 5.19+ (multishot accept), 6.0+ (zero-copy send)
+- **Use when**: targeting Linux 5.6+ kernels. Throughput is comparable to epoll on `/hello`; the advantage grows with large payloads because io_uring supports zero-copy send (`SEND_ZC`)
+- **Requires**: Linux 5.6+ (enforced at engine construction), 5.19+ (multishot accept), 6.0+ (zero-copy send)
 - **TLS**: same as epoll
 
 ### kqueue (`keel-engine-kqueue`)
 
 - **Targets**: `macosArm64`, `macosX64`
 - **Use when**: building a macOS server binary, or developing on M1/M2 Mac
-- **TLS**: via `keel-tls-openssl` or `keel-tls-mbedtls`
+- **TLS**: via `keel-tls-openssl`, `keel-tls-awslc`, or `keel-tls-mbedtls`
 
 ### NWConnection (`keel-engine-nwconnection`)
 
@@ -79,9 +79,21 @@ For constructor parameters and configuration options, see the [API reference](pa
 | Platform | Recommended | Alternative | Notes |
 |----------|-------------|-------------|-------|
 | JVM | Netty | NIO | NIO if you want to avoid the Netty dependency |
-| Linux server | epoll | io_uring | io_uring requires Linux 5.1+; choose it if `/large` throughput matters |
+| Linux server | epoll | io_uring | io_uring requires Linux 5.6+; choose it if `/large` throughput matters |
 | macOS server | kqueue | NWConnection | NWConnection for App Store or OS-managed TLS |
 | Node.js | nodejs | — | |
+
+## Performance by Engine
+
+Relative guidance only — absolute throughput depends heavily on hardware and workload:
+
+- **Pipeline mode is the fastest mode** on every engine: it removes the per-connection coroutine and its resume cost from the I/O path.
+- **epoll and io_uring deliver comparable throughput on Linux.**
+- **kqueue leads among keel engines on macOS.**
+- **NWConnection and Node.js trail the native event-loop engines** on their platforms; both wrap push-style platform APIs rather than driving readiness syscalls directly.
+- **JVM NIO and Netty are competitive** with the native engines, on both small and large responses.
+
+For absolute numbers, see the [benchmark tables in the repository README](https://github.com/fukusaka/keel#benchmark) — they carry a measurement-vintage note stating when they were last refreshed.
 
 ## Development Workflow
 

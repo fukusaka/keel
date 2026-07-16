@@ -13,7 +13,7 @@ keel は Kotlin Multiplatform ネットワーク I/O エンジンライブラリ
 | keel とは何か？ | Linux（epoll、io_uring）、macOS（kqueue、NWConnection）、JVM（NIO、Netty）、JS（Node.js）にまたがるソケット I/O のための統一 `StreamEngine` インターフェースを提供する KMP ライブラリ。 |
 | keel は Kotlin/Native で動作するか？ | Yes。keel は Kotlin/Native を最初のターゲットとして設計されており、epoll・kqueue・io_uring・NWConnection はすべて JVM 依存なしのネイティブエンジンです。 |
 | keel は Ktor のバックエンドとして使えるか？ | Yes。`keel-server-ktor` が keel を Ktor のサーバーエンジンとして接続します。Ktor でルートを書き、keel がバイトを運びます。 |
-| keel は Web フレームワーク？ | No。keel はトランスポート層 — ソケット上のバイト転送を担います。ルーティング・リクエスト解析・HTTP セマンティクスには [Ktor](https://ktor.io) を上位に載せます。 |
+| keel は Web フレームワーク？ | フルスタックなものではありません。keel のコアはトランスポート層 — ソケット上のバイト転送を担います。その上に `keel-server-http` が、ルーティング・ミドルウェア・静的ファイル・エラーハンドリングを備えた軽量なスタンドアロン HTTP サーバ層を提供します（[HTTP サーバ DSL](./server/http-server.md) 参照）。`keel-server-ktor` アダプタ経由の [Ktor](https://ktor.io) 統合も引き続き利用できます。 |
 | keel は Netty の代替？ | No。JVM では `keel-engine-netty` が I/O バックエンドとして Netty を使用します。Kotlin/Native では Netty 自体が動作しないため、keel が OS システムコールを直接呼び出します。keel と Netty は異なる抽象レイヤーに位置します。 |
 
 ## アーキテクチャ
@@ -36,21 +36,25 @@ keel の中心的な価値は **7 つのエンジンを単一の `StreamEngine` 
 
 ## クイックスタート
 
-keel はまだ Maven Central に公開されていません。まずソースからビルドしてローカル Maven に公開します:
+keel はまだ Maven リポジトリに公開されていません（公開は v1.0 で予定）。
+Gradle composite build でソースから利用します:
 
 ```bash
 git clone https://github.com/fukusaka/keel.git
-cd keel && ./gradlew publishToMavenLocal
+cd keel && git switch --detach v0.4.0
+```
+
+```kotlin
+// settings.gradle.kts（利用側プロジェクト）
+includeBuild("path/to/keel")
 ```
 
 ### Coroutine モード（Ktor 使用）
 
 ```kotlin
-// build.gradle.kts
-repositories { mavenLocal() }
-
+// build.gradle.kts — Gradle が included build のプロジェクトに置換する
 dependencies {
-    implementation("io.github.fukusaka.keel:keel-server-ktor:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-server-ktor")
     implementation("io.ktor:ktor-server-core:3.4.1")
 }
 ```
@@ -80,16 +84,16 @@ fun main() {
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.fukusaka.keel:keel-engine-epoll:0.3.0")  // または keel-engine-kqueue、keel-engine-nio 等
-    implementation("io.github.fukusaka.keel:keel-codec-http:0.3.0")
+    implementation("io.github.fukusaka.keel:keel-engine-epoll:0.4.0")  // または keel-engine-kqueue、keel-engine-nio 等
+    implementation("io.github.fukusaka.keel:keel-codec-http:0.4.0")
 }
 ```
 
 ```kotlin
 val engine = EpollEngine()  // または KqueueEngine、NioEngine 等
 engine.bindPipeline("0.0.0.0", 8080) { channel ->
-    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("decoder", HttpRequestDecoder())
+    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("routing", RoutingHandler(mapOf(
         "/hello" to { _ -> HttpResponse.ok("Hello!") },
     )))
@@ -126,7 +130,7 @@ keel は両方を提供します:
 
 | モジュール | 提供するもの |
 |---|---|
-| `keel-core` | `StreamEngine`、`Channel`、`Server`、`BindConfig`、`Logger` |
+| `keel-core` | `StreamEngine`、`Channel`、`StreamServer`、`BindConfig`、`Logger` |
 | `keel-io` | `IoBuf`、`SuspendSource`、`SuspendSink`、`BufferAllocator` |
 | `keel-tls` | `TlsConfig`、`TlsCodecFactory`、証明書ユーティリティ（TLS プロトコル primitives。 server-side install 配管は `keel-server` 側） |
 | `keel-native-posix` | POSIX ソケットユーティリティ（Native エンジンの内部利用） |
@@ -138,7 +142,7 @@ keel は両方を提供します:
 | `keel-engine-nio` | JVM | java.nio.Selector |
 | `keel-engine-netty` | JVM | Netty 4.2 |
 | `keel-engine-epoll` | Linux | epoll |
-| `keel-engine-io-uring` | Linux（カーネル 5.1+） | io_uring |
+| `keel-engine-io-uring` | Linux（カーネル 5.6+） | io_uring |
 | `keel-engine-kqueue` | macOS | kqueue |
 | `keel-engine-nwconnection` | macOS / iOS（Apple） | Network.framework |
 | `keel-engine-nodejs` | JS（Node.js） | Node.js net/tls |
@@ -156,19 +160,31 @@ keel は両方を提供します:
 
 `keel-engine-netty`・`keel-engine-nwconnection`・`keel-engine-nodejs` は `keel-tls-*` モジュール不要です。
 
-### Ktor アダプタとコーデック
+### サーバと Ktor アダプタ
 
 | モジュール | 提供するもの |
 |---|---|
-| `keel-server-ktor` | Ktor サーバーエンジンアダプタ |
+| `keel-server` | サーバサイド共通プリミティブ: バックオフ付き accept ループ、graceful shutdown、TLS サーバ設定 |
+| `keel-server-http` | スタンドアロン HTTP/1.1 サーバ（`keelHttpServer { }` DSL）。ルーティング・ミドルウェア・静的ファイル・圧縮・エラーハンドリングを提供 |
+| `keel-server-websocket` | `keel-server-http` 向けのサーバサイド WebSocket（RFC 6455）エンドポイント。任意で `permessage-deflate`（RFC 7692） |
+| `keel-server-ktor` | keel 自身の HTTP コーデック（`keel-codec-http`）を使う Ktor サーバーエンジンアダプタ |
+| `keel-server-ktor-base` | Ktor アダプタ共通のコーデック非依存スケルトン（Ktor ライフサイクル配線・accept ループ・shutdown） |
+| `keel-server-ktor-cio` | `ktor-http-cio` の HTTP パーサーを使う Ktor サーバーエンジンアダプタの variant |
+
+### コーデックと圧縮
+
+| モジュール | 提供するもの |
+|---|---|
 | `keel-codec-http` | HTTP/1.1 パーサー / ライター（RFC 7230/7231） |
 | `keel-codec-websocket` | WebSocket フレーミング（RFC 6455） |
+| `keel-compression` | HTTP content coding と WebSocket `permessage-deflate` が利用するトランスポート非依存の圧縮 SPI |
+| `keel-compression-zlib` | 圧縮 SPI の gzip / deflate バックエンド |
 
 ## 動作要件
 
 - Kotlin 2.3.20+
 - JVM 21+（JVM ターゲット）
-- Linux 4.5+（epoll）、5.1+（io_uring）
+- Linux（epoll）。io_uring は追加でカーネル 5.6+ が必要
 - macOS 10.14+（kqueue / NWConnection）
 - TLS（`-Ptls` ビルド）: OpenSSL 3.x · Mbed TLS 4.x · AWS-LC
 

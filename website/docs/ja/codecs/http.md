@@ -4,16 +4,16 @@ sidebar_position: 1
 
 # HTTP/1.1 コーデック
 
-`keel-codec-http` モジュールは RFC 7230/7231 準拠の HTTP/1.1 パーサーとライターを提供します。`keel-io`、`keel-core`、`kotlinx.io` に依存し、サポートされる全ターゲットで動作します。
+`keel-codec-http` モジュールは RFC 7230/7231 準拠の HTTP/1.1 パーサーとライターを提供します。`keel-io`、`keel-core`、`keel-compression`（圧縮ハンドラが利用する content-encoding SPI）に依存し、`kotlinx.io` はパース処理の内部でのみ使用します。サポートされる全ターゲットで動作します。
 
 ## Pipeline モード
 
-Pipeline モードのサーバーでは、`HttpRequestDecoder` と `HttpResponseEncoder` をチャネルパイプラインに追加します。**アウトバウンドメッセージは tail から head に向かって流れる**ため、encoder を decoder および handler より先に追加する必要があります:
+Pipeline モードのサーバーでは、`HttpRequestDecoder` と `HttpResponseEncoder` をチャネルパイプラインに追加します。**decoder を encoder より先に追加する必要があります** — encoder はインバウンドのリクエストヘッドを覗き見て HEAD リクエストに対するレスポンスボディを抑制する duplex ハンドラであるため（RFC 9110 §9.3.2）、インバウンドメッセージが decoder を通ってから encoder に届く順序にします:
 
 ```kotlin
 engine.bindPipeline("0.0.0.0", 8080) { channel ->
-    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("decoder", HttpRequestDecoder())
+    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("handler", MyHandler())
 }
 ```
@@ -21,10 +21,10 @@ engine.bindPipeline("0.0.0.0", 8080) { channel ->
 結果のパイプライン順序は以下のとおりです:
 
 ```
-HEAD ↔ encoder ↔ decoder ↔ handler ↔ TAIL
+HEAD ↔ decoder ↔ encoder ↔ handler ↔ TAIL
 
-インバウンド:  HEAD → (encoder スキップ) → decoder → handler
-アウトバウンド: handler → (decoder スキップ) → encoder → HEAD
+インバウンド:  HEAD → decoder → encoder (リクエストヘッドを覗き見) → handler
+アウトバウンド: handler → encoder → (decoder スキップ) → HEAD
 ```
 
 `HttpRequestDecoder` はインバウンド `IoBuf` バイトをストリーミングメ���セージ列にデコードします: `HttpRequestHead` → `HttpBody` × N → `HttpBodyEnd`。ボディなしのリクエストでも `HttpBodyEnd.EMPTY` で終端します。Content-Length / chunked 両方に対応。
@@ -48,8 +48,8 @@ HttpBodyAggregator あり:
 
 ```kotlin
 engine.bindPipeline("0.0.0.0", 8080) { channel ->
-    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("decoder", HttpRequestDecoder())
+    channel.pipeline.addLast("encoder", HttpResponseEncoder())
     channel.pipeline.addLast("aggregator", HttpBodyAggregator())
     channel.pipeline.addLast("handler", MyHandler())
 }
@@ -78,9 +78,7 @@ import io.github.fukusaka.keel.codec.http.*
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 
 val source = channel.asBufferedSuspendSource()
-val sink = BufferedSuspendSink(
-    channel.asSuspendSink(), channel.allocator, channel.supportsDeferredFlush
-)
+val sink = BufferedSuspendSink(channel.asSuspendSink(), channel.allocator)
 try {
     // サスペンドバリアント — runBlocking 不要
     val head: HttpRequestHead = parseRequestHead(source)
@@ -157,15 +155,28 @@ writeResponse(response, buf)
 | 型 | 備考 |
 |---|---|
 | `HttpMessage` | sealed interface — 全ストリーミング pipeline メッセージの共通 supertype |
-| `HttpRequestHead` | `method`、`uri`、`version`、`headers`。`HttpRequestDecoder` が発出 |
+| `HttpRequestHead` | `method`、`uri`、`version`、`headers`。computed プロパティ: `path`、`queryString`、`isKeepAlive`。`HttpRequestDecoder` が発出 |
 | `HttpResponseHead` | `status`、`version`、`headers`。ストリーミングレスポンスで `HttpResponseEncoder` に渡す |
 | `HttpBody` | ストリーミングボディチャンク (`IoBuf` 内包)。受信側が `content.release()` を呼ぶ |
 | `HttpBodyEnd` | ボディ終端マーカー + オプションの trailer ヘッダー。`HttpBodyEnd.EMPTY` singleton |
 | `HttpRequest` | 集約されたリクエスト: `method`、`uri`、`version`、`headers`、`body?`。`HttpBodyAggregator` が生成 |
-| `HttpResponse` | 完全なレスポンス: `status`、`version`、`headers`、`body?`。ファクトリ: `ok()`、`notFound()` |
-| `HttpHeaders` | 大文字小文字非区別ストア。`HttpHeaders.EMPTY` singleton |
+| `HttpResponse` | 完全なレスポンス: `status`、`version`、`headers`、`body?`。ファクトリ: `ok()`、`notFound()`、`of(status)` |
+| `HttpHeaders` | 大文字小文字非区別ストア。`add()` / `set()` / `get()` / `getAll()` / `remove()`。`HttpHeaders.EMPTY` singleton |
 | `HttpBodyAggregator` | Pipeline handler: `HttpRequestHead` + `HttpBody` + `HttpBodyEnd` → `HttpRequest` に集約 |
 | `HttpMethod` | 大文字小文字区別トークン。定数: `GET`、`POST`、`PUT`、`DELETE`、`PATCH` 等 |
+
+## サーバーサイドハンドラ
+
+コアの decoder/encoder に加えて、本モジュールはサーバーサイドのパイプラインハンドラとヘルパー群を提供します:
+
+| 型 | 備考 |
+|---|---|
+| `addHttp1ServerCodec` | 標準の HTTP/1.1 サーバーコーデックチェーンをインストールする `PipelinedChannel` 拡張: decoder（ヘッダー制限付き）、オプションの deadline / rate-floor ハンドラ、encoder、オプションのボディ aggregator |
+| `HttpHeaderLimitsConfig` | リクエストライン / ヘッダーのサイズ・件数に対するパーサー制限 — 超過するリクエストは拒否されます |
+| `CompressionHandler` | リクエストの `Accept-Encoding` とネゴシエーションするレスポンス圧縮（`Content-Encoding`）。`keel-compression` の `CompressionRegistry` を利用 |
+| `HttpRequestDecompressionHandler` | `Content-Encoding` に応じたインバウンドリクエストボディの伸長 |
+| `RequestDeadlineHandler` | ヘッダー / リクエスト全体の絶対期限。slowloris 型のピアを強制切断 |
+| `BodyRateFloorHandler` | 最低ボディスループットの定期チェック。下限を下回るピアを強制切断 |
 
 ## エラー処理
 
