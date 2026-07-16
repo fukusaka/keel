@@ -3,7 +3,7 @@
 Core TLS interfaces, pipeline handler, and configuration types shared by all keel TLS backends.
 
 Platform-specific implementations live in separate modules (`keel-tls-jsse`, `keel-tls-mbedtls`,
-`keel-tls-awslc`, `keel-tls-openssl`, `keel-tls-nodejs`). Application code depends only on
+`keel-tls-awslc`, `keel-tls-openssl`). Application code depends only on
 `keel-tls`; the implementation module is selected at link time.
 
 ## TLS Integration Model

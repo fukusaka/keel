@@ -80,6 +80,25 @@ messages (`HttpBody` / `HttpBodyEnd`) and routes by `HttpRequestHead.path`.
 | `HttpBodyAggregator` | Pipeline handler: `HttpRequestHead` + `HttpBody` + `HttpBodyEnd` → `HttpRequest` |
 | `RoutingHandler` | Terminal inbound handler: routes by path, releases body messages |
 
+## Server-Side Handlers
+
+Beyond the core decoder/encoder, the module ships a family of server-side pipeline
+handlers and helpers:
+
+| Type | Notes |
+|------|-------|
+| `addHttp1ServerCodec` (`HttpServerCodecInstaller.kt`) | `PipelinedChannel` extension that installs the standard HTTP/1.1 server codec chain: decoder (with header limits), optional deadline / rate-floor handlers, encoder, and optional body aggregator |
+| `HttpHeaderLimitsConfig` | Parser limits for request line / header size and count (oversize requests are rejected, see `HttpHeaderLimitExceededException` / `HttpUriLengthExceededException`) |
+| `CompressionHandler` | Response compression (`Content-Encoding`) negotiated against the request's `Accept-Encoding`, backed by a `CompressionRegistry` from `keel-compression`; `CompressionCondition` customises when to compress |
+| `HttpRequestDecompressionHandler` | Inbound request-body decompression per `Content-Encoding` |
+| `RequestDeadlineHandler` | Absolute header / whole-request deadlines that force-close slowloris-style peers |
+| `BodyRateFloorHandler` | Recurring minimum body-throughput check that force-closes peers trickling below the floor |
+
+Internal (non-API) optimisations in the same package include `HttpHeadersPool`
+(recycles `HttpHeaders` instances on the hot path) and `StaticHeaderTable`
+(interns well-known header names); Accept-Encoding negotiation lives in
+internal helpers in `ContentEncodingNegotiation.kt`.
+
 ## Error Handling
 
 | Exception | When thrown |

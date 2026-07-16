@@ -46,15 +46,17 @@ listen backlog; the OS manages it internally.
 
 ## Read Path
 
-Network.framework delivers data as `dispatch_data_t`. The C wrapper `keel_nw_read_async`
-iterates over data segments via `dispatch_data_apply` and copies each segment into
-`IoBuf` via `memcpy`. This copy is unavoidable — the same structural constraint as
-Netty and Node.js.
+Network.framework delivers data as `dispatch_data_t`. When the delivered data
+is a **single contiguous region**, the transport wraps it **zero-copy** as a
+`DispatchDataIoBuf` — an engine-direct `IoBuf` over the retained
+`dispatch_data_t` region, released back to the framework when its refcount
+drops to zero. Multi-region (fragmented) `dispatch_data_t` falls back to a
+per-region `memcpy` into a pre-allocated buffer.
 
 **Pipeline**: `armRead()` is called immediately after pipeline setup.
 
 ```
-keel_nw_read callback → IoBuf copy (dispatch_data bytes)
+keel_nw_read callback → IoBuf wrap (DispatchDataIoBuf; memcpy fallback for multi-region data)
   → pipeline.notifyRead(buf)
     → handler chain (Decoder → Router → ...)
 ```
@@ -62,7 +64,7 @@ keel_nw_read callback → IoBuf copy (dispatch_data bytes)
 **Coroutine**: `armRead()` is called lazily when `ensureBridge()` is called.
 
 ```
-keel_nw_read callback → IoBuf copy (dispatch_data bytes)
+keel_nw_read callback → IoBuf wrap (DispatchDataIoBuf; memcpy fallback for multi-region data)
   → pipeline.notifyRead(buf)
     → SuspendBridgeHandler.onRead() → queue
                                         ↓
@@ -135,6 +137,7 @@ PKCS#8-wrapped private keys are unwrapped by `Pkcs8KeyUnwrapper` before
 | `NwPipelinedChannel` | Unified channel: Pipeline + Coroutine modes. Wraps `nw_connection_t` |
 | `NwIoTransport` | `IoTransport` for write/flush via `keel_nw_write_async` / `keel_nw_writev_async` |
 | `NwStreamServer` | Coroutine-mode server: wraps `nw_listener_t`, queues connections for `accept()` |
+| `DispatchDataIoBuf` | Engine-direct `IoBuf` wrapping a retained single-region `dispatch_data_t` (zero-copy receive path) |
 | `NwTlsParams` | Builds `nw_parameters_t` with `SecIdentity` for listener-level TLS |
 | `CallbackContext` | Thread-safe single-resume guard for C dispatch-queue callbacks |
 

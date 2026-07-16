@@ -24,8 +24,19 @@ Exposes:
   `:keel-tls`) into a `TlsServerInstaller`. Default choice for keel's `TlsHandler`-based
   TLS; engine-specific installers (e.g. a Netty `SslHandler` adapter) replace it for
   transport-level TLS.
+- `ServerTls` — engine-neutral server-side TLS intent for a connector: the
+  protocol-level `TlsConfig` plus a `ServerTlsStrategy`.
+- `ServerTlsStrategy` — sealed choice of TLS mechanism: `EngineNative` (the engine's
+  own TLS), `KeelCodec` (keel's `TlsHandler` with a `TlsCodecFactory`; works on every
+  engine), or `Custom` (bring your own `TlsServerInstaller`).
+- `ServerTlsProvider` — optional capability interface implemented by engines with
+  native server TLS (Netty, NWConnection, Node.js); `ServerConnector.resolveBindConfig`
+  uses it to obtain an engine-specific `BindConfig` for `EngineNative`.
+- `connector { ... }` DSL (`dsl` subpackage) — protocol-neutral builder for
+  `ServerConnector` (`ServerConnectorBuilder` / `ServerTlsBuilder`, marked with
+  the `@KeelServerDsl` DSL marker).
 
-The Ktor adapter (`:keel-server-ktor`) and the upcoming HTTP/1.1 native server
+The Ktor adapter (`:keel-server-ktor`) and the HTTP/1.1 native server
 (`:keel-server-http`) both consume these primitives so neither side has to own them.
 
 # Package io.github.fukusaka.keel.server
@@ -43,3 +54,11 @@ The Ktor adapter (`:keel-server-ktor`) and the upcoming HTTP/1.1 native server
 `TlsServerConfig` — `BindConfig` subclass for HTTPS listeners.
 
 `TlsCodecServerInstaller` — adapter from `TlsCodecFactory` to `TlsServerInstaller`.
+
+`ServerTls` / `ServerTlsStrategy` / `ServerTlsProvider` — engine-neutral TLS intent,
+mechanism selection, and the engine-native TLS capability interface.
+
+# Package io.github.fukusaka.keel.server.dsl
+
+`connector { ... }` builder DSL: `ServerConnectorBuilder`, `ServerTlsBuilder`,
+and the `@KeelServerDsl` DSL marker.

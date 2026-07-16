@@ -21,11 +21,17 @@ flows TAIL → HEAD. `HeadHandler` connects the pipeline to `NettyIoTransport`.
 ## Architecture
 
 ```
-NettyEngine (owns NioEventLoopGroups)
-├── bossGroup (NioEventLoopGroup, 1 thread) ── accept on server channel
-└── workerGroup (NioEventLoopGroup, N threads)
+NettyEngine (owns boss + worker EventLoopGroups)
+├── bossGroup (1 thread) ── accept on server channel
+└── workerGroup (N threads)
       └── accepts I/O callbacks for each connection
 ```
+
+The Netty transport is selectable via the `NettyTransport` sealed interface
+(`Auto` / `Epoll` / `KQueue` / `IoUring` / `Nio`); each variant builds the
+matching `EventLoopGroup` through `newEventLoopGroup(threads)`. The default
+`Auto` prefers the platform's native transport (Linux → epoll, macOS/BSD →
+kqueue) and falls back to NIO.
 
 `IoEngineConfig.threads` maps directly to the Netty worker group size.
 Passing `0` (default) lets Netty choose automatically (`cpu × 2`).
@@ -39,13 +45,16 @@ when `ensureBridge()` (Coroutine mode) or `armRead()` (Pipeline mode) is called.
 ## Read Path
 
 Netty delivers data asynchronously via `channelRead(ByteBuf)` before the user
-provides a buffer. The `ByteBuf` content is copied into `IoBuf` via `ByteBuf.getBytes`.
-This copy is unavoidable — the same structural constraint as NWConnection and Node.js.
+provides a buffer. When the inbound `ByteBuf` is backed by a single NIO buffer
+(`nioBufferCount() == 1`), the transport wraps it **zero-copy** via
+`NettyByteBufIoBuf.borrowInbound` — a pooled, engine-direct `IoBuf` view over
+the same off-heap memory. Composite buffers (`nioBufferCount() > 1`) fall back
+to an allocate-and-copy path (`ByteBuf.getBytes`).
 
 **Pipeline**: `armRead()` enables `autoRead = true` immediately after pipeline setup.
 
 ```
-Netty channelRead(ByteBuf) → IoBuf copy (ByteBuf.getBytes)
+Netty channelRead(ByteBuf) → IoBuf wrap (borrowInbound; copy fallback for composites)
   → pipeline.notifyRead(buf)
     → handler chain (Decoder → Router → ...)
 ```
@@ -53,7 +62,7 @@ Netty channelRead(ByteBuf) → IoBuf copy (ByteBuf.getBytes)
 **Coroutine**: `autoRead = true` is enabled lazily when `ensureBridge()` is called.
 
 ```
-Netty channelRead(ByteBuf) → IoBuf copy (ByteBuf.getBytes)
+Netty channelRead(ByteBuf) → IoBuf wrap (borrowInbound; copy fallback for composites)
   → pipeline.notifyRead(buf)
     → SuspendBridgeHandler.onRead() → queue
                                         ↓
@@ -102,7 +111,9 @@ Supported certificate sources: `TlsCertificateSource.Pem`, `TlsCertificateSource
 
 | Class | Role |
 |-------|------|
-| `NettyEngine` | `StreamEngine` implementation. Creates boss + worker `NioEventLoopGroup` |
+| `NettyEngine` | `StreamEngine` implementation. Creates boss + worker EventLoopGroups |
+| `NettyTransport` | Sealed transport selector (`Auto` / `Epoll` / `KQueue` / `IoUring` / `Nio`) — builds the matching `EventLoopGroup` |
+| `NettyByteBufAllocator` | `BufferAllocator` adapter over a Netty `ByteBufAllocator`; usable as `IoEngineConfig.allocator` on JVM engines |
 | `NettyPipelinedChannel` | Unified channel: Pipeline + Coroutine modes. Bridges `channelRead` to keel pipeline |
 | `NettyIoTransport` | `IoTransport` for buffered async writes via `writeAndFlush`. Always async |
 | `NettySslInstaller` | `TlsServerInstaller` (in `:keel-server`) that installs Netty `SslHandler` at the transport level |

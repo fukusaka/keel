@@ -6,6 +6,8 @@ Engine modules implement these interfaces; codec and application code depend on 
 ## I/O Engine Interfaces
 
 `IoEngine` is the root interface for all keel I/O engines (lifecycle: `close()`).
+It is also a `CoroutineScope` whose context carries the engine's EventLoop
+dispatcher, so per-connection handlers can be launched directly on the engine.
 `StreamEngine : IoEngine` extends it with TCP byte-stream operations.
 Engine modules implement `StreamEngine` for each platform:
 
@@ -19,7 +21,7 @@ Application
  kq  ep  nio net  nw  js  uring
 ```
 
-- `bind(host, port)` — server socket + listen; returns `Server` (Coroutine mode)
+- `bind(host, port)` — server socket + listen; returns `StreamServer` (Coroutine mode)
 - `bindPipeline(host, port, init)` — server socket + listen; drives I/O via callbacks (Pipeline mode)
 - `connect(host, port)` — outbound TCP connection; returns `Channel`
 
@@ -63,22 +65,40 @@ Configuration shared by all engines:
 
 | Property | Default | Description |
 |----------|---------|-------------|
-| `threads` | 0 (cpu × 2) | Worker thread count |
-| `allocator` | `DefaultBufferAllocator` | Buffer allocator |
+| `allocator` | `defaultAllocator()` | Root buffer allocator (platform pooled allocator — Native: `SlabAllocator`, JVM: `PooledDirectAllocator`, JS: `DefaultAllocator`); engines derive per-EventLoop child allocators from it |
+| `threads` | 0 (auto) | Worker EventLoop thread count; 0 resolves per engine (typically `availableProcessors()`) |
 | `loggerFactory` | `NoopLoggerFactory` | Logging factory |
+| `resolver` | `DnsResolver.SYSTEM` | DNS resolver used when `bind` / `connect` receives an unresolved hostname; swap in `CachingDnsResolver` or a custom implementation |
+| `idleReadPolicy` | `IdleReadPolicy.DETECT_PEER_CLOSE` | Peer-close detection vs TCP back-pressure trade-off for the idle-read window (consulted only by engines with the structural constraint) |
+| `readBufferSize` | 8 KiB | Engine-wide default per-read buffer size for pull-model engines; must be a power of two; overridable per server (`BindConfig`) / per client (`ConnectConfig`) |
+| `idleTimeoutMillis` | 0 (disabled) | Per-connection no-progress timeout (slowloris / stalled-peer defence); overridable per server / per client |
+| `flushCoalescing` | `true` | Coalesce same-tick flushes into a single gathered send (writev / batched send) |
+
+Per-server settings live in `BindConfig` (backlog, `childSocketOptions`, read buffer /
+idle-timeout overrides, TLS-capable subclasses); per-client settings in `ConnectConfig`
+(`socketOptions` plus the same overrides). `BindSpec` pairs a `SocketAddress` with a
+`BindConfig` for multi-address `bindPipeline` calls. `SocketOptions` carries the
+per-socket options (TCP_NODELAY, SO_KEEPALIVE, SO_RCVBUF, SO_SNDBUF). `IpAddress`
+(sealed `V4` / `V6`) models resolved addresses, including IPv6 scope ids.
 
 ## Key Classes and Interfaces
 
 | Type | Package | Role |
 |------|---------|------|
-| `IoEngine` | `core` | Root interface for all keel I/O engines (lifecycle) |
+| `IoEngine` | `core` | Root interface for all keel I/O engines (lifecycle, `CoroutineScope`) |
 | `StreamEngine` | `core` | TCP byte-stream engine: `bind` / `bindPipeline` / `connect` |
 | `Channel` | `core` | Bidirectional TCP channel |
-| `Server` | `core` | Coroutine-mode server: suspend-based accept loop |
-| `PipelinedStreamServer` | `core` | Pipeline-mode server lifecycle |
-| `SocketAddress` | `core` | `(host, port)` tuple |
+| `StreamServer` | `core` | Coroutine-mode server: suspend-based accept loop |
+| `PipelinedStreamServer` | `pipeline` | Pipeline-mode server lifecycle |
+| `SocketAddress` | `core` | Sealed address type: `InetSocketAddress` / `UnixSocketAddress` |
+| `IpAddress` | `core` | Sealed resolved IP address: `V4` / `V6` (with scope id) |
+| `DnsResolver` | `core` | Hostname resolution interface (`SystemDnsResolver`, `CachingDnsResolver`) |
 | `IoEngineConfig` | `core` | Engine-wide configuration |
-| `BindConfig` | `core` | Per-server bind configuration (backlog, TLS initializer) |
+| `BindConfig` | `core` | Per-server bind configuration (backlog, child socket options, TLS-capable subclasses) |
+| `BindSpec` | `core` | `(address, config)` pair for multi-address `bindPipeline` |
+| `ConnectConfig` | `core` | Per-client connect configuration |
+| `SocketOptions` | `core` | Per-socket options (TCP_NODELAY, SO_KEEPALIVE, buffer sizes) |
+| `DeadlineScheduler` | `pipeline` | EventLoop-local timer for idle/read deadlines (O(1) refresh) |
 | `Pipeline` | `pipeline` | Handler chain interface |
 | `DefaultPipeline` | `pipeline` | Doubly-linked handler chain implementation |
 | `PipelinedChannel` | `pipeline` | Channel with attached `Pipeline` |
@@ -92,9 +112,10 @@ Configuration shared by all engines:
 
 # Package io.github.fukusaka.keel.core
 
-`IoEngine`, `StreamEngine`, `Channel`, `Server`, `PipelinedStreamServer`,
-`IoEngineConfig`, `BindConfig`, `SocketAddress` — the public API for
-binding servers and creating connections.
+`IoEngine`, `StreamEngine`, `Channel`, `StreamServer`, `IoEngineConfig`,
+`BindConfig`, `BindSpec`, `ConnectConfig`, `SocketAddress`, `IpAddress`,
+`SocketOptions`, `DnsResolver` — the public API for binding servers and
+creating connections.
 
 # Package io.github.fukusaka.keel.pipeline
 

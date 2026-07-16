@@ -96,12 +96,12 @@ water marks on pending bytes, independent of Node.js flow control.
 
 `NodeEngine` supports two TLS modes:
 
-**Listener-level TLS** (`TlsConnectorConfig` with `installer = null`): creates a
+**Listener-level TLS** (`TlsServerConfig` with `installer = null`): creates a
 `tls.Server` via `tls.createServer()`. TLS is handled by Node.js at the transport
 level. The `"secureConnection"` event fires after the TLS handshake instead of
 `"connection"`. No keel `TlsHandler` is needed in the pipeline.
 
-**Per-connection TLS** (`TlsConnectorConfig` with non-null `installer`): creates a
+**Per-connection TLS** (`TlsServerConfig` with non-null `installer`): creates a
 plain `net.Server` and installs a keel `TlsHandler` per connection via
 `BindConfig.initializeConnection`.
 

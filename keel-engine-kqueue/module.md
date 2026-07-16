@@ -98,7 +98,10 @@ and EVFILT_WRITE is deleted.
 | `KqueueIoTransport` | `IoTransport` for write/flush with EVFILT_WRITE backpressure |
 | `KqueueEventLoop` | Single-threaded kqueue loop + `CoroutineDispatcher` |
 | `KqueueEventLoopGroup` | Round-robin distribution of channels across EventLoops |
-| `SocketUtils` | POSIX socket helpers (bind, connect, address conversion) |
+| `KqueueSyscallOps` / `PosixKqueueSyscallOps` | Seam over the `kqueue(2)`-family syscalls, making error branches testable without a real kernel |
+
+Socket lifecycle helpers (bind/listen, non-blocking connect, address queries) come
+from the shared `keel-native-posix` module (`NativeSocketOps` / `NativeSocket`).
 
 # Package io.github.fukusaka.keel.engine.kqueue
 

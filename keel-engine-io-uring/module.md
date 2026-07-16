@@ -161,7 +161,12 @@ via `IoModeSelectors.eagainThreshold()`.
 | `IoMode` | Flush strategy enum: CQE, FALLBACK_CQE, SEND_ZC |
 | `IoModeSelector` | Per-connection strategy selection based on `ConnectionStats` |
 | `ConnectionStats` | Per-connection EAGAIN rate (EMA) for adaptive mode switching |
-| `SocketUtils` | POSIX socket helpers (bind, connect, address conversion) |
+| `RegisteredBufferStrategy` | Registered ("fixed") buffer strategy enum, configured via the `IoUringEngine` constructor |
+| `IoUringSyscallOps` / `IoUringRing` / `IoUringProbe` | Seams over the io_uring syscalls, ring lifecycle, and opcode probing — error branches testable without a real kernel |
+| `FixedFileRegistry` | Per-EventLoop registered-fd (fixed file) table with deferred on-loop kernel registration |
+
+Socket lifecycle helpers (bind/listen, non-blocking connect, address queries) come
+from the shared `keel-native-posix` module (`NativeSocketOps` / `NativeSocket`).
 
 ## Kernel Version Requirements
 

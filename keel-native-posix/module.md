@@ -6,7 +6,10 @@ Targets: **linuxX64**, **linuxArm64**, **macosArm64**, **macosX64**
 
 ## Role
 
-`keel-native-posix` provides the `PosixSocketUtils` singleton used by all Native engine modules.
+`keel-native-posix` provides the shared POSIX socket surface used by all Native engine
+modules: the `NativeSocket` / `NativeSocketOps` seams with their production
+implementations `PosixNativeSocket` / `PosixNativeSocketOps`, plus the helpers
+`errnoMessage`, `closeFdSafely`, and `applySocketOptions`.
 Engine modules (`keel-engine-epoll`, `keel-engine-kqueue`, `keel-engine-io-uring`) depend on this
 module to avoid duplicating socket lifecycle code.
 
@@ -27,23 +30,25 @@ Two cinterop definitions expose POSIX functions that Kotlin/Native cannot bind d
 - `sin_family` type: differs between Linux (`UShort`) and macOS (`UByte`), causing commonization errors. `keel_init_sockaddr_in` sets all `sockaddr_in` fields from C, avoiding the type divergence.
 - `writev`: provided as `keel_writev(fd, bases[], lens[], count)` — builds `iovec[]` internally for gather-write in a single syscall. Used by epoll and kqueue `IoTransport` for multiple pending buffers.
 
-## PosixSocketUtils
+## NativeSocketOps
 
-`PosixSocketUtils` creates and configures POSIX TCP sockets for engine use:
+`NativeSocketOps` is the socket-lifecycle seam; `PosixNativeSocketOps` is the
+production implementation:
 
 | Function | Description |
 |----------|-------------|
-| `createServerSocket(host, port, backlog, logger)` | `socket` → `SO_REUSEADDR` → non-blocking → `bind` → `listen`. `logger` is routed through `closeFdSafely` on the error-cleanup path so any `close(2)` failure surfaces as a warn-level log instead of a silent fd drop |
-| `createReusePortServerSocket(host, port, backlog, logger)` | Same as above + `SO_REUSEPORT`. Used by io_uring Pipeline mode — the kernel distributes connections across worker sockets by 4-tuple hash |
-| `createUnconnectedSocket()` | Creates a non-blocking TCP socket; caller drives `connect()` |
-| `connectNonBlocking(fd, host, port)` | Initiates non-blocking `connect()`. Returns a [ConnectResult] — `Connected` on immediate success (e.g. loopback), `InProgress` on `EINPROGRESS` / `EINTR`, or `Failed(errno)` otherwise |
+| `bindListener(address, port, backlog, reusePort)` | `socket` → `SO_REUSEADDR` [→ `SO_REUSEPORT`] → non-blocking → `bind` → `listen`. `reusePort = true` enables kernel-side load balancing across worker sockets |
+| `openClientSocket(family)` | Creates a non-blocking TCP socket (unconnected); caller drives `connectNonBlocking` |
+| `connectNonBlocking(fd, address, port)` | Initiates non-blocking `connect()`. Returns a `ConnectResult` — `Connected` on immediate success (e.g. loopback), `InProgress` on `EINPROGRESS` / `EINTR`, or `Failed(errno)` otherwise |
 | `getSocketError(fd)` | Reads `SO_ERROR` via `getsockopt` after EventLoop reports WRITE readiness (non-blocking connect completion check) |
-| `getLocalAddress(fd)` | `getsockname` → `SocketAddress` |
-| `getRemoteAddress(fd)` | `getpeername` → `SocketAddress` |
-| `setNonBlocking(fd)` | Sets `O_NONBLOCK` via `fcntl(F_GETFL)` + `fcntl(F_SETFL)` |
-| `toSocketAddress(addr)` | Converts C `sockaddr_in` to keel `SocketAddress` via `keel_ntohs` + `keel_inet_ntop` |
+| `getLocalAddress(fd)` / `getRemoteAddress(fd)` | `getsockname` / `getpeername` → `SocketAddress`, auto-detecting V4 / V6 / UNIX |
+| `setNonBlocking(fd)` | Sets `O_NONBLOCK` via `fcntl` |
+| `setSocketOption(fd, option)` | Applies a single `SocketOption`; `applySocketOptions(fd, options)` applies a whole `SocketOptions` set |
+| `bindUnixListener(address, backlog)` / `openUnixClientSocket()` / `connectUnixNonBlocking(fd, address)` | `AF_UNIX` / `SOCK_STREAM` equivalents for Unix domain sockets |
 
-All functions are IPv4 only (`AF_INET`). IPv6 support is deferred.
+The socket family follows the `IpAddress` argument: `IpAddress.V4` → `AF_INET`,
+`IpAddress.V6` → `AF_INET6` — both IPv4 and IPv6 are supported, plus `AF_UNIX`
+for Unix domain sockets.
 
 **`IntArray.usePinned` workaround**: `IntVar.value` and `socklen_tVar.value` assignment
 fails on some Kotlin/Native versions. `getsockopt` and `setsockopt` calls use
@@ -53,14 +58,21 @@ fails on some Kotlin/Native versions. `getsockopt` and `setsockopt` calls use
 
 | Type | Role |
 |------|------|
-| `PosixSocketUtils` | Singleton. POSIX TCP socket lifecycle: create, bind, connect, query |
-| `NativeSocket` | Interface. `read` / `write` / `writev` / `accept` / `connect` / `send` / `shutdown` / `close`. Sealed `Result` types replace raw errno |
+| `NativeSocket` | Interface. Data-path syscalls: `read` / `write` / `writev` / `accept` / `shutdown` / `close`. Sealed `Result` types replace raw errno |
 | `PosixNativeSocket` | Singleton. Production `NativeSocket` impl backed by EINTR-retrying `keel_*` C wrappers |
-| `PosixRawClient` | Test helper. Blocking loopback client I/O on top of `NativeSocket` |
-| `FakeNativeSocket` | Test helper. Scripted in-memory `NativeSocket` with per-fd FIFO response queues + fd-lifecycle tracking |
+| `NativeSocketOps` | Interface. Socket lifecycle: bind / listen, client socket creation, non-blocking connect, address queries, socket options (TCP + Unix domain) |
+| `PosixNativeSocketOps` | Production `NativeSocketOps` impl |
+| `errnoMessage(errno)` | Thread-safe errno-to-string helper (`strerror_r`-based) |
+| `closeFdSafely(fd, logger, context)` | Cleanup-path `close(2)` that logs failures instead of dropping them silently |
+| `applySocketOptions(fd, options)` | Applies a `SocketOptions` set through `NativeSocketOps.setSocketOption` |
+
+Test doubles for these seams (`FakeNativeSocket`, `FakeNativeSocketOps`, and the
+blocking loopback client `PosixRawClient`) live in the `keel-testing-internal`
+module, not here.
 
 # Package io.github.fukusaka.keel.native.posix
 
-Shared POSIX socket utilities for Native engines: `PosixSocketUtils`
-(production) + `NativeSocket` seam (`PosixNativeSocket` in production,
-`FakeNativeSocket` in unit tests).
+Shared POSIX socket utilities for Native engines: the `NativeSocket` /
+`NativeSocketOps` seams (`PosixNativeSocket` / `PosixNativeSocketOps` in
+production) plus the `errnoMessage`, `closeFdSafely`, and
+`applySocketOptions` helpers.
