@@ -57,9 +57,11 @@ decides which engine module(s) to depend on.
 Example:
 
 ```kotlin
-embeddedServer(Keel) {
+embeddedServer(Keel, configure = {
     engine = NioEngine()
     connector { port = 8080 }
+}) {
+    // application module
 }
 ```
 

@@ -77,12 +77,22 @@ java -cp @benchmark/build/benchmark-classpath.txt \
 
 | Script | Purpose |
 |--------|---------|
-| `bench-one.sh` | Single engine on loopback: `bench-one.sh <name> <command> [args...]` |
-| `bench-remote.sh` | Single engine with server / wrk on different ssh hosts (real NIC) |
+| `bench-one.sh` | Single engine on loopback (wrk): `bench-one.sh <name> <command> [args...]` |
 | `bench-keel.sh` | keel engines + `ktor-cio` only |
 | `bench-all.sh` | All engines (external servers + Kotlin/Native + JVM + JS) |
+| `bench-stream-one.sh` | Single engine, streaming scenarios (upload / SSE / WebSocket) driven by k6 instead of wrk |
+| `bench-stream-all.sh` | All servers across all streaming scenarios, using `bench-stream-one.sh` per engine |
+| `bench-https-matrix.sh` | HTTPS full matrix: runs `bench-keel.sh` once per TLS backend, rebuilding the binary in between |
+| `bench-keepalive-compare.sh` | A/B compare of HTTP keep-alive vs `Connection: close` for one engine + scenario |
+| `bench-remote.sh` | Single engine with server / wrk on different ssh hosts (real NIC) |
+| `bench-remote-keel.sh` | Real-network batch run of every keel engine via `bench-remote.sh` |
+| `bench-remote-slow.sh` | Slow-path scenarios (netem delay + small send buffers) to force partial-write handling on a real network |
+| `bench-remote-ws.sh` | WebSocket permessage-deflate real-network throughput benchmark |
 | `bench-pull.sh` | Pull results from a remote host over `rsync`/`ssh` |
 | `bench-snapshot.sh` | Snapshot raw results with summary |
+| `bench-preflight.sh` | Sourced helper: pre-flight binary validation so `bench-all.sh` / `bench-stream-all.sh` refuse silent partial sweeps |
+| `bench-temp.sh` | Sourced helper: no-sudo CPU temperature capture (opt-in via `BENCH_TEMP_CAPTURE=1`) |
+| `bench-jvm-cp.sh` | Resolves the JVM classpath file's placeholders against the running host and sanity-checks each entry |
 
 Key environment variables:
 
@@ -125,29 +135,47 @@ All registered engines by platform:
 | Platform | Engine name | Backend |
 |----------|-------------|---------|
 | JVM | `ktor-keel-nio` | keel NIO + Ktor |
+| JVM | `ktor-cio-keel-nio` | keel NIO + Ktor with ktor-http-cio parser (`KeelCio`) |
 | JVM | `pipeline-http-nio` | keel NIO Pipeline mode (no Ktor) |
+| JVM | `server-http-nio` | keel NIO + `keelHttpServer { }` (`:keel-server-http`) |
 | JVM | `ktor-keel-netty` | keel Netty + Ktor |
+| JVM | `ktor-keel-netty-io-uring` | keel Netty (io_uring transport) + Ktor |
+| JVM | `ktor-cio-keel-netty` | keel Netty + Ktor with ktor-http-cio parser (`KeelCio`) |
 | JVM | `pipeline-http-netty` | keel Netty Pipeline mode (no Ktor) |
+| JVM | `pipeline-http-netty-io-uring` | keel Netty (io_uring transport) Pipeline mode |
+| JVM | `server-http-netty` | keel Netty + `keelHttpServer { }` (`:keel-server-http`) |
 | JVM | `ktor-cio` | Ktor CIO |
 | JVM | `ktor-netty` | Ktor Netty |
 | JVM | `netty-raw` | Raw Netty (no Ktor) |
 | JVM | `spring` | Spring Boot |
 | JVM | `vertx` | Vert.x |
 | macOS | `ktor-keel-kqueue` | keel kqueue + Ktor |
+| macOS | `ktor-cio-keel-kqueue` | keel kqueue + Ktor with ktor-http-cio parser (`KeelCio`) |
 | macOS | `pipeline-http-kqueue` | keel kqueue Pipeline mode (no Ktor) |
+| macOS | `server-http-kqueue` | keel kqueue + `keelHttpServer { }` (`:keel-server-http`) |
 | macOS | `ktor-keel-nwconnection` | keel NWConnection + Ktor |
+| macOS | `ktor-cio-keel-nwconnection` | keel NWConnection + Ktor with ktor-http-cio parser (`KeelCio`) |
 | macOS | `pipeline-http-nwconnection` | keel NWConnection Pipeline mode |
+| macOS | `server-http-nwconnection` | keel NWConnection + `keelHttpServer { }` (`:keel-server-http`) |
 | macOS | `ktor-cio` | Ktor CIO |
 | Linux | `ktor-keel-epoll` | keel epoll + Ktor |
+| Linux | `ktor-cio-keel-epoll` | keel epoll + Ktor with ktor-http-cio parser (`KeelCio`) |
 | Linux | `pipeline-http-epoll` | keel epoll Pipeline mode (no Ktor) |
+| Linux | `server-http-epoll` | keel epoll + `keelHttpServer { }` (`:keel-server-http`) |
 | Linux | `ktor-keel-io-uring` | keel io_uring + Ktor |
+| Linux | `ktor-cio-keel-io-uring` | keel io_uring + Ktor with ktor-http-cio parser (`KeelCio`) |
 | Linux | `pipeline-http-io-uring` | keel io_uring Pipeline mode |
+| Linux | `server-http-io-uring` | keel io_uring + `keelHttpServer { }` (`:keel-server-http`) |
 | Linux | `raw-io-uring` | io_uring raw benchmark (no HTTP codec) |
 | Linux | `ktor-cio` | Ktor CIO |
 | JS | `pipeline-http-nodejs` | keel Node.js Pipeline mode |
+| JS | `server-http-nodejs` | keel Node.js + `keelHttpServer { }` (`:keel-server-http`) |
 
 `ktor-keel-*` engines run a full Ktor application pipeline on top of keel's `StreamEngine`.
+`ktor-cio-keel-*` engines run the same Ktor application but parse HTTP with ktor-http-cio
+(the `:keel-server-ktor-cio` adapter) instead of keel's own codec.
 `pipeline-http-*` engines use keel's `bindPipeline` directly (`HttpRequestDecoder` + `RoutingHandler` + `HttpResponseEncoder`) without Ktor — zero-suspend, maximum throughput.
+`server-http-*` engines run the productized `keelHttpServer { }` DSL stack from `:keel-server-http`.
 
 ## External Reference Servers
 

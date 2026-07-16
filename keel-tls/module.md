@@ -3,7 +3,7 @@
 Core TLS interfaces, pipeline handler, and configuration types shared by all keel TLS backends.
 
 Platform-specific implementations live in separate modules (`keel-tls-jsse`, `keel-tls-mbedtls`,
-`keel-tls-awslc`, `keel-tls-openssl`, `keel-tls-nodejs`). Application code depends only on
+`keel-tls-awslc`, `keel-tls-openssl`). Application code depends only on
 `keel-tls`; the implementation module is selected at link time.
 
 ## TLS Integration Model
@@ -27,7 +27,7 @@ HeadHandler → IoTransport → Network
 ```
 
 This design decouples TLS from the I/O engine, making `TlsHandler` portable across all keel
-engines (kqueue, epoll, NIO, Netty, NWConnection, Node.js).
+engines (epoll, kqueue, io_uring, NIO, Netty, NWConnection, Node.js).
 
 Engine-native TLS (NWConnection listener-level, Node.js `tls.createServer`) bypasses
 `TlsHandler` entirely — the pipeline receives plaintext directly from the engine.
@@ -103,8 +103,12 @@ keel's `TlsHandler`.
 | `certificates` | `TlsCertificateSource?` | Server cert + private key (required for server mode) |
 | `trustAnchors` | `TlsTrustSource?` | CA trust; null = OS/JDK default |
 | `verifyMode` | `TlsVerifyMode` | `NONE` / `PEER` / `REQUIRED` (default: `PEER`) |
+| `minVersion` | `TlsVersion` | Minimum protocol version (default: `TLS1_2`) |
+| `maxVersion` | `TlsVersion?` | Maximum protocol version; null = backend default |
 | `alpnProtocols` | `List<String>?` | ALPN preference list (e.g. `["h2", "http/1.1"]`) |
 | `serverName` | `String?` | SNI hostname for client mode |
+| `verifyHostname` | `Boolean?` | Hostname verification toggle; null = backend default |
+| `handshakeTimeoutMillis` | `Long` | Handshake deadline; 0 disables the timeout (default) |
 
 `TlsServerConfig` (in `:keel-server`) extends `BindConfig` and wraps `TlsConfig` + `TlsServerInstaller?`:
 - `installer = non-null` — per-connection TLS via `TlsServerInstaller.install()`
@@ -116,8 +120,8 @@ keel's `TlsHandler`.
 
 | Variant | Platform | Notes |
 |---------|----------|-------|
-| `Pem(certPem, keyPem)` | All | PEM-encoded certificate + private key strings |
-| `Der(cert, key)` | All | DER-encoded byte arrays. `asPem()` / `asDer()` convert between them |
+| `Pem(certificatePem, privateKeyPem)` | All | PEM-encoded certificate + private key strings |
+| `Der(certificate, privateKey)` | All | DER-encoded byte arrays. `asPem()` / `asDer()` convert between them |
 | `KeyStoreFile(path, password, type)` | JVM only | PKCS12 or JKS file on disk |
 | `SystemKeychain(identityLabel)` | macOS NWConnection only | `SecIdentity` from macOS Keychain |
 
