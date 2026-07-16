@@ -16,9 +16,11 @@ import io.ktor.server.engine.ApplicationEngineFactory
  *
  * Usage:
  * ```
- * embeddedServer(Keel) {
+ * embeddedServer(Keel, configure = {
  *     engine = NioEngine()
  *     connector { port = 8080 }
+ * }) {
+ *     // application module
  * }.start(wait = true)
  * ```
  *
