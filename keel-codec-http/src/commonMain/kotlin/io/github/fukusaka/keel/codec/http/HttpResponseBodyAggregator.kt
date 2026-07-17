@@ -63,7 +63,7 @@ class HttpResponseBodyAggregator(
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpResponseHead ->
-                if (isInterim(msg)) beginInterim() else startAggregation(msg)
+                if (isInterim(msg)) beginInterim(msg) else startAggregation(msg)
             is HttpBodyEnd ->
                 if (interimPending) {
                     interimPending = false
@@ -88,14 +88,15 @@ class HttpResponseBodyAggregator(
         head.status.isInformational && head.status.code != SWITCHING_PROTOCOLS_CODE
 
     /**
-     * Enters interim-response mode: releases any chunks still held from a
-     * malformed prior sequence (mirroring [startAggregation]'s pool-safety) and
-     * marks the stream interim so its terminating [HttpBodyEnd] is swallowed.
+     * Enters interim-response mode: the interim head is consumed without ever
+     * being emitted, so its pooled headers — which retain the recv buffer via
+     * `addRange` (e.g. a `103 Early Hints` `Link` header) — are released back to
+     * the pool here. Also releases any head / chunks still held from a malformed
+     * prior sequence (mirroring [startAggregation]'s pool-safety), and marks the
+     * stream interim so its terminating [HttpBodyEnd] is swallowed.
      */
-    private fun beginInterim() {
-        // Release a held head's pooled headers (recv buffer via addRange) and
-        // any chunks from a malformed prior sequence before entering interim
-        // mode (mirroring startAggregation / resetAggregation pool-safety).
+    private fun beginInterim(interimHead: HttpResponseHead) {
+        interimHead.headers.release()
         head?.headers?.release()
         head = null
         acc?.release()

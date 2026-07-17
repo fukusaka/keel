@@ -318,4 +318,29 @@ class HttpResponseBodyAggregatorTest {
         trackedTransport.close()
         assertEquals(0, tracker.outstandingCount)
     }
+
+    @Test
+    fun `an interim response head releases its pooled headers and retained buffer`() {
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val (pipeline, trackedTransport) = trackedDecoderAggregatorPipeline(tracker)
+
+        // A 103 Early Hints interim head carrying a Link header (stored via
+        // addRange → retains the recv buffer), then the final 200 — both in one
+        // pow2 recv buffer. The interim head is swallowed by the aggregator and
+        // never emitted, so it must release its own pooled headers.
+        pipeline.notifyRead(
+            bufOfPow2(
+                "HTTP/1.1 103 Early Hints\r\nLink: </s.css>; rel=preload\r\n\r\n" +
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi",
+                tracker,
+            ),
+        )
+
+        val response = collector.responses.single()
+        assertEquals(HttpStatus.OK, response.status)
+        assertEquals("hi", response.body?.decodeToString())
+        response.headers.release()
+        trackedTransport.close()
+        assertEquals(0, tracker.outstandingCount)
+    }
 }
