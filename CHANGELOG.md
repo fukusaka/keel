@@ -9,9 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `codec-http`: add the client-side HTTP/1.1 codec — `HttpRequestEncoder`,
-  `HttpResponseDecoder` (HEAD/CONNECT-aware framing, interim 1xx, chunked trailers,
-  close-delimited bodies, 101/CONNECT tunnel pass-through), `HttpResponseBodyAggregator`,
-  and the `addHttp1ClientCodec` installer (#962)
+  `HttpResponseDecoder` with RFC 9112 §6.3 response framing,
+  `HttpResponseBodyAggregator`, and the `addHttp1ClientCodec` installer (#962)
 
 ### Changed
 
