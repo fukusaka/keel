@@ -557,7 +557,13 @@ class HttpResponseDecoder(
                 "Both Transfer-Encoding and Content-Length present (RFC 7230 §3.3.3)",
             )
         }
+        // RFC 9110 §8.6: an invalid (negative) Content-Length is unrecoverable
+        // framing — treating it as "no body" would let the body bytes be
+        // parsed as the next response (response splitting).
         val cl = headers.contentLength
+        if (cl != null && cl < 0L) {
+            throw HttpParseException("Invalid Content-Length: $cl (RFC 9110 §8.6)")
+        }
         val head = HttpResponseHead(parsedStatus, parsedVersion, headers)
         // Latch the framing decision off the head BEFORE dispatching it, so
         // whatever a downstream handler does with the headers cannot skew

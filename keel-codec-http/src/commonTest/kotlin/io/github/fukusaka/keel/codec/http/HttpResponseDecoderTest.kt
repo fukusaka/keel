@@ -432,6 +432,24 @@ class HttpResponseDecoderTest {
     }
 
     @Test
+    fun `negative Content-Length propagates a parse error`() {
+        val pipeline = createPipeline()
+
+        // RFC 9110 §8.6: treating "-1" as bodyless would let the body bytes
+        // be parsed as the next response (response splitting).
+        pipeline.notifyRead(
+            bufOf(
+                "HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n" +
+                    "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHELLO",
+            ),
+        )
+
+        assertEquals(1, collector.errors.size)
+        assertIs<HttpParseException>(collector.errors[0])
+        assertTrue(collector.heads.isEmpty())
+    }
+
+    @Test
     fun `invalid status line propagates a parse error`() {
         val pipeline = createPipeline()
 
