@@ -675,11 +675,35 @@ class HttpHeaders {
     }
 
     /**
-     * Validates the message's `Content-Length` header field(s) against the two
+     * True when the `Content-Length` value at slot [i], after OWS trim, begins
+     * with a sign (`+` / `-`). [parseContentLengthAt] would accept such a value
+     * as a number, but RFC 9110 §8.6 grammar is `Content-Length = 1*DIGIT`, so
+     * a signed value is malformed framing and must be rejected.
+     */
+    private fun contentLengthHasLeadingSign(i: Int): Boolean {
+        val s = slotsOrFail()
+        val base = i * STRIDE
+        if (s[base + 1] == STRING_SENTINEL) {
+            val v = stringValue(s[base + 2]).trim()
+            return v.isNotEmpty() && (v[0] == '+' || v[0] == '-')
+        }
+        val buf = bufFor(i)
+        var start = valStartOf(i)
+        val end = start + s[base + 4]
+        while (start < end && isTrimmedByte(buf.getByte(start))) start++
+        if (start >= end) return false
+        val b = buf.getByte(start).toInt() and 0xFF
+        return b == '+'.code || b == '-'.code
+    }
+
+    /**
+     * Validates the message's `Content-Length` header field(s) against the
      * unrecoverable-framing hazards of RFC 9110 §8.6 / RFC 9112 §6.3:
      *
-     * - a `Content-Length` present with an **unparseable** value (`5x`, empty,
-     *   …), which [contentLength] silently reports as absent; and
+     * - a `Content-Length` present with a value that is not `1*DIGIT` —
+     *   **unparseable** (`5x`, empty), **signed** (`+5` / `-5`), or overflowing
+     *   `Long` — which [contentLength] would silently report as absent (or, for
+     *   a sign, parse to a value that mis-frames the body); and
      * - **two or more `Content-Length` fields with differing values**, which
      *   [contentLength] silently collapses to the first wire-order value.
      *
@@ -690,12 +714,13 @@ class HttpHeaders {
      * letting its bytes be parsed as the next message (request/response
      * splitting).
      *
-     * A **negative** value is not treated as invalid here — that is a parseable
-     * value and is rejected by the caller's own negative-Content-Length guard;
-     * this method is orthogonal to it. A single in-place slot scan that
-     * materialises no intermediate list; the buffer-backed decoder path
-     * ([addRange]) is fully allocation-free, and the String-backed path may
-     * `trim` one substring per `Content-Length` field that carries OWS.
+     * Rejecting a **signed** value here closes the negative-`Content-Length`
+     * splitting vector for both decoders through this one shared gate, so it no
+     * longer depends on each decoder carrying its own negative guard. A single
+     * in-place slot scan that materialises no intermediate list; the
+     * buffer-backed decoder path ([addRange]) is fully allocation-free, and the
+     * String-backed path may `trim` one substring per `Content-Length` field
+     * that carries OWS.
      */
     fun contentLengthValidity(): ContentLengthValidity {
         if (slotCount == 0) return ContentLengthValidity.ABSENT
@@ -705,6 +730,9 @@ class HttpHeaders {
         var firstValue = 0L
         for (i in 0 until slotCount) {
             if (s[i * STRIDE] != hash || !nameMatches(i, HttpHeaderName.CONTENT_LENGTH_KEY)) continue
+            // 1*DIGIT only: reject a signed value that parseContentLengthAt would
+            // otherwise accept, and an unparseable / overflowing value (null).
+            if (contentLengthHasLeadingSign(i)) return ContentLengthValidity.INVALID
             val v = parseContentLengthAt(i) ?: return ContentLengthValidity.INVALID
             if (!seen) {
                 seen = true

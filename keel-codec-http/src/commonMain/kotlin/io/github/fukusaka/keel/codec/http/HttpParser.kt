@@ -146,14 +146,17 @@ internal fun validateRequestHeaders(version: HttpVersion, headers: HttpHeaders) 
 }
 
 /**
- * Rejects a malformed (unparseable) or conflicting (duplicate, differing
- * values) `Content-Length` with [HttpParseException] — an unrecoverable framing
- * error per RFC 9110 §8.6 / RFC 9112 §6.3. [HttpHeaders.contentLength] silently
- * reports both cases as absent / the first wire-order value, so both the request
- * ([HttpRequestDecoder]) and the response ([HttpResponseDecoder]) decoder gate
- * on this before framing a body — otherwise the declared body bytes would be
- * parsed as the next message (request / response splitting). A negative value is
- * a separate concern handled by each decoder's own guard.
+ * Rejects a `Content-Length` that is not RFC 9110 §8.6 `1*DIGIT` — malformed
+ * (unparseable / signed / overflowing) or conflicting (duplicate fields with
+ * differing values) — with [HttpParseException], an unrecoverable framing error
+ * per RFC 9110 §8.6 / RFC 9112 §6.3. [HttpHeaders.contentLength] silently
+ * reports these as absent / a signed value / the first wire-order value, so both
+ * the request ([HttpRequestDecoder]) and the response ([HttpResponseDecoder])
+ * decoder gate on this before framing a body — otherwise the declared body bytes
+ * would be parsed as the next message (request / response splitting). Signed
+ * values (including negatives) are rejected here through the shared
+ * [HttpHeaders.contentLengthValidity] gate, so neither decoder needs its own
+ * negative-`Content-Length` guard for correctness.
  */
 internal fun rejectInvalidContentLength(headers: HttpHeaders) {
     if (headers.contentLengthValidity() == ContentLengthValidity.INVALID) {

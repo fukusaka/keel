@@ -266,8 +266,7 @@ class HttpHeadersTest {
     @Test
     fun `contentLengthValidity is VALID for a single value and for identical duplicates`() {
         assertEquals(ContentLengthValidity.VALID, HttpHeaders.of("Content-Length" to "5").contentLengthValidity())
-        // A negative value is parseable — not this method's concern (VALID here).
-        assertEquals(ContentLengthValidity.VALID, HttpHeaders.of("Content-Length" to "-1").contentLengthValidity())
+        assertEquals(ContentLengthValidity.VALID, HttpHeaders.of("Content-Length" to "0").contentLengthValidity())
         val dup = HttpHeaders().add("Content-Length", "5").add("Content-Length", "5")
         assertEquals(ContentLengthValidity.VALID, dup.contentLengthValidity())
     }
@@ -282,5 +281,13 @@ class HttpHeadersTest {
     fun `contentLengthValidity is INVALID for an unparseable value`() {
         assertEquals(ContentLengthValidity.INVALID, HttpHeaders.of("Content-Length" to "5x").contentLengthValidity())
         assertEquals(ContentLengthValidity.INVALID, HttpHeaders.of("Content-Length" to "").contentLengthValidity())
+    }
+
+    @Test
+    fun `contentLengthValidity is INVALID for a signed value`() {
+        // RFC 9110 §8.6 grammar is 1*DIGIT: a signed value parses to a number
+        // but is malformed framing, so it must be rejected by the shared gate.
+        assertEquals(ContentLengthValidity.INVALID, HttpHeaders.of("Content-Length" to "-1").contentLengthValidity())
+        assertEquals(ContentLengthValidity.INVALID, HttpHeaders.of("Content-Length" to "+5").contentLengthValidity())
     }
 }
