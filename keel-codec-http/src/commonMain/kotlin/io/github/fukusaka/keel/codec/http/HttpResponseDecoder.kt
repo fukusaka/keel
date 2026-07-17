@@ -657,6 +657,12 @@ class HttpResponseDecoder(
         chunkTrailers = null
         chunkCrlfSeen = 0
         headerByteCount = 0
+        // After a parse error / truncation the caller is expected to close
+        // the connection, but clear the method queue anyway: a consumer
+        // that keeps reading must not have later responses framed against
+        // the stale methods of aborted exchanges (a HEAD entry applied to
+        // the wrong response would desync the whole connection).
+        pendingMethods.clear()
     }
 
     private companion object {
