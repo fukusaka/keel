@@ -242,6 +242,12 @@ internal fun parseHeaders(source: Source): HttpHeaders {
 internal fun readBody(source: Source, headers: HttpHeaders): ByteArray? {
     if (headers.isChunked) return readChunkedBody(source)
     val length = headers.contentLength ?: return null
+    // RFC 9110 §8.6: an invalid (negative) Content-Length is unrecoverable —
+    // reject it as a parse error rather than letting the negative reach
+    // Source.readByteArray (which would throw a bare IllegalArgumentException).
+    // The streaming HttpRequestDecoder path is already guarded upstream by
+    // rejectInvalidContentLength; this covers the Source-based parseRequest API.
+    if (length < 0L) throw HttpParseException("Invalid Content-Length: $length (RFC 9110 §8.6)")
     return if (length == 0L) null else readBodyByContentLength(source, length)
 }
 

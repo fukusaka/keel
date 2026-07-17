@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `codec-http`: release held server request-body chunks and the head's recv-buffer-retaining
   `HttpHeaders` when a connection closes or errors mid-body (`HttpBodyAggregator` abort paths),
   fixing a pool + recv-buffer leak on abandoned uploads (#963)
+- `codec-http`: the `Source`-based `parseRequest` rejects a negative `Content-Length` as an
+  `HttpParseException` instead of a bare `IllegalArgumentException` from `readByteArray` (#963)
 
 ### Security
 

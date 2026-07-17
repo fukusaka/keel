@@ -154,6 +154,15 @@ class HttpParserTest {
         assertContentEquals(data, readBodyByContentLength(src, 1024))
     }
 
+    @Test
+    fun readBodyRejectsNegativeContentLength() {
+        // RFC 9110 §8.6: a negative Content-Length is a parse error, surfaced
+        // as HttpParseException rather than a bare IllegalArgumentException
+        // from Source.readByteArray.
+        val headers = HttpHeaders.of("Content-Length" to "-1")
+        assertFailsWith<HttpParseException> { readBody(buffer("body"), headers) }
+    }
+
     // --- readChunkedBody ---
 
     @Test
