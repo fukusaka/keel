@@ -204,19 +204,39 @@ class HttpRequestEncoder : OutboundHandler {
 
     private fun encodeContentChunked(ctx: PipelineHandlerContext, content: HttpBody, last: Boolean) {
         val payloadSize = content.content.readableBytes
-        if (payloadSize > 0) {
-            // Emit: "{hex-size}\r\n" + payload + "\r\n". Exact-sized framing
-            // buffers per chunk — see the class KDoc for why the client path
-            // skips the server encoder's scratch-reuse machinery.
-            ctx.propagateWrite(buildChunkFraming(ctx.allocator, payloadSize))
+        // Allocate every framing buffer BEFORE transferring content.content
+        // downstream. If an allocation throws, content.content is still owned
+        // here, so the pipeline's error path releases it exactly once.
+        // Allocating after the transfer would let that release double-free a
+        // buffer the transport's pending-write queue already owns
+        // (use-after-free). Exact-sized framing per chunk — see the class KDoc
+        // for why the client path skips the server encoder's scratch-reuse.
+        var framing: IoBuf? = null
+        var crlf: IoBuf? = null
+        var terminator: IoBuf? = null
+        try {
+            if (payloadSize > 0) {
+                framing = buildChunkFraming(ctx.allocator, payloadSize)
+                crlf = buildCrlf(ctx.allocator)
+            }
+            if (last && content is HttpBodyEnd) {
+                terminator = buildChunkedTerminator(ctx.allocator, content.trailers)
+            }
+        } catch (t: Throwable) {
+            framing?.release()
+            crlf?.release()
+            terminator?.release()
+            throw t
+        }
+        // Emit: "{hex-size}\r\n" + payload + "\r\n".
+        if (framing != null && crlf != null) {
+            ctx.propagateWrite(framing)
             ctx.propagateWrite(content.content)
-            ctx.propagateWrite(buildCrlf(ctx.allocator))
+            ctx.propagateWrite(crlf)
         } else {
             content.content.release()
         }
-        if (last && content is HttpBodyEnd) {
-            ctx.propagateWrite(buildChunkedTerminator(ctx.allocator, content.trailers))
-        }
+        terminator?.let { ctx.propagateWrite(it) }
     }
 
     /**
