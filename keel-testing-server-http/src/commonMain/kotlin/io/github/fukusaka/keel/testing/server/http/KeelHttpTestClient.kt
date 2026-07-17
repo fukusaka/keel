@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
 import io.github.fukusaka.keel.server.http.KeelHttpServer
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 /**
@@ -43,6 +44,11 @@ public class KeelHttpTestClient internal constructor(
     /**
      * Sends one request and returns the parsed response.
      *
+     * Suspends until the complete response has been decoded or the
+     * connection closes / errors — there is no built-in timeout, so tests
+     * should bound the call with `withTimeout` (as a hung route handler
+     * would otherwise suspend the caller indefinitely).
+     *
      * @param method the request method.
      * @param path the request target (path plus optional query string).
      * @param headers extra request headers; `Host` and `Content-Length`
@@ -57,11 +63,13 @@ public class KeelHttpTestClient internal constructor(
     ): TestHttpResponse {
         val server = serverProvider()
         val channel = engine.connect(server.localAddress)
-        check(channel is PipelinedChannel) {
-            "KeelHttpTestClient requires a PipelinedChannel connection; " +
-                "got ${channel::class.simpleName} from ${engine::class.simpleName}"
-        }
         try {
+            // Inside the try so a non-pipeline engine does not leak the
+            // just-connected channel when the check throws.
+            check(channel is PipelinedChannel) {
+                "KeelHttpTestClient requires a PipelinedChannel connection; " +
+                    "got ${channel::class.simpleName} from ${engine::class.simpleName}"
+            }
             val bridge = SuspendMessageBridge(HttpResponse::class)
             // Pipeline mutation and the outbound write run on the channel's
             // EventLoop dispatcher, per the pipeline threading contract.
@@ -79,6 +87,17 @@ public class KeelHttpTestClient internal constructor(
                     )
             return TestHttpResponse(response.status, response.headers, response.body ?: EMPTY_BODY)
         } finally {
+            if (channel is PipelinedChannel) {
+                withContext(NonCancellable + channel.ioDispatcher) {
+                    // A locally-initiated close delivers no peer-FIN, so the
+                    // client-side pipeline would never fire inactive — fire it
+                    // explicitly so codec-held state (e.g. body chunks the
+                    // aggregator retained before a cancellation aborted the
+                    // request mid-response) is released. Idempotent when the
+                    // peer's EOF already fired it.
+                    channel.pipeline.notifyInactive()
+                }
+            }
             channel.close()
         }
     }
