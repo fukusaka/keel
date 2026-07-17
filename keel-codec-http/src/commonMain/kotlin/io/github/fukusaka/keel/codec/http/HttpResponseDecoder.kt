@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.EmptyIoBuf
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.ioBufToLatin1String
 import io.github.fukusaka.keel.pipeline.DuplexHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import kotlin.reflect.KClass
@@ -103,10 +104,6 @@ class HttpResponseDecoder(
     // reallocate per line. Only `accumulatorSize` resets between lines.
     private var accumulator: ByteArray? = null
     private var accumulatorSize: Int = 0
-
-    // Reusable scratch for materialising a line that is fully contained
-    // in the current IoBuf. Grows on demand up to headerLimits.maxLineSize.
-    private var scratchBuffer: ByteArray = ByteArray(INITIAL_SCRATCH_CAPACITY)
 
     // Head fields of the response currently being parsed.
     private var status: HttpStatus? = null
@@ -269,8 +266,7 @@ class HttpResponseDecoder(
         if (lfIndex < 0) {
             val remaining = buf.writerIndex - buf.readerIndex
             if (remaining > 0) {
-                appendToAccumulator(buf, buf.readerIndex, remaining)
-                buf.readerIndex = buf.writerIndex
+                appendToAccumulator(buf, remaining)
             }
             return false
         }
@@ -296,12 +292,13 @@ class HttpResponseDecoder(
             var length = tailLength
             if (length > 0 && buf.getByte(buf.readerIndex + length - 1) == CR) length--
             enforceLineSizeCap(length)
-            val scratch = ensureScratchCapacity(length)
-            for (i in 0 until length) scratch[i] = buf.getByte(buf.readerIndex + i)
-            return latin1ToString(scratch, length)
+            // Bulk platform decode straight off the buffer range — no
+            // intermediate scratch copy (keel-io primitive, same one the
+            // server decoder uses for its materialisation paths).
+            return ioBufToLatin1String(buf, buf.readerIndex, length)
         }
         if (tailLength > 0) {
-            appendToAccumulator(buf, buf.readerIndex, tailLength)
+            appendToAccumulator(buf, tailLength)
         }
         val arr = accumulator!!
         var length = accumulatorSize
@@ -324,15 +321,17 @@ class HttpResponseDecoder(
         return chars.concatToString()
     }
 
-    private fun appendToAccumulator(buf: IoBuf, offset: Int, length: Int) {
+    /**
+     * Appends the next [length] readable bytes of [buf] to the
+     * accumulator with one bulk [IoBuf.readByteArray] (which advances the
+     * buffer's `readerIndex`).
+     */
+    private fun appendToAccumulator(buf: IoBuf, length: Int) {
         if (length == 0) return
         val newSize = accumulatorSize + length
         enforceLineSizeCap(newSize)
         ensureAccumulatorCapacity(newSize)
-        val arr = accumulator!!
-        for (i in 0 until length) {
-            arr[accumulatorSize + i] = buf.getByte(offset + i)
-        }
+        buf.readByteArray(accumulator!!, accumulatorSize, length)
         accumulatorSize = newSize
     }
 
@@ -350,14 +349,6 @@ class HttpResponseDecoder(
             cur.copyInto(next, 0, 0, accumulatorSize)
         }
         accumulator = next
-    }
-
-    private fun ensureScratchCapacity(required: Int): ByteArray {
-        val cur = scratchBuffer
-        if (cur.size >= required) return cur
-        val next = ByteArray(minOf(headerLimits.maxLineSize, maxOf(required, cur.size * 2)))
-        scratchBuffer = next
-        return next
     }
 
     private fun scanLf(buf: IoBuf, from: Int, until: Int): Int {
@@ -557,12 +548,12 @@ class HttpResponseDecoder(
                 "Both Transfer-Encoding and Content-Length present (RFC 7230 §3.3.3)",
             )
         }
+        val cl = headers.contentLength
         val head = HttpResponseHead(parsedStatus, parsedVersion, headers)
         // Latch the framing decision off the head BEFORE dispatching it, so
         // whatever a downstream handler does with the headers cannot skew
         // the decoder's state transition (same hazard as the server
         // decoder's emitHead).
-        val cl = head.headers.contentLength
         val chunked = head.headers.isChunked
         val code = parsedStatus.code
         status = null
@@ -656,9 +647,6 @@ class HttpResponseDecoder(
     private companion object {
         /** Initial capacity of the fallback line accumulator, in bytes. */
         private const val INITIAL_ACCUMULATOR_CAPACITY = 256
-
-        /** Initial capacity of the single-buffer line scratch, in bytes. */
-        private const val INITIAL_SCRATCH_CAPACITY = 256
 
         private val LF = '\n'.code.toByte()
         private val CR = '\r'.code.toByte()
