@@ -350,8 +350,8 @@ Ktor Coroutine mode via `keel-server-ktor`, Linux Ryzen 9:
 
 | Server | `/large` Req/sec | Notes |
 |---|---:|---|
+| **jvm:ktor-keel-nio** | **292K** | |
 | **jvm:ktor-keel-netty** | **239K** | |
-| **jvm:ktor-keel-nio** | **113K** | tail-latency dominated (p99 ~30ms) on this path |
 | jvm:netty-raw (reference) | 273K | raw Netty, no framework |
 
 ### Notes
@@ -360,7 +360,7 @@ Ktor Coroutine mode via `keel-server-ktor`, Linux Ryzen 9:
 - **server-http rows** measure the standalone `keel-server-http` server as an application would run it (the `keelHttpServer { }` DSL on the zero-coroutine push pipeline) — **jvm:server-http-nio** (921K) reaches ~72-75% of the fastest native baselines on Linux, and the DSL layer costs under 1% versus a hand-wired pipeline.
 - **Ktor Coroutine mode** (suspend-based) adds coroutine overhead — **jvm:ktor-keel-nio** (827K) sits within 11% of the standalone server on Linux.
 - On HTTPS, **AWS-LC is the fastest native TLS backend on Linux** (~15% over OpenSSL); the JVM/JSSE path (**729K**) tops all native backends there.
-- On `/large` (100KB) via Ktor, **jvm:ktor-keel-netty** reaches **239K req/s** — within 13% of raw Netty.
+- On `/large` (100KB) via Ktor, **jvm:ktor-keel-nio** reaches **292K req/s** — ahead of raw Netty (273K) — after the adapter started wrapping aggregated bodies zero-copy.
 - On macOS the field is loopback-bound and tightly clustered (149-159K): **server-http-kqueue**, **server-http-nio**, and **ktor-keel-nio** are all within 2% of the fastest server measured.
 
 ---

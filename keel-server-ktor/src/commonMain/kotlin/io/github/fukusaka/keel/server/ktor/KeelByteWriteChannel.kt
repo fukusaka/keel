@@ -21,8 +21,25 @@ internal class KeelByteWriteChannel(
 
     override fun emit(bytes: ByteArray) {
         if (bytes.isEmpty()) return
-        val ioBuf = pipelinedChannel.allocator.allocate(bytes.size)
-        ioBuf.writeByteArray(bytes, 0, bytes.size)
+        // Large drains: wrap the snapshot array zero-copy instead of allocate+copy.
+        // The array is this emit's exclusive snapshot (drained from the write
+        // buffer, never touched again), so wrapBytes' no-mutation-until-release
+        // contract holds. Without this, a drain larger than the allocator's
+        // largest cached size class falls through to an unpooled exact-size
+        // direct-buffer allocation — per response on large bodies, whose
+        // reserve/free churn dominated the profile (Bits.reserveMemory) and
+        // drove the p99 tail. Small drains keep the pooled copy: an 8 KiB
+        // pooled buffer round-trip is cheaper than carrying a wrapped heap
+        // array through the JVM transport's temp-direct copy.
+        // Same pattern and threshold as BufferedSuspendSink's direct-write path.
+        val wrapped = if (bytes.size >= LARGE_BODY_WRAP_THRESHOLD) {
+            pipelinedChannel.allocator.wrapBytes(bytes, 0, bytes.size)
+        } else {
+            null
+        }
+        val ioBuf = wrapped ?: pipelinedChannel.allocator.allocate(bytes.size).also {
+            it.writeByteArray(bytes, 0, bytes.size)
+        }
         pipelinedChannel.pipeline.requestWrite(HttpBody(ioBuf))
         pipelinedChannel.pipeline.requestFlush()
     }
@@ -44,3 +61,16 @@ internal class KeelByteWriteChannel(
      */
     internal suspend fun awaitTerminated() = terminationDeferred.await()
 }
+
+/**
+ * Body size at or above which the ktor adapter wraps the caller's array
+ * zero-copy via [io.github.fukusaka.keel.buf.BufferAllocator.wrapBytes]
+ * instead of allocate+copy ([KeelByteWriteChannel.emit] drains and
+ * [KeelApplicationResponse.respondFromBytes] aggregated bodies). Matches
+ * the direct-write threshold of
+ * [io.github.fukusaka.keel.io.BufferedSuspendSink] (one pooled buffer):
+ * below it, the pooled copy stays on the allocator's hottest size class;
+ * above it, copying would either split the body or fall through to an
+ * unpooled exact-size allocation per response.
+ */
+internal const val LARGE_BODY_WRAP_THRESHOLD = 8192
