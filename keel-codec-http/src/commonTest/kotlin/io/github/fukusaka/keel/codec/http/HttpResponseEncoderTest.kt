@@ -218,6 +218,36 @@ class HttpResponseEncoderTest {
     }
 
     @Test
+    fun `a response with a non-chunked Transfer-Encoding is not given a Content-Length`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        // RFC 9112 §6.1: Content-Length must not accompany any Transfer-Encoding,
+        // not only a `chunked` token — so a `TE: gzip` response gets no injection.
+        pipeline.requestWrite(
+            HttpResponse(
+                HttpStatus.OK,
+                headers = HttpHeaders.of("Transfer-Encoding" to "gzip"),
+                body = "compressed".encodeToByteArray(),
+            ),
+        )
+
+        val text = transport.written[0].readString()
+        assertTrue(text.contains("Transfer-Encoding: gzip\r\n"), "TE preserved: $text")
+        assertTrue(!text.contains("Content-Length"), "no Content-Length injected: $text")
+    }
+
+    @Test
+    fun `an injected response is an exact-sized IoBuf`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        // The injected Content-Length must be counted in the head allocation;
+        // an off-by-one would leave spare/short bytes in the buffer.
+        pipeline.requestWrite(
+            HttpResponse(HttpStatus.OK, headers = HttpHeaders.of("X-Tag" to "t"), body = "hello".encodeToByteArray()),
+        )
+
+        assertEquals(0, transport.written[0].writableBytes, "injected response IoBuf should be exactly sized")
+    }
+
+    @Test
     fun `a bodyless status without framing gets no Content-Length`() {
         val pipeline = createPipeline("encoder" to HttpResponseEncoder())
         // 204 / 304 / 1xx must never carry Content-Length (RFC 9112 §6.3).

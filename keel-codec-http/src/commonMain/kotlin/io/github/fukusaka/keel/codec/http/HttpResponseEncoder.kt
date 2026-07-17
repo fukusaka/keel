@@ -190,11 +190,16 @@ class HttpResponseEncoder : DuplexHandler {
      */
     private fun injectedContentLength(response: HttpResponse): String? {
         if (isBodylessStatus(response.status.code)) return null
-        // Presence check (no value parse) — cheaper on the encode hot path, and
-        // correct even for a present-but-malformed Content-Length (which must
-        // not get a second, injected one).
+        // Presence checks (no value parse) — cheaper on the encode hot path,
+        // correct for a present-but-malformed Content-Length (which must not get
+        // a second, injected one), and keyed on ANY Transfer-Encoding, not just
+        // a `chunked` token: RFC 9112 §6.1 forbids sending Content-Length
+        // together with Transfer-Encoding, so a response declaring `TE: gzip`
+        // (without `chunked`) must not receive an injected Content-Length.
         val headers = response.headers
-        if (HttpHeaderName.CONTENT_LENGTH in headers || headers.isChunked) return null
+        if (HttpHeaderName.CONTENT_LENGTH in headers || HttpHeaderName.TRANSFER_ENCODING in headers) {
+            return null
+        }
         return (response.body?.size ?: 0).toString()
     }
 
