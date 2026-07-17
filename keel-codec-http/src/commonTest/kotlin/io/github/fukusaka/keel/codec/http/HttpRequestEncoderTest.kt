@@ -1,0 +1,320 @@
+package io.github.fukusaka.keel.codec.http
+
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
+import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
+
+class HttpRequestEncoderTest {
+
+    // --- Test infrastructure ---
+
+    private val transport = TestIoTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
+
+    /** Collects errors propagated through the pipeline. */
+    private class ErrorCollector : InboundHandler {
+        val errors = mutableListOf<Throwable>()
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {}
+        override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+            errors.add(cause)
+        }
+    }
+
+    private val errorCollector = ErrorCollector()
+
+    private fun createPipeline(): Pipeline {
+        val pipeline = channel.pipeline
+        pipeline.addLast("encoder", HttpRequestEncoder())
+        pipeline.addLast("errors", errorCollector)
+        return pipeline
+    }
+
+    private fun bufOf(text: String): IoBuf {
+        val bytes = text.encodeToByteArray()
+        val buf = DefaultAllocator.allocate(bytes.size)
+        buf.writeByteArray(bytes, 0, bytes.size)
+        return buf
+    }
+
+    private fun IoBuf.readString(): String {
+        val bytes = ByteArray(readableBytes)
+        readByteArray(bytes, 0, bytes.size)
+        return bytes.decodeToString()
+    }
+
+    /** Concatenates every transport write (wrap fast path may emit 2 buffers). */
+    private fun writtenText(): String = transport.written.joinToString("") { it.readString() }
+
+    // --- Complete-message path ---
+
+    @Test
+    fun `GET request without body writes the head only`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequest(HttpMethod.GET, "/hello", headers = HttpHeaders.of("Host" to "example.com")),
+        )
+
+        assertEquals(1, transport.written.size)
+        assertEquals("GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n", writtenText())
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `POST request with body writes head plus body`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequest(
+                HttpMethod.POST,
+                "/submit",
+                headers = HttpHeaders.of("Host" to "example.com", "Content-Length" to "5"),
+                body = "hello".encodeToByteArray(),
+            ),
+        )
+
+        assertEquals(
+            "POST /submit HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello",
+            writtenText(),
+        )
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `HTTP 1 0 version is written on the request line`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequest(HttpMethod.GET, "/", version = HttpVersion.HTTP_1_0),
+        )
+
+        assertEquals("GET / HTTP/1.0\r\n\r\n", writtenText())
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `large body encodes the same bytes regardless of the wrap fast path`() {
+        val pipeline = createPipeline()
+        // 16 KiB body — above DIRECT_BODY_THRESHOLD, so the JVM takes the
+        // zero-copy wrap path (2 writes) while Native / JS copy (1 write).
+        // The joined byte stream must be identical either way.
+        val body = ByteArray(16 * 1024) { ('a' + (it % 26)).code.toByte() }
+
+        pipeline.requestWrite(
+            HttpRequest(
+                HttpMethod.PUT,
+                "/upload",
+                headers = HttpHeaders.of("Content-Length" to body.size.toString()),
+                body = body,
+            ),
+        )
+
+        val text = writtenText()
+        assertTrue(text.startsWith("PUT /upload HTTP/1.1\r\nContent-Length: ${body.size}\r\n\r\n"))
+        assertTrue(text.endsWith(body.decodeToString().takeLast(64)))
+        assertEquals("PUT /upload HTTP/1.1\r\nContent-Length: ${body.size}\r\n\r\n".length + body.size, text.length)
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    // --- Streaming FIXED path ---
+
+    @Test
+    fun `streaming head with Content-Length forwards body chunks unchanged`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(
+                HttpMethod.POST,
+                "/stream",
+                headers = HttpHeaders.of("Content-Length" to "10"),
+            ),
+        )
+        pipeline.requestWrite(HttpBody(bufOf("hello")))
+        pipeline.requestWrite(HttpBodyEnd(bufOf("world"), HttpHeaders.EMPTY))
+
+        assertEquals(3, transport.written.size)
+        assertEquals("POST /stream HTTP/1.1\r\nContent-Length: 10\r\n\r\n", transport.written[0].readString())
+        assertEquals("hello", transport.written[1].readString())
+        assertEquals("world", transport.written[2].readString())
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `FIXED body exceeding Content-Length propagates an error`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(HttpMethod.POST, "/", headers = HttpHeaders.of("Content-Length" to "3")),
+        )
+        pipeline.requestWrite(HttpBody(bufOf("toolong")))
+
+        assertEquals(1, errorCollector.errors.size)
+        assertIs<IllegalStateException>(errorCollector.errors[0])
+    }
+
+    @Test
+    fun `HttpBodyEnd before Content-Length is fully written propagates an error`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(HttpMethod.POST, "/", headers = HttpHeaders.of("Content-Length" to "10")),
+        )
+        pipeline.requestWrite(HttpBodyEnd(bufOf("short"), HttpHeaders.EMPTY))
+
+        assertEquals(1, errorCollector.errors.size)
+        assertIs<IllegalStateException>(errorCollector.errors[0])
+    }
+
+    // --- Streaming CHUNKED path ---
+
+    @Test
+    fun `streaming chunked body writes hex framing and terminator`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(
+                HttpMethod.POST,
+                "/chunks",
+                headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+            ),
+        )
+        pipeline.requestWrite(HttpBody(bufOf("hello")))
+        pipeline.requestWrite(HttpBodyEnd.EMPTY)
+
+        // head + "5\r\n" + payload + "\r\n" + "0\r\n\r\n"
+        assertEquals(5, transport.written.size)
+        assertEquals("5\r\n", transport.written[1].readString())
+        assertEquals("hello", transport.written[2].readString())
+        assertEquals("\r\n", transport.written[3].readString())
+        assertEquals("0\r\n\r\n", transport.written[4].readString())
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `chunked terminator carries trailers`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(
+                HttpMethod.POST,
+                "/chunks",
+                headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+            ),
+        )
+        pipeline.requestWrite(
+            HttpBodyEnd(bufOf("abc"), HttpHeaders.of("X-Sum" to "42")),
+        )
+
+        val last = transport.written.last().readString()
+        assertEquals("0\r\nX-Sum: 42\r\n\r\n", last)
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `chunk framing hex is emitted for sizes above 15`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(
+                HttpMethod.POST,
+                "/chunks",
+                headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+            ),
+        )
+        pipeline.requestWrite(HttpBody(bufOf("x".repeat(255))))
+        pipeline.requestWrite(HttpBodyEnd.EMPTY)
+
+        assertEquals("ff\r\n", transport.written[1].readString())
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    // --- Streaming BODYLESS path ---
+
+    @Test
+    fun `head without framing headers plus empty end writes the head only`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(HttpMethod.GET, "/", headers = HttpHeaders.of("Host" to "h")),
+        )
+        pipeline.requestWrite(HttpBodyEnd.EMPTY)
+
+        assertEquals(1, transport.written.size)
+        assertEquals("GET / HTTP/1.1\r\nHost: h\r\n\r\n", transport.written[0].readString())
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `non-empty body for a bodyless head propagates an error`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(HttpRequestHead(HttpMethod.GET, "/"))
+        pipeline.requestWrite(HttpBody(bufOf("nope")))
+
+        assertEquals(1, errorCollector.errors.size)
+        assertIs<IllegalStateException>(errorCollector.errors[0])
+    }
+
+    // --- Contract violations and pass-through ---
+
+    @Test
+    fun `a second head while streaming is in progress propagates an error`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(HttpMethod.POST, "/", headers = HttpHeaders.of("Content-Length" to "5")),
+        )
+        pipeline.requestWrite(HttpRequestHead(HttpMethod.GET, "/other"))
+
+        assertEquals(1, errorCollector.errors.size)
+        assertIs<IllegalStateException>(errorCollector.errors[0])
+    }
+
+    @Test
+    fun `head with both Content-Length and chunked propagates an error`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(
+                HttpMethod.POST,
+                "/",
+                headers = HttpHeaders.of("Content-Length" to "5", "Transfer-Encoding" to "chunked"),
+            ),
+        )
+
+        assertEquals(1, errorCollector.errors.size)
+        assertIs<IllegalStateException>(errorCollector.errors[0])
+    }
+
+    @Test
+    fun `HttpBody without a preceding head propagates an error`() {
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(HttpBody(bufOf("stray")))
+
+        assertEquals(1, errorCollector.errors.size)
+        assertIs<IllegalStateException>(errorCollector.errors[0])
+    }
+
+    @Test
+    fun `raw IoBuf passes through unchanged`() {
+        val pipeline = createPipeline()
+        val raw = bufOf("opaque bytes")
+
+        pipeline.requestWrite(raw)
+
+        assertEquals(1, transport.written.size)
+        assertSame(raw, transport.written[0])
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+}
