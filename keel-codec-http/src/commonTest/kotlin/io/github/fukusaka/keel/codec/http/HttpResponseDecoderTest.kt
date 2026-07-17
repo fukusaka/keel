@@ -531,6 +531,26 @@ class HttpResponseDecoderTest {
     }
 
     @Test
+    fun `an at-cap line split between CR and LF is not rejected`() {
+        val maxLine = 1024
+        val pipeline = createPipeline(
+            headerLimits = HttpHeaderLimitsConfig(maxHeaderCount = 100, maxLineSize = maxLine),
+        )
+        // Header line content of exactly maxLineSize bytes; the read boundary
+        // lands between the CR and the LF, so the accumulator briefly holds
+        // maxLineSize + 1 bytes (content + CR) before the CR is stripped.
+        val name = "X-Big"
+        val value = "v".repeat(maxLine - name.length - ": ".length)
+
+        pipeline.notifyRead(bufOf("HTTP/1.1 200 OK\r\n$name: $value\r"))
+        pipeline.notifyRead(bufOf("\nContent-Length: 0\r\n\r\n"))
+
+        assertEquals(1, collector.heads.size)
+        assertEquals(value, collector.heads[0].headers.getString(name))
+        assertTrue(collector.errors.isEmpty())
+    }
+
+    @Test
     fun `trailer bytes accumulate on the same cumulative cap as headers`() {
         // Header block: "Transfer-Encoding" + "chunked" = 24 bytes (under the
         // 30-byte cap). Trailers add 4 + 4 bytes on the SAME accumulator, so

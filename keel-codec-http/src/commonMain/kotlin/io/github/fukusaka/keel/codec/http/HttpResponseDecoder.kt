@@ -325,11 +325,19 @@ class HttpResponseDecoder(
      * Appends the next [length] readable bytes of [buf] to the
      * accumulator with one bulk [IoBuf.readByteArray] (which advances the
      * buffer's `readerIndex`).
+     *
+     * The size cap allows one byte beyond `maxLineSize` so that a line of
+     * exactly the cap whose CRLF straddles the read boundary (CR arrives,
+     * LF does not) is not rejected before [materialiseLine] strips the CR
+     * — the definitive post-strip cap check happens there. The
+     * accumulator is therefore bounded at `maxLineSize + 1` bytes.
      */
     private fun appendToAccumulator(buf: IoBuf, length: Int) {
         if (length == 0) return
         val newSize = accumulatorSize + length
-        enforceLineSizeCap(newSize)
+        if (newSize > headerLimits.maxLineSize + 1) {
+            enforceLineSizeCap(newSize)
+        }
         ensureAccumulatorCapacity(newSize)
         buf.readByteArray(accumulator!!, accumulatorSize, length)
         accumulatorSize = newSize
@@ -341,8 +349,9 @@ class HttpResponseDecoder(
         val newCap = if (cur == null) {
             maxOf(required, INITIAL_ACCUMULATOR_CAPACITY)
         } else {
-            // Double, capped at maxLineSize (the hard per-line limit).
-            minOf(headerLimits.maxLineSize, maxOf(required, cur.size * 2))
+            // Double, capped at the accumulator bound (maxLineSize + the
+            // one-byte CR allowance documented on [appendToAccumulator]).
+            minOf(headerLimits.maxLineSize + 1, maxOf(required, cur.size * 2))
         }
         val next = ByteArray(newCap)
         if (cur != null && accumulatorSize > 0) {
