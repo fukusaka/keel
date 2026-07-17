@@ -96,8 +96,8 @@ class HttpRequestEncoder : OutboundHandler {
             val wrapped = allocator.tryWrapBytes(body, 0, body.size)
             if (wrapped != null) {
                 val headBuf = try {
-                    allocator.allocate(calculateHeadSize(request)).also {
-                        writeRequestLine(request, it)
+                    allocator.allocate(headSize(request.method, request.uri, request.version, request.headers)).also {
+                        writeRequestLine(request.method, request.uri, request.version, it)
                         writeHeaders(request.headers, it)
                     }
                 } catch (t: Throwable) {
@@ -113,8 +113,10 @@ class HttpRequestEncoder : OutboundHandler {
         }
 
         // Fallback: single exact-sized buffer containing head + body copy.
-        val buf = allocator.allocate(calculateHeadSize(request) + (body?.size ?: 0))
-        writeRequestLine(request, buf)
+        val buf = allocator.allocate(
+            headSize(request.method, request.uri, request.version, request.headers) + (body?.size ?: 0),
+        )
+        writeRequestLine(request.method, request.uri, request.version, buf)
         writeHeaders(request.headers, buf)
         body?.let { buf.writeByteArray(it, 0, it.size) }
         ctx.propagateWrite(buf)
@@ -138,7 +140,7 @@ class HttpRequestEncoder : OutboundHandler {
         }
         remainingContentLength = cl ?: 0L
 
-        val headBuf = ctx.allocator.allocate(calculateStreamingHeadSize(head))
+        val headBuf = ctx.allocator.allocate(headSize(head.method, head.uri, head.version, head.headers))
         writeRequestLine(head.method, head.uri, head.version, headBuf)
         writeHeaders(head.headers, headBuf)
         ctx.propagateWrite(headBuf)
@@ -217,18 +219,18 @@ class HttpRequestEncoder : OutboundHandler {
         }
     }
 
-    /** Builds an exact-sized "{hex-size}\r\n" chunk framing buffer. */
+    /**
+     * Builds an exact-sized "{hex-size}\r\n" chunk framing buffer.
+     * Caller guarantees `size > 0` — the zero-size terminator chunk is
+     * built by [buildChunkedTerminator], never here.
+     */
     private fun buildChunkFraming(allocator: BufferAllocator, size: Int): IoBuf {
-        val hexLen = if (size == 0) 1 else (HEX_DIGITS_INT - size.countLeadingZeroBits() / 4)
+        val hexLen = HEX_DIGITS_INT - size.countLeadingZeroBits() / 4
         val buf = allocator.allocate(hexLen + CRLF_SIZE)
-        if (size == 0) {
-            buf.writeByte('0'.code.toByte())
-        } else {
-            var shift = (hexLen - 1) * 4
-            while (shift >= 0) {
-                buf.writeByte(HEX_CHARS[(size ushr shift) and 0xF])
-                shift -= 4
-            }
+        var shift = (hexLen - 1) * 4
+        while (shift >= 0) {
+            buf.writeByte(HEX_CHARS[(size ushr shift) and 0xF])
+            shift -= 4
         }
         buf.writeByte(CR)
         buf.writeByte(LF)
@@ -260,28 +262,20 @@ class HttpRequestEncoder : OutboundHandler {
 
     // --- Wire-format helpers ---
 
-    private fun calculateHeadSize(request: HttpRequest): Int =
-        requestLineSize(request.method, request.uri, request.version) +
-            headerBlockSize(request.headers)
-
-    private fun calculateStreamingHeadSize(head: HttpRequestHead): Int =
-        requestLineSize(head.method, head.uri, head.version) + headerBlockSize(head.headers)
-
-    /** Size of "Method SP request-target SP HTTP-version CRLF". */
-    private fun requestLineSize(method: HttpMethod, uri: String, version: HttpVersion): Int =
-        method.name.length + 1 + uri.length + 1 + version.text.length + CRLF_SIZE
-
-    /** Size of every "Name: value\r\n" field plus the terminating empty line. */
-    private fun headerBlockSize(headers: HttpHeaders): Int {
-        var size = 0
+    /**
+     * Exact byte size of a serialised request head: the request line plus
+     * every "Name: value\r\n" field and the terminating empty line. Must
+     * stay byte-exact with [writeRequestLine] + [writeHeaders] — the
+     * encoder allocates head buffers at exactly this size. One shared
+     * function serves both the complete-message and streaming paths so
+     * the two cannot drift apart.
+     */
+    private fun headSize(method: HttpMethod, uri: String, version: HttpVersion, headers: HttpHeaders): Int {
+        var size = method.name.length + 1 + uri.length + 1 + version.text.length + CRLF_SIZE
         for (i in 0 until headers.size) {
             size += headers.nameAt(i).length + HEADER_SEPARATOR_SIZE + headers.valueAt(i).length + CRLF_SIZE
         }
         return size + CRLF_SIZE
-    }
-
-    private fun writeRequestLine(request: HttpRequest, buf: IoBuf) {
-        writeRequestLine(request.method, request.uri, request.version, buf)
     }
 
     private fun writeRequestLine(method: HttpMethod, uri: String, version: HttpVersion, buf: IoBuf) {
