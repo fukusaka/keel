@@ -273,7 +273,7 @@ subprojects {
         }
     }
     group = "io.github.fukusaka.keel"
-    version = "0.4.1-SNAPSHOT"
+    version = "0.4.2-SNAPSHOT"
 
     // Apply detekt to production modules
     if (name !in setOf("benchmark", "sample", "detekt-rules")) {
