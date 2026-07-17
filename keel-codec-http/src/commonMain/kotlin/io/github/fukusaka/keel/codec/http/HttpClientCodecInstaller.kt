@@ -38,14 +38,19 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * @param headerLimits per-response header limits enforced by the
  *   installed [HttpResponseDecoder]; defaults to
  *   [HttpHeaderLimitsConfig.DEFAULT].
+ * @param maxContentLength maximum aggregated response-body size accepted
+ *   by the installed [HttpResponseBodyAggregator] (ignored when
+ *   [aggregateBody] is false); defaults to
+ *   [HttpResponseBodyAggregator.DEFAULT_MAX_CONTENT_LENGTH] (1 MiB).
  */
 public fun PipelinedChannel.addHttp1ClientCodec(
     aggregateBody: Boolean = true,
     headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
+    maxContentLength: Int = HttpResponseBodyAggregator.DEFAULT_MAX_CONTENT_LENGTH,
 ) {
     pipeline.addLast("encoder", HttpRequestEncoder())
     pipeline.addLast("decoder", HttpResponseDecoder(headerLimits))
     if (aggregateBody) {
-        pipeline.addLast("aggregator", HttpResponseBodyAggregator())
+        pipeline.addLast("aggregator", HttpResponseBodyAggregator(maxContentLength))
     }
 }

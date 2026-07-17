@@ -182,9 +182,9 @@ class HttpResponseBodyAggregator(
         interimPending = false
     }
 
-    private companion object {
+    companion object {
         /** Default maximum aggregated body size: 1 MiB. */
-        private const val DEFAULT_MAX_CONTENT_LENGTH = 1 shl 20
+        const val DEFAULT_MAX_CONTENT_LENGTH: Int = 1 shl 20
 
         private const val SWITCHING_PROTOCOLS_CODE = 101
     }
