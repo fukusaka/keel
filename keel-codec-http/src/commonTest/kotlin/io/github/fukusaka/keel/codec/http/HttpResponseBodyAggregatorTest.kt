@@ -57,6 +57,23 @@ class HttpResponseBodyAggregatorTest {
         return buf
     }
 
+    /**
+     * Like [bufOf] but rounds the capacity up to a power of two, so the
+     * decoder's `addRange` fast path retains this recv buffer (its zero-copy
+     * header views) instead of falling back to `String` materialisation. A
+     * non-power-of-two capacity would never retain the buffer, so the pooled
+     * head-header release contract would go untested (the same blind spot an
+     * exact-size buffer left on the server aggregator).
+     */
+    private fun bufOfPow2(text: String, allocator: BufferAllocator): IoBuf {
+        val bytes = text.encodeToByteArray()
+        var cap = 1
+        while (cap < bytes.size) cap = cap shl 1
+        val buf = allocator.allocate(cap)
+        buf.writeByteArray(bytes, 0, bytes.size)
+        return buf
+    }
+
     private fun head(status: HttpStatus = HttpStatus.OK): HttpResponseHead =
         HttpResponseHead(status, headers = HttpHeaders.of("X-Tag" to "t"))
 
@@ -223,6 +240,82 @@ class HttpResponseBodyAggregatorTest {
         pipeline.notifyRead(HttpBodyEnd(bufOf("def", tracker), HttpHeaders.EMPTY))
 
         assertEquals("abcdef", collector.responses.single().body?.decodeToString())
+        assertEquals(0, tracker.outstandingCount)
+    }
+
+    // --- Zero-copy pooled-header release contract ---
+    //
+    // These drive the real HttpResponseDecoder so the emitted head carries
+    // pooled headers whose views retain the recv buffer via addRange (the
+    // zero-copy path). The aggregator must release those headers on every
+    // path that discards the head unemitted, and the success path must
+    // transfer that retention to the aggregated response for the consumer to
+    // release at the application boundary. The plain HttpHeaders.of heads used
+    // above cannot catch a pooled-header leak: release() is a no-op for them.
+
+    private fun trackedDecoderAggregatorPipeline(
+        tracker: TrackingAllocator,
+        maxContentLength: Int = HttpResponseBodyAggregator.DEFAULT_MAX_CONTENT_LENGTH,
+    ): Pair<Pipeline, TestIoTransport> {
+        val trackedTransport = TestIoTransport(tracker)
+        val trackedChannel = object : AbstractPipelinedChannel(trackedTransport, PrintLogger("tracked")) {}
+        val pipeline = trackedChannel.pipeline
+        pipeline.addLast("decoder", HttpResponseDecoder())
+        pipeline.addLast("aggregator", HttpResponseBodyAggregator(maxContentLength))
+        pipeline.addLast("collector", collector)
+        return pipeline to trackedTransport
+    }
+
+    @Test
+    fun `a pooled response head transfers its retained buffer to the aggregated response`() {
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val (pipeline, trackedTransport) = trackedDecoderAggregatorPipeline(tracker)
+
+        pipeline.notifyRead(
+            bufOfPow2("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Tag: t\r\n\r\nhello", tracker),
+        )
+
+        val response = collector.responses.single()
+        assertEquals("hello", response.body?.decodeToString())
+        // The pooled headers still retain the recv buffer, so the views resolve.
+        assertEquals("t", response.headers.getString("X-Tag"))
+        // Application boundary: releasing the pooled headers frees the buffer.
+        response.headers.release()
+        trackedTransport.close()
+        assertEquals(0, tracker.outstandingCount)
+    }
+
+    @Test
+    fun `an overflowing pooled response head releases its retained buffer`() {
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val (pipeline, trackedTransport) = trackedDecoderAggregatorPipeline(tracker, maxContentLength = 4)
+
+        pipeline.notifyRead(
+            bufOfPow2("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Tag: t\r\n\r\nhello", tracker),
+        )
+
+        assertEquals(1, collector.errors.size)
+        assertIs<HttpParseException>(collector.errors[0])
+        assertTrue(collector.responses.isEmpty())
+        trackedTransport.close()
+        assertEquals(0, tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a connection close mid-body releases the pooled response head buffer`() {
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val (pipeline, trackedTransport) = trackedDecoderAggregatorPipeline(tracker)
+
+        // Content-Length 10 but only 7 body bytes arrive: the decoder emits the
+        // head + a partial HttpBody and awaits the rest, so the head stays held.
+        pipeline.notifyRead(
+            bufOfPow2("HTTP/1.1 200 OK\r\nContent-Length: 10\r\nX-Tag: t\r\n\r\npartial", tracker),
+        )
+        pipeline.notifyInactive()
+
+        assertTrue(collector.responses.isEmpty())
+        assertEquals(1, collector.errors.size) // truncation
+        trackedTransport.close()
         assertEquals(0, tracker.outstandingCount)
     }
 }

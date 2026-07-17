@@ -25,9 +25,12 @@ import kotlin.reflect.KClass
  * [IoBufMutableChunks] — no per-chunk copy and no growing intermediate
  * array. The body is flattened to a contiguous [ByteArray] exactly once,
  * at [HttpBodyEnd] (the application-API boundary), and that flatten
- * releases every held chunk. On overflow, error, or a reset the held
- * chunks are released in one pass instead. The aggregator is stateful
- * and must not be shared between connections.
+ * releases every held chunk. On overflow, error, connection close, or a
+ * reset the held chunks — and the head's pooled [HttpHeaders], which retain
+ * the recv buffer via the decoder's `addRange` zero-copy path — are released
+ * instead (on the success path the headers' ownership transfers to the
+ * emitted [HttpResponse], whose consumer releases them). The aggregator is
+ * stateful and must not be shared between connections.
  *
  * **Interim responses**: a non-101 1xx head (`100 Continue`, `102`,
  * `103`) and its terminating [HttpBodyEnd] are consumed silently — the
@@ -90,6 +93,11 @@ class HttpResponseBodyAggregator(
      * marks the stream interim so its terminating [HttpBodyEnd] is swallowed.
      */
     private fun beginInterim() {
+        // Release a held head's pooled headers (recv buffer via addRange) and
+        // any chunks from a malformed prior sequence before entering interim
+        // mode (mirroring startAggregation / resetAggregation pool-safety).
+        head?.headers?.release()
+        head = null
         acc?.release()
         acc = null
         interimPending = true
@@ -108,8 +116,11 @@ class HttpResponseBodyAggregator(
     }
 
     private fun startAggregation(newHead: HttpResponseHead) {
-        // A new head before the previous body completed: release any chunks
-        // still held so a malformed sequence cannot leak the pool.
+        // A new head before the previous body completed: release the previous
+        // head's pooled headers (which retain the recv buffer via addRange) and
+        // any chunks still held, so a malformed sequence cannot leak the pool /
+        // recv buffer. release() is a no-op for non-pooled headers.
+        head?.headers?.release()
         acc?.release()
         head = newHead
         acc = null
@@ -157,6 +168,9 @@ class HttpResponseBodyAggregator(
         }
         head = null
         if (overflowed) {
+            // The head is discarded here (never emitted): release its pooled
+            // headers (recv buffer via addRange) before resetting the rest.
+            aggregatedHead.headers.release()
             resetAggregation()
             ctx.propagateError(
                 HttpParseException(
@@ -170,12 +184,14 @@ class HttpResponseBodyAggregator(
         // Flatten the held chunks to a contiguous array exactly once (the
         // application-API boundary); null body when nothing was held. Guard
         // the flatten so a failed body-sized allocation releases the held
-        // pool chunks instead of leaking them.
+        // pool chunks — and the head's pooled headers, discarded with the
+        // never-emitted response — instead of leaking them.
         val finalBody = held?.let { chunks ->
             try {
                 chunks.toByteArray()
             } catch (t: Throwable) {
                 chunks.release()
+                aggregatedHead.headers.release()
                 throw t
             }
         }
@@ -190,6 +206,9 @@ class HttpResponseBodyAggregator(
     }
 
     private fun resetAggregation() {
+        // Release a held head's pooled headers (recv buffer via addRange) and
+        // any held chunks: a close / error / stray-end discards them unemitted.
+        head?.headers?.release()
         acc?.release()
         head = null
         acc = null
