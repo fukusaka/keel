@@ -17,6 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `testing-server-http`: `KeelHttpTestClient` now drives the production client codec over
   the in-memory loopback instead of a hand-rolled encoder/parser (#962)
 
+### Fixed
+
+- `codec-http`: release held server request-body chunks and the head's recv-buffer-retaining
+  `HttpHeaders` when a connection closes or errors mid-body (`HttpBodyAggregator` abort paths),
+  fixing a pool + recv-buffer leak on abandoned uploads (#963)
+
 ### Security
 
 - `codec-http`: reject a `Content-Length` that is not RFC 9110 §8.6 `1*DIGIT` — unparseable,

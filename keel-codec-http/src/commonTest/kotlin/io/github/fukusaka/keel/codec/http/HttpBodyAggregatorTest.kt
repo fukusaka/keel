@@ -56,6 +56,23 @@ class HttpBodyAggregatorTest {
         return buf
     }
 
+    /**
+     * Like [bufOf] but rounds the capacity up to a power of two, so the
+     * decoder's `addRange` zero-copy header path is taken (it retains the recv
+     * buffer in `head.headers`). Exact-size [bufOf] buffers degrade to the
+     * String-materialise path, which does not retain — so only this helper
+     * exercises the recv-buffer retention that the mid-body-close fix must
+     * release.
+     */
+    private fun bufOfPow2(text: String): IoBuf {
+        val bytes = text.encodeToByteArray()
+        var cap = 1
+        while (cap < bytes.size) cap = cap shl 1
+        val buf = tracker.allocate(cap)
+        buf.writeByteArray(bytes, 0, bytes.size)
+        return buf
+    }
+
     // --- Tests ---
 
     @Test
@@ -185,6 +202,52 @@ class HttpBodyAggregatorTest {
         assertEquals("abcdef", collector.requests[0].body!!.decodeToString())
         // The held chunks must be released by the end-of-body flatten.
         tracker.assertNoLeaks("every held + input IoBuf must be released after aggregation")
+    }
+
+    @Test
+    fun `a connection closed mid-body releases the held body chunks`() {
+        val (pipeline, collector) = createPipeline()
+
+        // A POST that declares a 10000-byte body but delivers only a small
+        // prefix; the aggregator holds the partial chunk waiting for more.
+        pipeline.notifyRead(
+            bufOf(
+                "POST /upload HTTP/1.1\r\n" +
+                    "Host: example.com\r\n" +
+                    "Content-Length: 10000\r\n" +
+                    "\r\n" +
+                    "partial-body-bytes",
+            ),
+        )
+        // The peer drops the connection before the body completes.
+        pipeline.notifyInactive()
+
+        assertEquals(0, collector.requests.size)
+        tracker.assertNoLeaks("a connection closed mid-body must release the held body chunks")
+    }
+
+    @Test
+    fun `a connection closed mid-body releases the recv buffer retained by head headers`() {
+        val (pipeline, collector) = createPipeline()
+
+        // Power-of-two recv buffer: the decoder stores the header values as
+        // addRange zero-copy views that retain THIS buffer in head.headers.
+        // On a mid-body close the aggregator is the sole owner of that head, so
+        // it must release head.headers too — not just the body chunks —
+        // otherwise the (much larger) recv buffer leaks (slow-loris).
+        pipeline.notifyRead(
+            bufOfPow2(
+                "POST /upload HTTP/1.1\r\n" +
+                    "Host: example.com\r\n" +
+                    "Content-Length: 10000\r\n" +
+                    "\r\n" +
+                    "partial",
+            ),
+        )
+        pipeline.notifyInactive()
+
+        assertEquals(0, collector.requests.size)
+        tracker.assertNoLeaks("mid-body close must release the recv buffer retained by head.headers")
     }
 
     @Test

@@ -31,9 +31,12 @@ import kotlin.reflect.KClass
  * [IoBufMutableChunks] — no per-chunk copy and no growing intermediate
  * array. The body is flattened to a contiguous [ByteArray] exactly once,
  * at [HttpBodyEnd] (the application-API boundary), and that flatten
- * releases every held chunk. On overflow, error, or a reset the held
- * chunks are released in one pass instead. The aggregator is stateful
- * and must not be shared between connections.
+ * releases every held chunk. On overflow, error, connection close, or a
+ * reset the held chunks — and the head's pooled [HttpHeaders], which retain
+ * the recv buffer via the decoder's `addRange` zero-copy path — are released
+ * instead (on the success path the headers' ownership transfers to the emitted
+ * [HttpRequest]). The aggregator is stateful and must not be shared between
+ * connections.
  */
 class HttpBodyAggregator(
     private val maxContentLength: Int = DEFAULT_MAX_CONTENT_LENGTH,
@@ -60,9 +63,24 @@ class HttpBodyAggregator(
         ctx.propagateError(cause)
     }
 
+    override fun onInactive(ctx: PipelineHandlerContext) {
+        // A connection that closes mid-body (a peer that drops the socket
+        // after the head and some body bytes, e.g. an abandoned upload)
+        // leaves the partial body chunks held in [acc]. The decoder does
+        // not synthesise a terminating [HttpBodyEnd] on close, so without
+        // this release every truncated request leaks its held pool chunks
+        // (a slow-loris-style accumulation). Release before propagating.
+        resetAggregation()
+        ctx.propagateInactive()
+    }
+
     private fun startAggregation(newHead: HttpRequestHead) {
-        // A new head before the previous body completed: release any chunks
-        // still held so a malformed sequence cannot leak the pool.
+        // A new head before the previous body completed: release the previous
+        // head's pooled headers (which retain the recv buffer via the decoder's
+        // addRange zero-copy path) and any chunks still held, so a malformed
+        // sequence cannot leak the pool / the recv buffer. release() is a no-op
+        // for a non-pooled HttpHeaders and is idempotent for a pooled one.
+        head?.headers?.release()
         acc?.release()
         head = newHead
         acc = null
@@ -110,6 +128,9 @@ class HttpBodyAggregator(
         }
         head = null
         if (overflowed) {
+            // `head` is already nulled, so resetAggregation cannot release the
+            // head's pooled headers — release the captured head's headers here.
+            aggregatedHead.headers.release()
             resetAggregation()
             ctx.propagateError(
                 HttpParseException(
@@ -123,12 +144,14 @@ class HttpBodyAggregator(
         // Flatten the held chunks to a contiguous array exactly once (the
         // application-API boundary); null body when nothing was held. Guard
         // the flatten so a failed body-sized allocation releases the held
-        // pool chunks instead of leaking them.
+        // pool chunks AND the head's recv-buffer-retaining headers instead of
+        // leaking them (`head` is already nulled, so this is the sole owner).
         val finalBody = held?.let { chunks ->
             try {
                 chunks.toByteArray()
             } catch (t: Throwable) {
                 chunks.release()
+                aggregatedHead.headers.release()
                 throw t
             }
         }
@@ -144,6 +167,13 @@ class HttpBodyAggregator(
     }
 
     private fun resetAggregation() {
+        // Release the held head's pooled headers as well as the body chunks:
+        // the decoder's addRange zero-copy path retains the recv buffer in
+        // head.headers, so a reset that only frees `acc` strands the (much
+        // larger) recv buffer on the abort paths (onError / onInactive /
+        // stray-end). Ownership is transferred to the emitted HttpRequest on
+        // the success path, which does not route through here.
+        head?.headers?.release()
         acc?.release()
         head = null
         acc = null
