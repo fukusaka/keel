@@ -37,12 +37,20 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  * request body no default framing, so body bytes without a framing header
  * are a contract error rather than silent wire corruption).
  *
- * **Chunk framing allocation**: CHUNKED mode allocates one exact-sized
- * framing buffer per chunk (`"{hex}\r\n"` prefix and `"\r\n"` suffix)
- * instead of reusing [HttpResponseEncoder]'s per-encoder scratch +
- * constant-suffix machinery. The client request path is not the server
- * hot path; unify with the server encoder's scratch scheme only if
- * profiling shows the per-chunk allocations matter.
+ * **Chunk framing allocation**: CHUNKED mode reuses a per-encoder scratch
+ * [ByteArray] for chunk framing, the same technique as
+ * [HttpResponseEncoder]. Both the variable `"{hex}\r\n"` prefix and the
+ * constant `"\r\n"` chunk-data suffix are written at successive scratch
+ * offsets and emitted as zero-copy [BufferAllocator.wrapBytes] views, so a
+ * steady stream of chunks allocates no per-chunk framing [IoBuf] (a fresh
+ * buffer is taken only when the scratch fills mid-response, or on a
+ * platform without `wrapBytes`). The scratch is a GC-managed field, so —
+ * unlike [HttpResponseEncoder]'s reusable suffix `IoBuf` constant, which a
+ * [io.github.fukusaka.keel.pipeline.DuplexHandler] releases in `onInactive`
+ * — this [io.github.fukusaka.keel.pipeline.OutboundHandler] needs no
+ * teardown hook (it has none; `onInactive` is inbound-only). The suffix is
+ * served from scratch rather than a reusable constant for exactly that
+ * reason.
  *
  * **Framing responsibility**: headers are serialised as-is. Like
  * [HttpResponseEncoder]'s complete-message path (and `writeRequest`),
@@ -73,6 +81,16 @@ class HttpRequestEncoder : OutboundHandler {
 
     private var streamingMode: StreamingMode = StreamingMode.NONE
     private var remainingContentLength: Long = 0L
+
+    // Per-encoder scratch for chunk framing. Both the variable "{hex}\r\n"
+    // prefix and the constant "\r\n" suffix are written at successive offsets
+    // and wrapped as IoBuf views (avoiding per-chunk allocation), so pending
+    // views for concurrent chunks never alias each other. Reset to 0 when the
+    // chunked request ends. Mirrors HttpResponseEncoder's scratch; the suffix
+    // lives here too (not a reusable IoBuf constant) because this
+    // OutboundHandler has no onInactive teardown hook to release one.
+    private val chunkFramingScratch = ByteArray(CHUNK_FRAMING_SCRATCH_SIZE)
+    private var chunkFramingOffset = 0
 
     override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
@@ -204,20 +222,20 @@ class HttpRequestEncoder : OutboundHandler {
 
     private fun encodeContentChunked(ctx: PipelineHandlerContext, content: HttpBody, last: Boolean) {
         val payloadSize = content.content.readableBytes
-        // Allocate every framing buffer BEFORE transferring content.content
-        // downstream. If an allocation throws, content.content is still owned
-        // here, so the pipeline's error path releases it exactly once.
-        // Allocating after the transfer would let that release double-free a
-        // buffer the transport's pending-write queue already owns
-        // (use-after-free). Exact-sized framing per chunk — see the class KDoc
-        // for why the client path skips the server encoder's scratch-reuse.
+        // Prepare every framing buffer BEFORE transferring content.content
+        // downstream. If a slow-path allocation throws, content.content is
+        // still owned here, so the pipeline's error path releases it exactly
+        // once; allocating after the transfer would let that release
+        // double-free a buffer the transport's pending-write queue already
+        // owns (use-after-free). [emitChunkFraming] / [emitChunkCrlf] serve the
+        // prefix and suffix from the per-encoder scratch (see the class KDoc).
         var framing: IoBuf? = null
         var crlf: IoBuf? = null
         var terminator: IoBuf? = null
         try {
             if (payloadSize > 0) {
-                framing = buildChunkFraming(ctx.allocator, payloadSize)
-                crlf = buildCrlf(ctx.allocator)
+                framing = emitChunkFraming(ctx, payloadSize)
+                crlf = emitChunkCrlf(ctx)
             }
             if (last && content is HttpBodyEnd) {
                 terminator = buildChunkedTerminator(ctx.allocator, content.trailers)
@@ -237,14 +255,78 @@ class HttpRequestEncoder : OutboundHandler {
             content.content.release()
         }
         terminator?.let { ctx.propagateWrite(it) }
+        // The chunked request is complete: rewind the scratch so the next
+        // chunked request starts from offset 0. Safe because a request's
+        // framing views are flushed before the next request writes (mirrors
+        // HttpResponseEncoder).
+        if (last) chunkFramingOffset = 0
     }
 
     /**
-     * Builds an exact-sized "{hex-size}\r\n" chunk framing buffer.
-     * Caller guarantees `size > 0` — the zero-size terminator chunk is
-     * built by [buildChunkedTerminator], never here.
+     * Writes "{hex-size}\r\n" into the scratch buffer and returns a zero-copy
+     * [IoBuf] view. Each call advances [chunkFramingOffset] so multiple pending
+     * views do not overlap. Caller guarantees `size > 0`. When the scratch
+     * lacks room for the worst-case hex+CRLF emission the header is written
+     * into a fresh exact-sized buffer instead, leaving the scratch and offset
+     * untouched so earlier in-flight views keep their bytes.
      */
-    private fun buildChunkFraming(allocator: BufferAllocator, size: Int): IoBuf {
+    private fun emitChunkFraming(ctx: PipelineHandlerContext, size: Int): IoBuf {
+        if (chunkFramingOffset + CHUNK_HEADER_MAX_BYTES > chunkFramingScratch.size) {
+            return allocateChunkFraming(ctx.allocator, size)
+        }
+        val start = chunkFramingOffset
+        var off = start
+        val shift = (HEX_DIGITS_INT - 1 - size.countLeadingZeroBits() / 4) * 4
+        var s = shift
+        while (s >= 0) {
+            chunkFramingScratch[off++] = HEX_CHARS[(size ushr s) and 0xF]
+            s -= 4
+        }
+        chunkFramingScratch[off++] = CR
+        chunkFramingScratch[off++] = LF
+        val len = off - start
+        chunkFramingOffset = off
+        return wrapScratch(ctx, start, len)
+    }
+
+    /**
+     * Writes the constant "\r\n" chunk-data suffix into the scratch buffer and
+     * returns a zero-copy [IoBuf] view. Served from scratch (not a reusable
+     * per-encoder [IoBuf] constant like [HttpResponseEncoder]'s) because this
+     * [io.github.fukusaka.keel.pipeline.OutboundHandler] has no `onInactive`
+     * teardown hook to release such a constant. Falls back to a fresh
+     * two-byte buffer when the scratch is full.
+     */
+    private fun emitChunkCrlf(ctx: PipelineHandlerContext): IoBuf {
+        if (chunkFramingOffset + CRLF_SIZE > chunkFramingScratch.size) {
+            return buildCrlf(ctx.allocator)
+        }
+        val start = chunkFramingOffset
+        chunkFramingScratch[chunkFramingOffset++] = CR
+        chunkFramingScratch[chunkFramingOffset++] = LF
+        return wrapScratch(ctx, start, CRLF_SIZE)
+    }
+
+    /**
+     * Wraps `chunkFramingScratch[offset, offset+length)` as a zero-copy
+     * [IoBuf] view. On a platform without [BufferAllocator.wrapBytes] (JS)
+     * this copies into a fresh exact-sized buffer instead. Caller has already
+     * verified the range is in-bounds.
+     */
+    private fun wrapScratch(ctx: PipelineHandlerContext, offset: Int, length: Int): IoBuf {
+        val wrapped = ctx.allocator.tryWrapBytes(chunkFramingScratch, offset, length)
+        if (wrapped != null) return wrapped
+        val buf = ctx.allocator.allocate(length)
+        buf.writeByteArray(chunkFramingScratch, offset, length)
+        return buf
+    }
+
+    /**
+     * Slow path: scratch exhausted within a single chunked request. Allocates
+     * an exact-sized [IoBuf] and writes "{hex-size}\r\n" directly. Caller
+     * guarantees `size > 0`.
+     */
+    private fun allocateChunkFraming(allocator: BufferAllocator, size: Int): IoBuf {
         val hexLen = HEX_DIGITS_INT - size.countLeadingZeroBits() / 4
         val buf = allocator.allocate(hexLen + CRLF_SIZE)
         var shift = (hexLen - 1) * 4
@@ -257,7 +339,7 @@ class HttpRequestEncoder : OutboundHandler {
         return buf
     }
 
-    /** Builds a two-byte "\r\n" chunk-data suffix buffer. */
+    /** Builds a fresh two-byte "\r\n" chunk-data suffix buffer (scratch full). */
     private fun buildCrlf(allocator: BufferAllocator): IoBuf {
         val buf = allocator.allocate(CRLF_SIZE)
         buf.writeByte(CR)
@@ -341,8 +423,24 @@ class HttpRequestEncoder : OutboundHandler {
          */
         private const val DIRECT_BODY_THRESHOLD = 8192
 
+        /**
+         * Per-encoder scratch buffer size for chunk framing. Each chunk
+         * consumes up to 10 bytes for its "{hex}\r\n" prefix plus 2 for its
+         * "\r\n" suffix; 256 bytes covers ~21 chunks before the overflow
+         * fallback allocates a fresh framing buffer. Mirrors
+         * [HttpResponseEncoder]'s scratch sizing.
+         */
+        private const val CHUNK_FRAMING_SCRATCH_SIZE = 256
+
         /** Number of hex digits for Int (32-bit). */
         private const val HEX_DIGITS_INT = 8
+
+        /**
+         * Worst-case bytes a single [emitChunkFraming] writes to scratch:
+         * 8 hex digits (Int.MAX_VALUE) + CRLF. The pre-write capacity check
+         * triggers the slow path before any out-of-bounds scratch write.
+         */
+        private const val CHUNK_HEADER_MAX_BYTES = HEX_DIGITS_INT + CRLF_SIZE
 
         /** Size of the "0\r\n" terminator prefix. */
         private const val ZERO_CHUNK_SIZE = 3

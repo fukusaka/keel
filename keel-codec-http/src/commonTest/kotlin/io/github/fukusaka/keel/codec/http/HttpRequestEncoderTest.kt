@@ -324,11 +324,17 @@ class HttpRequestEncoderTest {
 
     @Test
     fun `a chunk-framing allocation failure does not double-release the payload buffer`() {
-        // Regression: encodeContentChunked must allocate every framing buffer
-        // BEFORE transferring the payload downstream. If the CRLF-suffix
-        // allocation fails after the payload was already propagated, the
-        // pipeline's error path would release the payload a second time (it is
-        // still owned by the transport's pending-write queue) — a use-after-free.
+        // Regression: encodeContentChunked must prepare every framing buffer
+        // BEFORE transferring the payload downstream. If a framing allocation
+        // fails after the payload was already propagated, the pipeline's error
+        // path would release the payload a second time (it is still owned by
+        // the transport's pending-write queue) — a use-after-free.
+        //
+        // DefaultAllocator returns null from wrapBytes, so the scratch-view
+        // path falls back to allocate+copy: the "{hex}\r\n" prefix allocates 3
+        // bytes and the "\r\n" suffix allocates 2. Faulting the 2-byte suffix
+        // allocation fires the error path while the payload is still owned by
+        // the encoder (not yet propagated).
         val tracker = TrackingAllocator(DefaultAllocator)
         val faultTransport = TestIoTransport(FaultOnSizeAllocator(tracker, faultCapacity = 2))
         val faultChannel = object : AbstractPipelinedChannel(faultTransport, PrintLogger("test")) {}
@@ -339,8 +345,6 @@ class HttpRequestEncoderTest {
         faultChannel.pipeline.requestWrite(
             HttpRequestHead(HttpMethod.POST, "/", headers = HttpHeaders.of("Transfer-Encoding" to "chunked")),
         )
-        // The chunk payload's "\r\n" suffix is the only 2-byte allocation, so a
-        // fault there fires the error path after the payload was propagated.
         val payloadBytes = "hello".encodeToByteArray()
         val payload = tracker.allocate(payloadBytes.size).also { it.writeByteArray(payloadBytes, 0, payloadBytes.size) }
         faultChannel.pipeline.requestWrite(HttpBody(payload))
@@ -350,6 +354,77 @@ class HttpRequestEncoderTest {
         // already-released payload a second time; after, it is a clean no-op.
         faultTransport.close()
         assertEquals(0, tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a terminator allocation failure does not double-release the last chunk payload`() {
+        // The last chunk (HttpBodyEnd with a payload) builds the "0\r\n...\r\n"
+        // terminator via allocate, still BEFORE transferring the payload. A
+        // fault there must not double-release the payload either.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        // "0\r\n\r\n" terminator (empty trailers) is 5 bytes.
+        val faultTransport = TestIoTransport(FaultOnSizeAllocator(tracker, faultCapacity = 5))
+        val faultChannel = object : AbstractPipelinedChannel(faultTransport, PrintLogger("test")) {}
+        val errors = ErrorCollector()
+        faultChannel.pipeline.addLast("encoder", HttpRequestEncoder())
+        faultChannel.pipeline.addLast("errors", errors)
+
+        faultChannel.pipeline.requestWrite(
+            HttpRequestHead(HttpMethod.POST, "/", headers = HttpHeaders.of("Transfer-Encoding" to "chunked")),
+        )
+        val payloadBytes = "hello".encodeToByteArray()
+        val payload = tracker.allocate(payloadBytes.size).also { it.writeByteArray(payloadBytes, 0, payloadBytes.size) }
+        faultChannel.pipeline.requestWrite(HttpBodyEnd(payload, HttpHeaders.EMPTY))
+
+        assertEquals(1, errors.errors.size)
+        faultTransport.close()
+        assertEquals(0, tracker.outstandingCount)
+    }
+
+    // --- Chunk-framing scratch reuse ---
+
+    @Test
+    fun `multiple chunks in one request frame correctly from the reused scratch`() {
+        // The per-encoder scratch serves each chunk's framing at a fresh offset;
+        // a wrong offset would corrupt an earlier chunk's still-pending view.
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(HttpMethod.POST, "/chunks", headers = HttpHeaders.of("Transfer-Encoding" to "chunked")),
+        )
+        pipeline.requestWrite(HttpBody(bufOf("aa")))     // "2\r\n" + "aa" + "\r\n"
+        pipeline.requestWrite(HttpBody(bufOf("bbbb")))   // "4\r\n" + "bbbb" + "\r\n"
+        pipeline.requestWrite(HttpBodyEnd.EMPTY)         // "0\r\n\r\n"
+
+        assertEquals(
+            "POST /chunks HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                "2\r\naa\r\n4\r\nbbbb\r\n0\r\n\r\n",
+            writtenText(),
+        )
+        assertTrue(errorCollector.errors.isEmpty())
+    }
+
+    @Test
+    fun `a second chunked request reuses the scratch from the start`() {
+        // After a chunked request ends the scratch offset rewinds to 0; the next
+        // request must frame correctly from the reused scratch.
+        val pipeline = createPipeline()
+
+        pipeline.requestWrite(
+            HttpRequestHead(HttpMethod.POST, "/a", headers = HttpHeaders.of("Transfer-Encoding" to "chunked")),
+        )
+        pipeline.requestWrite(HttpBodyEnd(bufOf("one"), HttpHeaders.EMPTY))
+        pipeline.requestWrite(
+            HttpRequestHead(HttpMethod.POST, "/b", headers = HttpHeaders.of("Transfer-Encoding" to "chunked")),
+        )
+        pipeline.requestWrite(HttpBodyEnd(bufOf("two"), HttpHeaders.EMPTY))
+
+        assertEquals(
+            "POST /a HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\none\r\n0\r\n\r\n" +
+                "POST /b HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\ntwo\r\n0\r\n\r\n",
+            writtenText(),
+        )
+        assertTrue(errorCollector.errors.isEmpty())
     }
 
     /** Delegating allocator that throws on an `allocate()` of exactly [faultCapacity] bytes. */
