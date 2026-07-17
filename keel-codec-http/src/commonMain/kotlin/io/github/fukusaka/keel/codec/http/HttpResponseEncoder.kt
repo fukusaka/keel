@@ -136,16 +136,21 @@ class HttpResponseEncoder : DuplexHandler {
         val allocator = ctx.allocator
         val reasonPhrase = response.status.reasonPhrase()
         val isHead = pendingMethods.removeFirstOrNull() == HttpMethod.HEAD
+        // Inject Content-Length when the response declares no framing and the
+        // status permits a body. Otherwise the response is unframed on the wire
+        // and a conformant client cannot find its end on a keep-alive connection
+        // (a route that returns `HttpResponse(status, headers, body)` via the
+        // primary constructor — which, unlike the `ok`/`of` factories, adds no
+        // Content-Length). The streaming path enforces the same invariant by
+        // rejecting an unframed head; here the full body is in hand, so its size
+        // is injected rather than rejected. Null (already framed / bodyless
+        // status) leaves the hot path untouched.
+        val injectedCl = injectedContentLength(response)
 
         // RFC 9110 §9.3.2: HEAD response MUST NOT include a message body.
         // Emit only the head (status line + headers); suppress body bytes.
         if (isHead) {
-            ctx.propagateWrite(
-                allocator.allocate(calculateHeadSize(response, reasonPhrase)).also {
-                    writeStatusLine(response.version, response.status.code, reasonPhrase, it)
-                    writeHeaders(response.headers, it)
-                },
-            )
+            ctx.propagateWrite(writeHead(response, reasonPhrase, injectedCl, allocator))
             return
         }
 
@@ -157,10 +162,7 @@ class HttpResponseEncoder : DuplexHandler {
             val wrapped = allocator.tryWrapBytes(body, 0, body.size)
             if (wrapped != null) {
                 val headBuf = try {
-                    allocator.allocate(calculateHeadSize(response, reasonPhrase)).also {
-                        writeStatusLine(response.version, response.status.code, reasonPhrase, it)
-                        writeHeaders(response.headers, it)
-                    }
+                    writeHead(response, reasonPhrase, injectedCl, allocator)
                 } catch (t: Throwable) {
                     // propagateWrite would have taken ownership of wrapped; we never got
                     // that far, so release it here on the failure path.
@@ -174,7 +176,62 @@ class HttpResponseEncoder : DuplexHandler {
         }
 
         // Fallback: single exact-sized buffer containing head + body copy.
-        ctx.propagateWrite(encode(response, allocator, reasonPhrase))
+        ctx.propagateWrite(encode(response, allocator, reasonPhrase, injectedCl))
+    }
+
+    /**
+     * Returns the decimal `Content-Length` to inject before the response's
+     * own headers, or null when no injection is needed: a bodyless status
+     * (1xx / 204 / 304, which must carry no Content-Length), or a response
+     * that already declares `Content-Length` or `Transfer-Encoding`. The
+     * common factory-built response (`ok` / `of`) carries a Content-Length,
+     * so this returns null before allocating the digit string — the hot path
+     * pays only one header lookup.
+     */
+    private fun injectedContentLength(response: HttpResponse): String? {
+        if (isBodylessStatus(response.status.code)) return null
+        // Presence check (no value parse) — cheaper on the encode hot path, and
+        // correct even for a present-but-malformed Content-Length (which must
+        // not get a second, injected one).
+        val headers = response.headers
+        if (HttpHeaderName.CONTENT_LENGTH in headers || headers.isChunked) return null
+        return (response.body?.size ?: 0).toString()
+    }
+
+    /**
+     * Writes the status line, the optional injected `Content-Length`, and the
+     * response's own header block into a single exact-sized head buffer. The
+     * injected field precedes the caller's headers; HTTP header order is not
+     * significant, so this keeps the caller's [HttpHeaders] unmutated.
+     */
+    private fun writeHead(
+        response: HttpResponse,
+        reasonPhrase: String,
+        injectedCl: String?,
+        allocator: BufferAllocator,
+    ): IoBuf {
+        val buf = allocator.allocate(calculateHeadSize(response, reasonPhrase) + injectedHeaderSize(injectedCl))
+        writeStatusLine(response.version, response.status.code, reasonPhrase, buf)
+        writeInjectedContentLength(injectedCl, buf)
+        writeHeaders(response.headers, buf)
+        return buf
+    }
+
+    private fun injectedHeaderSize(injectedCl: String?): Int =
+        if (injectedCl == null) {
+            0
+        } else {
+            HttpHeaderName.CONTENT_LENGTH.length + HEADER_SEPARATOR_SIZE + injectedCl.length + CRLF_SIZE
+        }
+
+    private fun writeInjectedContentLength(injectedCl: String?, buf: IoBuf) {
+        if (injectedCl == null) return
+        buf.writeAscii(HttpHeaderName.CONTENT_LENGTH, 0, HttpHeaderName.CONTENT_LENGTH.length)
+        buf.writeByte(COLON)
+        buf.writeByte(SP)
+        buf.writeAscii(injectedCl, 0, injectedCl.length)
+        buf.writeByte(CR)
+        buf.writeByte(LF)
     }
 
     // --- Streaming path (HttpResponseHead + HttpBody + HttpBodyEnd) ---
@@ -443,18 +500,21 @@ class HttpResponseEncoder : DuplexHandler {
 
     // --- Legacy path (complete HttpResponse with body: ByteArray?) ---
 
-    private fun encode(response: HttpResponse, allocator: BufferAllocator, reasonPhrase: String): IoBuf {
-        val buf = allocator.allocate(calculateSize(response, reasonPhrase))
+    private fun encode(
+        response: HttpResponse,
+        allocator: BufferAllocator,
+        reasonPhrase: String,
+        injectedCl: String?,
+    ): IoBuf {
+        val size = calculateHeadSize(response, reasonPhrase) +
+            injectedHeaderSize(injectedCl) +
+            (response.body?.size ?: 0)
+        val buf = allocator.allocate(size)
         writeStatusLine(response.version, response.status.code, reasonPhrase, buf)
+        writeInjectedContentLength(injectedCl, buf)
         writeHeaders(response.headers, buf)
         response.body?.let { buf.writeByteArray(it, 0, it.size) }
         return buf
-    }
-
-    private fun calculateSize(response: HttpResponse, reasonPhrase: String): Int {
-        var size = calculateHeadSize(response, reasonPhrase)
-        size += response.body?.size ?: 0
-        return size
     }
 
     private fun calculateHeadSize(response: HttpResponse, reasonPhrase: String): Int {

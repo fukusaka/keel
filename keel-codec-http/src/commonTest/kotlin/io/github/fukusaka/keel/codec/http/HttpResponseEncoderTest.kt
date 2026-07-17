@@ -159,6 +159,105 @@ class HttpResponseEncoderTest {
         }
     }
 
+    // --- Content-Length injection (framing enforcement) ---
+
+    @Test
+    fun `full response without framing gets an injected Content-Length`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        // Primary constructor, no Content-Length / Transfer-Encoding: without
+        // injection this response is unframed on the wire and a keep-alive
+        // client cannot find its end.
+        pipeline.requestWrite(
+            HttpResponse(HttpStatus.OK, headers = HttpHeaders.of("X-Tag" to "t"), body = "hello".encodeToByteArray()),
+        )
+
+        val text = transport.written[0].readString()
+        assertTrue(text.contains("Content-Length: 5\r\n"), "injected Content-Length: $text")
+        assertTrue(text.contains("X-Tag: t\r\n"), "caller header preserved: $text")
+        assertTrue(text.endsWith("hello"), "body present: $text")
+    }
+
+    @Test
+    fun `full response with null body and no framing gets Content-Length 0`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        pipeline.requestWrite(HttpResponse(HttpStatus.OK))
+
+        val text = transport.written[0].readString()
+        assertEquals("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", text)
+    }
+
+    @Test
+    fun `a response that already declares Content-Length is not given a second one`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        pipeline.requestWrite(
+            HttpResponse(
+                HttpStatus.OK,
+                headers = HttpHeaders.of("Content-Length" to "5"),
+                body = "hello".encodeToByteArray(),
+            ),
+        )
+
+        val text = transport.written[0].readString()
+        assertEquals("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", text)
+    }
+
+    @Test
+    fun `a chunked response is not given a Content-Length`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        pipeline.requestWrite(
+            HttpResponse(
+                HttpStatus.OK,
+                headers = HttpHeaders.of("Transfer-Encoding" to "chunked"),
+                body = "0\r\n\r\n".encodeToByteArray(),
+            ),
+        )
+
+        val text = transport.written[0].readString()
+        assertTrue(text.contains("Transfer-Encoding: chunked\r\n"), "TE preserved: $text")
+        assertTrue(!text.contains("Content-Length"), "no Content-Length injected: $text")
+    }
+
+    @Test
+    fun `a bodyless status without framing gets no Content-Length`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        // 204 / 304 / 1xx must never carry Content-Length (RFC 9112 §6.3).
+        pipeline.requestWrite(HttpResponse(HttpStatus.NO_CONTENT))
+        pipeline.requestWrite(HttpResponse(HttpStatus.NOT_MODIFIED))
+
+        assertTrue(!transport.written[0].readString().contains("Content-Length"), "204 has no CL")
+        assertTrue(!transport.written[1].readString().contains("Content-Length"), "304 has no CL")
+    }
+
+    @Test
+    fun `HEAD response without framing gets an injected Content-Length and no body`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        pipeline.notifyRead(headRequest())
+        // The GET would return 5 bytes; the HEAD response must advertise that
+        // Content-Length while suppressing the body.
+        pipeline.requestWrite(
+            HttpResponse(HttpStatus.OK, headers = HttpHeaders.of("X-Tag" to "t"), body = "hello".encodeToByteArray()),
+        )
+
+        val text = transport.written[0].readString()
+        assertTrue(text.contains("Content-Length: 5\r\n"), "injected Content-Length: $text")
+        assertTrue(!text.contains("hello"), "HEAD body suppressed: $text")
+        assertTrue(text.endsWith("\r\n\r\n"), "no body bytes: $text")
+    }
+
+    @Test
+    fun `large body without framing gets an injected Content-Length on the wrap path`() {
+        val pipeline = createPipeline("encoder" to HttpResponseEncoder())
+        val body = ByteArray(10000) { 'x'.code.toByte() }
+        pipeline.requestWrite(HttpResponse(HttpStatus.OK, body = body))
+
+        val wire = transport.written.joinToString("") { it.readString() }
+        assertTrue(
+            wire.startsWith("HTTP/1.1 200 OK\r\nContent-Length: 10000\r\n\r\n"),
+            "head prefix: ${wire.take(60)}",
+        )
+        assertEquals(10000, wire.length - wire.indexOf("\r\n\r\n") - 4, "body length mismatch")
+    }
+
     // --- Full response round-trip ---
 
     @Test
