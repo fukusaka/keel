@@ -550,9 +550,16 @@ class HttpResponseDecoder(
     private fun emitHead(ctx: PipelineHandlerContext) {
         val parsedStatus = checkNotNull(status) { "status not parsed" }
         val parsedVersion = checkNotNull(version) { "version not parsed" }
+        // Latch the framing predicates off `headers` once, before building the
+        // head and dispatching it: both are non-trivial getters (hash lookup +
+        // scan/parse), and reading them here — before `headers` is reassigned to
+        // a fresh instance below — feeds the smuggling check, the negative-CL
+        // check, and the framing decision from a single evaluation each.
+        val cl = headers.contentLength
+        val chunked = headers.isChunked
         // RFC 9112 §6.3: both Content-Length and Transfer-Encoding present
         // is a smuggling vector — reject, matching HttpRequestDecoder.
-        if (headers.isChunked && headers.contentLength != null) {
+        if (chunked && cl != null) {
             throw HttpParseException(
                 "Both Transfer-Encoding and Content-Length present (RFC 7230 §3.3.3)",
             )
@@ -560,16 +567,10 @@ class HttpResponseDecoder(
         // RFC 9110 §8.6: an invalid (negative) Content-Length is unrecoverable
         // framing — treating it as "no body" would let the body bytes be
         // parsed as the next response (response splitting).
-        val cl = headers.contentLength
         if (cl != null && cl < 0L) {
             throw HttpParseException("Invalid Content-Length: $cl (RFC 9110 §8.6)")
         }
         val head = HttpResponseHead(parsedStatus, parsedVersion, headers)
-        // Latch the framing decision off the head BEFORE dispatching it, so
-        // whatever a downstream handler does with the headers cannot skew
-        // the decoder's state transition (same hazard as the server
-        // decoder's emitHead).
-        val chunked = head.headers.isChunked
         val code = parsedStatus.code
         status = null
         version = null
