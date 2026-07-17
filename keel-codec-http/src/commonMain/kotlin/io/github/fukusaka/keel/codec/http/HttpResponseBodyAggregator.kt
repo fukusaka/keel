@@ -29,6 +29,14 @@ import kotlin.reflect.KClass
  * chunks are released in one pass instead. The aggregator is stateful
  * and must not be shared between connections.
  *
+ * **Interim responses**: a non-101 1xx head (`100 Continue`, `102`,
+ * `103`) and its terminating [HttpBodyEnd] are consumed silently — the
+ * final response that follows is the one aggregated and forwarded, so a
+ * consumer awaiting one [HttpResponse] per request never receives an
+ * interim status as its answer (RFC 9110 §15.2 lets a client ignore
+ * unexpected 1xx responses). `101 Switching Protocols` is a final
+ * response to its request and is aggregated normally.
+ *
  * Deliberately a sibling of [HttpBodyAggregator] rather than a shared
  * base class: the fold/flatten core is small, and keeping the client
  * codec free of server-class edits keeps this addition self-contained.
@@ -45,14 +53,36 @@ class HttpResponseBodyAggregator(
     private var acc: IoBufMutableChunks? = null
     private var overflowed: Boolean = false
 
+    // True while the streamed message belongs to an interim (non-101 1xx)
+    // response: its terminating HttpBodyEnd is consumed without emitting.
+    private var interimPending: Boolean = false
+
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
-            is HttpResponseHead -> startAggregation(msg)
-            is HttpBodyEnd -> completeAggregation(ctx, msg)
-            is HttpBody -> foldChunk(msg.content)
+            is HttpResponseHead ->
+                if (isInterim(msg)) interimPending = true else startAggregation(msg)
+            is HttpBodyEnd ->
+                if (interimPending) {
+                    interimPending = false
+                    msg.release()
+                } else {
+                    completeAggregation(ctx, msg)
+                }
+            is HttpBody ->
+                if (interimPending) {
+                    // Interim responses are bodyless by construction; release
+                    // defensively rather than folding into the next response.
+                    msg.release()
+                } else {
+                    foldChunk(msg.content)
+                }
             else -> ctx.propagateRead(msg)
         }
     }
+
+    /** True for an interim informational head — every 1xx except 101. */
+    private fun isInterim(head: HttpResponseHead): Boolean =
+        head.status.isInformational && head.status.code != SWITCHING_PROTOCOLS_CODE
 
     override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
         resetAggregation()
@@ -149,10 +179,13 @@ class HttpResponseBodyAggregator(
         head = null
         acc = null
         overflowed = false
+        interimPending = false
     }
 
     private companion object {
         /** Default maximum aggregated body size: 1 MiB. */
         private const val DEFAULT_MAX_CONTENT_LENGTH = 1 shl 20
+
+        private const val SWITCHING_PROTOCOLS_CODE = 101
     }
 }

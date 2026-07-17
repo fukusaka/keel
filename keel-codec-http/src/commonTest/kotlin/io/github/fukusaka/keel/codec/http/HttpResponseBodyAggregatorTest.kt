@@ -107,6 +107,34 @@ class HttpResponseBodyAggregatorTest {
     }
 
     @Test
+    fun `interim 100 head and end are skipped and the final response aggregates`() {
+        val pipeline = createPipeline(HttpResponseBodyAggregator())
+
+        pipeline.notifyRead(HttpResponseHead(HttpStatus.CONTINUE))
+        pipeline.notifyRead(HttpBodyEnd.EMPTY)
+        pipeline.notifyRead(head())
+        pipeline.notifyRead(HttpBodyEnd(bufOf("final"), HttpHeaders.EMPTY))
+
+        // The interim 100 must never surface as an aggregated response —
+        // a single-receive consumer would take it as the request's answer.
+        val response = collector.responses.single()
+        assertEquals(HttpStatus.OK, response.status)
+        assertEquals("final", response.body?.decodeToString())
+        assertTrue(collector.errors.isEmpty())
+    }
+
+    @Test
+    fun `101 switching protocols aggregates as a final response`() {
+        val pipeline = createPipeline(HttpResponseBodyAggregator())
+
+        pipeline.notifyRead(HttpResponseHead(HttpStatus.SWITCHING_PROTOCOLS))
+        pipeline.notifyRead(HttpBodyEnd.EMPTY)
+
+        assertEquals(HttpStatus.SWITCHING_PROTOCOLS, collector.responses.single().status)
+        assertTrue(collector.errors.isEmpty())
+    }
+
+    @Test
     fun `non-HTTP messages pass through unchanged`() {
         val pipeline = createPipeline(HttpResponseBodyAggregator())
 
