@@ -6,12 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-17
+
 ### Changed
 
 - `ktor-engine`: wrap aggregated large response bodies zero-copy in the Ktor adapter
   instead of allocate+copy — bodies above the largest cached size class no longer pay an
   unpooled direct-buffer allocation per response (`/large` on the NIO engine: 113K → 292K
   req/s, p99 30ms → 0.5ms) (#959)
+
+### Documentation
+
+- `readme`: refresh the benchmark tables from a July 2026 full-matrix re-measurement on
+  v0.4.1 — standalone-server rows, a TLS-backend comparison matrix, and
+  measurement-vintage labeling (#957, #958)
 
 ## [0.4.1] - 2026-07-17
 
