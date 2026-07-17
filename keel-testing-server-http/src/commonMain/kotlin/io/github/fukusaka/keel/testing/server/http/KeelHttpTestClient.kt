@@ -1,40 +1,37 @@
 package io.github.fukusaka.keel.testing.server.http
 
-import io.github.fukusaka.keel.buf.DefaultAllocator
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
+import io.github.fukusaka.keel.codec.http.HttpRequest
+import io.github.fukusaka.keel.codec.http.HttpResponse
+import io.github.fukusaka.keel.codec.http.addHttp1ClientCodec
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
 import io.github.fukusaka.keel.server.http.KeelHttpServer
-
-/** CRLF line terminator used when building an HTTP/1.1 request on the wire. */
-private const val CRLF = "\r\n"
-
-/** Read-buffer size for draining the response off the channel. */
-private const val READ_BUFFER_SIZE = 8192
+import kotlinx.coroutines.withContext
 
 /**
- * An in-process HTTP/1.1 test client bound to a running [keelHttpServer].
+ * An in-process HTTP/1.1 test client bound to a running [KeelHttpServer].
  *
  * Each request opens a fresh in-memory connection
- * ([StreamEngine.connect]) to the server's bound address, encodes the
- * request to HTTP/1.1 wire bytes, writes them on the channel, reads the
- * response back, and parses it into a [TestHttpResponse]. One request per
- * connection keeps requests independent — this is a test-client
- * convenience, not a keep-alive performance concern.
+ * ([StreamEngine.connect]) to the server's bound address and drives it
+ * through the production client codec: `addHttp1ClientCodec` installs
+ * `HttpRequestEncoder` / `HttpResponseDecoder` /
+ * `HttpResponseBodyAggregator` on the connection's pipeline, the typed
+ * [HttpRequest] is written outbound, and the aggregated [HttpResponse] is
+ * received through a [SuspendMessageBridge] and repackaged as a
+ * [TestHttpResponse]. One request per connection keeps requests
+ * independent — this is a test-client convenience, not a keep-alive
+ * performance concern.
  *
  * Obtained from [KeelHttpTestScope.client]; not constructed directly.
  *
- * **Interim implementation.** The request encoding here and the
- * [parseHttpResponse] decoder are a deliberately minimal hand-rolled
- * HTTP/1.1 client: keel-codec-http ships only the server-side codec
- * today, so there is no client-side codec to reuse. When the keel HTTP
- * client lands (Phase 12), this client should install the real
- * client-side codec on the loopback channel — or be replaced outright by
- * the production keel HTTP client pointed at the in-memory engine.
- *
- * @param engine the in-memory engine the server is bound on.
+ * @param engine the in-memory engine the server is bound on. [request]
+ *   requires [StreamEngine.connect] to return a [PipelinedChannel]
+ *   (as `InMemoryEngine` and every keel engine does) so the client
+ *   codec can be installed on the connection's pipeline.
  * @param serverProvider lazily starts (on the first request) and returns
  *   the [KeelHttpServer] this client targets.
  */
@@ -60,11 +57,27 @@ public class KeelHttpTestClient internal constructor(
     ): TestHttpResponse {
         val server = serverProvider()
         val channel = engine.connect(server.localAddress)
+        check(channel is PipelinedChannel) {
+            "KeelHttpTestClient requires a PipelinedChannel connection; " +
+                "got ${channel::class.simpleName} from ${engine::class.simpleName}"
+        }
         try {
-            channel.write(encodeRequest(method, path, headers, body))
-            channel.flush()
-            val raw = readResponse(channel, isHead = method == HttpMethod.HEAD)
-            return parseHttpResponse(raw)
+            val bridge = SuspendMessageBridge(HttpResponse::class)
+            // Pipeline mutation and the outbound write run on the channel's
+            // EventLoop dispatcher, per the pipeline threading contract.
+            withContext(channel.ioDispatcher) {
+                channel.addHttp1ClientCodec()
+                channel.pipeline.addLast("bridge", bridge)
+                channel.readEnabled = true
+                channel.pipeline.requestWriteAndFlush(buildRequest(method, path, headers, body))
+            }
+            val result = bridge.receiveCatching()
+            val response = result.getOrNull()
+                ?: throw (
+                    result.exceptionOrNull()
+                        ?: IllegalStateException("connection closed before a complete response arrived")
+                    )
+            return TestHttpResponse(response.status, response.headers, response.body ?: EMPTY_BODY)
         } finally {
             channel.close()
         }
@@ -116,61 +129,30 @@ public class KeelHttpTestClient internal constructor(
     ): TestHttpResponse = request(HttpMethod.PATCH, path, headers, body)
 
     /**
-     * Drains the response off [channel] until a complete HTTP/1.1 response
-     * has been received.
-     *
-     * Reads in [READ_BUFFER_SIZE] chunks, accumulating bytes, and stops as
-     * soon as [isResponseComplete] confirms the header block plus the
-     * `Content-Length` / `chunked` body are fully present — or when the
-     * server closes its write side (`read` returns -1).
-     *
-     * @param isHead `true` for a `HEAD` request; the response is then
-     *   bodyless regardless of any `Content-Length` header.
+     * Builds the typed [HttpRequest] for the wire: the caller's headers
+     * plus an auto-filled `Host` (the encoder serialises headers as-is,
+     * and HTTP/1.1 requires Host) and, for requests with a body, an
+     * auto-filled `Content-Length`.
      */
-    private suspend fun readResponse(
-        channel: io.github.fukusaka.keel.core.Channel,
-        isHead: Boolean,
-    ): ByteArray {
-        val accumulated = ArrayList<Byte>()
-        while (true) {
-            if (isResponseComplete(accumulated, isHead)) break
-            val buf = DefaultAllocator.allocate(READ_BUFFER_SIZE)
-            val n = channel.read(buf)
-            if (n <= 0) {
-                buf.release()
-                break
-            }
-            val chunk = ByteArray(n)
-            buf.readByteArray(chunk, 0, n)
-            buf.release()
-            for (byte in chunk) accumulated.add(byte)
-        }
-        return accumulated.toByteArray()
-    }
-
-    /** Encodes an HTTP/1.1 request — head plus optional body — into one [IoBuf]. */
-    private fun encodeRequest(
+    private fun buildRequest(
         method: HttpMethod,
         path: String,
         headers: HttpHeaders,
         body: ByteArray?,
-    ): IoBuf {
-        val head = buildString {
-            append(method.name).append(' ').append(path).append(" HTTP/1.1").append(CRLF)
-            if (headers[HttpHeaderName.HOST] == null) {
-                append(HttpHeaderName.HOST).append(": localhost").append(CRLF)
-            }
-            headers.forEach { name, value -> append(name).append(": ").append(value).append(CRLF) }
-            if (body != null && headers[HttpHeaderName.CONTENT_LENGTH] == null) {
-                append(HttpHeaderName.CONTENT_LENGTH).append(": ").append(body.size).append(CRLF)
-            }
-            append(CRLF)
+    ): HttpRequest {
+        val requestHeaders = HttpHeaders()
+        if (headers[HttpHeaderName.HOST] == null) {
+            requestHeaders.add(HttpHeaderName.HOST, "localhost")
         }
-        val headBytes = head.encodeToByteArray()
-        val bodyBytes = body ?: ByteArray(0)
-        val buf = DefaultAllocator.allocate(headBytes.size + bodyBytes.size)
-        buf.writeByteArray(headBytes, 0, headBytes.size)
-        if (bodyBytes.isNotEmpty()) buf.writeByteArray(bodyBytes, 0, bodyBytes.size)
-        return buf
+        headers.forEach { name, value -> requestHeaders.add(name, value) }
+        if (body != null && headers[HttpHeaderName.CONTENT_LENGTH] == null) {
+            requestHeaders.add(HttpHeaderName.CONTENT_LENGTH, body.size.toString())
+        }
+        return HttpRequest(method, path, headers = requestHeaders, body = body)
+    }
+
+    private companion object {
+        /** Shared empty body for bodyless responses. */
+        private val EMPTY_BODY = ByteArray(0)
     }
 }
