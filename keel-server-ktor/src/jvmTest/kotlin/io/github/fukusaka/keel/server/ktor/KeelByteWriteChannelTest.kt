@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.ktor
 
+import io.github.fukusaka.keel.buf.withTracking
 import io.github.fukusaka.keel.engine.netty.NettyEngine
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.ktor.server.application.Application
@@ -540,5 +541,63 @@ class KeelByteWriteChannelTest {
          * range, absorbing the full test payload before any server-side gate fires.
          */
         private const val SLOW_READER_RCVBUF = 16 * 1024
+    }
+}
+
+/**
+ * Regression tests for [KeelByteWriteChannel.emit]'s zero-copy wrap fast path:
+ * drains at or above the wrap threshold are forwarded via
+ * [io.github.fukusaka.keel.buf.BufferAllocator.wrapBytes] instead of
+ * allocate+copy (which fell through to an unpooled exact-size direct-buffer
+ * allocation per large response). Covers both failure modes of the change:
+ * body corruption (wrapped array delivered wrongly) and buffer leaks
+ * (wrapped IoBuf not released along the encoder/transport path).
+ */
+class KeelByteWriteChannelWrapPathTest {
+
+    @Test
+    fun `large and threshold-boundary bodies arrive intact and leak-free through emit`() {
+        val allocator = io.github.fukusaka.keel.buf.defaultAllocator().withTracking()
+        // 100 KB — realistic /large-sized drain, well above the wrap threshold.
+        val big = ByteArray(100_000) { (it % 251).toByte() }
+        // One byte below the threshold — pins the pooled copy path.
+        val small = ByteArray(8_191) { (it % 13).toByte() }
+        val server = embeddedServer(Keel, port = 0) {
+            routing {
+                get("/big") { call.respondBytesWriter { writeFully(big) } }
+                get("/small") { call.respondBytesWriter { writeFully(small) } }
+            }
+        }
+        val cfg = server.engine.configuration
+        cfg.engine = NioEngine(io.github.fukusaka.keel.core.IoEngineConfig(allocator = allocator))
+        server.start(wait = false)
+        try {
+            val port = runBlocking {
+                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port }
+            }
+            kotlin.test.assertContentEquals(big, httpGetBytes(port, "/big"))
+            kotlin.test.assertContentEquals(small, httpGetBytes(port, "/small"))
+        } finally {
+            server.stop(500, 1000)
+        }
+        // Releases complete on the EventLoop; poll briefly before asserting.
+        runBlocking {
+            withTimeout(5.seconds) {
+                while (allocator.outstandingCount > 0) delay(10)
+            }
+        }
+        allocator.assertNoLeaks()
+    }
+
+    private fun httpGetBytes(port: Int, path: String): ByteArray {
+        val url = URI("http://127.0.0.1:$port$path").toURL()
+        val conn = url.openConnection() as HttpURLConnection
+        return try {
+            conn.connectTimeout = 5_000
+            conn.readTimeout = 15_000
+            conn.inputStream.readBytes()
+        } finally {
+            conn.disconnect()
+        }
     }
 }

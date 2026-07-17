@@ -214,8 +214,22 @@ internal class KeelApplicationResponse(
         withContext(pipelinedChannel.ioDispatcher) {
             pipelinedChannel.pipeline.requestWrite(head)
             if (bytes.isNotEmpty()) {
-                val buf = pipelinedChannel.allocator.allocate(bytes.size)
-                buf.writeByteArray(bytes, 0, bytes.size)
+                // Large bodies: wrap the caller's array zero-copy instead of
+                // allocate+copy. A body above the allocator's largest cached
+                // size class otherwise falls through to an unpooled exact-size
+                // direct-buffer allocation per response, whose reserve/free
+                // churn showed up as the dominant allocation cost on large
+                // responses. Safe: [awaitFlushComplete] below keeps this call
+                // suspended until the transport has released the wrap, and
+                // respondBytes semantics treat the array as an immutable
+                // payload (Ktor's own ByteArrayContent holds it uncopied too).
+                val buf = if (bytes.size >= LARGE_BODY_WRAP_THRESHOLD) {
+                    pipelinedChannel.allocator.wrapBytes(bytes, 0, bytes.size)
+                } else {
+                    null
+                } ?: pipelinedChannel.allocator.allocate(bytes.size).also {
+                    it.writeByteArray(bytes, 0, bytes.size)
+                }
                 pipelinedChannel.pipeline.requestWrite(HttpBody(buf))
             }
             pipelinedChannel.pipeline.requestWrite(HttpBodyEnd.EMPTY)

@@ -278,8 +278,8 @@ Ktor Coroutine モード（`keel-server-ktor`）、Linux Ryzen 9:
 
 | Server | `/large` Req/sec | Notes |
 |---|---:|---|
+| **jvm:ktor-keel-nio** | **292K** | |
 | **jvm:ktor-keel-netty** | **239K** | |
-| **jvm:ktor-keel-nio** | **113K** | この経路は tail latency 支配（p99 ~30ms） |
 | jvm:netty-raw (reference) | 273K | raw Netty, no framework |
 
 ### 備考
@@ -288,7 +288,7 @@ Ktor Coroutine モード（`keel-server-ktor`）、Linux Ryzen 9:
 - **server-http 行**は、アプリケーションが実際に使う構成そのまま（`keelHttpServer { }` DSL、ゼロコルーチン push pipeline 上）のスタンドアロン `keel-server-http` の計測 — **jvm:server-http-nio**（921K）は Linux の最速ネイティブ基準の約 72-75% に到達し、DSL 層のコストは手組み pipeline 比で 1% 未満。
 - **Ktor Coroutine モード**（suspend ベース）はコルーチンのオーバーヘッドが乗る — **jvm:ktor-keel-nio**（827K）は Linux でスタンドアロンサーバーの 11% 以内。
 - HTTPS では **Linux の最速 native TLS backend は AWS-LC**（OpenSSL 比 ~15% 上）。JVM/JSSE 経路（**729K**）は Linux で全 native backend を上回る。
-- Ktor 経由の `/large`（100KB）では **jvm:ktor-keel-netty** が **239K req/s** — raw Netty の 13% 以内。
+- Ktor 経由の `/large`（100KB）では **jvm:ktor-keel-nio** が **292K req/s** — adapter の aggregated body zero-copy 化により raw Netty（273K）を上回る。
 - macOS はループバック律速で密集（149-159K）: **server-http-kqueue**・**server-http-nio**・**ktor-keel-nio** はいずれも最速サーバーの 2% 以内。
 
 ---
