@@ -357,23 +357,44 @@ class HttpResponseEncoder : DuplexHandler {
 
     private fun encodeContentChunked(ctx: PipelineHandlerContext, content: HttpBody, last: Boolean) {
         val payloadSize = content.content.readableBytes
+        // Build every framing buffer BEFORE transferring content.content: an
+        // allocation that throws after the payload has been propagated would let
+        // the pipeline's error path release the payload a second time (it is
+        // still owned by the transport's pending-write queue) — a use-after-free.
+        // The variable "{hex-size}\r\n" header comes from the per-encoder scratch
+        // buffer (view, no allocate); the "\r\n" suffix from a single reusable
+        // per-encoder buffer (allocated once, on the first chunk).
+        var framing: IoBuf? = null
+        var crlf: IoBuf? = null
         if (payloadSize > 0) {
-            // Emit: "{hex-size}\r\n" + payload + "\r\n"
-            // The variable "{hex-size}\r\n" header is written into the
-            // per-encoder scratch buffer and wrapped as an IoBuf view (avoiding
-            // per-chunk allocator.allocate() overhead); the constant "\r\n"
-            // suffix is served from a single reusable per-encoder buffer.
-            ctx.propagateWrite(emitChunkFraming(ctx, payloadSize))
+            framing = emitChunkFraming(ctx, payloadSize)
+            crlf = try {
+                chunkCrlfSuffix(ctx)
+            } catch (t: Throwable) {
+                framing.release()
+                throw t
+            }
+        }
+        var terminator: IoBuf? = null
+        if (last && content is HttpBodyEnd) {
+            chunkFramingOffset = 0
+            terminator = try {
+                buildChunkedTerminator(ctx.allocator, content.trailers)
+            } catch (t: Throwable) {
+                framing?.release()
+                crlf?.release()
+                throw t
+            }
+        }
+        // Emit: "{hex-size}\r\n" + payload + "\r\n".
+        if (framing != null && crlf != null) {
+            ctx.propagateWrite(framing)
             ctx.propagateWrite(content.content)
-            ctx.propagateWrite(chunkCrlfSuffix(ctx))
+            ctx.propagateWrite(crlf)
         } else {
             content.content.release()
         }
-        if (last && content is HttpBodyEnd) {
-            chunkFramingOffset = 0
-            val terminator = buildChunkedTerminator(ctx.allocator, content.trailers)
-            ctx.propagateWrite(terminator)
-        }
+        terminator?.let { ctx.propagateWrite(it) }
     }
 
     /**

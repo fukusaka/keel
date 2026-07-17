@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.codec.http
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
@@ -499,5 +500,55 @@ class HttpResponseEncoderStreamingTest {
     /** Initiates an outbound write from the tail toward HEAD (through HttpResponseEncoder). */
     private fun Pipeline.writeFromTail(msg: Any) {
         requestWrite(msg)
+    }
+
+    // --- Chunk-framing allocation-failure safety ---
+
+    @Test
+    fun `a chunk-framing allocation failure does not double-release the payload buffer`() {
+        // Regression: encodeContentChunked must allocate every framing buffer
+        // BEFORE transferring the payload downstream. If the CRLF-suffix
+        // allocation fails after the payload was already propagated, the
+        // pipeline's error path would release the payload a second time (it is
+        // still owned by the transport's pending-write queue) — a use-after-free.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val faultTransport = TestIoTransport(FaultOnSizeAllocator(tracker, faultCapacity = 2))
+        val faultChannel = object : AbstractPipelinedChannel(faultTransport, PrintLogger("test")) {}
+        val errors = ErrorCollector()
+        faultChannel.pipeline.addLast("encoder", HttpResponseEncoder())
+        faultChannel.pipeline.addLast("errors", errors)
+
+        faultChannel.pipeline.requestWrite(
+            HttpResponseHead(HttpStatus.OK, headers = HttpHeaders.of("Transfer-Encoding" to "chunked")),
+        )
+        // The chunk's "\r\n" suffix is the only 2-byte allocation (the reusable
+        // per-encoder constant, built on the first chunk), so a fault there
+        // fires the error path after the payload was propagated.
+        val payloadBytes = "hello".encodeToByteArray()
+        val payload = tracker.allocate(payloadBytes.size).also { it.writeByteArray(payloadBytes, 0, payloadBytes.size) }
+        faultChannel.pipeline.requestWrite(HttpBody(payload))
+
+        assertEquals(1, errors.errors.size)
+        // Before the fix, close() throws IllegalStateException releasing the
+        // already-released payload a second time; after, it is a clean no-op.
+        faultTransport.close()
+        assertEquals(0, tracker.outstandingCount)
+    }
+
+    /** Delegating allocator that throws on an `allocate()` of exactly [faultCapacity] bytes. */
+    private class FaultOnSizeAllocator(
+        private val delegate: BufferAllocator,
+        private val faultCapacity: Int,
+    ) : BufferAllocator {
+        override fun allocate(capacity: Int): IoBuf {
+            if (capacity == faultCapacity) throw IllegalStateException("injected allocation failure")
+            return delegate.allocate(capacity)
+        }
+
+        override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? =
+            delegate.wrapBytes(bytes, offset, length)
+
+        override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
+            delegate.slice(source, offset, length)
     }
 }

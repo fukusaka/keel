@@ -27,6 +27,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `codec-http`: `HttpResponseEncoder` injects `Content-Length` on the complete-`HttpResponse`
   path when the response declares no framing and the status permits a body, so keep-alive
   clients can find the response end (#965)
+- `codec-http`: `HttpResponseEncoder` now allocates chunk framing before transferring the
+  payload, closing a use-after-free where an allocation failure on the chunked response path
+  double-released a payload buffer the transport still owned (#966)
 
 ### Security
 
