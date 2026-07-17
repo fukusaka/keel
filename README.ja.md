@@ -285,7 +285,7 @@ Ktor Coroutine モード（`keel-server-ktor`）、Linux Ryzen 9:
 ### 備考
 
 - keel の全エンジンは完全非同期 I/O + HTTP/1.1 keep-alive で動作。
-- **server-http 行は出荷製品そのもの**: `keelHttpServer { }` DSL で組んだスタンドアロン `keel-server-http`（ゼロコルーチン push pipeline 上で動作）— **jvm:server-http-nio**（921K）は Linux の最速ネイティブ基準の約 72-75% に到達し、DSL 層のコストは手組み pipeline 比で 1% 未満。
+- **server-http 行**は、アプリケーションが実際に使う構成そのまま（`keelHttpServer { }` DSL、ゼロコルーチン push pipeline 上）のスタンドアロン `keel-server-http` の計測 — **jvm:server-http-nio**（921K）は Linux の最速ネイティブ基準の約 72-75% に到達し、DSL 層のコストは手組み pipeline 比で 1% 未満。
 - **Ktor Coroutine モード**（suspend ベース）はコルーチンのオーバーヘッドが乗る — **jvm:ktor-keel-nio**（827K）は Linux でスタンドアロンサーバーの 11% 以内。
 - HTTPS では **Linux の最速 native TLS backend は AWS-LC**（OpenSSL 比 ~15% 上）。JVM/JSSE 経路（**729K**）は Linux で全 native backend を上回る。
 - Ktor 経由の `/large`（100KB）では **jvm:ktor-keel-netty** が **239K req/s** — raw Netty の 13% 以内。

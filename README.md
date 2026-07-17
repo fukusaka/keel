@@ -357,7 +357,7 @@ Ktor Coroutine mode via `keel-server-ktor`, Linux Ryzen 9:
 ### Notes
 
 - All keel engines use fully async I/O with HTTP/1.1 keep-alive.
-- **server-http rows are the shipped product**: the standalone `keel-server-http` server built with the `keelHttpServer { }` DSL, running on the zero-coroutine push pipeline — **jvm:server-http-nio** (921K) reaches ~72-75% of the fastest native baselines on Linux, and the DSL layer costs under 1% versus a hand-wired pipeline.
+- **server-http rows** measure the standalone `keel-server-http` server as an application would run it (the `keelHttpServer { }` DSL on the zero-coroutine push pipeline) — **jvm:server-http-nio** (921K) reaches ~72-75% of the fastest native baselines on Linux, and the DSL layer costs under 1% versus a hand-wired pipeline.
 - **Ktor Coroutine mode** (suspend-based) adds coroutine overhead — **jvm:ktor-keel-nio** (827K) sits within 11% of the standalone server on Linux.
 - On HTTPS, **AWS-LC is the fastest native TLS backend on Linux** (~15% over OpenSSL); the JVM/JSSE path (**729K**) tops all native backends there.
 - On `/large` (100KB) via Ktor, **jvm:ktor-keel-netty** reaches **239K req/s** — within 13% of raw Netty.
