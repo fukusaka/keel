@@ -692,8 +692,10 @@ class HttpHeaders {
      *
      * A **negative** value is not treated as invalid here — that is a parseable
      * value and is rejected by the caller's own negative-Content-Length guard;
-     * this method is orthogonal to it. Non-allocating: a single in-place slot
-     * scan, no `String` or intermediate list materialised.
+     * this method is orthogonal to it. A single in-place slot scan that
+     * materialises no intermediate list; the buffer-backed decoder path
+     * ([addRange]) is fully allocation-free, and the String-backed path may
+     * `trim` one substring per `Content-Length` field that carries OWS.
      */
     fun contentLengthValidity(): ContentLengthValidity {
         if (slotCount == 0) return ContentLengthValidity.ABSENT
@@ -988,7 +990,7 @@ class HttpHeaders {
  *   an unrecoverable framing error the caller must reject (RFC 9110 §8.6 /
  *   RFC 9112 §6.3).
  */
-public enum class ContentLengthValidity { ABSENT, VALID, INVALID }
+enum class ContentLengthValidity { ABSENT, VALID, INVALID }
 
 /**
  * A single well-known HTTP header `(name, value)` pair held by
