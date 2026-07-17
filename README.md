@@ -318,12 +318,19 @@ Apple M1 Max (10 cores: 8P + 2E), 64 GB RAM, macOS 15.4, Java 21 (Temurin)
 
 ### HTTPS (`keel-server-http`, `/hello`)
 
-| Server | TLS Backend | Req/sec | p50 |
-|---|---|---:|---:|
-| **native:server-http-io-uring** (Linux) | OpenSSL | **597K** | **70us** |
-| **native:server-http-epoll** (Linux) | OpenSSL | **578K** | **71us** |
-| **native:server-http-kqueue** (macOS) | OpenSSL | **154K** | **570us** |
-| **jvm:server-http-nio** (macOS) | JSSE | **151K** | **591us** |
+Native engines run keel's `TlsCodec` pipeline; each column is a separately linked TLS
+backend (one backend per binary, selected with `-Ptls-backend=<name>`). JVM engines use JSSE.
+
+| Server | OpenSSL | AWS-LC | Mbed TLS |
+|---|---:|---:|---:|
+| **native:server-http-epoll** (Linux) | **578K** | **685K** | **666K** |
+| **native:server-http-io-uring** (Linux) | **597K** | **681K** | **661K** |
+| **native:server-http-kqueue** (macOS) | **154K** | **155K** | **153K** |
+
+| Server | JSSE |
+|---|---:|
+| **jvm:server-http-nio** (Linux) | **729K** |
+| **jvm:server-http-nio** (macOS) | **151K** |
 
 ### `/large` Response (100 KB)
 
@@ -352,6 +359,7 @@ Ktor Coroutine mode via `keel-server-ktor`, Linux Ryzen 9:
 - All keel engines use fully async I/O with HTTP/1.1 keep-alive.
 - **server-http rows are the shipped product**: the standalone `keel-server-http` server built with the `keelHttpServer { }` DSL, running on the zero-coroutine push pipeline — **jvm:server-http-nio** (921K) reaches ~72-75% of the fastest native baselines on Linux, and the DSL layer costs under 1% versus a hand-wired pipeline.
 - **Ktor Coroutine mode** (suspend-based) adds coroutine overhead — **jvm:ktor-keel-nio** (827K) sits within 11% of the standalone server on Linux.
+- On HTTPS, **AWS-LC is the fastest native TLS backend on Linux** (~15% over OpenSSL); the JVM/JSSE path (**729K**) tops all native backends there.
 - On `/large` (100KB) via Ktor, **jvm:ktor-keel-netty** reaches **239K req/s** — within 13% of raw Netty.
 - On macOS the field is loopback-bound and tightly clustered (149-159K): **server-http-kqueue**, **server-http-nio**, and **ktor-keel-nio** are all within 2% of the fastest server measured.
 

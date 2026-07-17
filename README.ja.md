@@ -246,12 +246,19 @@ Apple M1 Max（10 コア: 8P + 2E）、64 GB RAM、macOS 15.4、Java 21（Temuri
 
 ### HTTPS（`keel-server-http`、`/hello`）
 
-| Server | TLS Backend | Req/sec | p50 |
-|---|---|---:|---:|
-| **native:server-http-io-uring** (Linux) | OpenSSL | **597K** | **70us** |
-| **native:server-http-epoll** (Linux) | OpenSSL | **578K** | **71us** |
-| **native:server-http-kqueue** (macOS) | OpenSSL | **154K** | **570us** |
-| **jvm:server-http-nio** (macOS) | JSSE | **151K** | **591us** |
+Native エンジンは keel の `TlsCodec` pipeline で駆動し、各列は個別にリンクした TLS backend
+（1 バイナリ 1 backend、`-Ptls-backend=<name>` で選択）。JVM エンジンは JSSE を使用。
+
+| Server | OpenSSL | AWS-LC | Mbed TLS |
+|---|---:|---:|---:|
+| **native:server-http-epoll** (Linux) | **578K** | **685K** | **666K** |
+| **native:server-http-io-uring** (Linux) | **597K** | **681K** | **661K** |
+| **native:server-http-kqueue** (macOS) | **154K** | **155K** | **153K** |
+
+| Server | JSSE |
+|---|---:|
+| **jvm:server-http-nio** (Linux) | **729K** |
+| **jvm:server-http-nio** (macOS) | **151K** |
 
 ### `/large` レスポンス（100 KB）
 
@@ -280,6 +287,7 @@ Ktor Coroutine モード（`keel-server-ktor`）、Linux Ryzen 9:
 - keel の全エンジンは完全非同期 I/O + HTTP/1.1 keep-alive で動作。
 - **server-http 行は出荷製品そのもの**: `keelHttpServer { }` DSL で組んだスタンドアロン `keel-server-http`（ゼロコルーチン push pipeline 上で動作）— **jvm:server-http-nio**（921K）は Linux の最速ネイティブ基準の約 72-75% に到達し、DSL 層のコストは手組み pipeline 比で 1% 未満。
 - **Ktor Coroutine モード**（suspend ベース）はコルーチンのオーバーヘッドが乗る — **jvm:ktor-keel-nio**（827K）は Linux でスタンドアロンサーバーの 11% 以内。
+- HTTPS では **Linux の最速 native TLS backend は AWS-LC**（OpenSSL 比 ~15% 上）。JVM/JSSE 経路（**729K**）は Linux で全 native backend を上回る。
 - Ktor 経由の `/large`（100KB）では **jvm:ktor-keel-netty** が **239K req/s** — raw Netty の 13% 以内。
 - macOS はループバック律速で密集（149-159K）: **server-http-kqueue**・**server-http-nio**・**ktor-keel-nio** はいずれも最速サーバーの 2% 以内。
 
