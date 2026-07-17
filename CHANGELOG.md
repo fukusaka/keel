@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `codec-http`: add the client-side HTTP/1.1 codec — `HttpRequestEncoder`,
+  `HttpResponseDecoder` with RFC 9112 §6.3 response framing,
+  `HttpResponseBodyAggregator`, and the `addHttp1ClientCodec` installer (#962)
+
+### Changed
+
+- `testing-server-http`: `KeelHttpTestClient` now drives the production client codec over
+  the in-memory loopback instead of a hand-rolled encoder/parser (#962)
+
 ## [0.4.2] - 2026-07-17
 
 ### Changed
