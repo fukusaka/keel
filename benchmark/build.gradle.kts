@@ -97,6 +97,12 @@ kotlin {
                 implementation(libs.ktor.server.compression)
                 implementation(libs.spring.boot.starter.webflux)
                 implementation(libs.vertx.web)
+                // Client benchmark harness (--role=client): reference client engines
+                // (Ktor CIO here; Java HttpClient is JDK built-in) + HdrHistogram for
+                // coordinated-omission-corrected latency percentiles. JVM-only.
+                implementation(libs.ktor.client.core)
+                implementation(libs.ktor.client.cio)
+                implementation(libs.hdrhistogram)
             }
         }
         nativeMain {
