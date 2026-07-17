@@ -84,7 +84,9 @@ class HttpClientCodecRoundTripTest {
         for (buf in from.written) {
             val len = buf.readableBytes
             val copy = DefaultAllocator.allocate(len)
-            for (i in 0 until len) copy.writeByte(buf.getByte(buf.readerIndex + i))
+            // Bulk copy; advancing the source cursor is fine — the captures
+            // are released right after the loop.
+            buf.copyTo(copy, len)
             to.pipeline.notifyRead(copy)
         }
         from.releaseWritten()
