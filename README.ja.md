@@ -279,7 +279,7 @@ Ktor Coroutine モード（`keel-server-ktor`）、Linux Ryzen 9:
 | Server | `/large` Req/sec | Notes |
 |---|---:|---|
 | **jvm:ktor-keel-netty** | **239K** | |
-| **jvm:ktor-keel-nio** | **113K** | 4 月値（228K）からの regression、調査中 |
+| **jvm:ktor-keel-nio** | **113K** | この経路は tail latency 支配（p99 ~30ms） |
 | jvm:netty-raw (reference) | 273K | raw Netty, no framework |
 
 ### 備考

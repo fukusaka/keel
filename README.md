@@ -351,7 +351,7 @@ Ktor Coroutine mode via `keel-server-ktor`, Linux Ryzen 9:
 | Server | `/large` Req/sec | Notes |
 |---|---:|---|
 | **jvm:ktor-keel-netty** | **239K** | |
-| **jvm:ktor-keel-nio** | **113K** | regression vs April (228K) under investigation |
+| **jvm:ktor-keel-nio** | **113K** | tail-latency dominated (p99 ~30ms) on this path |
 | jvm:netty-raw (reference) | 273K | raw Netty, no framework |
 
 ### Notes
