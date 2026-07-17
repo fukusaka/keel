@@ -885,6 +885,10 @@ class HttpRequestDecoder(
         if (parsedVersion == HttpVersion.HTTP_1_1 && HttpHeaderName.HOST !in headers) {
             throw HttpParseException("Missing required Host header (RFC 7230 §5.4)")
         }
+        // RFC 9110 §8.6 / RFC 9112 §6.3: reject a malformed or conflicting
+        // Content-Length before framing the body (see [rejectInvalidContentLength]).
+        // Ordered before the smuggling check to match HttpResponseDecoder.
+        rejectInvalidContentLength(headers)
         // RFC 7230 §3.3.3: reject requests with both Content-Length and Transfer-Encoding
         // to prevent HTTP Request Smuggling.
         if (headers.isChunked && headers.contentLength != null) {

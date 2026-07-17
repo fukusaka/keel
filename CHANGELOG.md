@@ -17,6 +17,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `testing-server-http`: `KeelHttpTestClient` now drives the production client codec over
   the in-memory loopback instead of a hand-rolled encoder/parser (#962)
 
+### Security
+
+- `codec-http`: reject a `Content-Length` that is not RFC 9110 §8.6 `1*DIGIT` — unparseable,
+  signed (`+5` / `-5`), overflowing, or conflicting (duplicate fields with differing values) —
+  in both the request and response decoders instead of silently framing on the first value,
+  closing a request/response-splitting vector (RFC 9110 §8.6 / RFC 9112 §6.3) (#967)
+
 ## [0.4.2] - 2026-07-17
 
 ### Changed

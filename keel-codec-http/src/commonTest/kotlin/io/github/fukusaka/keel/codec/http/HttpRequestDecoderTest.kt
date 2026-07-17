@@ -414,6 +414,81 @@ class HttpRequestDecoderTest {
     }
 
     @Test
+    fun `conflicting duplicate Content-Length is rejected and its body is not parsed as the next request`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        // RFC 9112 §6.3: two differing Content-Length values are unrecoverable —
+        // framing on either would let the body bytes be parsed as a second request.
+        pipeline.notifyRead(
+            bufOf(
+                "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 10\r\n\r\n" +
+                    "GET /evil HTTP/1.1\r\nHost: y\r\n\r\n",
+            ),
+        )
+
+        assertEquals(1, collector.errors.size)
+        assertIs<HttpParseException>(collector.errors[0])
+        assertTrue(collector.heads.isEmpty())
+    }
+
+    @Test
+    fun `negative Content-Length is rejected and its body is not parsed as the next request`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        // RFC 9110 §8.6 grammar is 1*DIGIT: a signed Content-Length is malformed.
+        // The request decoder has no negative-CL guard of its own, so without the
+        // shared contentLengthValidity gate rejecting the sign, "-5" frames as
+        // bodyless and the declared body bytes ("GET /evil ...") are parsed as a
+        // second request (request splitting).
+        pipeline.notifyRead(
+            bufOf(
+                "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: -5\r\n\r\n" +
+                    "GET /evil HTTP/1.1\r\nHost: y\r\n\r\n",
+            ),
+        )
+
+        assertEquals(1, collector.errors.size)
+        assertIs<HttpParseException>(collector.errors[0])
+        assertTrue(collector.heads.isEmpty())
+    }
+
+    @Test
+    fun `identical duplicate Content-Length is accepted`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        // RFC 9110 §8.6 permits identical duplicates (treat as one value).
+        pipeline.notifyRead(
+            bufOf("POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello"),
+        )
+
+        assertEquals(1, collector.heads.size)
+        assertEquals(5L, collector.heads[0].headers.contentLength)
+        assertTrue(collector.errors.isEmpty())
+    }
+
+    @Test
+    fun `malformed non-numeric Content-Length is rejected and its body is not parsed as the next request`() {
+        val collector = MessageCollector()
+        val pipeline = createPipeline("decoder" to HttpRequestDecoder(), "collector" to collector)
+
+        // A present-but-unparseable Content-Length must be rejected, not treated
+        // as absent (which would parse the body bytes as the next request line).
+        pipeline.notifyRead(
+            bufOf(
+                "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n" +
+                    "GET /evil HTTP/1.1\r\nHost: y\r\n\r\n",
+            ),
+        )
+
+        assertEquals(1, collector.errors.size)
+        assertIs<HttpParseException>(collector.errors[0])
+        assertTrue(collector.heads.isEmpty())
+    }
+
+    @Test
     fun `decoder resets after parse error and handles next request`() {
         val decoder = HttpRequestDecoder()
         val collector = MessageCollector()

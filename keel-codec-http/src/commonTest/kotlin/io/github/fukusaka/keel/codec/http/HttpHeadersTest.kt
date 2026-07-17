@@ -254,4 +254,40 @@ class HttpHeadersTest {
         assertEquals("Content-Type", names.single())
         assertEquals(listOf("text/plain", "text/html"), h.getAll("Content-Type"))
     }
+
+    // --- contentLengthValidity ---
+
+    @Test
+    fun `contentLengthValidity is ABSENT when no Content-Length is present`() {
+        assertEquals(ContentLengthValidity.ABSENT, HttpHeaders().contentLengthValidity())
+        assertEquals(ContentLengthValidity.ABSENT, HttpHeaders.of("Host" to "x").contentLengthValidity())
+    }
+
+    @Test
+    fun `contentLengthValidity is VALID for a single value and for identical duplicates`() {
+        assertEquals(ContentLengthValidity.VALID, HttpHeaders.of("Content-Length" to "5").contentLengthValidity())
+        assertEquals(ContentLengthValidity.VALID, HttpHeaders.of("Content-Length" to "0").contentLengthValidity())
+        val dup = HttpHeaders().add("Content-Length", "5").add("Content-Length", "5")
+        assertEquals(ContentLengthValidity.VALID, dup.contentLengthValidity())
+    }
+
+    @Test
+    fun `contentLengthValidity is INVALID for conflicting duplicates`() {
+        val conflicting = HttpHeaders().add("Content-Length", "5").add("Content-Length", "10")
+        assertEquals(ContentLengthValidity.INVALID, conflicting.contentLengthValidity())
+    }
+
+    @Test
+    fun `contentLengthValidity is INVALID for an unparseable value`() {
+        assertEquals(ContentLengthValidity.INVALID, HttpHeaders.of("Content-Length" to "5x").contentLengthValidity())
+        assertEquals(ContentLengthValidity.INVALID, HttpHeaders.of("Content-Length" to "").contentLengthValidity())
+    }
+
+    @Test
+    fun `contentLengthValidity is INVALID for a signed value`() {
+        // RFC 9110 §8.6 grammar is 1*DIGIT: a signed value parses to a number
+        // but is malformed framing, so it must be rejected by the shared gate.
+        assertEquals(ContentLengthValidity.INVALID, HttpHeaders.of("Content-Length" to "-1").contentLengthValidity())
+        assertEquals(ContentLengthValidity.INVALID, HttpHeaders.of("Content-Length" to "+5").contentLengthValidity())
+    }
 }
