@@ -768,12 +768,15 @@ class HttpResponseDecoder(
         val parsedStatus = checkNotNull(status) { "status not parsed" }
         val parsedVersion = checkNotNull(version) { "version not parsed" }
         // Latch the framing predicates off `headers` once, before building the
-        // head and dispatching it: both are non-trivial getters (hash lookup +
-        // scan/parse), and reading them here — before `headers` is reassigned to
-        // a fresh instance below — feeds the smuggling check, the negative-CL
-        // check, and the framing decision from a single evaluation each.
-        val cl = headers.contentLength
+        // head and dispatching it (both are non-trivial getters, and `headers`
+        // is reassigned to a fresh instance below). `chunked` here; `cl` after
+        // the Content-Length validity gate so a single evaluation each feeds the
+        // smuggling check, the negative-CL check, and the framing decision.
         val chunked = headers.isChunked
+        // Reject a malformed / conflicting Content-Length before reading a value
+        // (see [rejectInvalidContentLength]).
+        rejectInvalidContentLength(headers)
+        val cl = headers.contentLength
         // RFC 9112 §6.3: both Content-Length and Transfer-Encoding present
         // is a smuggling vector — reject, matching HttpRequestDecoder.
         if (chunked && cl != null) {

@@ -892,6 +892,9 @@ class HttpRequestDecoder(
                 "Both Transfer-Encoding and Content-Length present (RFC 7230 §3.3.3)",
             )
         }
+        // RFC 9110 §8.6 / RFC 9112 §6.3: reject a malformed or conflicting
+        // Content-Length before framing the body (see [rejectInvalidContentLength]).
+        rejectInvalidContentLength(headers)
         val head = HttpRequestHead(
             checkNotNull(method) { "method not parsed" },
             checkNotNull(uri) { "uri not parsed" },

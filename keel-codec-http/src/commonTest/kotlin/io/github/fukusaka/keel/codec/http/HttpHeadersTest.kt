@@ -254,4 +254,33 @@ class HttpHeadersTest {
         assertEquals("Content-Type", names.single())
         assertEquals(listOf("text/plain", "text/html"), h.getAll("Content-Type"))
     }
+
+    // --- contentLengthValidity ---
+
+    @Test
+    fun `contentLengthValidity is ABSENT when no Content-Length is present`() {
+        assertEquals(ContentLengthValidity.ABSENT, HttpHeaders().contentLengthValidity())
+        assertEquals(ContentLengthValidity.ABSENT, HttpHeaders.of("Host" to "x").contentLengthValidity())
+    }
+
+    @Test
+    fun `contentLengthValidity is VALID for a single value and for identical duplicates`() {
+        assertEquals(ContentLengthValidity.VALID, HttpHeaders.of("Content-Length" to "5").contentLengthValidity())
+        // A negative value is parseable — not this method's concern (VALID here).
+        assertEquals(ContentLengthValidity.VALID, HttpHeaders.of("Content-Length" to "-1").contentLengthValidity())
+        val dup = HttpHeaders().add("Content-Length", "5").add("Content-Length", "5")
+        assertEquals(ContentLengthValidity.VALID, dup.contentLengthValidity())
+    }
+
+    @Test
+    fun `contentLengthValidity is INVALID for conflicting duplicates`() {
+        val conflicting = HttpHeaders().add("Content-Length", "5").add("Content-Length", "10")
+        assertEquals(ContentLengthValidity.INVALID, conflicting.contentLengthValidity())
+    }
+
+    @Test
+    fun `contentLengthValidity is INVALID for an unparseable value`() {
+        assertEquals(ContentLengthValidity.INVALID, HttpHeaders.of("Content-Length" to "5x").contentLengthValidity())
+        assertEquals(ContentLengthValidity.INVALID, HttpHeaders.of("Content-Length" to "").contentLengthValidity())
+    }
 }

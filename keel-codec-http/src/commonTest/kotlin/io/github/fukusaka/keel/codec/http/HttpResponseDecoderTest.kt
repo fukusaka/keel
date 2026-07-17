@@ -450,6 +450,56 @@ class HttpResponseDecoderTest {
     }
 
     @Test
+    fun `conflicting duplicate Content-Length propagates a parse error`() {
+        val pipeline = createPipeline()
+
+        // RFC 9112 §6.3: two differing Content-Length values are unrecoverable —
+        // framing on either would let the body bytes be parsed as a second response.
+        pipeline.notifyRead(
+            bufOf(
+                "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 10\r\n\r\n" +
+                    "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHELLO",
+            ),
+        )
+
+        assertEquals(1, collector.errors.size)
+        assertIs<HttpParseException>(collector.errors[0])
+        assertTrue(collector.heads.isEmpty())
+    }
+
+    @Test
+    fun `identical duplicate Content-Length is accepted`() {
+        val pipeline = createPipeline()
+
+        // RFC 9110 §8.6 permits identical duplicates (treat as one value).
+        pipeline.notifyRead(
+            bufOf("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello"),
+        )
+
+        assertEquals(1, collector.heads.size)
+        assertEquals("hello", collectedBodyText())
+        assertTrue(collector.errors.isEmpty())
+    }
+
+    @Test
+    fun `malformed non-numeric Content-Length propagates a parse error`() {
+        val pipeline = createPipeline()
+
+        // A present-but-unparseable Content-Length must be rejected, not treated
+        // as absent (which would read the body until close / as the next response).
+        pipeline.notifyRead(
+            bufOf(
+                "HTTP/1.1 200 OK\r\nContent-Length: 5x\r\n\r\n" +
+                    "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHELLO",
+            ),
+        )
+
+        assertEquals(1, collector.errors.size)
+        assertIs<HttpParseException>(collector.errors[0])
+        assertTrue(collector.heads.isEmpty())
+    }
+
+    @Test
     fun `invalid status line propagates a parse error`() {
         val pipeline = createPipeline()
 

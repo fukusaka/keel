@@ -145,6 +145,22 @@ internal fun validateRequestHeaders(version: HttpVersion, headers: HttpHeaders) 
     }
 }
 
+/**
+ * Rejects a malformed (unparseable) or conflicting (duplicate, differing
+ * values) `Content-Length` with [HttpParseException] — an unrecoverable framing
+ * error per RFC 9110 §8.6 / RFC 9112 §6.3. [HttpHeaders.contentLength] silently
+ * reports both cases as absent / the first wire-order value, so both the request
+ * ([HttpRequestDecoder]) and the response ([HttpResponseDecoder]) decoder gate
+ * on this before framing a body — otherwise the declared body bytes would be
+ * parsed as the next message (request / response splitting). A negative value is
+ * a separate concern handled by each decoder's own guard.
+ */
+internal fun rejectInvalidContentLength(headers: HttpHeaders) {
+    if (headers.contentLengthValidity() == ContentLengthValidity.INVALID) {
+        throw HttpParseException("Invalid or conflicting Content-Length (RFC 9110 §8.6)")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers — exposed as `internal` for unit testing
 // ---------------------------------------------------------------------------
