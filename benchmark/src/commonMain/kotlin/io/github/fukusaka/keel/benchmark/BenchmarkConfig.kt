@@ -41,6 +41,15 @@ data class BenchmarkConfig(
     val tls: String? = null,
     val tlsInstaller: String = "keel",
     /**
+     * Benchmark role. `server` (default) starts an HTTP server engine for an
+     * external load generator (wrk / k6) to hit. `client` runs the client
+     * benchmark harness — the process under test is an HTTP *client* driving a
+     * fixture server (see [ClientConfig]). Dispatched in the platform `main()`.
+     */
+    val role: String = "server",
+    /** Client-role settings; ignored when [role] is `server`. */
+    val client: ClientConfig = ClientConfig(),
+    /**
      * When true, enable HTTP response compression (gzip / deflate) on the
      * server. Off by default — preserves existing baseline benchmarks for
      * `/hello`, `/large`, `/upload-stream` etc. that historically ran
@@ -156,6 +165,7 @@ data class BenchmarkConfig(
         fun parse(args: Array<String>): BenchmarkConfig {
             var config = BenchmarkConfig()
             var socket = SocketConfig()
+            var client = ClientConfig()
             val engineArgs = mutableMapOf<String, String>()
 
             for (arg in args) {
@@ -182,6 +192,18 @@ data class BenchmarkConfig(
                     "dos-hardening" -> config = config.copy(dosHardening = value.toBooleanStrict())
                     "tls" -> config = config.copy(tls = value)
                     "tls-installer" -> config = config.copy(tlsInstaller = value)
+                    // Client role
+                    "role" -> config = config.copy(role = value)
+                    "client-type" -> client = client.copy(clientType = value)
+                    "client-endpoint" -> client = client.copy(endpoint = value)
+                    "client-connections" -> client = client.copy(connections = value.toInt())
+                    "client-duration" -> client = client.copy(durationSec = value.toInt())
+                    "client-warmup" -> client = client.copy(warmupSec = value.toInt())
+                    "client-requests" -> client = client.copy(requests = value.toInt())
+                    "client-mode" -> client = client.copy(mode = value)
+                    "client-rate" -> client = client.copy(rateRps = value.toInt())
+                    "client-target" -> client = client.copy(targetUrl = value)
+                    "fixture-engine" -> client = client.copy(fixtureEngine = value)
                     // Socket options
                     "tcp-nodelay" -> socket = socket.copy(tcpNoDelay = value.toBooleanStrict())
                     "reuse-address" -> socket = socket.copy(reuseAddress = value.toBooleanStrict())
@@ -195,6 +217,7 @@ data class BenchmarkConfig(
             }
 
             config = config.copy(socket = socket)
+            config = config.copy(client = client)
             config = config.applyProfile()
             config = config.copy(
                 engineConfig = EngineConfig.merge(config.engine, config.engineConfig, engineArgs)
