@@ -650,19 +650,69 @@ class HttpHeaders {
             val key = HttpHeaderName.CONTENT_LENGTH_KEY
             val i = lastMatch(caseInsensitiveHash(key), key)
             if (i < 0) return null
-            val s = slotsOrFail()
-            val base = i * STRIDE
-            if (s[base + 1] == STRING_SENTINEL) return stringValue(s[base + 2]).trim().toDecLongOrNull()
-            // In-place parse of the stored value range. The decoder stores
-            // OWS-trimmed ranges already; re-trim defensively so an addRange
-            // caller that did not pre-trim gets the String-path semantics.
-            val buf = bufFor(i)
-            var start = valStartOf(i)
-            var end = start + s[base + 4]
-            while (start < end && isTrimmedByte(buf.getByte(start))) start++
-            while (end > start && isTrimmedByte(buf.getByte(end - 1))) end--
-            return buf.parseDecLongAt(start, end - start)
+            return parseContentLengthAt(i)
         }
+
+    /**
+     * In-place decimal parse of the `Content-Length` value stored at slot [i],
+     * or `null` when the value is not a valid decimal number. Buffer-backed
+     * slots are parsed with [parseDecLongAt] (no `String` allocation);
+     * String-backed entries use the [String.trim] + [toDecLongOrNull] shape.
+     */
+    private fun parseContentLengthAt(i: Int): Long? {
+        val s = slotsOrFail()
+        val base = i * STRIDE
+        if (s[base + 1] == STRING_SENTINEL) return stringValue(s[base + 2]).trim().toDecLongOrNull()
+        // In-place parse of the stored value range. The decoder stores
+        // OWS-trimmed ranges already; re-trim defensively so an addRange
+        // caller that did not pre-trim gets the String-path semantics.
+        val buf = bufFor(i)
+        var start = valStartOf(i)
+        var end = start + s[base + 4]
+        while (start < end && isTrimmedByte(buf.getByte(start))) start++
+        while (end > start && isTrimmedByte(buf.getByte(end - 1))) end--
+        return buf.parseDecLongAt(start, end - start)
+    }
+
+    /**
+     * Validates the message's `Content-Length` header field(s) against the two
+     * unrecoverable-framing hazards of RFC 9110 §8.6 / RFC 9112 §6.3:
+     *
+     * - a `Content-Length` present with an **unparseable** value (`5x`, empty,
+     *   …), which [contentLength] silently reports as absent; and
+     * - **two or more `Content-Length` fields with differing values**, which
+     *   [contentLength] silently collapses to the first wire-order value.
+     *
+     * Returns [ContentLengthValidity.INVALID] for either; [ABSENT] when no
+     * `Content-Length` is present; [VALID] when a single value (or several
+     * identical duplicates, permitted by RFC 9110 §8.6) is present. A message
+     * decoder rejects an INVALID result rather than mis-framing the body and
+     * letting its bytes be parsed as the next message (request/response
+     * splitting).
+     *
+     * A **negative** value is not treated as invalid here — that is a parseable
+     * value and is rejected by the caller's own negative-Content-Length guard;
+     * this method is orthogonal to it. Non-allocating: a single in-place slot
+     * scan, no `String` or intermediate list materialised.
+     */
+    fun contentLengthValidity(): ContentLengthValidity {
+        if (slotCount == 0) return ContentLengthValidity.ABSENT
+        val hash = caseInsensitiveHash(HttpHeaderName.CONTENT_LENGTH_KEY)
+        val s = slotsOrFail()
+        var seen = false
+        var firstValue = 0L
+        for (i in 0 until slotCount) {
+            if (s[i * STRIDE] != hash || !nameMatches(i, HttpHeaderName.CONTENT_LENGTH_KEY)) continue
+            val v = parseContentLengthAt(i) ?: return ContentLengthValidity.INVALID
+            if (!seen) {
+                seen = true
+                firstValue = v
+            } else if (v != firstValue) {
+                return ContentLengthValidity.INVALID
+            }
+        }
+        return if (seen) ContentLengthValidity.VALID else ContentLengthValidity.ABSENT
+    }
 
     val contentType: String? get() = getString(HttpHeaderName.CONTENT_TYPE_KEY)
 
@@ -927,6 +977,18 @@ class HttpHeaders {
         }
     }
 }
+
+/**
+ * Result of [HttpHeaders.contentLengthValidity] — whether a message's
+ * `Content-Length` header field(s) are well-formed for body framing.
+ *
+ * - [ABSENT]: no `Content-Length` header is present.
+ * - [VALID]: a single value (or several identical duplicates) is present.
+ * - [INVALID]: a value is unparseable, or two fields carry differing values —
+ *   an unrecoverable framing error the caller must reject (RFC 9110 §8.6 /
+ *   RFC 9112 §6.3).
+ */
+public enum class ContentLengthValidity { ABSENT, VALID, INVALID }
 
 /**
  * A single well-known HTTP header `(name, value)` pair held by
