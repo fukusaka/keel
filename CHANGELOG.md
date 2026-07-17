@@ -24,6 +24,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fixing a pool + recv-buffer leak on abandoned uploads (#963)
 - `codec-http`: the `Source`-based `parseRequest` rejects a negative `Content-Length` as an
   `HttpParseException` instead of a bare `IllegalArgumentException` from `readByteArray` (#963)
+- `codec-http`: `HttpResponseEncoder` injects `Content-Length` on the complete-`HttpResponse`
+  path when the response declares no framing and the status permits a body, so keep-alive
+  clients can find the response end (#965)
 
 ### Security
 
