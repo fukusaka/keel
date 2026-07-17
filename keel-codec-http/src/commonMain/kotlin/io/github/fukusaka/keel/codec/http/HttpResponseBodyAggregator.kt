@@ -60,7 +60,7 @@ class HttpResponseBodyAggregator(
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         when (msg) {
             is HttpResponseHead ->
-                if (isInterim(msg)) interimPending = true else startAggregation(msg)
+                if (isInterim(msg)) beginInterim() else startAggregation(msg)
             is HttpBodyEnd ->
                 if (interimPending) {
                     interimPending = false
@@ -84,6 +84,17 @@ class HttpResponseBodyAggregator(
     private fun isInterim(head: HttpResponseHead): Boolean =
         head.status.isInformational && head.status.code != SWITCHING_PROTOCOLS_CODE
 
+    /**
+     * Enters interim-response mode: releases any chunks still held from a
+     * malformed prior sequence (mirroring [startAggregation]'s pool-safety) and
+     * marks the stream interim so its terminating [HttpBodyEnd] is swallowed.
+     */
+    private fun beginInterim() {
+        acc?.release()
+        acc = null
+        interimPending = true
+    }
+
     override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
         resetAggregation()
         ctx.propagateError(cause)
@@ -103,6 +114,10 @@ class HttpResponseBodyAggregator(
         head = newHead
         acc = null
         overflowed = false
+        // Clear any interim flag left set by an interim head that was not
+        // followed by its terminating HttpBodyEnd — otherwise this real
+        // response's body would be dropped (mirrors resetAggregation).
+        interimPending = false
     }
 
     /**

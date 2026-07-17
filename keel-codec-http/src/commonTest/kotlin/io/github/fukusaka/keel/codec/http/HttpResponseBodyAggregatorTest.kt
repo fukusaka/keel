@@ -124,6 +124,43 @@ class HttpResponseBodyAggregatorTest {
     }
 
     @Test
+    fun `a real head after an interim head without its terminator still aggregates`() {
+        // Defensive: an interim head not followed by its HttpBodyEnd before the
+        // next head must not leave interimPending set (which would drop the real
+        // response's body). Not reachable through the paired decoder, but the
+        // aggregator is a public standalone handler.
+        val pipeline = createPipeline(HttpResponseBodyAggregator())
+
+        pipeline.notifyRead(HttpResponseHead(HttpStatus.CONTINUE)) // interim, no terminator
+        pipeline.notifyRead(head())
+        pipeline.notifyRead(HttpBodyEnd(bufOf("final"), HttpHeaders.EMPTY))
+
+        val response = collector.responses.single()
+        assertEquals(HttpStatus.OK, response.status)
+        assertEquals("final", response.body?.decodeToString())
+        assertTrue(collector.errors.isEmpty())
+    }
+
+    @Test
+    fun `an interim head arriving mid-body releases the held chunks`() {
+        // Defensive: an interim head while chunks are held must release them
+        // (mirroring startAggregation's pool-safety), not leak the pool.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val pipeline = createPipeline(HttpResponseBodyAggregator())
+
+        pipeline.notifyRead(head())
+        pipeline.notifyRead(HttpBody(bufOf("held", tracker)))
+        pipeline.notifyRead(HttpResponseHead(HttpStatus.CONTINUE)) // interim mid-body
+        // A following real response completes cleanly.
+        pipeline.notifyRead(head())
+        pipeline.notifyRead(HttpBodyEnd(bufOf("done", tracker), HttpHeaders.EMPTY))
+
+        assertEquals("done", collector.responses.single().body?.decodeToString())
+        assertEquals(0, tracker.outstandingCount)
+        assertTrue(collector.errors.isEmpty())
+    }
+
+    @Test
     fun `101 switching protocols aggregates as a final response`() {
         val pipeline = createPipeline(HttpResponseBodyAggregator())
 
