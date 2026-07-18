@@ -97,6 +97,22 @@ kotlin {
                 implementation(libs.ktor.server.compression)
                 implementation(libs.spring.boot.starter.webflux)
                 implementation(libs.vertx.web)
+                // Client benchmark harness (--role=client): reference client engines
+                // + HdrHistogram for coordinated-omission-corrected latency percentiles.
+                // JVM-only. CIO is Ktor's pure-Kotlin engine (does not reuse keep-alive,
+                // KTOR-6503); OkHttp / Apache5 / Java delegate to mature libraries that
+                // pool connections and speak HTTP/2 — the pooling-capable A/B references.
+                implementation(libs.ktor.client.core)
+                implementation(libs.ktor.client.cio)
+                implementation(libs.ktor.client.okhttp)
+                implementation(libs.ktor.client.apache5)
+                implementation(libs.ktor.client.java)
+                // Direct (non-Ktor) reference clients: the raw popular JVM
+                // libraries, so ktor-okhttp vs okhttp / ktor-apache5 vs apache5
+                // isolates the Ktor client-pipeline overhead from the library cost.
+                implementation(libs.okhttp)
+                implementation(libs.httpclient5)
+                implementation(libs.hdrhistogram)
             }
         }
         nativeMain {

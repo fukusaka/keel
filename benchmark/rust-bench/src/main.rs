@@ -33,6 +33,9 @@ mod config;
 use config::Config;
 
 static LARGE_PAYLOAD: LazyLock<String> = LazyLock::new(|| "x".repeat(102_400));
+// Pre-allocated 1 MiB buffer sliced per request (zero per-request server alloc)
+// for the client payload-size matrix via GET /bytes?n=N.
+static BYTES_PAYLOAD: LazyLock<Vec<u8>> = LazyLock::new(|| vec![b'x'; 1_048_576]);
 
 const SSE_DEFAULT_COUNT: usize = 100;
 const SSE_DEFAULT_SIZE: usize = 1024;
@@ -43,6 +46,24 @@ async fn hello() -> &'static str {
 
 async fn large() -> &'static str {
     &LARGE_PAYLOAD
+}
+
+// GET /bytes?n=N — N bytes (default 1024, capped at 1 MiB) from the shared
+// buffer, for the client payload-size matrix (128 B .. 1 MiB).
+async fn bytes(Query(params): Query<HashMap<String, String>>) -> impl IntoResponse {
+    let n = params
+        .get("n")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1024)
+        .min(BYTES_PAYLOAD.len());
+    &BYTES_PAYLOAD[..n]
+}
+
+// GET /close — small body with `Connection: close` so the server closes the
+// connection after each response, forcing every client to open a fresh
+// connection per request (the keep-alive-vs-fresh axis; no client change).
+async fn close_conn() -> impl IntoResponse {
+    ([("connection", "close")], "Hello, World!")
 }
 
 // POST /upload-stream — drain the request body chunk-by-chunk via the
@@ -156,6 +177,8 @@ fn main() {
         let app = Router::new()
             .route("/hello", get(hello))
             .route("/large", get(large))
+            .route("/bytes", get(bytes))
+            .route("/close", get(close_conn))
             .route("/upload-stream", post(upload_stream))
             .route("/sse-stream", get(sse_stream))
             .route("/ws-echo", get(ws_echo));

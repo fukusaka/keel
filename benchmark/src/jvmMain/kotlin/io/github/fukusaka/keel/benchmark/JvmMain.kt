@@ -38,6 +38,11 @@ fun main(args: Array<String>) {
     val config = BenchmarkConfig.parse(args)
     validateTlsBackend(config)
 
+    if (config.role == "client") {
+        runClientBenchmark(config)
+        return
+    }
+
     if (config.engine !in engines) {
         System.err.println("Unknown engine: ${config.engine}")
         System.err.println("Available: ${engines.keys.joinToString(", ")}")
