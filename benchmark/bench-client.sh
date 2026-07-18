@@ -35,7 +35,7 @@
 #                         (separate binaries, auto-built): rust-reqwest,
 #                         rust-hyper, go-nethttp, go-fasthttp, libcurl,
 #                         swift-nsurlsession (macOS). "keel" pending the
-#                         standalone keel-client-http (Phase 12b).
+#                         standalone keel HTTP client.
 #   BENCH_CLIENT_ENDPOINT fixture path (default /hello; /large for throughput)
 #   BENCH_CLIENT_CONNS    concurrent connections / pool size (default 50)
 #   BENCH_CLIENT_WARMUP   warm-up seconds, discarded (default 3)
