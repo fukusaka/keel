@@ -57,20 +57,25 @@ func parse() -> Config {
                   warmup: warmup, duration: duration, pinned: pinned)
 }
 
-// Each worker owns one target (targets[worker % count]) for all its requests —
-// per-worker distribution (pinned-style), which is exact for a single fixture
-// and for pinned multi-host; it is not per-request round-robin.
-func runPhase(session: URLSession, cfg: Config, secs: Int) async -> (rps: Double, lat: [Int64], errors: Int) {
+// Target distribution honours [Config.pinned]: pinned = worker i owns target i;
+// otherwise each worker round-robins deterministically (its k-th request goes to
+// target (worker + k*C) % T), giving even per-request distribution across targets
+// with no shared counter — a single target makes both identical.
+func runPhase(session: URLSession, urls: [URL], cfg: Config, secs: Int) async -> (rps: Double, lat: [Int64], errors: Int) {
     let deadlineNs = DispatchTime.now().uptimeNanoseconds + UInt64(secs) * 1_000_000_000
     let startNs = DispatchTime.now().uptimeNanoseconds
+    let conns = cfg.connections
+    let pinned = cfg.pinned
     let result = await withTaskGroup(of: (lat: [Int64], errors: Int, completed: Int).self) { group in
-        for worker in 0..<cfg.connections {
-            guard let url = URL(string: cfg.targets[worker % cfg.targets.count]) else { continue }
+        for worker in 0..<conns {
+            let pinnedURL = pinned ? urls[worker % urls.count] : nil
             group.addTask {
                 var lat: [Int64] = []
                 var errors = 0
                 var completed = 0
+                var k = 0
                 while DispatchTime.now().uptimeNanoseconds < deadlineNs {
+                    let url = pinnedURL ?? urls[(worker + k * conns) % urls.count]
                     let t0 = DispatchTime.now().uptimeNanoseconds
                     do {
                         let (data, _) = try await session.data(from: url)
@@ -80,6 +85,7 @@ func runPhase(session: URLSession, cfg: Config, secs: Int) async -> (rps: Double
                     } catch {
                         errors += 1
                     }
+                    k += 1
                 }
                 return (lat, errors, completed)
             }
@@ -107,6 +113,11 @@ func pctMs(_ sorted: [Int64], _ q: Double) -> Double {
 
 let name = "swift-nsurlsession"
 let cfg = parse()
+let urls = cfg.targets.compactMap { URL(string: $0) }
+if urls.isEmpty {
+    FileHandle.standardError.write(Data("no valid target URL from --client-target\n".utf8))
+    exit(1)
+}
 let sessionConfig = URLSessionConfiguration.default
 sessionConfig.httpMaximumConnectionsPerHost = cfg.connections
 sessionConfig.timeoutIntervalForRequest = 30
@@ -124,9 +135,9 @@ FileHandle.standardError.write(Data(
     "client bench: type=\(name) targets=\(cfg.targets.count) conns=\(cfg.connections) warmup=\(cfg.warmup)s duration=\(cfg.duration)s\n".utf8))
 
 if cfg.warmup > 0 {
-    _ = await runPhase(session: session, cfg: cfg, secs: cfg.warmup)
+    _ = await runPhase(session: session, urls: urls, cfg: cfg, secs: cfg.warmup)
 }
-let (rps, lat, errors) = await runPhase(session: session, cfg: cfg, secs: cfg.duration)
+let (rps, lat, errors) = await runPhase(session: session, urls: urls, cfg: cfg, secs: cfg.duration)
 let maxMs = lat.isEmpty ? 0.0 : Double(lat[lat.count - 1]) / 1e6
 print(String(format: "%@%@|%.0f|%.3f|%.3f|%.3f|%.3f|n/a|%ld",
              name, cfg.endpoint, rps,

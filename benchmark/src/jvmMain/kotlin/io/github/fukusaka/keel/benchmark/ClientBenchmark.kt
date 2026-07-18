@@ -365,6 +365,11 @@ private class RunResult(
     val allocSupported: Boolean,
 ) {
     val reqPerSec: Double get() = completed * 1e9 / elapsedNanos.coerceAtLeast(1)
+
+    // Whole-window allocation per COMPLETED request. Exact for a 0-error run (all
+    // recorded here — bytes/op is only used for pooling clients that run clean);
+    // with errors, error-path allocation is amortised over completed ops, so this
+    // reads slightly high (a deliberate "cost per successful request" definition).
     val bytesPerOp: Double get() = if (completed == 0L) 0.0 else bytesAllocated.toDouble() / completed
 }
 
