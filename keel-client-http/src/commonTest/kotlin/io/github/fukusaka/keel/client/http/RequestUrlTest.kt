@@ -108,6 +108,13 @@ class RequestUrlTest {
     }
 
     @Test
+    fun `a signed port is rejected even though toInt would accept the plus`() {
+        // Kotlin's toIntOrNull accepts a leading '+'; the parser must not
+        // (RFC 3986 port = *DIGIT).
+        assertFailsWith<IllegalArgumentException> { RequestUrl.parse("http://h:+80/") }
+    }
+
+    @Test
     fun `an out-of-range port is rejected`() {
         assertFailsWith<IllegalArgumentException> { RequestUrl.parse("http://h:70000/") }
         assertFailsWith<IllegalArgumentException> { RequestUrl.parse("http://h:0/") }

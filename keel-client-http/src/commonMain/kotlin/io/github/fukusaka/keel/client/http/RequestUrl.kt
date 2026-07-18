@@ -95,6 +95,11 @@ internal class RequestUrl private constructor(
         }
 
         private fun parsePort(text: String, url: String): Int {
+            // RFC 3986 §3.2.3: port = *DIGIT. Reject a sign or stray character
+            // that Kotlin's toIntOrNull would otherwise accept (e.g. "+80").
+            require(text.isNotEmpty() && text.all { it in '0'..'9' }) {
+                "invalid port '$text' in URL: $url"
+            }
             val port = text.toIntOrNull()
                 ?: throw IllegalArgumentException("invalid port '$text' in URL: $url")
             require(port in 1..MAX_PORT) { "port out of range ($port) in URL: $url" }
