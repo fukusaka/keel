@@ -50,9 +50,8 @@ import kotlin.concurrent.thread
  * (`--client-target`; `bench-client.sh` runs rust-bench by default — no shared
  * JVM to contaminate the numbers), with Java `HttpClient`, OkHttp, Apache5 and
  * Ktor reference drivers, plus the keel client under test ([KeelClientDriver],
- * `--client-type=keel`) on a NioEngine. The keel L1 driver is fresh-connect
- * (no keep-alive pool yet — that is L2), so compare it on the fresh-connect
- * axis rather than as the keep-alive ceiling.
+ * `--client-type=keel`) on a NioEngine. The keel driver pools keep-alive
+ * connections, so it is the warm-path peer of the pooling reference clients.
  */
 fun runClientBenchmark(config: BenchmarkConfig) {
     val cc = config.client
@@ -189,7 +188,7 @@ private fun createDriver(type: String, connections: Int): ClientDriver = when (t
         },
     )
     "ktor-java" -> KtorEngineDriver("ktor-java", KtorHttpClient(Java))
-    "keel" -> KeelClientDriver()
+    "keel" -> KeelClientDriver(connections)
     else -> error(
         "Unknown client type '$type' (expected: keel | java | okhttp | apache5 | " +
             "ktor-cio | ktor-okhttp | ktor-apache5 | ktor-java)",
@@ -269,39 +268,41 @@ private class KtorEngineDriver(
 }
 
 /**
- * The keel HTTP client under test — the standalone `keel-client-http` (L1).
+ * The keel HTTP client under test — the standalone `keel-client-http`.
  *
  * Coroutine-native ([coroutineNative] = true), so the harness drives it with
  * N concurrent coroutines like the other suspend clients. It runs on a
  * [NioEngine] (the JVM keel engine) so its bytes/op is directly comparable to
  * the JVM reference drivers.
  *
- * L1 is FRESH-CONNECT: it opens and closes one connection per request, with
- * no keep-alive pool yet (that is L2). So in the default reused-connection
- * comparison it pays full connection setup on every request and is a
- * fresh-connect-class number, NOT the keep-alive ceiling.
- *
- * CAVEAT — like the CIO driver (KTOR-6503), a fresh connection per request
- * exhausts the ephemeral port range under concurrency: measured clean at
- * conns=1 (0 errors), but from conns≈20 a large fraction of connects fail
- * with `BindException: Can't assign requested address` (TIME_WAIT churn). The
- * completed-request throughput is then not steady-state — always read the
- * error column alongside it. The meaningful L1 signals are the conns=1 cost
- * and per-request bytes/op; L2 (pool + keep-alive) closes the warm-path gap
- * and removes the churn.
+ * KEEP-ALIVE POOLED: the client reuses idle keep-alive connections per route,
+ * so on the reused-connection comparison it pays connection setup only when the
+ * pool has to grow — this is the warm-path (keep-alive) number, the fair peer of
+ * the pooling reference clients (Java `HttpClient`, OkHttp, Apache5). Unlike the
+ * earlier fresh-connect form it does not exhaust the ephemeral port range under
+ * concurrency. The idle pool is sized to [connections] (the harness's
+ * concurrency) so all N in-flight connections stay warm rather than churn — the
+ * same pool-sizing the delegating Ktor drivers need. A default idle cap below
+ * the concurrency would leave the surplus fresh-connecting each round and churn
+ * `BindException` under load, so this must track the connection count.
  */
-private class KeelClientDriver : ClientDriver {
+private class KeelClientDriver(connections: Int) : ClientDriver {
     override val name = "keel"
     override val coroutineNative = true
     private val engine = NioEngine()
-    private val client = keelHttpClient(engine)
+    private val client = keelHttpClient(engine) {
+        pool { maxIdleConnectionsPerRoute = connections }
+    }
 
     override suspend fun getSuspend(url: String): Int = client.get(url).body.size
 
     override fun get(url: String): Int = runBlocking { getSuspend(url) }
 
     override fun close() {
-        runBlocking { engine.close() }
+        runBlocking {
+            client.close() // close pooled keep-alive connections first
+            engine.close()
+        }
     }
 }
 

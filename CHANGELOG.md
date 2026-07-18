@@ -11,13 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `codec-http`: `HttpResponse.isKeepAlive` — the response-side counterpart of
   `HttpRequestHead.isKeepAlive`, so a client can decide connection reuse from a response (#971)
 - `client-http`: new `keel-client-http` module — a standalone HTTP/1.1 client on a keel
-  `StreamEngine` via the `keelHttpClient {}` DSL (fresh connect, `http://` only for now) (#969)
+  `StreamEngine` via the `keelHttpClient {}` DSL (`http://` only for now) (#969)
 - `codec-http`: add the client-side HTTP/1.1 codec — `HttpRequestEncoder`,
   `HttpResponseDecoder` with RFC 9112 §6.3 response framing,
   `HttpResponseBodyAggregator`, and the `addHttp1ClientCodec` installer (#962)
 
 ### Changed
 
+- `client-http`: `keel-client-http` now reuses keep-alive connections through a per-route
+  connection pool (configurable via `pool { }`, closed by `KeelHttpClient.close()`) instead of
+  opening a fresh connection per request, recovering warm-path throughput under concurrency (#972)
 - `testing-server-http`: `KeelHttpTestClient` now drives the production client codec over
   the in-memory loopback instead of a hand-rolled encoder/parser (#962)
 
