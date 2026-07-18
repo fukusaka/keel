@@ -79,33 +79,43 @@ public class KeelHttpTestClient internal constructor(
                 HttpResponse::class,
                 releaseUndelivered = { it.headers.release() },
             )
-            // Pipeline mutation and the outbound write run on the channel's
-            // EventLoop dispatcher, per the pipeline threading contract.
-            withContext(channel.ioDispatcher) {
+            // Everything that touches pooled state runs on the channel's
+            // EventLoop dispatcher: the pipeline mutation and outbound write
+            // (per the pipeline threading contract), the receive, and — most
+            // importantly — the materialisation and release of the decoder's
+            // pooled response headers. The decoder borrows those headers from a
+            // per-EventLoop-thread pool, so releasing them on the caller's
+            // coroutine thread (a different thread on a real multi-worker
+            // engine) would corrupt that thread-local pool. `InMemoryEngine`'s
+            // `Dispatchers.Unconfined` keeps everything on one thread and hides
+            // the hazard, but confining the pooled work here keeps the client
+            // correct on any engine its PipelinedChannel check admits.
+            return withContext(channel.ioDispatcher) {
                 channel.addHttp1ClientCodec()
                 channel.pipeline.addLast("bridge", bridge)
                 channel.readEnabled = true
                 channel.pipeline.requestWriteAndFlush(buildRequest(method, path, headers, body))
-            }
-            val result = bridge.receiveCatching()
-            val response = result.getOrNull()
-                ?: throw (
-                    result.exceptionOrNull()
-                        ?: IllegalStateException("connection closed before a complete response arrived")
-                    )
-            // The decoder's zero-copy headers are pooled and view the retained
-            // recv buffer via addRange; the connection closes in `finally` and
-            // releases that buffer. Materialise the fields to a plain,
-            // GC-owned HttpHeaders (String values) while the buffer is still
-            // valid, then release the pooled one in a finally — the aggregator
-            // relinquished the head at emit, so this is the sole owner and a
-            // throw mid-materialisation must still fulfil the release contract.
-            try {
-                val detachedHeaders = HttpHeaders()
-                response.headers.forEach { name, value -> detachedHeaders.add(name, value) }
-                return TestHttpResponse(response.status, detachedHeaders, response.body ?: EMPTY_BODY)
-            } finally {
-                response.headers.release()
+                val result = bridge.receiveCatching()
+                val response = result.getOrNull()
+                    ?: throw (
+                        result.exceptionOrNull()
+                            ?: IllegalStateException("connection closed before a complete response arrived")
+                        )
+                // The decoder's zero-copy headers are pooled and view the
+                // retained recv buffer via addRange; the connection closes in
+                // `finally` and releases that buffer. Materialise the fields to
+                // a plain, GC-owned HttpHeaders (String values) while the buffer
+                // is still valid, then release the pooled one in a finally — the
+                // aggregator relinquished the head at emit, so this is the sole
+                // owner and a throw mid-materialisation must still fulfil the
+                // release contract.
+                try {
+                    val detachedHeaders = HttpHeaders()
+                    response.headers.forEach { name, value -> detachedHeaders.add(name, value) }
+                    TestHttpResponse(response.status, detachedHeaders, response.body ?: EMPTY_BODY)
+                } finally {
+                    response.headers.release()
+                }
             }
         } finally {
             if (channel is PipelinedChannel) {
