@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.client.http
 
+import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpRequest
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpStatus
@@ -41,24 +42,40 @@ internal class ClientConnection private constructor(
     val isActive: Boolean get() = channel.isActive
 
     /**
-     * Writes [request] and suspends until the complete response has been
-     * decoded (or the connection closes / errors). May be called repeatedly
-     * on the same connection for keep-alive, but only serially.
+     * Writes [request], suspends until the complete response has been decoded,
+     * and returns it fully materialised into GC-owned values plus whether the
+     * connection may be reused. May be called repeatedly on the same connection
+     * for keep-alive, but only serially.
      *
-     * The returned [HttpResponse]'s headers are pooled and view the retained
-     * recv buffer — the caller must materialise and release them (and decide
-     * reuse via [isReusable]) before the next exchange or [close].
+     * The write, the receive, the header materialisation, and the release of the
+     * decoder's pooled headers all run on the channel's EventLoop dispatcher.
+     * This is mandatory, not just tidy: the decoder borrows the response headers
+     * from a **per-EventLoop-thread** pool ([io.github.fukusaka.keel.codec.http]
+     * internal `HttpHeadersPool`), so releasing them on the caller's coroutine
+     * thread — a different thread on a real multi-worker engine — corrupts that
+     * thread-local pool (and the per-EventLoop buffer allocator). Materialising
+     * here hands the caller only GC-owned state, so nothing pooled crosses a
+     * thread boundary.
      */
-    suspend fun exchange(request: HttpRequest): HttpResponse {
-        withContext(channel.ioDispatcher) {
-            channel.pipeline.requestWriteAndFlush(request)
-        }
+    suspend fun exchange(request: HttpRequest): Exchanged = withContext(channel.ioDispatcher) {
+        channel.pipeline.requestWriteAndFlush(request)
         val result = bridge.receiveCatching()
-        return result.getOrNull()
+        val response = result.getOrNull()
             ?: throw (
                 result.exceptionOrNull()
                     ?: IllegalStateException("connection closed before a complete response arrived")
                 )
+        // Everything that reads the pooled headers runs inside the try so a
+        // throw mid-materialisation still fulfils the release contract — this
+        // is their sole owner once the aggregator relinquished the head at emit.
+        try {
+            val reusable = isReusable(response)
+            val detached = HttpHeaders()
+            response.headers.forEach { name, value -> detached.add(name, value) }
+            Exchanged(KeelHttpResponse(response.status, detached, response.body ?: EMPTY_BODY), reusable)
+        } finally {
+            response.headers.release()
+        }
     }
 
     /**
@@ -149,5 +166,11 @@ internal class ClientConnection private constructor(
                 response.headers.contentLength != null ||
                 response.headers.isChunked
         }
+
+        /** Shared empty body for bodyless responses. */
+        private val EMPTY_BODY = ByteArray(0)
     }
 }
+
+/** The outcome of [ClientConnection.exchange]: the materialised response and whether the connection may be reused. */
+internal class Exchanged(val response: KeelHttpResponse, val reusable: Boolean)

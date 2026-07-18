@@ -56,18 +56,16 @@ class ClientConnectionTest {
         val route = routeOf(server)
         val connection = ClientConnection.open(engine, route)
         try {
-            val r1 = connection.exchange(get("/a", route))
-            assertEquals(HttpStatus.OK, r1.status)
-            assertEquals("first", r1.body?.decodeToString())
+            val e1 = connection.exchange(get("/a", route))
+            assertEquals(HttpStatus.OK, e1.response.status)
+            assertEquals("first", e1.response.bodyText())
             // respondText sends a Content-Length body over HTTP/1.1 → reusable.
-            assertTrue(ClientConnection.isReusable(r1), "framed keep-alive response should be reusable")
-            r1.headers.release()
+            assertTrue(e1.reusable, "framed keep-alive response should be reusable")
 
-            // Second exchange on the SAME connection — the decoder reset after r1.
-            val r2 = connection.exchange(get("/b", route))
-            assertEquals(HttpStatus.OK, r2.status)
-            assertEquals("second", r2.body?.decodeToString())
-            r2.headers.release()
+            // Second exchange on the SAME connection — the decoder reset after e1.
+            val e2 = connection.exchange(get("/b", route))
+            assertEquals(HttpStatus.OK, e2.response.status)
+            assertEquals("second", e2.response.bodyText())
 
             assertTrue(connection.isActive, "connection should still be open after two keep-alive exchanges")
         } finally {
