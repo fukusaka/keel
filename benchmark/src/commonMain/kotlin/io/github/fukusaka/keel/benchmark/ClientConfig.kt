@@ -34,6 +34,12 @@ package io.github.fukusaka.keel.benchmark
  *   process (e.g. rust-bench on loopback). The harness only connects; it never
  *   starts a fixture in-process (that would share the client JVM and
  *   contaminate the numbers — `bench-client.sh` manages the fixture lifecycle).
+ *   May be a comma-separated list to drive several fixtures (multi-host axis).
+ * @property targetMode how workers map to multiple targets. `roundrobin` (each
+ *   request picks the next target — models a client load-balancing across
+ *   replicas) or `pinned` (worker `i` → target `i % targets` for all its
+ *   requests — models one client per host, so each route sees strictly
+ *   sequential access = low per-route concurrency). Single target ignores this.
  */
 data class ClientConfig(
     val clientType: String = "keel",
@@ -45,4 +51,5 @@ data class ClientConfig(
     val mode: String = "closed",
     val rateRps: Int = 0,
     val targetUrl: String? = null,
+    val targetMode: String = "roundrobin",
 )

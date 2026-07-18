@@ -63,6 +63,9 @@ RUNS="${BENCH_RUNS:-3}"
 FIXTURE="${BENCH_FIXTURE:-rust-bench}"
 FIXTURE_PORT="${BENCH_FIXTURE_PORT:-18080}"
 TARGET="${BENCH_CLIENT_TARGET:-}"
+# roundrobin (load-balanced fan-out) | pinned (worker i -> host i). Only matters
+# when BENCH_CLIENT_TARGET is a comma-separated multi-host list.
+TARGET_MODE="${BENCH_CLIENT_TARGET_MODE:-roundrobin}"
 
 FIXTURE_PID=""
 cleanup() { [ -n "$FIXTURE_PID" ] && kill "$FIXTURE_PID" 2>/dev/null || true; }
@@ -122,6 +125,7 @@ for type in $TYPES; do
   for run in $(seq 1 "$RUNS"); do
     java -cp "$CP" io.github.fukusaka.keel.benchmark.JvmMainKt \
       --role=client --client-type="$type" --client-target="$TARGET" \
+      --client-target-mode="$TARGET_MODE" \
       --client-endpoint="$ENDPOINT" --client-connections="$CONNS" \
       --client-warmup="$WARMUP" --client-duration="$DURATION" 2>/dev/null \
       | grep '|' >> "$tmp" || echo "  run $run for $type failed" >&2

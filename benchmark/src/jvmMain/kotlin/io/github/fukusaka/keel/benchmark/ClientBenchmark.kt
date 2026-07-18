@@ -42,19 +42,19 @@ import kotlin.concurrent.thread
  */
 fun runClientBenchmark(config: BenchmarkConfig) {
     val cc = config.client
-    val targetUrl = requireTarget(cc)
-    probeReady(targetUrl)
+    val targets = requireTargets(cc)
+    targets.forEach { probeReady(it) }
     val driver = createDriver(cc.clientType, cc.connections)
     try {
         System.err.println(
-            "client bench: type=${driver.name} target=$targetUrl conns=${cc.connections} " +
-                "mode=${cc.mode} warmup=${cc.warmupSec}s duration=${cc.durationSec}s",
+            "client bench: type=${driver.name} targets=${targets.size}[${targets.joinToString()}] " +
+                "conns=${cc.connections} mode=${cc.mode} warmup=${cc.warmupSec}s duration=${cc.durationSec}s",
         )
         // Warm-up: JIT + connection-pool warm; results discarded.
         if (cc.warmupSec > 0) {
-            driveDispatch(driver, targetUrl, cc, warmup = true)
+            driveDispatch(driver, targets, cc, warmup = true)
         }
-        val result = driveDispatch(driver, targetUrl, cc, warmup = false)
+        val result = driveDispatch(driver, targets, cc, warmup = false)
         printReport(cc, driver.name, result)
     } finally {
         driver.close()
@@ -64,24 +64,37 @@ fun runClientBenchmark(config: BenchmarkConfig) {
 // --- Fixture target ---
 
 /**
- * Resolves the fixture URL from the required `--client-target`. The fixture is
- * a SEPARATE process the harness only connects to (`bench-client.sh` manages
- * its lifecycle) — an in-process fixture is deliberately not supported: sharing
- * the client's JVM (heap / GC / CPU / thread scheduler) would contaminate the
+ * Resolves fixture URLs from the required `--client-target`. The fixture is a
+ * SEPARATE process the harness only connects to (`bench-client.sh` manages its
+ * lifecycle) — an in-process fixture is deliberately not supported: sharing the
+ * client's JVM (heap / GC / CPU / thread scheduler) would contaminate the
  * client's throughput, latency, and especially its per-request allocation (the
  * fixture's allocations would pollute the same `ThreadMXBean` counters). The
  * default fixture is `rust-bench` (axum / hyper / tokio: separate OS process,
  * no JVM, no GC/JIT, high headroom), matching the neutral-server practice of
  * Ktor's and OkHttp's client benchmarks.
+ *
+ * `--client-target` may be a COMMA-SEPARATED list of fixtures; requests are
+ * round-robined across them. Because an HTTP connection pool is keyed by route
+ * (host:port), the number of targets changes the per-route concurrency: N
+ * targets divide [ClientConfig.connections] concurrency ~N-way per route. This
+ * is the axis that exposes CIO's per-route keep-alive defect (KTOR-6503) — one
+ * target concentrates all concurrency on a single route (its worst case), while
+ * many targets drop each route toward the conns=1 regime where even CIO reuses.
  */
-private fun requireTarget(cc: ClientConfig): String {
-    val url = cc.targetUrl
+private fun requireTargets(cc: ClientConfig): List<String> {
+    val raw = cc.targetUrl
         ?: error(
-            "client bench requires --client-target=<url> pointing at a SEPARATE fixture process " +
-                "(e.g. rust-bench on loopback). bench-client.sh starts / stops the fixture. " +
+            "client bench requires --client-target=<url>[,<url>...] pointing at SEPARATE fixture " +
+                "process(es) (e.g. rust-bench on loopback). bench-client.sh starts / stops the fixture. " +
                 "In-process fixtures are unsupported: sharing the client JVM contaminates the numbers.",
         )
-    return url.trimEnd('/') + cc.endpoint
+    val targets = raw.split(',')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .map { it.trimEnd('/') + cc.endpoint }
+    require(targets.isNotEmpty()) { "no target URL parsed from --client-target='$raw'" }
+    return targets
 }
 
 /** Fails fast if the external fixture is not reachable before the run starts. */
@@ -247,8 +260,8 @@ private fun warnOpenLoopUnimplemented() {
 }
 
 /** Picks the concurrency model that matches the driver (coroutines vs threads). */
-private fun driveDispatch(driver: ClientDriver, url: String, cc: ClientConfig, warmup: Boolean): RunResult =
-    if (driver.coroutineNative) driveCoroutines(driver, url, cc, warmup) else drive(driver, url, cc, warmup)
+private fun driveDispatch(driver: ClientDriver, targets: List<String>, cc: ClientConfig, warmup: Boolean): RunResult =
+    if (driver.coroutineNative) driveCoroutines(driver, targets, cc, warmup) else drive(driver, targets, cc, warmup)
 
 /**
  * Coroutine model (for coroutine-native drivers): [ClientConfig.connections]
@@ -259,7 +272,7 @@ private fun driveDispatch(driver: ClientDriver, url: String, cc: ClientConfig, w
  * `ThreadMXBean` sum used by [drive] is unreliable; the dedicated JMH
  * allocation harness (a later increment) measures coroutine-client alloc.
  */
-private fun driveCoroutines(driver: ClientDriver, url: String, cc: ClientConfig, warmup: Boolean): RunResult {
+private fun driveCoroutines(driver: ClientDriver, targets: List<String>, cc: ClientConfig, warmup: Boolean): RunResult {
     if (cc.mode == "open" && !warmup) warnOpenLoopUnimplemented()
     val seconds = if (warmup) cc.warmupSec else cc.durationSec
     val budget = if (warmup) 0L else cc.requests.toLong()
@@ -268,17 +281,19 @@ private fun driveCoroutines(driver: ClientDriver, url: String, cc: ClientConfig,
     val completed = AtomicLong()
     val errors = AtomicLong()
     val issued = AtomicLong()
+    val pick = AtomicLong()
 
     val runStart = System.nanoTime()
     runBlocking(Dispatchers.Default) {
         coroutineScope {
-            repeat(cc.connections) {
+            repeat(cc.connections) { worker ->
+                val pinned = if (cc.targetMode == "pinned") targets[worker % targets.size] else null
                 launch {
                     val local = Histogram(3)
                     while (System.nanoTime() < deadline && (budget == 0L || issued.getAndIncrement() < budget)) {
                         val t0 = System.nanoTime()
                         try {
-                            driver.getSuspend(url)
+                            driver.getSuspend(pinned ?: targets[(pick.getAndIncrement() % targets.size).toInt()])
                             local.recordValue((System.nanoTime() - t0).coerceAtLeast(1))
                             completed.incrementAndGet()
                         } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
@@ -307,7 +322,7 @@ private fun driveCoroutines(driver: ClientDriver, url: String, cc: ClientConfig,
  * requested it falls back to closed-loop with a warning so latency numbers are
  * not silently mislabelled.
  */
-private fun drive(driver: ClientDriver, url: String, cc: ClientConfig, warmup: Boolean): RunResult {
+private fun drive(driver: ClientDriver, targets: List<String>, cc: ClientConfig, warmup: Boolean): RunResult {
     if (cc.mode == "open" && !warmup) warnOpenLoopUnimplemented()
     val threadBean = ManagementFactory.getThreadMXBean() as? com.sun.management.ThreadMXBean
     val allocSupported = threadBean?.isThreadAllocatedMemorySupported == true
@@ -320,11 +335,13 @@ private fun drive(driver: ClientDriver, url: String, cc: ClientConfig, warmup: B
     val errors = AtomicLong()
     val allocated = AtomicLong()
     val issued = AtomicLong()
+    val pick = AtomicLong()
     val start = CountDownLatch(1)
     val done = CountDownLatch(cc.connections)
 
-    repeat(cc.connections) {
-        thread(name = "client-worker-$it") {
+    repeat(cc.connections) { worker ->
+        val pinned = if (cc.targetMode == "pinned") targets[worker % targets.size] else null
+        thread(name = "client-worker-$worker") {
             start.await()
             val tid = Thread.currentThread().threadId()
             val allocStart = if (allocSupported) threadBean.getThreadAllocatedBytes(tid) else 0L
@@ -332,7 +349,7 @@ private fun drive(driver: ClientDriver, url: String, cc: ClientConfig, warmup: B
             while (System.nanoTime() < deadline && (budget == 0L || issued.getAndIncrement() < budget)) {
                 val t0 = System.nanoTime()
                 try {
-                    driver.get(url)
+                    driver.get(pinned ?: targets[(pick.getAndIncrement() % targets.size).toInt()])
                     local.recordValue((System.nanoTime() - t0).coerceAtLeast(1))
                     completed.incrementAndGet()
                 } catch (e: Exception) {
