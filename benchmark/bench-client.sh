@@ -46,6 +46,11 @@
 #   BENCH_FIXTURE_PORT    loopback port for the managed fixture (default 18080)
 #   BENCH_CLIENT_TARGET   external fixture base URL (e.g. a remote host for the
 #                         macro tier); when set, no fixture is started here
+#   BENCH_HOST_LABEL      results sub-dir name (default `hostname -s`)
+#   BENCH_CLIENT_NO_SAVE  set to 1 to skip the raw-result auto-save (smoke runs)
+#
+# Raw results auto-save to benchmark/results/{host}/{client}-{endpoint}-{conns}c
+# [-open{rate}]-{timestamp}.txt (raw runs + median), mirroring the server bench.
 #
 # Methodology guardrails (coordinated omission, SUT isolation):
 #   - Default latency is CLOSED-loop (coordinated-omission susceptible), which is
@@ -76,6 +81,15 @@ TARGET_MODE="${BENCH_CLIENT_TARGET_MODE:-roundrobin}"
 # native reference binaries run closed-loop regardless.
 CLIENT_MODE="${BENCH_CLIENT_MODE:-closed}"
 CLIENT_RATE="${BENCH_CLIENT_RATE:-0}"
+
+# Auto-save raw results per client+endpoint, mirroring the server bench
+# (bench-keel.sh / bench-all.sh): benchmark/results/{host}/{...}.txt, host from
+# BENCH_HOST_LABEL or `hostname -s`. Set BENCH_CLIENT_NO_SAVE=1 to skip (smoke).
+RESULTS_BASE="benchmark/results"
+HOST_LABEL="${BENCH_HOST_LABEL:-$(hostname -s)}"
+RESULTS_DIR="${RESULTS_BASE}/${HOST_LABEL}"
+TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+[ "${BENCH_CLIENT_NO_SAVE:-0}" = 1 ] || mkdir -p "$RESULTS_DIR"
 
 FIXTURE_PID=""
 cleanup() { [ -n "$FIXTURE_PID" ] && kill "$FIXTURE_PID" 2>/dev/null || true; }
@@ -214,6 +228,23 @@ for type in $TYPES; do
         | grep '|' >> "$tmp" || echo "  run $run for $type failed" >&2
     fi
   done
-  [ -s "$tmp" ] && median < "$tmp" || echo "$type: no successful runs" >&2
+  if [ -s "$tmp" ]; then
+    med="$(median < "$tmp")"
+    echo "$med"
+    # Auto-save the raw runs + median, one file per client+endpoint (mirrors the
+    # server bench). Filename carries client / endpoint / conns / mode.
+    if [ "${BENCH_CLIENT_NO_SAVE:-0}" != 1 ]; then
+      ep="$(echo "$ENDPOINT" | tr '/?=&' '-' | sed 's/^-*//;s/-*$//')"
+      suffix=""; [ "$CLIENT_MODE" = open ] && suffix="-open${CLIENT_RATE}"
+      rf="${RESULTS_DIR}/${type}-${ep}-${CONNS}c${suffix}-${TIMESTAMP}.txt"
+      {
+        echo "# client=$type endpoint=$ENDPOINT conns=$CONNS mode=$CLIENT_MODE rate=$CLIENT_RATE runs=$RUNS fixture=$TARGET"
+        cat "$tmp"
+        echo "# median: $med"
+      } > "$rf"
+    fi
+  else
+    echo "$type: no successful runs" >&2
+  fi
   rm -f "$tmp"
 done
