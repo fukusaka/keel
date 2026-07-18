@@ -17,7 +17,13 @@ let package = Package(
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
                 .product(name: "HummingbirdWSCompression", package: "hummingbird-websocket"),
             ],
-            path: "Sources"
+            path: "Sources",
+            exclude: ["client"]
+        ),
+        // Client benchmark (URLSession / NSURLSession) — no external deps.
+        .executableTarget(
+            name: "swift-client",
+            path: "Sources/client"
         ),
     ]
 )
