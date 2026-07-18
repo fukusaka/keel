@@ -191,6 +191,7 @@ dependencies {
     dokka(project(":keel-server"))
     dokka(project(":keel-server-http"))
     dokka(project(":keel-server-websocket"))
+    dokka(project(":keel-client-http"))
     dokka(project(":keel-server-ktor-base"))
     dokka(project(":keel-server-ktor"))
     dokka(project(":keel-server-ktor-cio"))

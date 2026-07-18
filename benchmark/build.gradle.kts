@@ -112,6 +112,9 @@ kotlin {
                 // isolates the Ktor client-pipeline overhead from the library cost.
                 implementation(libs.okhttp)
                 implementation(libs.httpclient5)
+                // The keel HTTP client under test (--client-type=keel). Driven on
+                // a NioEngine so its bytes/op is comparable to the JVM references.
+                implementation(project(":keel-client-http"))
                 implementation(libs.hdrhistogram)
             }
         }

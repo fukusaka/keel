@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.benchmark
 
+import io.github.fukusaka.keel.client.http.dsl.keelHttpClient
+import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.ktor.client.HttpClient as KtorHttpClient
 import io.ktor.client.engine.apache5.Apache5
 import io.ktor.client.engine.cio.CIO
@@ -47,8 +49,10 @@ import kotlin.concurrent.thread
  * ([driveOpenLoop]). It drives a SEPARATE fixture process over loopback
  * (`--client-target`; `bench-client.sh` runs rust-bench by default — no shared
  * JVM to contaminate the numbers), with Java `HttpClient`, OkHttp, Apache5 and
- * Ktor reference drivers. The keel client driver is a stub until the standalone
- * keel HTTP client lands.
+ * Ktor reference drivers, plus the keel client under test ([KeelClientDriver],
+ * `--client-type=keel`) on a NioEngine. The keel L1 driver is fresh-connect
+ * (no keep-alive pool yet — that is L2), so compare it on the fresh-connect
+ * axis rather than as the keep-alive ceiling.
  */
 fun runClientBenchmark(config: BenchmarkConfig) {
     val cc = config.client
@@ -185,10 +189,7 @@ private fun createDriver(type: String, connections: Int): ClientDriver = when (t
         },
     )
     "ktor-java" -> KtorEngineDriver("ktor-java", KtorHttpClient(Java))
-    "keel" -> error(
-        "keel client driver is not implemented yet — pending the standalone keel HTTP client. " +
-            "Use a reference client (java|okhttp|apache5|ktor-*) for the ceiling.",
-    )
+    "keel" -> KeelClientDriver()
     else -> error(
         "Unknown client type '$type' (expected: keel | java | okhttp | apache5 | " +
             "ktor-cio | ktor-okhttp | ktor-apache5 | ktor-java)",
@@ -264,6 +265,43 @@ private class KtorEngineDriver(
 
     override fun close() {
         client.close()
+    }
+}
+
+/**
+ * The keel HTTP client under test — the standalone `keel-client-http` (L1).
+ *
+ * Coroutine-native ([coroutineNative] = true), so the harness drives it with
+ * N concurrent coroutines like the other suspend clients. It runs on a
+ * [NioEngine] (the JVM keel engine) so its bytes/op is directly comparable to
+ * the JVM reference drivers.
+ *
+ * L1 is FRESH-CONNECT: it opens and closes one connection per request, with
+ * no keep-alive pool yet (that is L2). So in the default reused-connection
+ * comparison it pays full connection setup on every request and is a
+ * fresh-connect-class number, NOT the keep-alive ceiling.
+ *
+ * CAVEAT — like the CIO driver (KTOR-6503), a fresh connection per request
+ * exhausts the ephemeral port range under concurrency: measured clean at
+ * conns=1 (0 errors), but from conns≈20 a large fraction of connects fail
+ * with `BindException: Can't assign requested address` (TIME_WAIT churn). The
+ * completed-request throughput is then not steady-state — always read the
+ * error column alongside it. The meaningful L1 signals are the conns=1 cost
+ * and per-request bytes/op; L2 (pool + keep-alive) closes the warm-path gap
+ * and removes the churn.
+ */
+private class KeelClientDriver : ClientDriver {
+    override val name = "keel"
+    override val coroutineNative = true
+    private val engine = NioEngine()
+    private val client = keelHttpClient(engine)
+
+    override suspend fun getSuspend(url: String): Int = client.get(url).body.size
+
+    override fun get(url: String): Int = runBlocking { getSuspend(url) }
+
+    override fun close() {
+        runBlocking { engine.close() }
     }
 }
 
