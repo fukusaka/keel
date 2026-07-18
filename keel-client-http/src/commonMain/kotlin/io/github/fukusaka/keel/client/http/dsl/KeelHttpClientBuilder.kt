@@ -13,6 +13,7 @@ import io.github.fukusaka.keel.core.StreamEngine
  */
 public class KeelHttpClientBuilder internal constructor() {
 
+    /** Builds the configured [KeelHttpClient] on [engine]. */
     internal fun build(engine: StreamEngine): KeelHttpClient = KeelHttpClient(engine)
 }
 

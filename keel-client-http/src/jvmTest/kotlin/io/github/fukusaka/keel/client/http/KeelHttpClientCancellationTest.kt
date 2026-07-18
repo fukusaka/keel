@@ -17,16 +17,23 @@ import kotlin.test.assertFailsWith
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Regression test for the client's cancellation teardown. Uses `runBlocking`
- * (real wall-clock time, deterministic) rather than `runTest` (virtual time)
- * so the `withTimeout` deadline and the hanging handler interleave as they
- * would in production.
+ * Guards the client's cancellation-teardown invariant: cancelling a request
+ * that is parked waiting for a response must not leak a pooled buffer. Uses
+ * `runBlocking` (real wall-clock time, deterministic) rather than `runTest`
+ * (virtual time) so the `withTimeout` deadline and the hanging handler
+ * interleave as they would in production.
  *
  * A route that never responds keeps `request()` suspended in the bridge
- * receive; the caller's `withTimeout` then cancels it. The teardown
- * (`notifyInactive` + `close`, plus the bridge's `releaseUndelivered` hook and
- * the release-in-`finally` around materialisation) must free every pooled
- * buffer — asserted with `TrackingAllocator.outstandingCount == 0`.
+ * receive; the caller's `withTimeout` then cancels it, and the `notifyInactive`
+ * + `close` teardown must free every pooled buffer the request touched (the
+ * request bytes the server received, plus any codec-held state) — asserted with
+ * `TrackingAllocator.outstandingCount == 0`.
+ *
+ * Scope note: because the server sends nothing, no response is ever buffered on
+ * the bridge, so this does NOT exercise the `releaseUndelivered` hook or the
+ * release-in-`finally` around materialisation — those cover a response that
+ * arrives and is then stranded by cancellation, a race the synchronous
+ * in-memory loopback cannot reproduce deterministically.
  */
 class KeelHttpClientCancellationTest {
 

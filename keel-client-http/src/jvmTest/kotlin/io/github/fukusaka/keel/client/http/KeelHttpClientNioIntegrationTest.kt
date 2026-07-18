@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.client.http
 
 import io.github.fukusaka.keel.client.http.dsl.keelHttpClient
+import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.engine.nio.NioEngine
-import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.server.http.dsl.keelHttpServer
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
