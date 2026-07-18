@@ -8,6 +8,13 @@ import io.ktor.client.engine.java.Java
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsBytes
+import okhttp3.ConnectionPool
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.apache.hc.client5.http.classic.methods.HttpGet
+import org.apache.hc.client5.http.impl.classic.HttpClients
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder
+import org.apache.hc.core5.http.io.entity.EntityUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -20,6 +27,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
@@ -140,6 +148,8 @@ private interface ClientDriver {
 
 private fun createDriver(type: String, connections: Int): ClientDriver = when (type) {
     "java" -> JavaHttpClientDriver(connections)
+    "okhttp" -> OkHttpDriver(connections)
+    "apache5" -> Apache5Driver(connections)
     "ktor-cio" -> KtorCioDriver(connections)
     // Delegating Ktor engines: they inherit the underlying library's keep-alive
     // pool + HTTP/2, so — unlike CIO (KTOR-6503) — they reuse connections.
@@ -148,12 +158,60 @@ private fun createDriver(type: String, connections: Int): ClientDriver = when (t
     "ktor-java" -> KtorEngineDriver("ktor-java", Java)
     "keel" -> error(
         "keel client driver is not implemented yet — pending the standalone keel-client-http " +
-            "(Phase 12b). Use --client-type=java|ktor-okhttp|ktor-apache5|ktor-java for the reference ceiling.",
+            "(Phase 12b). Use a reference client (java|okhttp|apache5|ktor-*) for the ceiling.",
     )
     else -> error(
-        "Unknown client type '$type' " +
-            "(expected: keel | java | ktor-cio | ktor-okhttp | ktor-apache5 | ktor-java)",
+        "Unknown client type '$type' (expected: keel | java | okhttp | apache5 | " +
+            "ktor-cio | ktor-okhttp | ktor-apache5 | ktor-java)",
     )
+}
+
+/**
+ * Direct OkHttp 5 reference driver (Square) — the most widely used JVM/Android
+ * HTTP client. Blocking `execute()` bypasses the async dispatcher's per-host
+ * request cap, so the harness's N worker threads run N concurrent calls; the
+ * connection pool is sized to [connections] so idle keep-alive sockets are not
+ * evicted between requests. Runs on the thread model, so it reports real
+ * per-request allocation (bytes/op) — the direct-library counterpart to
+ * `ktor-okhttp`, isolating the Ktor client-pipeline overhead from OkHttp itself.
+ */
+private class OkHttpDriver(connections: Int) : ClientDriver {
+    override val name = "okhttp"
+    private val client = OkHttpClient.Builder()
+        .connectionPool(ConnectionPool(connections, KEEP_ALIVE_MS, TimeUnit.MILLISECONDS))
+        .build()
+
+    override fun get(url: String): Int =
+        client.newCall(Request.Builder().url(url).build()).execute().use { resp ->
+            resp.body.bytes().size
+        }
+
+    override fun close() {
+        client.dispatcher.executorService.shutdown()
+        client.connectionPool.evictAll()
+    }
+}
+
+/**
+ * Direct Apache HttpClient 5 (Classic, blocking) reference driver — the
+ * enterprise-standard JVM client outside the JDK. The pooling connection
+ * manager holds [connections] keep-alive sockets per route. Thread model, so it
+ * reports real bytes/op — the direct-library counterpart to `ktor-apache5`.
+ */
+private class Apache5Driver(connections: Int) : ClientDriver {
+    override val name = "apache5"
+    private val connectionManager = PoolingHttpClientConnectionManagerBuilder.create()
+        .setMaxConnTotal(connections)
+        .setMaxConnPerRoute(connections)
+        .build()
+    private val client = HttpClients.custom().setConnectionManager(connectionManager).build()
+
+    override fun get(url: String): Int =
+        client.execute(HttpGet(url)) { resp -> EntityUtils.toByteArray(resp.entity).size }
+
+    override fun close() {
+        client.close()
+    }
 }
 
 /**

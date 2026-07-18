@@ -107,6 +107,11 @@ kotlin {
                 implementation(libs.ktor.client.okhttp)
                 implementation(libs.ktor.client.apache5)
                 implementation(libs.ktor.client.java)
+                // Direct (non-Ktor) reference clients: the raw popular JVM
+                // libraries, so ktor-okhttp vs okhttp / ktor-apache5 vs apache5
+                // isolates the Ktor client-pipeline overhead from the library cost.
+                implementation(libs.okhttp)
+                implementation(libs.httpclient5)
                 implementation(libs.hdrhistogram)
             }
         }
