@@ -48,6 +48,10 @@ class KeelHttpTestClientCancellationTest {
         server.start()
         val client = KeelHttpTestClient(engine) { server }
         try {
+            // withTimeout inside runTest is intentional: the route never
+            // responds, so runTest's virtual clock deterministically advances to
+            // the deadline and the timeout fires — which is exactly what this
+            // asserts (not the false-positive case the testing rules warn about).
             assertFailsWith<TimeoutCancellationException> {
                 withTimeout(1.seconds) { client.get("/hang") }
             }
