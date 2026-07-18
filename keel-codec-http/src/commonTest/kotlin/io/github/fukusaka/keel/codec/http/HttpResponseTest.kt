@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.codec.http
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -127,5 +128,37 @@ class HttpResponseTest {
         val a = HttpResponse(HttpStatus.OK, body = "hello".encodeToByteArray())
         val b = HttpResponse(HttpStatus.OK, body = "world".encodeToByteArray())
         assertNotEquals(a, b)
+    }
+
+    // --- isKeepAlive ---
+
+    @Test
+    fun `HTTP 1_1 is keep-alive by default`() {
+        assertTrue(HttpResponse(HttpStatus.OK, version = HttpVersion.HTTP_1_1).isKeepAlive)
+    }
+
+    @Test
+    fun `HTTP 1_0 is close by default`() {
+        assertFalse(HttpResponse(HttpStatus.OK, version = HttpVersion.HTTP_1_0).isKeepAlive)
+    }
+
+    @Test
+    fun `Connection close overrides HTTP 1_1 default`() {
+        val r = HttpResponse(
+            HttpStatus.OK,
+            version = HttpVersion.HTTP_1_1,
+            headers = HttpHeaders().add("Connection", "close"),
+        )
+        assertFalse(r.isKeepAlive)
+    }
+
+    @Test
+    fun `Connection keep-alive overrides HTTP 1_0 default`() {
+        val r = HttpResponse(
+            HttpStatus.OK,
+            version = HttpVersion.HTTP_1_0,
+            headers = HttpHeaders().add("Connection", "keep-alive"),
+        )
+        assertTrue(r.isKeepAlive)
     }
 }
