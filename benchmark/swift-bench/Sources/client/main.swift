@@ -49,6 +49,10 @@ func parse() -> Config {
         while s.hasSuffix("/") { s.removeLast() }
         return s + endpoint
     }.filter { !$0.isEmpty }
+    if targets.isEmpty {
+        FileHandle.standardError.write(Data("no target parsed from --client-target\n".utf8))
+        exit(1)
+    }
     return Config(targets: targets, endpoint: endpoint, connections: connections,
                   warmup: warmup, duration: duration, pinned: pinned)
 }
@@ -61,7 +65,7 @@ func runPhase(session: URLSession, cfg: Config, secs: Int) async -> (rps: Double
     let startNs = DispatchTime.now().uptimeNanoseconds
     let result = await withTaskGroup(of: (lat: [Int64], errors: Int, completed: Int).self) { group in
         for worker in 0..<cfg.connections {
-            let url = URL(string: cfg.targets[worker % cfg.targets.count])!
+            guard let url = URL(string: cfg.targets[worker % cfg.targets.count]) else { continue }
             group.addTask {
                 var lat: [Int64] = []
                 var errors = 0
@@ -124,6 +128,6 @@ if cfg.warmup > 0 {
 }
 let (rps, lat, errors) = await runPhase(session: session, cfg: cfg, secs: cfg.duration)
 let maxMs = lat.isEmpty ? 0.0 : Double(lat[lat.count - 1]) / 1e6
-print(String(format: "%@%@|%.0f|%.3f|%.3f|%.3f|%.3f|n/a|%d",
+print(String(format: "%@%@|%.0f|%.3f|%.3f|%.3f|%.3f|n/a|%ld",
              name, cfg.endpoint, rps,
              pctMs(lat, 0.50), pctMs(lat, 0.99), pctMs(lat, 0.999), maxMs, errors))

@@ -65,6 +65,10 @@ func Parse() Config {
 		}
 		targets = append(targets, strings.TrimRight(t, "/")+endpoint)
 	}
+	if len(targets) == 0 {
+		fmt.Fprintln(os.Stderr, "no target parsed from --client-target")
+		os.Exit(1)
+	}
 	return Config{targets, endpoint, connections, warmup, duration, pinned}
 }
 
