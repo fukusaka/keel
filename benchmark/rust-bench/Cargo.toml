@@ -9,10 +9,14 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 tokio = { version = "1", features = ["full"] }
 socket2 = "0.5"
 futures-util = "0.3"
-# Client benchmark (src/bin/client.rs): reqwest = the de-facto Rust HTTP client
-# (hyper-based, keep-alive pool + HTTP/2). default-features off = no TLS backend
+# Client benchmarks (src/bin/client.rs = reqwest, client-hyper.rs = hyper).
+# reqwest = the de-facto Rust HTTP client; hyper-util's pooling Client = the
+# lower-level layer reqwest is built on. default-features off = no TLS backend
 # (loopback http:// only); hdrhistogram for lossless latency percentiles.
 reqwest = { version = "0.12", default-features = false, features = ["http2"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
 hdrhistogram = "7"
 
 [profile.release]
