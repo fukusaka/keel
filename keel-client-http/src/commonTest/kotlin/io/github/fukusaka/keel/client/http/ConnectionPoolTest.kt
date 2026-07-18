@@ -22,6 +22,13 @@ import kotlin.time.TestTimeSource
 /**
  * Tests for [ConnectionPool] keep-alive reuse, idle eviction, cap, and
  * lifecycle, driven against a live `keelHttpServer` on an [InMemoryEngine].
+ *
+ * Not covered here: the stale-connection retry in `KeelHttpClient.request`
+ * (a reused connection failing an idempotent request → one retry on a fresh
+ * connection). It needs a pooled connection that is live at lease but dies
+ * during the exchange — a race the synchronous in-memory loopback cannot
+ * reproduce deterministically; a real-engine test where the server drops the
+ * kept-alive connection is the way to exercise it (tracked as follow-up).
  */
 class ConnectionPoolTest {
 

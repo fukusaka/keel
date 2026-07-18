@@ -88,6 +88,10 @@ internal class ConnectionPool(
     /**
      * Closes every idle connection and rejects further [lease]s. Idempotent.
      * The caller-owned engine is not closed.
+     *
+     * A request that has already leased a connection is allowed to finish
+     * (it may even open a fresh connection for its retry); its connection is
+     * closed on [release] once the pool is closed. Only new leases are rejected.
      */
     suspend fun close() {
         val all = mutex.withLock {
