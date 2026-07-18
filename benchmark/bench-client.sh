@@ -28,10 +28,12 @@
 #
 # Env vars:
 #   BENCH_CLIENT_TYPES    space list of client drivers (default "java ktor-cio").
-#                         Pooling-capable refs: java (direct java.net.http),
-#                         ktor-java / ktor-okhttp / ktor-apache5 (delegating Ktor
-#                         engines — all reuse keep-alive). ktor-cio churns
-#                         connections (KTOR-6503). "keel" pending the standalone
+#                         JVM refs: java (direct java.net.http), okhttp, apache5
+#                         (direct libraries), ktor-java / ktor-okhttp /
+#                         ktor-apache5 (delegating Ktor engines — all reuse
+#                         keep-alive), ktor-cio (churns, KTOR-6503). Native refs
+#                         (separate binaries, auto-built): rust-reqwest,
+#                         go-nethttp, libcurl. "keel" pending the standalone
 #                         keel-client-http (Phase 12b).
 #   BENCH_CLIENT_ENDPOINT fixture path (default /hello; /large for throughput)
 #   BENCH_CLIENT_CONNS    concurrent connections / pool size (default 50)
@@ -111,9 +113,38 @@ else
 fi
 wait_ready "$TARGET"
 
-echo "resolving JVM classpath (writeClasspath is config-cache-incompatible)..." >&2
-./gradlew --no-configuration-cache -Pbenchmark :benchmark:jvmMainClasses :benchmark:writeClasspath >/dev/null 2>&1
-CP="$(./benchmark/bench-jvm-cp.sh resolve)"
+# Native reference clients are separate binaries (Rust reqwest / Go net/http /
+# C libcurl) that accept the SAME CLI flags as the JVM harness and print the
+# SAME result line, so they share the drain + median + fixture logic below.
+# Returns the binary path for a native type, or empty for a JVM driver type.
+native_bin() {
+  case "$1" in
+    rust-reqwest) echo "benchmark/rust-bench/target/release/client" ;;
+    go-nethttp) echo "benchmark/go-bench/client-bench" ;;
+    libcurl) echo "benchmark/curl-bench/client" ;;
+    *) echo "" ;;
+  esac
+}
+build_native() {
+  case "$1" in
+    rust-reqwest) [ -x "$(native_bin "$1")" ] ||
+      ( cd benchmark/rust-bench && cargo build --release --bin client >/dev/null 2>&1 ) ;;
+    go-nethttp) [ -x "$(native_bin "$1")" ] ||
+      ( cd benchmark/go-bench && go build -o client-bench ./cmd/client >/dev/null 2>&1 ) ;;
+    libcurl) [ -x "$(native_bin "$1")" ] ||
+      ( cd benchmark/curl-bench && make >/dev/null 2>&1 ) ;;
+  esac
+}
+
+# Resolve the JVM classpath only if at least one JVM driver type is requested.
+CP=""
+NEED_JVM=false
+for t in $TYPES; do [ -z "$(native_bin "$t")" ] && NEED_JVM=true; done
+if [ "$NEED_JVM" = true ]; then
+  echo "resolving JVM classpath (writeClasspath is config-cache-incompatible)..." >&2
+  ./gradlew --no-configuration-cache -Pbenchmark :benchmark:jvmMainClasses :benchmark:writeClasspath >/dev/null 2>&1
+  CP="$(./benchmark/bench-jvm-cp.sh resolve)"
+fi
 
 echo "# client bench: endpoint=$ENDPOINT conns=$CONNS warmup=${WARMUP}s duration=${DURATION}s runs=$RUNS fixture=$TARGET"
 echo "# format: <client><endpoint>|<req/s>|<p50ms>|<p99ms>|<p99.9ms>|<maxms>|<bytes/op>|<errors>"
@@ -145,15 +176,25 @@ drain_ports() {
 }
 
 for type in $TYPES; do
+  bin="$(native_bin "$type")"
+  [ -n "$bin" ] && build_native "$type"
   tmp="$(mktemp)"
   for run in $(seq 1 "$RUNS"); do
     drain_ports # each run starts on clean ports (no cross-run port poisoning)
-    java -cp "$CP" io.github.fukusaka.keel.benchmark.JvmMainKt \
-      --role=client --client-type="$type" --client-target="$TARGET" \
-      --client-target-mode="$TARGET_MODE" \
-      --client-endpoint="$ENDPOINT" --client-connections="$CONNS" \
-      --client-warmup="$WARMUP" --client-duration="$DURATION" 2>/dev/null \
-      | grep '|' >> "$tmp" || echo "  run $run for $type failed" >&2
+    if [ -n "$bin" ]; then
+      "$bin" \
+        --client-target="$TARGET" --client-target-mode="$TARGET_MODE" \
+        --client-endpoint="$ENDPOINT" --client-connections="$CONNS" \
+        --client-warmup="$WARMUP" --client-duration="$DURATION" 2>/dev/null \
+        | grep '|' >> "$tmp" || echo "  run $run for $type failed" >&2
+    else
+      java -cp "$CP" io.github.fukusaka.keel.benchmark.JvmMainKt \
+        --role=client --client-type="$type" --client-target="$TARGET" \
+        --client-target-mode="$TARGET_MODE" \
+        --client-endpoint="$ENDPOINT" --client-connections="$CONNS" \
+        --client-warmup="$WARMUP" --client-duration="$DURATION" 2>/dev/null \
+        | grep '|' >> "$tmp" || echo "  run $run for $type failed" >&2
+    fi
   done
   [ -s "$tmp" ] && median < "$tmp" || echo "$type: no successful runs" >&2
   rm -f "$tmp"
