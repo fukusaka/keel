@@ -39,8 +39,8 @@ import kotlin.concurrent.thread
  * practice (Ktor client-benchmarks, undici, OkHttp MockWebServer, h2load, wrk2).
  *
  * First increment (Phase 12b-bench): closed-loop throughput + HdrHistogram
- * latency + per-request allocation (`ThreadMXBean.getThreadAllocatedBytes`,
- * the same mechanism JMH's `gc.alloc.rate.norm` uses), driving a SEPARATE
+ * latency + per-request allocation (`ThreadMXBean.getTotalThreadAllocatedBytes`,
+ * the whole-JVM counter JMH's `gc.alloc.rate.norm` reads on Java 17+), driving a SEPARATE
  * fixture process over loopback (`--client-target`; `bench-client.sh` runs
  * rust-bench by default — no shared JVM to contaminate the numbers), with
  * Java `HttpClient` and Ktor `CIO` reference drivers. The keel client driver
@@ -295,6 +295,34 @@ private class KtorCioDriver(connections: Int) : ClientDriver {
     }
 }
 
+// --- Allocation measurement ---
+
+/**
+ * Whole-JVM allocation counter — `com.sun.management.ThreadMXBean.getTotalThreadAllocatedBytes()`,
+ * the exact counter JMH's `gc.alloc.rate.norm` reads on Java 17+ (its
+ * GlobalHotspotAllocationSnapshot). Snapshotting it across the measured window
+ * yields per-request allocation (bytes/op) that captures ALL threads — including
+ * a client's internal executor / selector / event-loop threads. A per-worker
+ * `getThreadAllocatedBytes` sum (the previous approach) misses those, so it
+ * undercounts clients that offload body assembly (java.net.http reads the body
+ * on its executor threads) and reports nothing for coroutine-dispatched clients
+ * (Ktor). The harness already supplies JMH-equivalent rigor around this counter:
+ * a fresh JVM per client type per run (= @Fork), a discarded warm-up phase, a
+ * steady-state window, and a RUNS median. Null when the counter is unavailable.
+ */
+private val allocBean: com.sun.management.ThreadMXBean? =
+    (ManagementFactory.getThreadMXBean() as? com.sun.management.ThreadMXBean)
+        ?.takeIf { it.isThreadAllocatedMemorySupported && it.isThreadAllocatedMemoryEnabled }
+
+/** Whole-JVM allocated bytes so far, or -1 when the counter is unavailable. */
+private fun totalAllocatedBytes(): Long = allocBean?.totalThreadAllocatedBytes ?: -1L
+
+/** Allocated bytes since [start], or -1 when unmeasurable. */
+private fun allocDelta(start: Long): Long {
+    val end = totalAllocatedBytes()
+    return if (start >= 0 && end >= 0) end - start else -1L
+}
+
 // --- Load loop ---
 
 /** Result of one measured (or warm-up) run. */
@@ -325,10 +353,10 @@ private fun driveDispatch(driver: ClientDriver, targets: List<String>, cc: Clien
  * Coroutine model (for coroutine-native drivers): [ClientConfig.connections]
  * concurrent coroutines on [Dispatchers.Default], each looping a suspend GET.
  * This is the fair comparison for a coroutine client — it is not throttled by
- * OS-thread blocking. Per-request allocation is reported as `n/a` here: under
- * coroutine dispatch the work spreads across pool threads, so the per-thread
- * `ThreadMXBean` sum used by [drive] is unreliable; the dedicated JMH
- * allocation harness (a later increment) measures coroutine-client alloc.
+ * OS-thread blocking. Per-request allocation is measured with the whole-JVM
+ * [totalAllocatedBytes] counter (JMH's `gc.alloc.rate.norm` counter), which —
+ * unlike a per-thread sum — captures allocation spread across the coroutine
+ * dispatcher's pool threads.
  */
 private fun driveCoroutines(driver: ClientDriver, targets: List<String>, cc: ClientConfig, warmup: Boolean): RunResult {
     if (cc.mode == "open" && !warmup) warnOpenLoopUnimplemented()
@@ -341,6 +369,7 @@ private fun driveCoroutines(driver: ClientDriver, targets: List<String>, cc: Cli
     val issued = AtomicLong()
     val pick = AtomicLong()
 
+    val allocStart = totalAllocatedBytes()
     val runStart = System.nanoTime()
     runBlocking(Dispatchers.Default) {
         coroutineScope {
@@ -366,15 +395,15 @@ private fun driveCoroutines(driver: ClientDriver, targets: List<String>, cc: Cli
         }
     }
     val elapsed = System.nanoTime() - runStart
-    return RunResult(completed.get(), errors.get(), elapsed, histogram, 0L, allocSupported = false)
+    val allocated = allocDelta(allocStart)
+    return RunResult(completed.get(), errors.get(), elapsed, histogram, allocated, allocSupported = allocated >= 0)
 }
 
 /**
  * Closed-loop: [ClientConfig.connections] worker threads each loop a blocking
  * GET as fast as possible until the deadline (or the total request budget).
- * Records per-request latency into an [Histogram] and sums each worker
- * thread's allocated bytes (`ThreadMXBean`) so the reported bytes/op is the
- * client's per-request allocation.
+ * Records per-request latency into an [Histogram]; per-request allocation is
+ * measured with the whole-JVM [totalAllocatedBytes] counter over the run.
  *
  * Open-loop (constant-rate, coordinated-omission-free) is not yet wired; when
  * requested it falls back to closed-loop with a warning so latency numbers are
@@ -382,8 +411,6 @@ private fun driveCoroutines(driver: ClientDriver, targets: List<String>, cc: Cli
  */
 private fun drive(driver: ClientDriver, targets: List<String>, cc: ClientConfig, warmup: Boolean): RunResult {
     if (cc.mode == "open" && !warmup) warnOpenLoopUnimplemented()
-    val threadBean = ManagementFactory.getThreadMXBean() as? com.sun.management.ThreadMXBean
-    val allocSupported = threadBean?.isThreadAllocatedMemorySupported == true
     val seconds = if (warmup) cc.warmupSec else cc.durationSec
     val budget = if (warmup) 0L else cc.requests.toLong()
     val deadline = System.nanoTime() + seconds.toLong() * 1_000_000_000L
@@ -391,7 +418,6 @@ private fun drive(driver: ClientDriver, targets: List<String>, cc: ClientConfig,
     val histogram = Histogram(3) // 1..~1h in ns, 3 significant digits
     val completed = AtomicLong()
     val errors = AtomicLong()
-    val allocated = AtomicLong()
     val issued = AtomicLong()
     val pick = AtomicLong()
     val start = CountDownLatch(1)
@@ -401,8 +427,6 @@ private fun drive(driver: ClientDriver, targets: List<String>, cc: ClientConfig,
         val pinned = if (cc.targetMode == "pinned") targets[worker % targets.size] else null
         thread(name = "client-worker-$worker") {
             start.await()
-            val tid = Thread.currentThread().threadId()
-            val allocStart = if (allocSupported) threadBean.getThreadAllocatedBytes(tid) else 0L
             val local = Histogram(3)
             while (System.nanoTime() < deadline && (budget == 0L || issued.getAndIncrement() < budget)) {
                 val t0 = System.nanoTime()
@@ -414,17 +438,18 @@ private fun drive(driver: ClientDriver, targets: List<String>, cc: ClientConfig,
                     errors.incrementAndGet()
                 }
             }
-            if (allocSupported) allocated.addAndGet(threadBean.getThreadAllocatedBytes(tid) - allocStart)
             synchronized(histogram) { histogram.add(local) }
             done.countDown()
         }
     }
+    val allocStart = totalAllocatedBytes()
     val runStart = System.nanoTime()
     start.countDown()
     done.await()
     val elapsed = System.nanoTime() - runStart
+    val allocated = allocDelta(allocStart)
 
-    return RunResult(completed.get(), errors.get(), elapsed, histogram, allocated.get(), allocSupported)
+    return RunResult(completed.get(), errors.get(), elapsed, histogram, allocated, allocSupported = allocated >= 0)
 }
 
 // --- Reporting ---
