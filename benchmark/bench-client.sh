@@ -33,8 +33,9 @@
 #                         ktor-apache5 (delegating Ktor engines — all reuse
 #                         keep-alive), ktor-cio (churns, KTOR-6503). Native refs
 #                         (separate binaries, auto-built): rust-reqwest,
-#                         go-nethttp, libcurl. "keel" pending the standalone
-#                         keel-client-http (Phase 12b).
+#                         rust-hyper, go-nethttp, go-fasthttp, libcurl,
+#                         swift-nsurlsession (macOS). "keel" pending the
+#                         standalone keel-client-http (Phase 12b).
 #   BENCH_CLIENT_ENDPOINT fixture path (default /hello; /large for throughput)
 #   BENCH_CLIENT_CONNS    concurrent connections / pool size (default 50)
 #   BENCH_CLIENT_WARMUP   warm-up seconds, discarded (default 3)
@@ -120,8 +121,11 @@ wait_ready "$TARGET"
 native_bin() {
   case "$1" in
     rust-reqwest) echo "benchmark/rust-bench/target/release/client" ;;
+    rust-hyper) echo "benchmark/rust-bench/target/release/client-hyper" ;;
     go-nethttp) echo "benchmark/go-bench/client-bench" ;;
+    go-fasthttp) echo "benchmark/go-bench/client-fasthttp" ;;
     libcurl) echo "benchmark/curl-bench/client" ;;
+    swift-nsurlsession) echo "benchmark/swift-bench/.build/release/swift-client" ;;
     *) echo "" ;;
   esac
 }
@@ -129,10 +133,16 @@ build_native() {
   case "$1" in
     rust-reqwest) [ -x "$(native_bin "$1")" ] ||
       ( cd benchmark/rust-bench && cargo build --release --bin client >/dev/null 2>&1 ) ;;
+    rust-hyper) [ -x "$(native_bin "$1")" ] ||
+      ( cd benchmark/rust-bench && cargo build --release --bin client-hyper >/dev/null 2>&1 ) ;;
     go-nethttp) [ -x "$(native_bin "$1")" ] ||
       ( cd benchmark/go-bench && go build -o client-bench ./cmd/client >/dev/null 2>&1 ) ;;
+    go-fasthttp) [ -x "$(native_bin "$1")" ] ||
+      ( cd benchmark/go-bench && go build -o client-fasthttp ./cmd/client-fasthttp >/dev/null 2>&1 ) ;;
     libcurl) [ -x "$(native_bin "$1")" ] ||
       ( cd benchmark/curl-bench && make >/dev/null 2>&1 ) ;;
+    swift-nsurlsession) [ -x "$(native_bin "$1")" ] ||
+      ( cd benchmark/swift-bench && swift build -c release --product swift-client >/dev/null 2>&1 ) ;;
   esac
 }
 
