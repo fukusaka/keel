@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `codec-http`: `HttpResponse.isKeepAlive` — the response-side counterpart of
+  `HttpRequestHead.isKeepAlive`, so a client can decide connection reuse from a response (#971)
 - `client-http`: new `keel-client-http` module — a standalone HTTP/1.1 client on a keel
   `StreamEngine` via the `keelHttpClient {}` DSL (fresh connect, `http://` only for now) (#969)
 - `codec-http`: add the client-side HTTP/1.1 codec — `HttpRequestEncoder`,

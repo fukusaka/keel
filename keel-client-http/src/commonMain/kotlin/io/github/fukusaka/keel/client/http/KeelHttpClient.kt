@@ -4,13 +4,7 @@ import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpRequest
-import io.github.fukusaka.keel.codec.http.HttpResponse
-import io.github.fukusaka.keel.codec.http.addHttp1ClientCodec
 import io.github.fukusaka.keel.core.StreamEngine
-import io.github.fukusaka.keel.pipeline.PipelinedChannel
-import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.withContext
 
 /**
  * A native HTTP/1.1 client built directly on a keel [StreamEngine] — the
@@ -58,44 +52,15 @@ public class KeelHttpClient internal constructor(
         body: ByteArray? = null,
     ): KeelHttpResponse {
         val parsed = RequestUrl.parse(url)
-        val channel = engine.connect(parsed.host, parsed.port)
+        val connection = ClientConnection.open(engine, RouteKey(parsed.host, parsed.port))
         try {
-            // Inside the try so a non-pipeline engine does not leak the
-            // just-connected channel when the check throws.
-            check(channel is PipelinedChannel) {
-                "KeelHttpClient requires a PipelinedChannel connection; " +
-                    "got ${channel::class.simpleName} from ${engine::class.simpleName}"
-            }
-            // A complete HttpResponse decoded onto the (unbounded) bridge is
-            // buffered immediately; if the request is cancelled (e.g. a caller
-            // withTimeout) before receiveCatching() takes it, teardown must
-            // release its pooled, recv-buffer-retaining headers — the bridge's
-            // release hook does that for a stranded response.
-            val bridge = SuspendMessageBridge(
-                HttpResponse::class,
-                releaseUndelivered = { it.headers.release() },
-            )
-            // Pipeline mutation and the outbound write run on the channel's
-            // EventLoop dispatcher, per the pipeline threading contract.
-            withContext(channel.ioDispatcher) {
-                channel.addHttp1ClientCodec()
-                channel.pipeline.addLast("bridge", bridge)
-                channel.readEnabled = true
-                channel.pipeline.requestWriteAndFlush(buildRequest(method, parsed, headers, body))
-            }
-            val result = bridge.receiveCatching()
-            val response = result.getOrNull()
-                ?: throw (
-                    result.exceptionOrNull()
-                        ?: IllegalStateException("connection closed before a complete response arrived")
-                    )
+            val response = connection.exchange(buildRequest(method, parsed, headers, body))
             // The decoder's zero-copy headers are pooled and view the retained
-            // recv buffer via addRange; the connection closes in `finally` and
-            // releases that buffer. Materialise the fields to a plain,
+            // recv buffer via addRange; the connection is torn down in the outer
+            // finally, releasing that buffer. Materialise the fields to a plain,
             // GC-owned HttpHeaders (String values) while the buffer is still
-            // valid, then release the pooled one in a finally — the aggregator
-            // relinquished the head at emit, so this is the sole owner and a
-            // throw mid-materialisation must still fulfil the release contract.
+            // valid, then release the pooled one in a finally so a throw
+            // mid-materialisation still fulfils the decoder's release contract.
             try {
                 val detachedHeaders = HttpHeaders()
                 response.headers.forEach { name, value -> detachedHeaders.add(name, value) }
@@ -104,25 +69,9 @@ public class KeelHttpClient internal constructor(
                 response.headers.release()
             }
         } finally {
-            if (channel is PipelinedChannel) {
-                // Guard the two teardown steps independently: a throwing
-                // notifyInactive() must not skip the channel close (fd leak).
-                try {
-                    withContext(NonCancellable + channel.ioDispatcher) {
-                        // A locally-initiated close delivers no peer-FIN, so the
-                        // client-side pipeline would never fire inactive — fire it
-                        // explicitly so codec-held state (e.g. body chunks the
-                        // aggregator retained before a cancellation aborted the
-                        // request mid-response, or a response stranded on the
-                        // bridge) is released. Idempotent when EOF already fired it.
-                        channel.pipeline.notifyInactive()
-                    }
-                } finally {
-                    channel.close()
-                }
-            } else {
-                channel.close()
-            }
+            // One connection per request, always closed. A connection pool will
+            // return a reusable connection here instead of closing it.
+            connection.close()
         }
     }
 

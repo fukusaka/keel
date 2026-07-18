@@ -39,6 +39,26 @@ data class HttpResponse(
     val headers: HttpHeaders = HttpHeaders(),
     val body: ByteArray? = null,
 ) {
+    /**
+     * Returns true if this response's connection can be kept alive.
+     *
+     * HTTP/1.1 connections are keep-alive by default (RFC 7230 §6.3);
+     * returns false only if `Connection: close` is explicitly set.
+     * HTTP/1.0 connections are close by default; returns true only if
+     * `Connection: keep-alive` is explicitly set. Mirrors
+     * [HttpRequestHead.isKeepAlive] for the response side, so a client can
+     * decide whether to reuse the connection.
+     */
+    val isKeepAlive: Boolean
+        get() {
+            val conn = headers.connection
+            return when {
+                conn?.contains("close", ignoreCase = true) == true -> false
+                conn?.contains("keep-alive", ignoreCase = true) == true -> true
+                else -> version == HttpVersion.HTTP_1_1
+            }
+        }
+
     // ByteArray equality is reference-based by default in data classes.
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
