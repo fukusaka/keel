@@ -29,6 +29,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.LockSupport
 import kotlin.concurrent.thread
 
 /**
@@ -38,15 +39,15 @@ import kotlin.concurrent.thread
  * *client* is the component measured, following common HTTP-client-benchmark
  * practice (Ktor client-benchmarks, undici, OkHttp MockWebServer, h2load, wrk2).
  *
- * First increment (Phase 12b-bench): closed-loop throughput + HdrHistogram
- * latency + per-request allocation (`ThreadMXBean.getTotalThreadAllocatedBytes`,
- * the whole-JVM counter JMH's `gc.alloc.rate.norm` reads on Java 17+), driving a SEPARATE
- * fixture process over loopback (`--client-target`; `bench-client.sh` runs
- * rust-bench by default — no shared JVM to contaminate the numbers), with
- * Java `HttpClient` and Ktor `CIO` reference drivers. The keel client driver
- * is a stub until the standalone `keel-client-http` (Phase 12b) lands.
- * Open-loop constant-rate mode (for coordinated-omission-free latency) and the
- * JMH allocation harness are scaffolded / follow in later increments.
+ * Measures a client's closed-loop throughput + HdrHistogram latency +
+ * per-request allocation (`ThreadMXBean.getTotalThreadAllocatedBytes`, the
+ * whole-JVM counter JMH's `gc.alloc.rate.norm` reads on Java 17+), plus an
+ * open-loop constant-rate mode for coordinated-omission-free latency
+ * ([driveOpenLoop]). It drives a SEPARATE fixture process over loopback
+ * (`--client-target`; `bench-client.sh` runs rust-bench by default — no shared
+ * JVM to contaminate the numbers), with Java `HttpClient`, OkHttp, Apache5 and
+ * Ktor reference drivers. The keel client driver is a stub until the standalone
+ * keel HTTP client lands.
  */
 fun runClientBenchmark(config: BenchmarkConfig) {
     val cc = config.client
@@ -157,8 +158,8 @@ private fun createDriver(type: String, connections: Int): ClientDriver = when (t
     "ktor-apache5" -> KtorEngineDriver("ktor-apache5", Apache5)
     "ktor-java" -> KtorEngineDriver("ktor-java", Java)
     "keel" -> error(
-        "keel client driver is not implemented yet — pending the standalone keel-client-http " +
-            "(Phase 12b). Use a reference client (java|okhttp|apache5|ktor-*) for the ceiling.",
+        "keel client driver is not implemented yet — pending the standalone keel HTTP client. " +
+            "Use a reference client (java|okhttp|apache5|ktor-*) for the ceiling.",
     )
     else -> error(
         "Unknown client type '$type' (expected: keel | java | okhttp | apache5 | " +
@@ -338,16 +339,108 @@ private class RunResult(
     val bytesPerOp: Double get() = if (completed == 0L) 0.0 else bytesAllocated.toDouble() / completed
 }
 
-private fun warnOpenLoopUnimplemented() {
+private fun warnOpenLoopNeedsRate() {
     System.err.println(
-        "WARN: --client-mode=open (constant-rate, CO-corrected latency) is not implemented yet; " +
-            "running closed-loop. Latency percentiles below are closed-loop and may under-report the tail.",
+        "WARN: --client-mode=open needs --client-rate=<req/s>; none given, running closed-loop. " +
+            "Latency percentiles below are closed-loop and may under-report the tail.",
     )
 }
 
-/** Picks the concurrency model that matches the driver (coroutines vs threads). */
+/**
+ * Routes to the right load loop: open-loop constant-rate when a rate is given
+ * (CO-corrected latency), otherwise closed-loop in the driver's native model
+ * (coroutines for coroutine-native drivers, threads otherwise).
+ */
 private fun driveDispatch(driver: ClientDriver, targets: List<String>, cc: ClientConfig, warmup: Boolean): RunResult =
-    if (driver.coroutineNative) driveCoroutines(driver, targets, cc, warmup) else drive(driver, targets, cc, warmup)
+    when {
+        cc.mode == "open" && cc.rateRps > 0 -> driveOpenLoop(driver, targets, cc, warmup)
+        driver.coroutineNative -> driveCoroutines(driver, targets, cc, warmup)
+        else -> drive(driver, targets, cc, warmup)
+    }
+
+private const val NANOS_PER_SEC = 1_000_000_000.0
+
+/**
+ * Busy-wait-assisted sleep until [intended] (nanoTime). `parkNanos` alone
+ * oversleeps by whole milliseconds on some platforms (macOS timer coalescing),
+ * which makes a sub-millisecond per-connection schedule fall behind and inflates
+ * the measured tail. Park in <=1ms chunks (re-checking each time to bound a
+ * single oversleep), then busy-spin the last ~60us for precision.
+ */
+private fun awaitUntil(intended: Long) {
+    while (true) {
+        val remaining = intended - System.nanoTime()
+        when {
+            remaining <= 0 -> return
+            remaining > 1_200_000L -> LockSupport.parkNanos(1_000_000L)
+            remaining > 60_000L -> LockSupport.parkNanos(remaining - 60_000L)
+            else -> Thread.onSpinWait()
+        }
+    }
+}
+
+/**
+ * Open-loop constant-rate driver (wrk2 / HdrHistogram model) for
+ * coordinated-omission-free latency. [ClientConfig.connections] worker threads
+ * issue requests on a FIXED schedule at a combined [ClientConfig.rateRps]: the
+ * k-th request of worker `w` has an intended time `t0 + (w + k*N) * (1e9/rate)`,
+ * independent of when earlier requests actually complete. Latency is recorded
+ * from that INTENDED time, not the actual send — so when the client/server can
+ * no longer keep the rate, requests fall behind the fixed schedule and the
+ * recorded tail grows to reflect the queueing delay (the CO correction that a
+ * closed-loop loop hides). A worker parks until its intended time when ahead and
+ * proceeds immediately when behind.
+ *
+ * All drivers are driven through the blocking [ClientDriver.get] here (uniform
+ * across clients); at a sub-saturation rate the per-request bridge cost is
+ * negligible next to the request itself. Pick a rate below the closed-loop max
+ * (open-loop measures latency AT a rate, it does not find the max).
+ */
+private fun driveOpenLoop(driver: ClientDriver, targets: List<String>, cc: ClientConfig, warmup: Boolean): RunResult {
+    val seconds = if (warmup) cc.warmupSec else cc.durationSec
+    val n = cc.connections
+    val intervalNs = NANOS_PER_SEC / cc.rateRps.coerceAtLeast(1) // between successive requests (global)
+    val histogram = Histogram(3)
+    val completed = AtomicLong()
+    val errors = AtomicLong()
+    val t0Holder = AtomicLong()
+    val start = CountDownLatch(1)
+    val done = CountDownLatch(n)
+
+    repeat(n) { worker ->
+        val pinned = if (cc.targetMode == "pinned") targets[worker % targets.size] else null
+        thread(name = "client-openloop-$worker") {
+            start.await()
+            val t0 = t0Holder.get()
+            val deadline = t0 + seconds.toLong() * 1_000_000_000L
+            val local = Histogram(3)
+            var k = 0L
+            while (true) {
+                val intended = t0 + ((worker + k * n) * intervalNs).toLong()
+                if (intended >= deadline) break
+                awaitUntil(intended)
+                try {
+                    driver.get(pinned ?: targets[((worker + k * n) % targets.size).toInt()])
+                    local.recordValue((System.nanoTime() - intended).coerceAtLeast(1)) // from INTENDED time
+                    completed.incrementAndGet()
+                } catch (e: Exception) {
+                    errors.incrementAndGet()
+                }
+                k++
+            }
+            synchronized(histogram) { histogram.add(local) }
+            done.countDown()
+        }
+    }
+    val t0 = System.nanoTime()
+    t0Holder.set(t0)
+    val allocStart = totalAllocatedBytes()
+    start.countDown()
+    done.await()
+    val elapsed = System.nanoTime() - t0
+    val allocated = allocDelta(allocStart)
+    return RunResult(completed.get(), errors.get(), elapsed, histogram, allocated, allocSupported = allocated >= 0)
+}
 
 /**
  * Coroutine model (for coroutine-native drivers): [ClientConfig.connections]
@@ -359,7 +452,7 @@ private fun driveDispatch(driver: ClientDriver, targets: List<String>, cc: Clien
  * dispatcher's pool threads.
  */
 private fun driveCoroutines(driver: ClientDriver, targets: List<String>, cc: ClientConfig, warmup: Boolean): RunResult {
-    if (cc.mode == "open" && !warmup) warnOpenLoopUnimplemented()
+    if (cc.mode == "open" && !warmup) warnOpenLoopNeedsRate()
     val seconds = if (warmup) cc.warmupSec else cc.durationSec
     val budget = if (warmup) 0L else cc.requests.toLong()
     val deadline = System.nanoTime() + seconds.toLong() * 1_000_000_000L
@@ -410,7 +503,7 @@ private fun driveCoroutines(driver: ClientDriver, targets: List<String>, cc: Cli
  * not silently mislabelled.
  */
 private fun drive(driver: ClientDriver, targets: List<String>, cc: ClientConfig, warmup: Boolean): RunResult {
-    if (cc.mode == "open" && !warmup) warnOpenLoopUnimplemented()
+    if (cc.mode == "open" && !warmup) warnOpenLoopNeedsRate()
     val seconds = if (warmup) cc.warmupSec else cc.durationSec
     val budget = if (warmup) 0L else cc.requests.toLong()
     val deadline = System.nanoTime() + seconds.toLong() * 1_000_000_000L

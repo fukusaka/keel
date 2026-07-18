@@ -48,8 +48,10 @@
 #                         macro tier); when set, no fixture is started here
 #
 # Methodology guardrails (coordinated omission, SUT isolation):
-#   - Latency here is CLOSED-loop (coordinated-omission susceptible); the
-#     open-loop constant-rate mode (CO-corrected p99.9) is a later increment.
+#   - Default latency is CLOSED-loop (coordinated-omission susceptible), which is
+#     fine for throughput but under-reports the tail. For trustworthy p99.9 set
+#     BENCH_CLIENT_MODE=open + BENCH_CLIENT_RATE=<req/s below max>: constant-rate,
+#     latency measured from the intended send time (CO-corrected, JVM clients).
 #   - SUT isolation is two-sided: keep the fixture (rust-bench) unsaturated AND
 #     the client host below ~85% CPU, or the number is a fake plateau.
 #   - Record BENCH_RUNS>=3 median, not a single run, for any docs cell.
@@ -69,6 +71,11 @@ TARGET="${BENCH_CLIENT_TARGET:-}"
 # roundrobin (load-balanced fan-out) | pinned (worker i -> host i). Only matters
 # when BENCH_CLIENT_TARGET is a comma-separated multi-host list.
 TARGET_MODE="${BENCH_CLIENT_TARGET_MODE:-roundrobin}"
+# Load model: "closed" (max-throughput loop) or "open" (constant BENCH_CLIENT_RATE
+# req/s, coordinated-omission-corrected latency). Open-loop is JVM-only for now;
+# native reference binaries run closed-loop regardless.
+CLIENT_MODE="${BENCH_CLIENT_MODE:-closed}"
+CLIENT_RATE="${BENCH_CLIENT_RATE:-0}"
 
 FIXTURE_PID=""
 cleanup() { [ -n "$FIXTURE_PID" ] && kill "$FIXTURE_PID" 2>/dev/null || true; }
@@ -201,6 +208,7 @@ for type in $TYPES; do
       java -cp "$CP" io.github.fukusaka.keel.benchmark.JvmMainKt \
         --role=client --client-type="$type" --client-target="$TARGET" \
         --client-target-mode="$TARGET_MODE" \
+        --client-mode="$CLIENT_MODE" --client-rate="$CLIENT_RATE" \
         --client-endpoint="$ENDPOINT" --client-connections="$CONNS" \
         --client-warmup="$WARMUP" --client-duration="$DURATION" 2>/dev/null \
         | grep '|' >> "$tmp" || echo "  run $run for $type failed" >&2
