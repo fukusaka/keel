@@ -66,7 +66,15 @@ public class KeelHttpClient internal constructor(
                 "KeelHttpClient requires a PipelinedChannel connection; " +
                     "got ${channel::class.simpleName} from ${engine::class.simpleName}"
             }
-            val bridge = SuspendMessageBridge(HttpResponse::class)
+            // A complete HttpResponse decoded onto the (unbounded) bridge is
+            // buffered immediately; if the request is cancelled (e.g. a caller
+            // withTimeout) before receiveCatching() takes it, teardown must
+            // release its pooled, recv-buffer-retaining headers — the bridge's
+            // release hook does that for a stranded response.
+            val bridge = SuspendMessageBridge(
+                HttpResponse::class,
+                releaseUndelivered = { it.headers.release() },
+            )
             // Pipeline mutation and the outbound write run on the channel's
             // EventLoop dispatcher, per the pipeline threading contract.
             withContext(channel.ioDispatcher) {
@@ -85,25 +93,36 @@ public class KeelHttpClient internal constructor(
             // recv buffer via addRange; the connection closes in `finally` and
             // releases that buffer. Materialise the fields to a plain,
             // GC-owned HttpHeaders (String values) while the buffer is still
-            // valid, then release the pooled one — this is the application
-            // boundary that fulfils the decoder's release contract.
-            val detachedHeaders = HttpHeaders()
-            response.headers.forEach { name, value -> detachedHeaders.add(name, value) }
-            response.headers.release()
-            return KeelHttpResponse(response.status, detachedHeaders, response.body ?: EMPTY_BODY)
+            // valid, then release the pooled one in a finally — the aggregator
+            // relinquished the head at emit, so this is the sole owner and a
+            // throw mid-materialisation must still fulfil the release contract.
+            try {
+                val detachedHeaders = HttpHeaders()
+                response.headers.forEach { name, value -> detachedHeaders.add(name, value) }
+                return KeelHttpResponse(response.status, detachedHeaders, response.body ?: EMPTY_BODY)
+            } finally {
+                response.headers.release()
+            }
         } finally {
             if (channel is PipelinedChannel) {
-                withContext(NonCancellable + channel.ioDispatcher) {
-                    // A locally-initiated close delivers no peer-FIN, so the
-                    // client-side pipeline would never fire inactive — fire it
-                    // explicitly so codec-held state (e.g. body chunks the
-                    // aggregator retained before a cancellation aborted the
-                    // request mid-response) is released. Idempotent when the
-                    // peer's EOF already fired it.
-                    channel.pipeline.notifyInactive()
+                // Guard the two teardown steps independently: a throwing
+                // notifyInactive() must not skip the channel close (fd leak).
+                try {
+                    withContext(NonCancellable + channel.ioDispatcher) {
+                        // A locally-initiated close delivers no peer-FIN, so the
+                        // client-side pipeline would never fire inactive — fire it
+                        // explicitly so codec-held state (e.g. body chunks the
+                        // aggregator retained before a cancellation aborted the
+                        // request mid-response, or a response stranded on the
+                        // bridge) is released. Idempotent when EOF already fired it.
+                        channel.pipeline.notifyInactive()
+                    }
+                } finally {
+                    channel.close()
                 }
+            } else {
+                channel.close()
             }
-            channel.close()
         }
     }
 
