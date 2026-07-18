@@ -35,6 +35,7 @@ benchmark/rust-bench/target/
 benchmark/rust-bench/Cargo.lock
 benchmark/go-bench/go-bench
 benchmark/go-bench/client-bench
+benchmark/go-bench/client-fasthttp
 benchmark/go-bench/go.sum
 benchmark/swift-bench/.build/
 benchmark/zig-bench/zig-out/
