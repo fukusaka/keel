@@ -38,6 +38,7 @@ benchmark/go-bench/client-bench
 benchmark/go-bench/go.sum
 benchmark/swift-bench/.build/
 benchmark/zig-bench/zig-out/
+benchmark/curl-bench/client
 benchmark/zig-bench/.zig-cache/
 benchmark/wsbench/wsbench
 benchmark/wsbench/go.sum
