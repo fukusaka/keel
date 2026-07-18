@@ -1,0 +1,12 @@
+apache5/hello 9575
+apache5/large 214715
+java-httpclient/hello 14812
+java-httpclient/large 222290
+ktor-apache5/hello 27872
+ktor-apache5/large 441554
+ktor-java/hello 37936
+ktor-java/large 450552
+ktor-okhttp/hello 32007
+ktor-okhttp/large 342761
+okhttp/hello 9615
+okhttp/large 162893
