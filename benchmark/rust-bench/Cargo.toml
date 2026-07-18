@@ -9,6 +9,11 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 tokio = { version = "1", features = ["full"] }
 socket2 = "0.5"
 futures-util = "0.3"
+# Client benchmark (src/bin/client.rs): reqwest = the de-facto Rust HTTP client
+# (hyper-based, keep-alive pool + HTTP/2). default-features off = no TLS backend
+# (loopback http:// only); hdrhistogram for lossless latency percentiles.
+reqwest = { version = "0.12", default-features = false, features = ["http2"] }
+hdrhistogram = "7"
 
 [profile.release]
 lto = true
