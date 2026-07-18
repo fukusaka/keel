@@ -1,7 +1,11 @@
 package io.github.fukusaka.keel.benchmark
 
 import io.ktor.client.HttpClient as KtorHttpClient
+import io.ktor.client.engine.HttpClientEngineFactory
+import io.ktor.client.engine.apache5.Apache5
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.engine.java.Java
+import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsBytes
 import kotlinx.coroutines.Dispatchers
@@ -124,11 +128,42 @@ private interface ClientDriver {
 private fun createDriver(type: String, connections: Int): ClientDriver = when (type) {
     "java" -> JavaHttpClientDriver(connections)
     "ktor-cio" -> KtorCioDriver(connections)
+    // Delegating Ktor engines: they inherit the underlying library's keep-alive
+    // pool + HTTP/2, so — unlike CIO (KTOR-6503) — they reuse connections.
+    "ktor-okhttp" -> KtorEngineDriver("ktor-okhttp", OkHttp)
+    "ktor-apache5" -> KtorEngineDriver("ktor-apache5", Apache5)
+    "ktor-java" -> KtorEngineDriver("ktor-java", Java)
     "keel" -> error(
         "keel client driver is not implemented yet — pending the standalone keel-client-http " +
-            "(Phase 12b). Use --client-type=java or --client-type=ktor-cio for the reference ceiling.",
+            "(Phase 12b). Use --client-type=java|ktor-okhttp|ktor-apache5|ktor-java for the reference ceiling.",
     )
-    else -> error("Unknown client type '$type' (expected: keel | java | ktor-cio)")
+    else -> error(
+        "Unknown client type '$type' " +
+            "(expected: keel | java | ktor-cio | ktor-okhttp | ktor-apache5 | ktor-java)",
+    )
+}
+
+/**
+ * Ktor driver over a *delegating* engine (OkHttp / Apache5 / Java). These wrap a
+ * mature HTTP library, so they inherit its keep-alive connection pool and HTTP/2
+ * support — the pooling-capable A/B references, in contrast to the pure-Kotlin
+ * CIO engine ([KtorCioDriver]) which does not reuse connections (KTOR-6503).
+ * Coroutine-native, so the harness drives it with N concurrent coroutines.
+ */
+private class KtorEngineDriver(
+    override val name: String,
+    engineFactory: HttpClientEngineFactory<*>,
+) : ClientDriver {
+    override val coroutineNative = true
+    private val client = KtorHttpClient(engineFactory)
+
+    override suspend fun getSuspend(url: String): Int = client.get(url).bodyAsBytes().size
+
+    override fun get(url: String): Int = runBlocking { getSuspend(url) }
+
+    override fun close() {
+        client.close()
+    }
 }
 
 private class JavaHttpClientDriver(connections: Int) : ClientDriver {

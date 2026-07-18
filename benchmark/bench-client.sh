@@ -27,8 +27,12 @@
 #   ./benchmark/bench-client.sh
 #
 # Env vars:
-#   BENCH_CLIENT_TYPES    space list of client drivers (default "java ktor-cio";
-#                         "keel" pending the standalone keel-client-http, 12b)
+#   BENCH_CLIENT_TYPES    space list of client drivers (default "java ktor-cio").
+#                         Pooling-capable refs: java (direct java.net.http),
+#                         ktor-java / ktor-okhttp / ktor-apache5 (delegating Ktor
+#                         engines — all reuse keep-alive). ktor-cio churns
+#                         connections (KTOR-6503). "keel" pending the standalone
+#                         keel-client-http (Phase 12b).
 #   BENCH_CLIENT_ENDPOINT fixture path (default /hello; /large for throughput)
 #   BENCH_CLIENT_CONNS    concurrent connections / pool size (default 50)
 #   BENCH_CLIENT_WARMUP   warm-up seconds, discarded (default 3)

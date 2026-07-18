@@ -24,6 +24,9 @@ ktor-server-status-pages = { module = "io.ktor:ktor-server-status-pages", versio
 ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
+ktor-client-apache5 = { module = "io.ktor:ktor-client-apache5", version.ref = "ktor" }
+ktor-client-java = { module = "io.ktor:ktor-client-java", version.ref = "ktor" }
 hdrhistogram = { module = "org.hdrhistogram:HdrHistogram", version.ref = "hdrhistogram" }
 spring-boot-starter-webflux = { module = "org.springframework.boot:spring-boot-starter-webflux", version = "3.5.12" }
 vertx-web = { module = "io.vertx:vertx-web", version = "5.0.8" }
