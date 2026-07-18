@@ -21,6 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `testing-server-http`: release `KeelHttpTestClient`'s pooled response headers on request
+  cancellation / error paths (was leaked when a request was cancelled mid-flight), matching the
+  `keel-client-http` client (#970)
 - `codec-http`: release held server request-body chunks and the head's recv-buffer-retaining
   `HttpHeaders` when a connection closes or errors mid-body (`HttpBodyAggregator` abort paths),
   fixing a pool + recv-buffer leak on abandoned uploads (#963)
