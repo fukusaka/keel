@@ -26,6 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `client-http`: release each response's pooled headers on the connection's EventLoop thread
+  (not the caller's coroutine thread), fixing thread-local header-pool corruption that caused
+  sporadic errors under concurrency on real multi-worker engines (#973)
+- `testing-server-http`: confine `KeelHttpTestClient`'s pooled response-header release to the
+  EventLoop thread, matching the client fix — correct on real multi-worker engines, not only
+  `InMemoryEngine` (#973)
 - `testing-server-http`: release `KeelHttpTestClient`'s pooled response headers on request
   cancellation / error paths (was leaked when a request was cancelled mid-flight), matching the
   `keel-client-http` client (#970)
