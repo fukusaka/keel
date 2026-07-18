@@ -120,16 +120,40 @@ echo "# format: <client><endpoint>|<req/s>|<p50ms>|<p99ms>|<p99.9ms>|<maxms>|<by
 
 median() { sort -t'|' -k2 -n | awk -F'|' '{a[NR]=$0} END{print a[int((NR+1)/2)]}'; }
 
+# Count sockets in TIME_WAIT (ss on Linux, netstat on macOS/BSD).
+count_time_wait() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -tan state time-wait 2>/dev/null | grep -c ':' || echo 0
+  else
+    netstat -an -p tcp 2>/dev/null | grep -c TIME_WAIT || echo 0
+  fi
+}
+
+# Start every run on clean ephemeral ports. A per-request-churning client (Ktor
+# CIO, KTOR-6503) leaves ~10-16k TIME_WAIT sockets per run and self-poisons the
+# next run with BindException; pooling clients leave almost none so this returns
+# immediately. Loopback TIME_WAIT drains in seconds, so this is cheap when clean.
+DRAIN_THRESHOLD="${BENCH_DRAIN_THRESHOLD:-1000}"
+drain_ports() {
+  local tw
+  for _ in $(seq 1 40); do # up to ~120s
+    tw="$(count_time_wait)"
+    [ "${tw:-0}" -lt "$DRAIN_THRESHOLD" ] && return 0
+    sleep 3
+  done
+  echo "  WARN: TIME_WAIT still ${tw} after drain wait (results may be port-starved)" >&2
+}
+
 for type in $TYPES; do
   tmp="$(mktemp)"
   for run in $(seq 1 "$RUNS"); do
+    drain_ports # each run starts on clean ports (no cross-run port poisoning)
     java -cp "$CP" io.github.fukusaka.keel.benchmark.JvmMainKt \
       --role=client --client-type="$type" --client-target="$TARGET" \
       --client-target-mode="$TARGET_MODE" \
       --client-endpoint="$ENDPOINT" --client-connections="$CONNS" \
       --client-warmup="$WARMUP" --client-duration="$DURATION" 2>/dev/null \
       | grep '|' >> "$tmp" || echo "  run $run for $type failed" >&2
-    sleep 2
   done
   [ -s "$tmp" ] && median < "$tmp" || echo "$type: no successful runs" >&2
   rm -f "$tmp"
