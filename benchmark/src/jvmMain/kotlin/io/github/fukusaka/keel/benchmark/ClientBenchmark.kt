@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.benchmark
 
 import io.ktor.client.HttpClient as KtorHttpClient
-import io.ktor.client.engine.HttpClientEngineFactory
 import io.ktor.client.engine.apache5.Apache5
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.engine.java.Java
@@ -9,12 +8,14 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsBytes
 import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.apache.hc.client5.http.classic.methods.HttpGet
 import org.apache.hc.client5.http.impl.classic.HttpClients
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder
 import org.apache.hc.core5.http.io.entity.EntityUtils
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -51,6 +52,7 @@ import kotlin.concurrent.thread
  */
 fun runClientBenchmark(config: BenchmarkConfig) {
     val cc = config.client
+    require(cc.connections >= 1) { "--client-connections must be >= 1 (got ${cc.connections})" }
     val targets = requireTargets(cc)
     targets.forEach { probeReady(it) }
     val driver = createDriver(cc.clientType, cc.connections)
@@ -108,14 +110,15 @@ private fun requireTargets(cc: ClientConfig): List<String> {
 
 /** Fails fast if the external fixture is not reachable before the run starts. */
 private fun probeReady(target: String) {
-    val probe = HttpClient.newHttpClient()
-    val status = try {
-        val req = HttpRequest.newBuilder(URI.create(target)).GET().build()
-        probe.send(req, HttpResponse.BodyHandlers.discarding()).statusCode()
-    } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
-        error("fixture at $target is not reachable (${e.message}); start it first (bench-client.sh does this)")
+    HttpClient.newHttpClient().use { probe ->
+        val status = try {
+            val req = HttpRequest.newBuilder(URI.create(target)).GET().build()
+            probe.send(req, HttpResponse.BodyHandlers.discarding()).statusCode()
+        } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+            error("fixture at $target is not reachable (${e.message}); start it first (bench-client.sh does this)")
+        }
+        require(status in 200..299) { "fixture at $target returned HTTP $status (expected 2xx)" }
     }
-    require(status in 200..299) { "fixture at $target returned HTTP $status (expected 2xx)" }
 }
 
 // --- Drivers ---
@@ -153,10 +156,35 @@ private fun createDriver(type: String, connections: Int): ClientDriver = when (t
     "apache5" -> Apache5Driver(connections)
     "ktor-cio" -> KtorCioDriver(connections)
     // Delegating Ktor engines: they inherit the underlying library's keep-alive
-    // pool + HTTP/2, so — unlike CIO (KTOR-6503) — they reuse connections.
-    "ktor-okhttp" -> KtorEngineDriver("ktor-okhttp", OkHttp)
-    "ktor-apache5" -> KtorEngineDriver("ktor-apache5", Apache5)
-    "ktor-java" -> KtorEngineDriver("ktor-java", Java)
+    // pool + HTTP/2, so — unlike CIO (KTOR-6503) — they reuse connections. Each
+    // engine's pool MUST be sized to [connections]: the library defaults cap
+    // concurrency (OkHttp maxRequestsPerHost=5, Apache maxConnPerRoute default),
+    // which would throttle these drivers far below the others and make an unfair
+    // A/B (measured: ktor-okhttp did not scale from conns=5 to conns=50 until
+    // the pool was sized). java.net.http has no per-host cap, so Java needs none.
+    "ktor-okhttp" -> KtorEngineDriver(
+        "ktor-okhttp",
+        KtorHttpClient(OkHttp) {
+            engine {
+                config {
+                    dispatcher(Dispatcher().apply { maxRequests = connections; maxRequestsPerHost = connections })
+                    connectionPool(ConnectionPool(connections, KEEP_ALIVE_MS, TimeUnit.MILLISECONDS))
+                }
+            }
+        },
+    )
+    "ktor-apache5" -> KtorEngineDriver(
+        "ktor-apache5",
+        KtorHttpClient(Apache5) {
+            engine {
+                configureConnectionManager {
+                    setMaxConnPerRoute(connections)
+                    setMaxConnTotal(connections)
+                }
+            }
+        },
+    )
+    "ktor-java" -> KtorEngineDriver("ktor-java", KtorHttpClient(Java))
     "keel" -> error(
         "keel client driver is not implemented yet — pending the standalone keel HTTP client. " +
             "Use a reference client (java|okhttp|apache5|ktor-*) for the ceiling.",
@@ -220,14 +248,15 @@ private class Apache5Driver(connections: Int) : ClientDriver {
  * mature HTTP library, so they inherit its keep-alive connection pool and HTTP/2
  * support — the pooling-capable A/B references, in contrast to the pure-Kotlin
  * CIO engine ([KtorCioDriver]) which does not reuse connections (KTOR-6503).
- * Coroutine-native, so the harness drives it with N concurrent coroutines.
+ * Coroutine-native, so the harness drives it with N concurrent coroutines. The
+ * client is built by [createDriver] with its engine's pool sized to the
+ * connection count (see the note there — the library defaults would cap it).
  */
 private class KtorEngineDriver(
     override val name: String,
-    engineFactory: HttpClientEngineFactory<*>,
+    private val client: KtorHttpClient,
 ) : ClientDriver {
     override val coroutineNative = true
-    private val client = KtorHttpClient(engineFactory)
 
     override suspend fun getSuspend(url: String): Int = client.get(url).bodyAsBytes().size
 
@@ -358,22 +387,41 @@ private fun driveDispatch(driver: ClientDriver, targets: List<String>, cc: Clien
         else -> drive(driver, targets, cc, warmup)
     }
 
+/**
+ * Loop condition for the closed-loop drivers. When a request budget is set
+ * (`--client-requests`) it OVERRIDES the duration — issue exactly [budget]
+ * requests (ClientConfig.requests' contract) — otherwise run until the duration
+ * [deadline]. [issued] is incremented only in the budget branch (its side effect
+ * must not fire in the time-based path).
+ */
+private fun withinBudget(budget: Long, issued: AtomicLong, deadline: Long): Boolean =
+    if (budget == 0L) System.nanoTime() < deadline else issued.getAndIncrement() < budget
+
 private const val NANOS_PER_SEC = 1_000_000_000.0
+
+/** Park in <=1ms chunks so a single parkNanos oversleep can't desync the schedule. */
+private const val PARK_CHUNK_NS = 1_000_000L
+
+/** Above this remaining time, park a chunk; below it, park the remainder minus the spin window. */
+private const val PARK_CHUNK_THRESHOLD_NS = 1_200_000L
+
+/** Final window busy-spun (not parked) for sub-millisecond pacing precision. */
+private const val SPIN_WINDOW_NS = 60_000L
 
 /**
  * Busy-wait-assisted sleep until [intended] (nanoTime). `parkNanos` alone
  * oversleeps by whole milliseconds on some platforms (macOS timer coalescing),
  * which makes a sub-millisecond per-connection schedule fall behind and inflates
- * the measured tail. Park in <=1ms chunks (re-checking each time to bound a
- * single oversleep), then busy-spin the last ~60us for precision.
+ * the measured tail. Park in chunks (re-checking each time to bound a single
+ * oversleep), then busy-spin the last [SPIN_WINDOW_NS] for precision.
  */
 private fun awaitUntil(intended: Long) {
     while (true) {
         val remaining = intended - System.nanoTime()
         when {
             remaining <= 0 -> return
-            remaining > 1_200_000L -> LockSupport.parkNanos(1_000_000L)
-            remaining > 60_000L -> LockSupport.parkNanos(remaining - 60_000L)
+            remaining > PARK_CHUNK_THRESHOLD_NS -> LockSupport.parkNanos(PARK_CHUNK_NS)
+            remaining > SPIN_WINDOW_NS -> LockSupport.parkNanos(remaining - SPIN_WINDOW_NS)
             else -> Thread.onSpinWait()
         }
     }
@@ -410,26 +458,29 @@ private fun driveOpenLoop(driver: ClientDriver, targets: List<String>, cc: Clien
     repeat(n) { worker ->
         val pinned = if (cc.targetMode == "pinned") targets[worker % targets.size] else null
         thread(name = "client-openloop-$worker") {
-            start.await()
-            val t0 = t0Holder.get()
-            val deadline = t0 + seconds.toLong() * 1_000_000_000L
-            val local = Histogram(3)
-            var k = 0L
-            while (true) {
-                val intended = t0 + ((worker + k * n) * intervalNs).toLong()
-                if (intended >= deadline) break
-                awaitUntil(intended)
-                try {
-                    driver.get(pinned ?: targets[((worker + k * n) % targets.size).toInt()])
-                    local.recordValue((System.nanoTime() - intended).coerceAtLeast(1)) // from INTENDED time
-                    completed.incrementAndGet()
-                } catch (e: Exception) {
-                    errors.incrementAndGet()
+            try {
+                start.await()
+                val t0 = t0Holder.get()
+                val deadline = t0 + seconds.toLong() * 1_000_000_000L
+                val local = Histogram(3)
+                var k = 0L
+                while (true) {
+                    val intended = t0 + ((worker + k * n) * intervalNs).toLong()
+                    if (intended >= deadline) break
+                    awaitUntil(intended)
+                    try {
+                        driver.get(pinned ?: targets[((worker + k * n) % targets.size).toInt()])
+                        local.recordValue((System.nanoTime() - intended).coerceAtLeast(1)) // from INTENDED time
+                        completed.incrementAndGet()
+                    } catch (e: Exception) {
+                        errors.incrementAndGet()
+                    }
+                    k++
                 }
-                k++
+                synchronized(histogram) { histogram.add(local) }
+            } finally {
+                done.countDown() // always, so an Error can't deadlock done.await()
             }
-            synchronized(histogram) { histogram.add(local) }
-            done.countDown()
         }
     }
     val t0 = System.nanoTime()
@@ -470,12 +521,14 @@ private fun driveCoroutines(driver: ClientDriver, targets: List<String>, cc: Cli
                 val pinned = if (cc.targetMode == "pinned") targets[worker % targets.size] else null
                 launch {
                     val local = Histogram(3)
-                    while (System.nanoTime() < deadline && (budget == 0L || issued.getAndIncrement() < budget)) {
+                    while (withinBudget(budget, issued, deadline)) {
                         val t0 = System.nanoTime()
                         try {
                             driver.getSuspend(pinned ?: targets[(pick.getAndIncrement() % targets.size).toInt()])
                             local.recordValue((System.nanoTime() - t0).coerceAtLeast(1))
                             completed.incrementAndGet()
+                        } catch (e: CancellationException) {
+                            throw e // don't swallow cancellation — let structured concurrency unwind
                         } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
                             if (errors.getAndIncrement() < 3) {
                                 System.err.println("  [err] ${e::class.qualifiedName}: ${e.message}")
@@ -519,20 +572,23 @@ private fun drive(driver: ClientDriver, targets: List<String>, cc: ClientConfig,
     repeat(cc.connections) { worker ->
         val pinned = if (cc.targetMode == "pinned") targets[worker % targets.size] else null
         thread(name = "client-worker-$worker") {
-            start.await()
-            val local = Histogram(3)
-            while (System.nanoTime() < deadline && (budget == 0L || issued.getAndIncrement() < budget)) {
-                val t0 = System.nanoTime()
-                try {
-                    driver.get(pinned ?: targets[(pick.getAndIncrement() % targets.size).toInt()])
-                    local.recordValue((System.nanoTime() - t0).coerceAtLeast(1))
-                    completed.incrementAndGet()
-                } catch (e: Exception) {
-                    errors.incrementAndGet()
+            try {
+                start.await()
+                val local = Histogram(3)
+                while (withinBudget(budget, issued, deadline)) {
+                    val t0 = System.nanoTime()
+                    try {
+                        driver.get(pinned ?: targets[(pick.getAndIncrement() % targets.size).toInt()])
+                        local.recordValue((System.nanoTime() - t0).coerceAtLeast(1))
+                        completed.incrementAndGet()
+                    } catch (e: Exception) {
+                        errors.incrementAndGet()
+                    }
                 }
+                synchronized(histogram) { histogram.add(local) }
+            } finally {
+                done.countDown() // always, so an Error can't deadlock done.await()
             }
-            synchronized(histogram) { histogram.add(local) }
-            done.countDown()
         }
     }
     val allocStart = totalAllocatedBytes()
