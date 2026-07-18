@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `client-http`: new `keel-client-http` module — a standalone HTTP/1.1 client on a keel
+  `StreamEngine` via the `keelHttpClient {}` DSL (fresh connect, `http://` only for now) (#969)
 - `codec-http`: add the client-side HTTP/1.1 codec — `HttpRequestEncoder`,
   `HttpResponseDecoder` with RFC 9112 §6.3 response framing,
   `HttpResponseBodyAggregator`, and the `addHttp1ClientCodec` installer (#962)
