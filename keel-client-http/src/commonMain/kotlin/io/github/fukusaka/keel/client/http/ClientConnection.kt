@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.client.http
 
 import io.github.fukusaka.keel.codec.http.HttpRequest
 import io.github.fukusaka.keel.codec.http.HttpResponse
+import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.addHttp1ClientCodec
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.StreamEngine
@@ -59,18 +60,6 @@ internal class ClientConnection private constructor(
                     ?: IllegalStateException("connection closed before a complete response arrived")
                 )
     }
-
-    /**
-     * Whether the connection may be reused after [response]: it must be
-     * keep-alive AND carry explicit framing (`Content-Length` or
-     * `Transfer-Encoding: chunked`). A response with neither is delimited by
-     * connection close, so its connection is already spent.
-     *
-     * Reads [response]'s headers, so call it before releasing them.
-     */
-    fun isReusable(response: HttpResponse): Boolean =
-        response.isKeepAlive &&
-            (response.headers.contentLength != null || response.headers.isChunked)
 
     /**
      * Tears the connection down: fires `inactive` on the pipeline (a
@@ -135,6 +124,30 @@ internal class ClientConnection private constructor(
             } finally {
                 channel.close()
             }
+        }
+
+        /**
+         * Whether the connection may be reused after [response]: it must be
+         * keep-alive AND the response's body end must be unambiguous, so the
+         * client knows where the next response begins.
+         *
+         * The end is determinate when the status is bodyless by definition
+         * (204 / 304 — no body regardless of headers) or the response carries
+         * explicit framing (`Content-Length` or `Transfer-Encoding: chunked`).
+         * A response with none of these is delimited by connection close, so
+         * its connection is already spent and must not be pooled.
+         *
+         * Reads [response]'s headers, so call it before releasing them. Pure —
+         * takes no connection state — so a pool can decide reuse from the
+         * response alone.
+         */
+        fun isReusable(response: HttpResponse): Boolean {
+            if (!response.isKeepAlive) return false
+            val bodyless = response.status == HttpStatus.NO_CONTENT ||
+                response.status == HttpStatus.NOT_MODIFIED
+            return bodyless ||
+                response.headers.contentLength != null ||
+                response.headers.isChunked
         }
     }
 }
