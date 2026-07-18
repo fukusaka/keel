@@ -203,7 +203,6 @@ data class BenchmarkConfig(
                     "client-mode" -> client = client.copy(mode = value)
                     "client-rate" -> client = client.copy(rateRps = value.toInt())
                     "client-target" -> client = client.copy(targetUrl = value)
-                    "fixture-engine" -> client = client.copy(fixtureEngine = value)
                     // Socket options
                     "tcp-nodelay" -> socket = socket.copy(tcpNoDelay = value.toBooleanStrict())
                     "reuse-address" -> socket = socket.copy(reuseAddress = value.toBooleanStrict())

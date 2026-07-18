@@ -30,10 +30,10 @@ package io.github.fukusaka.keel.benchmark
  *   [rateRps]) measures latency without coordinated omission (wrk2 model).
  *   Latency claims must come from `open`.
  * @property rateRps target requests/sec for `open` mode (0 = unset).
- * @property targetUrl external fixture URL; when null the harness starts an
- *   in-process keel server fixture ([fixtureEngine]) on loopback.
- * @property fixtureEngine in-process fixture server engine when [targetUrl] is
- *   null (a `server-http-*` engine; must be a keel server with headroom).
+ * @property targetUrl **required** fixture URL, pointing at a SEPARATE fixture
+ *   process (e.g. rust-bench on loopback). The harness only connects; it never
+ *   starts a fixture in-process (that would share the client JVM and
+ *   contaminate the numbers — `bench-client.sh` manages the fixture lifecycle).
  */
 data class ClientConfig(
     val clientType: String = "keel",
@@ -45,5 +45,4 @@ data class ClientConfig(
     val mode: String = "closed",
     val rateRps: Int = 0,
     val targetUrl: String? = null,
-    val fixtureEngine: String = "server-http-nio",
 )

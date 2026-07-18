@@ -4,6 +4,9 @@ import io.ktor.client.HttpClient as KtorHttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsBytes
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.HdrHistogram.Histogram
 import java.lang.management.ManagementFactory
@@ -25,75 +28,68 @@ import kotlin.concurrent.thread
  *
  * First increment (Phase 12b-bench): closed-loop throughput + HdrHistogram
  * latency + per-request allocation (`ThreadMXBean.getThreadAllocatedBytes`,
- * the same mechanism JMH's `gc.alloc.rate.norm` uses), against an in-process
- * keel server fixture on loopback, with Java `HttpClient` and Ktor `CIO`
- * reference drivers. The keel client driver is a stub until the standalone
- * `keel-client-http` (Phase 12b) lands. Open-loop constant-rate mode (for
- * coordinated-omission-free latency) and the JMH allocation harness are
- * scaffolded / follow in later increments.
+ * the same mechanism JMH's `gc.alloc.rate.norm` uses), driving a SEPARATE
+ * fixture process over loopback (`--client-target`; `bench-client.sh` runs
+ * rust-bench by default — no shared JVM to contaminate the numbers), with
+ * Java `HttpClient` and Ktor `CIO` reference drivers. The keel client driver
+ * is a stub until the standalone `keel-client-http` (Phase 12b) lands.
+ * Open-loop constant-rate mode (for coordinated-omission-free latency) and the
+ * JMH allocation harness are scaffolded / follow in later increments.
  */
 fun runClientBenchmark(config: BenchmarkConfig) {
     val cc = config.client
-    val (targetUrl, stopFixture) = resolveTarget(config)
+    val targetUrl = requireTarget(cc)
+    probeReady(targetUrl)
+    val driver = createDriver(cc.clientType, cc.connections)
     try {
-        val driver = createDriver(cc.clientType, cc.connections)
-        try {
-            System.err.println(
-                "client bench: type=${driver.name} target=$targetUrl conns=${cc.connections} " +
-                    "mode=${cc.mode} warmup=${cc.warmupSec}s duration=${cc.durationSec}s",
-            )
-            // Warm-up: JIT + connection-pool warm; results discarded.
-            if (cc.warmupSec > 0) {
-                drive(driver, targetUrl, cc, warmup = true)
-            }
-            val result = drive(driver, targetUrl, cc, warmup = false)
-            printReport(cc, driver.name, result)
-        } finally {
-            driver.close()
+        System.err.println(
+            "client bench: type=${driver.name} target=$targetUrl conns=${cc.connections} " +
+                "mode=${cc.mode} warmup=${cc.warmupSec}s duration=${cc.durationSec}s",
+        )
+        // Warm-up: JIT + connection-pool warm; results discarded.
+        if (cc.warmupSec > 0) {
+            driveDispatch(driver, targetUrl, cc, warmup = true)
         }
+        val result = driveDispatch(driver, targetUrl, cc, warmup = false)
+        printReport(cc, driver.name, result)
     } finally {
-        stopFixture()
+        driver.close()
     }
 }
 
-// --- Fixture resolution ---
+// --- Fixture target ---
 
 /**
- * Returns the target URL to drive plus a stop lambda. When
- * [ClientConfig.targetUrl] is set, uses that external fixture (no-op stop);
- * otherwise starts an in-process keel server fixture ([ClientConfig.fixtureEngine])
- * on [BenchmarkConfig.port] and waits until it answers.
+ * Resolves the fixture URL from the required `--client-target`. The fixture is
+ * a SEPARATE process the harness only connects to (`bench-client.sh` manages
+ * its lifecycle) — an in-process fixture is deliberately not supported: sharing
+ * the client's JVM (heap / GC / CPU / thread scheduler) would contaminate the
+ * client's throughput, latency, and especially its per-request allocation (the
+ * fixture's allocations would pollute the same `ThreadMXBean` counters). The
+ * default fixture is `rust-bench` (axum / hyper / tokio: separate OS process,
+ * no JVM, no GC/JIT, high headroom), matching the neutral-server practice of
+ * Ktor's and OkHttp's client benchmarks.
  */
-private fun resolveTarget(config: BenchmarkConfig): Pair<String, () -> Unit> {
-    val cc = config.client
-    cc.targetUrl?.let { return it.trimEnd('/') + cc.endpoint to {} }
-
-    val engines = engineRegistry()
-    val fixture = engines[cc.fixtureEngine]
-        ?: error("Unknown fixture engine '${cc.fixtureEngine}'. Available: ${engines.keys.joinToString(", ")}")
-    val fixtureConfig = config.copy(engine = cc.fixtureEngine, role = "server")
-    val stop = fixture.start(fixtureConfig)
-    val base = "http://127.0.0.1:${config.port}"
-    waitForFixture(base + cc.endpoint)
-    return base + cc.endpoint to stop
+private fun requireTarget(cc: ClientConfig): String {
+    val url = cc.targetUrl
+        ?: error(
+            "client bench requires --client-target=<url> pointing at a SEPARATE fixture process " +
+                "(e.g. rust-bench on loopback). bench-client.sh starts / stops the fixture. " +
+                "In-process fixtures are unsupported: sharing the client JVM contaminates the numbers.",
+        )
+    return url.trimEnd('/') + cc.endpoint
 }
 
-/** Polls the fixture URL until it responds (or fails after a bounded wait). */
-private fun waitForFixture(url: String) {
+/** Fails fast if the external fixture is not reachable before the run starts. */
+private fun probeReady(target: String) {
     val probe = HttpClient.newHttpClient()
-    val deadline = System.nanoTime() + 30_000_000_000L // 30s
-    var lastError: Exception? = null
-    while (System.nanoTime() < deadline) {
-        try {
-            val req = HttpRequest.newBuilder(URI.create(url)).GET().build()
-            val resp = probe.send(req, HttpResponse.BodyHandlers.discarding())
-            if (resp.statusCode() in 200..299) return
-        } catch (e: Exception) {
-            lastError = e
-        }
-        Thread.sleep(100)
+    val status = try {
+        val req = HttpRequest.newBuilder(URI.create(target)).GET().build()
+        probe.send(req, HttpResponse.BodyHandlers.discarding()).statusCode()
+    } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+        error("fixture at $target is not reachable (${e.message}); start it first (bench-client.sh does this)")
     }
-    error("Fixture at $url did not become ready within 30s (last error: $lastError)")
+    require(status in 200..299) { "fixture at $target returned HTTP $status (expected 2xx)" }
 }
 
 // --- Drivers ---
@@ -108,7 +104,20 @@ private fun waitForFixture(url: String) {
  */
 private interface ClientDriver {
     val name: String
+
+    /**
+     * True for a coroutine-native engine (Ktor). The harness then drives it
+     * with N concurrent coroutines ([getSuspend]) instead of N blocking OS
+     * threads, so a coroutine client is not penalised by a thread-blocking
+     * loop — the fair, model-matched comparison.
+     */
+    val coroutineNative: Boolean get() = false
+
     fun get(url: String): Int
+
+    /** Suspend GET for the coroutine model; bridges to blocking [get] by default. */
+    suspend fun getSuspend(url: String): Int = get(url)
+
     fun close() {}
 }
 
@@ -140,28 +149,40 @@ private class JavaHttpClientDriver(connections: Int) : ClientDriver {
     }
 }
 
+/** Idle keep-alive window for the CIO endpoint pool (ms); longer than any run. */
+private const val KEEP_ALIVE_MS = 30_000L
+
 /**
- * Ktor `CIO` reference driver.
+ * Ktor `CIO` reference driver — coroutine-native ([coroutineNative] = true), so
+ * the harness drives it with N concurrent coroutines rather than N blocking OS
+ * threads. This is the model-matched comparison: a coroutine client must not be
+ * penalised by a thread-blocking loop (common client-benchmark practice holds
+ * the concurrency model fixed across engines).
  *
- * **Known limitation (next-increment refinement):** the harness owns a
- * thread-per-connection *blocking* loop and this driver bridges each request
- * with `runBlocking`. That model is a poor fit for a coroutine-native engine —
- * N blocking threads contending the CIO dispatcher throttle throughput and can
- * surface spurious request errors, so the numbers are NOT yet apples-to-apples
- * with the Java driver. Common client-benchmark practice is explicit that the
- * driver's concurrency model must be held fixed across engines (else a
- * coroutine-native client is penalised by a thread-blocking harness); the fair
- * fix is a unified coroutine concurrency model (launch N
- * coroutines on the engine's dispatcher rather than N OS threads), planned for
- * the next increment. Kept here to exercise the harness's multi-driver wiring.
+ * CAVEAT — the CIO client does NOT reuse keep-alive connections under
+ * concurrency (KTOR-6503, open against 2.3.6 / 3.3.0; still reproduces on
+ * 3.4.1). It opens a fresh TCP connection per request, exhausting ephemeral
+ * ports: measured clean only at conns=1 (sequential reuse of one idle socket),
+ * churning from conns=2 and collapsing by conns=8. The endpoint pool settings
+ * below are the correct config for when the bug is fixed but do NOT currently
+ * prevent the churn (neither does enabling pipelining). CIO's numbers here
+ * therefore reflect connection churn, not steady-state client cost — the
+ * pooling-capable A/B reference is Java `HttpClient` (OkHttp / Apache to come).
  */
 private class KtorCioDriver(connections: Int) : ClientDriver {
     override val name = "ktor-cio"
+    override val coroutineNative = true
     private val client = KtorHttpClient(CIO) {
-        engine { maxConnectionsCount = connections }
+        engine {
+            maxConnectionsCount = connections
+            endpoint.maxConnectionsPerRoute = connections
+            endpoint.keepAliveTime = KEEP_ALIVE_MS
+        }
     }
 
-    override fun get(url: String): Int = runBlocking { client.get(url).bodyAsBytes().size }
+    override suspend fun getSuspend(url: String): Int = client.get(url).bodyAsBytes().size
+
+    override fun get(url: String): Int = runBlocking { getSuspend(url) }
 
     override fun close() {
         client.close()
@@ -183,6 +204,63 @@ private class RunResult(
     val bytesPerOp: Double get() = if (completed == 0L) 0.0 else bytesAllocated.toDouble() / completed
 }
 
+private fun warnOpenLoopUnimplemented() {
+    System.err.println(
+        "WARN: --client-mode=open (constant-rate, CO-corrected latency) is not implemented yet; " +
+            "running closed-loop. Latency percentiles below are closed-loop and may under-report the tail.",
+    )
+}
+
+/** Picks the concurrency model that matches the driver (coroutines vs threads). */
+private fun driveDispatch(driver: ClientDriver, url: String, cc: ClientConfig, warmup: Boolean): RunResult =
+    if (driver.coroutineNative) driveCoroutines(driver, url, cc, warmup) else drive(driver, url, cc, warmup)
+
+/**
+ * Coroutine model (for coroutine-native drivers): [ClientConfig.connections]
+ * concurrent coroutines on [Dispatchers.Default], each looping a suspend GET.
+ * This is the fair comparison for a coroutine client — it is not throttled by
+ * OS-thread blocking. Per-request allocation is reported as `n/a` here: under
+ * coroutine dispatch the work spreads across pool threads, so the per-thread
+ * `ThreadMXBean` sum used by [drive] is unreliable; the dedicated JMH
+ * allocation harness (a later increment) measures coroutine-client alloc.
+ */
+private fun driveCoroutines(driver: ClientDriver, url: String, cc: ClientConfig, warmup: Boolean): RunResult {
+    if (cc.mode == "open" && !warmup) warnOpenLoopUnimplemented()
+    val seconds = if (warmup) cc.warmupSec else cc.durationSec
+    val budget = if (warmup) 0L else cc.requests.toLong()
+    val deadline = System.nanoTime() + seconds.toLong() * 1_000_000_000L
+    val histogram = Histogram(3)
+    val completed = AtomicLong()
+    val errors = AtomicLong()
+    val issued = AtomicLong()
+
+    val runStart = System.nanoTime()
+    runBlocking(Dispatchers.Default) {
+        coroutineScope {
+            repeat(cc.connections) {
+                launch {
+                    val local = Histogram(3)
+                    while (System.nanoTime() < deadline && (budget == 0L || issued.getAndIncrement() < budget)) {
+                        val t0 = System.nanoTime()
+                        try {
+                            driver.getSuspend(url)
+                            local.recordValue((System.nanoTime() - t0).coerceAtLeast(1))
+                            completed.incrementAndGet()
+                        } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+                            if (errors.getAndIncrement() < 3) {
+                                System.err.println("  [err] ${e::class.qualifiedName}: ${e.message}")
+                            }
+                        }
+                    }
+                    synchronized(histogram) { histogram.add(local) }
+                }
+            }
+        }
+    }
+    val elapsed = System.nanoTime() - runStart
+    return RunResult(completed.get(), errors.get(), elapsed, histogram, 0L, allocSupported = false)
+}
+
 /**
  * Closed-loop: [ClientConfig.connections] worker threads each loop a blocking
  * GET as fast as possible until the deadline (or the total request budget).
@@ -195,12 +273,7 @@ private class RunResult(
  * not silently mislabelled.
  */
 private fun drive(driver: ClientDriver, url: String, cc: ClientConfig, warmup: Boolean): RunResult {
-    if (cc.mode == "open" && !warmup) {
-        System.err.println(
-            "WARN: --client-mode=open (constant-rate, CO-corrected latency) is not implemented yet; " +
-                "running closed-loop. Latency percentiles below are closed-loop and may under-report the tail.",
-        )
-    }
+    if (cc.mode == "open" && !warmup) warnOpenLoopUnimplemented()
     val threadBean = ManagementFactory.getThreadMXBean() as? com.sun.management.ThreadMXBean
     val allocSupported = threadBean?.isThreadAllocatedMemorySupported == true
     val seconds = if (warmup) cc.warmupSec else cc.durationSec
