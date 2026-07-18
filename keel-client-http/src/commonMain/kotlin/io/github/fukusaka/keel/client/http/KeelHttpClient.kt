@@ -4,7 +4,7 @@ import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpRequest
-import io.github.fukusaka.keel.core.StreamEngine
+import kotlinx.coroutines.CancellationException
 
 /**
  * A native HTTP/1.1 client built directly on a keel [StreamEngine] — the
@@ -13,16 +13,22 @@ import io.github.fukusaka.keel.core.StreamEngine
  * Obtain one with the [keelHttpClient] DSL. The [engine] is owned by the
  * caller and is never closed by the client.
  *
- * **Fresh connect**: every request opens a new connection with
- * [StreamEngine.connect], drives one request/response through the
- * production client codec ([addHttp1ClientCodec] installs
- * `HttpRequestEncoder` / `HttpResponseDecoder` /
- * `HttpResponseBodyAggregator`), and closes the connection. There is no
- * connection pool or keep-alive reuse yet — that is a later addition. This
- * is the honest baseline for connection-setup cost.
+ * **Keep-alive pooling**: a request leases a connection from the
+ * [ConnectionPool] — reusing an idle keep-alive connection for its route
+ * (`host:port`) when one is available, otherwise opening a fresh one — and
+ * returns it to the pool afterward if the response left the connection
+ * reusable (keep-alive with a determinate body end). A response that is not
+ * reusable, or a failed exchange, closes the connection instead.
+ *
+ * **Stale-connection retry**: a pooled connection can be closed by the peer
+ * while it sits idle; if a *reused* connection fails and the request method
+ * is idempotent, the request is retried once on a fresh connection.
  *
  * **Scheme**: `http://` only. An `https://` URL throws
  * [UnsupportedOperationException] until client TLS lands.
+ *
+ * **Lifecycle**: [close] closes every pooled connection. The engine is owned
+ * by the caller and is never closed by the client.
  *
  * **Timeout**: [request] suspends until the complete response has been
  * decoded or the connection closes / errors — there is no built-in
@@ -30,7 +36,7 @@ import io.github.fukusaka.keel.core.StreamEngine
  * peer would otherwise suspend the caller indefinitely).
  */
 public class KeelHttpClient internal constructor(
-    private val engine: StreamEngine,
+    private val pool: ConnectionPool,
 ) {
 
     /**
@@ -52,27 +58,59 @@ public class KeelHttpClient internal constructor(
         body: ByteArray? = null,
     ): KeelHttpResponse {
         val parsed = RequestUrl.parse(url)
-        val connection = ClientConnection.open(engine, RouteKey(parsed.host, parsed.port))
+        val route = RouteKey(parsed.host, parsed.port)
+        val request = buildRequest(method, parsed, headers, body)
+        val lease = pool.lease(route)
         try {
-            val response = connection.exchange(buildRequest(method, parsed, headers, body))
-            // The decoder's zero-copy headers are pooled and view the retained
-            // recv buffer via addRange; the connection is torn down in the outer
-            // finally, releasing that buffer. Materialise the fields to a plain,
-            // GC-owned HttpHeaders (String values) while the buffer is still
-            // valid, then release the pooled one in a finally so a throw
-            // mid-materialisation still fulfils the decoder's release contract.
-            try {
+            return roundTrip(lease.connection, request)
+        } catch (e: CancellationException) {
+            throw e // never retry a cancellation — honour the caller's timeout / scope
+        } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+            // A pooled connection can be closed by the peer while it sat idle, so
+            // a *reused* connection failing usually means it was stale (the failed
+            // one is already closed by roundTrip). Retry once on a fresh connection
+            // for an idempotent request; a fresh connection failing is a real error.
+            if (lease.reused && method.isIdempotent) {
+                return roundTrip(pool.openFresh(route), request)
+            }
+            throw e
+        }
+    }
+
+    /**
+     * Runs one request/response on [connection], materialises the response,
+     * and disposes the connection: on success it is [released][ConnectionPool.release]
+     * to the pool (kept if reusable, else closed); on any failure it is closed.
+     */
+    private suspend fun roundTrip(connection: ClientConnection, request: HttpRequest): KeelHttpResponse {
+        var disposed = false
+        try {
+            val response = connection.exchange(request)
+            // Decide reuse before releasing the pooled headers (isReusable reads them).
+            val reusable = ClientConnection.isReusable(response)
+            // The decoder's zero-copy headers view the retained recv buffer; copy the
+            // fields to a plain, GC-owned HttpHeaders, then release the pooled one in a
+            // finally so a throw mid-materialisation still fulfils the release contract.
+            val result = try {
                 val detachedHeaders = HttpHeaders()
                 response.headers.forEach { name, value -> detachedHeaders.add(name, value) }
-                return KeelHttpResponse(response.status, detachedHeaders, response.body ?: EMPTY_BODY)
+                KeelHttpResponse(response.status, detachedHeaders, response.body ?: EMPTY_BODY)
             } finally {
                 response.headers.release()
             }
+            pool.release(connection, reusable)
+            disposed = true
+            return result
         } finally {
-            // One connection per request, always closed. A connection pool will
-            // return a reusable connection here instead of closing it.
-            connection.close()
+            // Exchange or materialisation failed before the connection was released
+            // to the pool — close it rather than pooling a broken connection.
+            if (!disposed) connection.close()
         }
+    }
+
+    /** Closes every pooled connection. The caller-owned engine is not closed. */
+    public suspend fun close() {
+        pool.close()
     }
 
     /** Sends a `GET` request to [url]. */
