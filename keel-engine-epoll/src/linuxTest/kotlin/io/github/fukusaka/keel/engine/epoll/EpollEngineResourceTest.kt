@@ -11,11 +11,28 @@ import kotlinx.coroutines.withTimeout
 import platform.posix.close
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
+/**
+ * Resource-leak coverage for [EpollEngine], driven through real sockets.
+ *
+ * Leaks are detected with [TrackingAllocator.outstandingCount] — the allocator
+ * knows exactly which buffers were handed out and returned, so a single
+ * unreleased 64-byte buffer fails the assertion deterministically.
+ *
+ * **Do not add GC-heap-size assertions here.** A `GC heap size does not grow`
+ * test lived here and was removed (2026-07-19) after measurement showed it
+ * could not work: pooled `IoBuf` memory is not on the Kotlin/Native GC heap, so
+ * retaining 6.4MB of buffers moved the reported heap by 0 bytes while the test
+ * still passed. It also sampled the heap mid-reclaim, which made its "growth"
+ * swing by ±177MB against a 512KB threshold — that is why it failed at random
+ * on loaded CI runners and passed locally. Settling the GC made the number
+ * deterministic but no more meaningful: it tracks GC bookkeeping, not buffer
+ * ownership.
+ */
 @OptIn(ExperimentalForeignApi::class)
 class EpollEngineResourceTest {
+
 
     // --- Resource leak detection ---
 
@@ -120,71 +137,6 @@ class EpollEngineResourceTest {
                 0, tracker.outstandingCount,
                 "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
             )
-        }
-    }
-
-    // --- GC heap verification ---
-
-    @OptIn(kotlin.native.runtime.NativeRuntimeApi::class, ExperimentalStdlibApi::class)
-    @Test
-    fun `GC heap size does not grow after repeated echo cycles`() = runBlocking {
-        withTimeout(5.seconds) {
-            val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
-            val port = (server.localAddress as InetSocketAddress).port
-
-            // Warm up
-            val clientFd = connectRawClient(port)
-            val ch = server.accept()
-            rawWrite(clientFd, "warmup")
-            val warmBuf = DefaultAllocator.allocate(64)
-            ch.read(warmBuf)
-            warmBuf.release()
-
-            // Baseline GC
-            kotlin.native.runtime.GC.collect()
-            val baselineInfo = kotlin.native.runtime.GC.lastGCInfo
-            val baselineHeap = baselineInfo?.memoryUsageAfter?.get("heap")?.totalObjectsSizeBytes ?: 0L
-
-            // Run 100 echo cycles
-            repeat(100) {
-                rawWrite(clientFd, "test")
-                val buf = DefaultAllocator.allocate(64)
-                val n = ch.read(buf)
-                if (n > 0) {
-                    ch.write(buf)
-                    ch.flush()
-                }
-            }
-            rawRead(clientFd, 400)
-
-            // Post-test GC
-            kotlin.native.runtime.GC.collect()
-            val afterInfo = kotlin.native.runtime.GC.lastGCInfo
-            val afterHeap = afterInfo?.memoryUsageAfter?.get("heap")?.totalObjectsSizeBytes ?: 0L
-
-            // Heap growth tolerance: fixed 512KB absolute increase.
-            // After GC.collect(), all IoBuf and coroutine temporaries
-            // from the 100 echo cycles should be fully reclaimed. Remaining
-            // growth comes from GC internal state (mark bitmaps, free lists),
-            // coroutine scheduler caches, and epoll EventLoop bookkeeping.
-            // 512KB is generous enough to absorb these, but tight enough to
-            // catch a real leak (e.g., unreleased IoBuf = 64 bytes * 100
-            // = 6.4KB, or retained pendingWrites = much larger).
-            // Using absolute size rather than percentage because percentage
-            // is too lenient for large heaps and too strict for small heaps.
-            val heapGrowthTolerance = 512L * 1024
-            val maxAllowed = baselineHeap + heapGrowthTolerance
-            assertTrue(
-                afterHeap <= maxAllowed,
-                "Heap grew from $baselineHeap to $afterHeap bytes after 100 echo cycles " +
-                    "(tolerance: ${heapGrowthTolerance / 1024}KB). Possible memory leak.",
-            )
-
-            ch.close()
-            close(clientFd)
-            server.close()
-            engine.close()
         }
     }
 
