@@ -28,7 +28,9 @@ import kotlin.time.TestTimeSource
 
 /**
  * Tests for [ConnectionPool] keep-alive reuse, idle eviction, cap, and
- * lifecycle, driven against a live `keelHttpServer` on an [InMemoryEngine].
+ * lifecycle, driven against a live server on an [InMemoryEngine] — a
+ * `keelHttpServer` for the pool-level cases, and a raw keep-alive pipeline
+ * server (with a per-connection accept counter) for the end-to-end reuse case.
  *
  * The pool's idle set has no public accessor: every assertion observes the
  * pool's behaviour instead — whether a lease is [Lease.reused], whether a
