@@ -6,9 +6,12 @@
 // (name=swift-nsurlsession). macOS-only.
 //
 // Line format: <name><endpoint>|<rps>|<p50ms>|<p99ms>|<p99.9ms>|<maxms>|<b/op>|<errors>
-// bytes/op is n/a for native clients; percentiles are exact (sorted samples).
+// bytes/op is n/a for native clients; percentiles use HdrHistogram (3
+// significant figures), the same method as the JVM / Rust / Go / C drivers, so
+// the reported p50/p99/p99.9 are directly comparable.
 
 import Foundation
+import Histogram
 
 struct Config {
     var targets: [String] // full URLs (base + endpoint)
@@ -61,7 +64,7 @@ func parse() -> Config {
 // otherwise each worker round-robins deterministically (its k-th request goes to
 // target (worker + k*C) % T), giving even per-request distribution across targets
 // with no shared counter — a single target makes both identical.
-func runPhase(session: URLSession, urls: [URL], cfg: Config, secs: Int) async -> (rps: Double, lat: [Int64], errors: Int) {
+func runPhase(session: URLSession, urls: [URL], cfg: Config, secs: Int) async -> (rps: Double, lat: Histogram<UInt64>, errors: Int) {
     let deadlineNs = DispatchTime.now().uptimeNanoseconds + UInt64(secs) * 1_000_000_000
     let startNs = DispatchTime.now().uptimeNanoseconds
     let conns = cfg.connections
@@ -101,14 +104,15 @@ func runPhase(session: URLSession, urls: [URL], cfg: Config, secs: Int) async ->
         return (lat: allLat, errors: totErr, completed: totComp)
     }
     let elapsed = Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1e9
-    let sorted = result.lat.sorted()
+    var hist = Histogram<UInt64>(numberOfSignificantValueDigits: .three)
+    for v in result.lat { _ = hist.record(UInt64(max(1, v))) }
     let rps = elapsed > 0 ? Double(result.completed) / elapsed : 0
-    return (rps, sorted, result.errors)
+    return (rps, hist, result.errors)
 }
 
-func pctMs(_ sorted: [Int64], _ q: Double) -> Double {
-    if sorted.isEmpty { return 0 }
-    return Double(sorted[Int(q * Double(sorted.count - 1))]) / 1e6
+// q is a percentile in 0...100.
+func pctMs(_ hist: Histogram<UInt64>, _ q: Double) -> Double {
+    return Double(hist.valueAtPercentile(q)) / 1e6
 }
 
 let name = "swift-nsurlsession"
@@ -138,7 +142,7 @@ if cfg.warmup > 0 {
     _ = await runPhase(session: session, urls: urls, cfg: cfg, secs: cfg.warmup)
 }
 let (rps, lat, errors) = await runPhase(session: session, urls: urls, cfg: cfg, secs: cfg.duration)
-let maxMs = lat.isEmpty ? 0.0 : Double(lat[lat.count - 1]) / 1e6
+let maxMs = Double(lat.max) / 1e6
 print(String(format: "%@%@|%.0f|%.3f|%.3f|%.3f|%.3f|n/a|%ld",
              name, cfg.endpoint, rps,
-             pctMs(lat, 0.50), pctMs(lat, 0.99), pctMs(lat, 0.999), maxMs, errors))
+             pctMs(lat, 50), pctMs(lat, 99), pctMs(lat, 99.9), maxMs, errors))
