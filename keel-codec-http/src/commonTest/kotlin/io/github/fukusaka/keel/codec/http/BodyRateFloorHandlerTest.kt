@@ -77,6 +77,19 @@ class BodyRateFloorHandlerTest {
     }
 
     @Test
+    fun `removing the handler disarms the in-flight window check`() {
+        val p = pipelineWith(MIN_RATE)
+        p.notifyRead(body(REQUIRED))
+        // A protocol switch swaps out the HTTP codec mid-body (the WebSocket
+        // upgrade does exactly this). The window check closes the channel, so a
+        // check left armed would fire at a connection that no longer carries an
+        // HTTP body — detaching the handler must disarm it.
+        p.remove("body-rate-floor")
+        assertTrue(scheduled[0].handle.cancelled, "removal must disarm the window check")
+        assertFalse(transport.closed, "removal itself must not close the channel")
+    }
+
+    @Test
     fun `further body chunks before the first check do not arm a second check`() {
         val p = pipelineWith(MIN_RATE)
         p.notifyRead(body(REQUIRED))

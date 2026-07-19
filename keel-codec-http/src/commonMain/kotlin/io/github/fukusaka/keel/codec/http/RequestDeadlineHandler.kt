@@ -89,11 +89,27 @@ class RequestDeadlineHandler(
     }
 
     override fun onInactive(ctx: PipelineHandlerContext) {
+        cancelDeadlines()
+        ctx.propagateInactive()
+    }
+
+    /**
+     * Disarms on removal. A scheduled deadline closes the **channel** — the task
+     * holds the channel, not this handler's place in the pipeline — so a handler
+     * detached while a deadline is still armed would keep an HTTP request
+     * deadline pointed at a connection that is no longer serving that request.
+     * A protocol switch that swaps out the HTTP codec (the WebSocket upgrade)
+     * removes this stage exactly in that state.
+     */
+    override fun handlerRemoved(ctx: PipelineHandlerContext) {
+        cancelDeadlines()
+    }
+
+    private fun cancelDeadlines() {
         headerDeadline?.cancel()
         headerDeadline = null
         requestDeadline?.cancel()
         requestDeadline = null
-        ctx.propagateInactive()
     }
 
     /**

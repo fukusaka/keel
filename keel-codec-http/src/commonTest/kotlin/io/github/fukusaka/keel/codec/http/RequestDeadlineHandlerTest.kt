@@ -82,6 +82,22 @@ class RequestDeadlineHandlerTest {
         assertTrue(transport.closed, "an elapsed header deadline must force-close the slow-header peer")
     }
 
+    // --- Removal (protocol switch) ---
+
+    @Test
+    fun `removing the handler disarms the in-flight deadlines`() {
+        val p = pipelineWith(HEADER_TIMEOUT, REQUEST_TIMEOUT)
+        p.notifyUserEvent(HttpRequestStarted)
+        // A protocol switch swaps out the HTTP codec mid-request (the WebSocket
+        // upgrade does exactly this). The scheduled task closes the channel, so a
+        // deadline left armed would fire at a connection no longer serving that
+        // request — detaching the handler must disarm it.
+        p.remove("request-deadline")
+        assertTrue(byTimeout(HEADER_TIMEOUT).handle.cancelled, "removal must disarm the header deadline")
+        assertTrue(byTimeout(REQUEST_TIMEOUT).handle.cancelled, "removal must disarm the request-total deadline")
+        assertFalse(transport.closed, "removal itself must not close the channel")
+    }
+
     // --- Request-total deadline ---
 
     @Test
