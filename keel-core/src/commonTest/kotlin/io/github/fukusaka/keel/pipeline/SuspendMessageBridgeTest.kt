@@ -184,6 +184,35 @@ class SuspendMessageBridgeTest {
     }
 
     @Test
+    fun `suspendMessageBridge factory builds a working bridge for the reified type`() {
+        runTest {
+            // The reified factory drops the explicit KClass argument.
+            val bridge = suspendMessageBridge<TestMessage>()
+            val pipeline = createPipeline(bridge)
+
+            pipeline.notifyRead(TestMessage("reified"))
+
+            val result = bridge.receiveCatching()
+            assertTrue(result.isSuccess)
+            assertEquals("reified", result.getOrThrow().value)
+        }
+    }
+
+    @Test
+    fun `suspendMessageBridge factory forwards the release hook`() {
+        runTest {
+            val released = mutableListOf<String>()
+            val bridge = suspendMessageBridge<TestMessage>(releaseUndelivered = { released.add(it.value) })
+            val pipeline = createPipeline(bridge)
+
+            pipeline.notifyRead(TestMessage("m"))
+            pipeline.notifyInactive() // undelivered → release hook fires
+
+            assertEquals(listOf("m"), released)
+        }
+    }
+
+    @Test
     fun `non-matching messages are propagated downstream`() {
         val bridge = SuspendMessageBridge(TestMessage::class)
         val pipeline = createPipeline(bridge)

@@ -155,3 +155,20 @@ class SuspendMessageBridge<T : Any>(
      */
     suspend fun receiveCatching(): ChannelResult<T> = messages.receiveCatching()
 }
+
+/**
+ * Builds a [SuspendMessageBridge] for messages of type [T] without naming the
+ * [KClass] explicitly — the reified counterpart of the [SuspendMessageBridge]
+ * constructor, for wiring a bridge into a hand-built pipeline (e.g. a custom
+ * HTTP client on `addHttp1ClientCodec`).
+ *
+ * @param capacity the coroutine channel buffer capacity (default unlimited).
+ * @param releaseUndelivered optional release hook for undelivered pooled
+ *   messages; pass `null` (default) when [T] owns no pooled resources, or e.g.
+ *   `{ it.headers.release() }` for a pooled response whose headers must be
+ *   released if the connection is torn down while a message is still buffered.
+ */
+public inline fun <reified T : Any> suspendMessageBridge(
+    capacity: Int = Channel.UNLIMITED,
+    noinline releaseUndelivered: ((T) -> Unit)? = null,
+): SuspendMessageBridge<T> = SuspendMessageBridge(T::class, capacity, releaseUndelivered)
