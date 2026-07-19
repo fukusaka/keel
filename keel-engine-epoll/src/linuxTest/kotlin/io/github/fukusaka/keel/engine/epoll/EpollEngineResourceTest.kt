@@ -29,9 +29,19 @@ import kotlin.time.Duration.Companion.seconds
  * on loaded CI runners and passed locally. Settling the GC made the number
  * deterministic but no more meaningful: it tracks GC bookkeeping, not buffer
  * ownership.
+ *
+ * [`repeated echo cycles release every buffer`] keeps the sustained-load
+ * exercise the removed test provided — 100 request/response cycles through the
+ * engine — but asserts on the allocator, so a buffer leaked once per cycle now
+ * fails instead of being invisible.
  */
 @OptIn(ExperimentalForeignApi::class)
 class EpollEngineResourceTest {
+
+    private companion object {
+        /** Request/response cycles driven by the sustained-load leak test. */
+        const val ECHO_CYCLES = 100
+    }
 
 
     // --- Resource leak detection ---
@@ -136,6 +146,46 @@ class EpollEngineResourceTest {
             assertEquals(
                 0, tracker.outstandingCount,
                 "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
+            )
+        }
+    }
+
+
+    @Test
+    fun `repeated echo cycles release every buffer`() = runBlocking {
+        withTimeout(5.seconds) {
+            val tracker = TrackingAllocator()
+            val engine = EpollEngine(IoEngineConfig(allocator = tracker))
+            val server = engine.bind("127.0.0.1", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+
+            // Sustained load: a per-cycle leak accumulates here, where the
+            // single-exchange tests above would never reveal it.
+            repeat(ECHO_CYCLES) {
+                rawWrite(clientFd, "test")
+                val buf = tracker.allocate(64)
+                val n = ch.read(buf)
+                if (n > 0) {
+                    ch.write(buf) // takes ownership; the transport releases it on flush
+                    ch.flush()
+                } else {
+                    buf.release() // nothing took ownership — release it here
+                }
+            }
+            rawRead(clientFd, ECHO_CYCLES * 4)
+
+            ch.close()
+            close(clientFd)
+            server.close()
+            engine.close()
+
+            assertEquals(
+                0, tracker.outstandingCount,
+                "Buffer leak over $ECHO_CYCLES cycles: " +
+                    "allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
             )
         }
     }
