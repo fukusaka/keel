@@ -4,7 +4,6 @@ import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpRequest
-import kotlinx.coroutines.CancellationException
 
 /**
  * A native HTTP/1.1 client built directly on a keel [StreamEngine] — the
@@ -63,13 +62,15 @@ public class KeelHttpClient internal constructor(
         val lease = pool.lease(route)
         try {
             return roundTrip(lease.connection, request)
-        } catch (e: CancellationException) {
-            throw e // never retry a cancellation — honour the caller's timeout / scope
-        } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
-            // A pooled connection can be closed by the peer while it sat idle, so
-            // a *reused* connection failing usually means it was stale (the failed
-            // one is already closed by roundTrip). Retry once on a fresh connection
-            // for an idempotent request; a fresh connection failing is a real error.
+        } catch (e: StaleConnectionException) {
+            // Only a stale-connection failure (the peer dropped the kept-alive
+            // connection before responding) is retried, and only when the
+            // connection was reused from the pool and the method is idempotent —
+            // the failed connection is already closed by roundTrip, so a fresh one
+            // may succeed. Response-level failures (a malformed response, etc.) do
+            // not throw StaleConnectionException and so are never re-sent; a fresh
+            // reused connection failing this way is a real error. Cancellation is
+            // never StaleConnectionException, so it propagates unretried too.
             if (lease.reused && method.isIdempotent) {
                 return roundTrip(pool.openFresh(route), request)
             }
