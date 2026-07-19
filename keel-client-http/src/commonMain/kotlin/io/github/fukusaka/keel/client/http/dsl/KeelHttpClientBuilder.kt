@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.client.http.ConnectionPool
 import io.github.fukusaka.keel.client.http.HttpRequestTimeoutException
 import io.github.fukusaka.keel.client.http.KeelHttpClient
 import io.github.fukusaka.keel.client.http.PoolConfig
+import io.github.fukusaka.keel.client.http.TooManyRedirectsException
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.core.StreamEngine
 
@@ -11,11 +12,15 @@ import io.github.fukusaka.keel.core.StreamEngine
  * Builder for [keelHttpClient].
  *
  * The client is defined by the injected [StreamEngine] plus optional
- * [pool] / [defaultHeaders] blocks and [requestTimeoutMillis]. Redirects
- * arrive later; keeping the builder means those additions do not change
- * the call shape.
+ * [pool] / [defaultHeaders] blocks, [requestTimeoutMillis], and the
+ * [followRedirects] / [maxRedirects] pair.
  */
 public class KeelHttpClientBuilder internal constructor() {
+
+    private companion object {
+        /** Matches the client's own default cap. */
+        const val DEFAULT_MAX_REDIRECTS = 20
+    }
 
     private val poolBuilder = PoolConfigBuilder()
     private val headers = HttpHeaders()
@@ -28,6 +33,23 @@ public class KeelHttpClientBuilder internal constructor() {
      * caller to bound a call with `withTimeout`.
      */
     public var requestTimeoutMillis: Long = 0
+
+    /**
+     * Whether to follow `301` / `302` / `303` / `307` / `308` responses that
+     * carry a `Location`. Default `true`.
+     *
+     * With `false` the 3xx response is returned as-is, so the caller can decide
+     * — useful when the redirect target itself is the information wanted.
+     */
+    public var followRedirects: Boolean = true
+
+    /**
+     * Redirect hops allowed for one call before the request fails with
+     * [TooManyRedirectsException]. Default 20. This is what breaks a redirect
+     * cycle; the whole chain also shares the single [requestTimeoutMillis]
+     * budget.
+     */
+    public var maxRedirects: Int = DEFAULT_MAX_REDIRECTS
 
     /**
      * Adds headers sent with every request:
@@ -66,7 +88,13 @@ public class KeelHttpClientBuilder internal constructor() {
     }
 
     internal fun build(engine: StreamEngine): KeelHttpClient =
-        KeelHttpClient(ConnectionPool(engine, poolBuilder.build()), headers, requestTimeoutMillis)
+        KeelHttpClient(
+            ConnectionPool(engine, poolBuilder.build()),
+            headers,
+            requestTimeoutMillis,
+            followRedirects,
+            maxRedirects,
+        )
 }
 
 /**
