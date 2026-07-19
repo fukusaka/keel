@@ -64,8 +64,9 @@ build_engine_list() {
     # NOTE: this is *client-side ephemeral* port exhaustion, distinct from the
     # *server listening* port. The latter is now a per-engine port (see the run
     # loop below) so no engine binds a port a prior engine left in TIME_WAIT.
-    # Multi-threaded engines (kqueue / nio / netty / nwconnection / Phase 2
-    # natives) absorb the ephemeral-port setup pressure transparently;
+    # Multi-threaded engines (kqueue / nio / netty / nwconnection / the
+    # cross-language reference servers) absorb the ephemeral-port setup
+    # pressure transparently;
     # Node.js's single-threaded libuv event loop is materially slower at
     # completing a WebSocket upgrade on the loopback path, so it is the
     # canary that surfaces the saturation as `k6 ws-large status 101 0%`

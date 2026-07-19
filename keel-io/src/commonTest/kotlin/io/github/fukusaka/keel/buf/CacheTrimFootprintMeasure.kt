@@ -4,7 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * Measurement (not a strict contract test) for the footprint effect of Phase 5
+ * Measurement (not a strict contract test) for the footprint effect of
  * cache trim + idle-chunk reclaim under a *variable* working set.
  *
  * Why a dedicated measurement: the steady-state `/hello` A/B keeps every cache
@@ -31,7 +31,7 @@ class CacheTrimFootprintMeasure {
     fun `footprint - burst then idle - trim reclaims chunks the I_O bench cannot show`() {
         if (!isPoolAllocator()) return
 
-        // --- Run A: no trim (simulates the pre-Phase-5 behaviour) ---
+        // --- Run A: no trim (simulates the behaviour before cache trim existed) ---
         val noTrim = pooled()
         val liveA = (0 until BURST).map { noTrim.allocate(CLASS) }
         val peakA = noTrim.chunkCount
@@ -39,7 +39,7 @@ class CacheTrimFootprintMeasure {
         // No trimNow() call: idle chunks stay pinned/resident.
         val idleNoTrim = noTrim.chunkCount
 
-        // --- Run B: with trim (Phase 5) ---
+        // --- Run B: with trim ---
         val withTrim = pooled()
         val liveB = (0 until BURST).map { withTrim.allocate(CLASS) }
         val peakB = withTrim.chunkCount

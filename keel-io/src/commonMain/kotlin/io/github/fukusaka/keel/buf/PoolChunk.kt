@@ -9,7 +9,7 @@ package io.github.fukusaka.keel.buf
  * subdivides a run into a [PoolSubpage] bitmap for small sizes. This class tracks
  * *which* pages are free using pure integer math — it owns **no backing memory**.
  * The backing buffer and the conversion `handle -> (byteOffset, length)` belong to
- * the wiring layer (Phase 4); a handle here only encodes page coordinates.
+ * the wiring layer; a handle here only encodes page coordinates.
  *
  * ## Handle layout (64 bits)
  *
@@ -35,7 +35,7 @@ package io.github.fukusaka.keel.buf
  *   map's footprint scales with live entries instead. `0` means "no run".
  *
  * **Thread safety.** None of its own — the wiring layer serialises access (Netty's
- * arena holds `runsAvailLock`). Phase 3 is single-threaded pure logic.
+ * arena holds `runsAvailLock`). This class is single-threaded pure logic.
  *
  * @param sizeClasses the size-class table shared with the allocator.
  */
@@ -131,7 +131,7 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
      * Carves a fresh [PoolSubpage] for size class [sizeIdx] (a small class),
      * links it into [head]'s pool, and returns its first element's handle.
      * Returns [NO_HANDLE] when no run is available. Reusing an existing partially
-     * free subpage across chunks is the arena's job (Phase 4) — this only creates
+     * free subpage across chunks is the arena's job — this only creates
      * a new subpage in this chunk.
      */
     fun allocateSubpage(sizeIdx: Int, head: PoolSubpage): Long {
@@ -222,7 +222,7 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
 
     /**
      * Byte offset of [handle]'s allocation within the chunk's backing — the
-     * wiring layer (Phase 4) adds this to the chunk's base pointer to carve a
+     * wiring layer adds this to the chunk's base pointer to carve a
      * view. For a run it is `runOffset << pageShifts`; for a subpage element it
      * adds `bitmapIdx * elemSize`.
      */

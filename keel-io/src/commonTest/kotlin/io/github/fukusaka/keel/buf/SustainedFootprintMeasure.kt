@@ -6,7 +6,7 @@ import kotlin.test.assertTrue
 
 /**
  * Measurement (not a strict contract test) asking the one question that decides
- * whether Phase 6's soft cap is needed: under a *sustained high-concurrency* 8 KiB
+ * whether a soft cap is needed: under a *sustained high-concurrency* 8 KiB
  * working set with churn, does the resident chunk footprint stay bounded by the
  * working set, or does it over-retain (grow beyond the minimum and not come back)?
  *
@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
  * loop allocates a fixed `readBufferSize` (default 8 KiB) per read, so real traffic
  * is 8 KiB-dominated by construction — a cross-class *fragmentation* measurement
  * cannot be representative (there is no multi-class workload to drive it), but a
- * *total-bytes* measurement on the 8 KiB class is. If Phase 5's idle-chunk reclaim
+ * *total-bytes* measurement on the 8 KiB class is. If the idle-chunk reclaim
  * already bounds the footprint here, a soft cap is premature for this workload.
  *
  * The rolling live set holds N buffers at all times (allocate a new one into a
@@ -22,9 +22,9 @@ import kotlin.test.assertTrue
  * concurrent connections each holding a read buffer. Trim runs periodically as in
  * production.
  *
- * Findings (the evidence that deferred a soft cap / usage-ring — Phase 6):
+ * Findings (the evidence that deferred a soft cap / usage-ring):
  * 1. **Steady-state churn is bounded** (resident ≈ working-set minimum, ×1.0) — the
- *    Phase 5 reclaim already bounds the footprint of the actual 8 KiB workload.
+ *    idle-chunk reclaim already bounds the footprint of the actual 8 KiB workload.
  * 2. **A one-shot in-place load drop does NOT recover** (resident stays at the peak):
  *    surviving buffers are pinned in place (the cache recycles the same buffer) and
  *    keel does no compaction, so reclaim — which needs a fully-idle chunk — frees
@@ -39,7 +39,8 @@ import kotlin.test.assertTrue
  *
  * Numbers are printed; the assertions only pin the two robust invariants (steady
  * churn stays bounded, a full release drains to the warm reserve). The one-shot-drop
- * and turnover numbers are reported, not asserted — they are the Phase 6 evidence.
+ * and turnover numbers are reported, not asserted — they are the evidence for or
+ * against a soft cap.
  */
 class SustainedFootprintMeasure {
     private fun pooled(): PooledAllocator = createPoolAllocator() as PooledAllocator
@@ -111,8 +112,8 @@ class SustainedFootprintMeasure {
         println("  (2) after 1/4 turnover  : $afterTurnover  (re-carved fresh, first-fit re-pack)")
         println("  (3) drained (all freed) : $drained  (warm reserve = ${PooledAllocator.WARM_RESERVE})")
 
-        // Steady-state is bounded (Phase 5). One-shot drop and turnover are reported,
-        // not asserted to a target — they are the Phase 6 evidence.
+        // Steady-state is bounded by the idle-chunk reclaim. One-shot drop and
+        // turnover are reported, not asserted to a target — they are the soft-cap evidence.
         assertTrue(afterChurn <= minChunks + 2, "sustained churn over-retained: $afterChurn > $minChunks (+2)")
         assertTrue(drained <= PooledAllocator.WARM_RESERVE + 1, "did not drain to warm reserve: $drained")
     }

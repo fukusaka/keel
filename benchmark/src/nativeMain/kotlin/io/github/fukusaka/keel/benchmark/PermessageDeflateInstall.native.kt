@@ -15,7 +15,7 @@ import io.ktor.server.websocket.WebSockets
  * ktor-keel-* does not support deflate" rather than a connection
  * failure, which is what the pre-fix code surfaced as the `0 [FAILED]`
  * rows for `ktor-keel-epoll` / `ktor-keel-io-uring` in the 2026-06-19
- * stage 12 measurement.
+ * WebSocket sweep.
  */
 internal actual fun WebSockets.WebSocketOptions.installPermessageDeflate() {
     // No-op — see KDoc above.
