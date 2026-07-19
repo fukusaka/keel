@@ -103,9 +103,6 @@ internal class ConnectionPool(
         all.forEach { it.close() }
     }
 
-    /** Idle connections currently pooled for [route]. For tests. */
-    suspend fun idleCount(route: RouteKey): Int = mutex.withLock { idle[route]?.size ?: 0 }
-
     private fun isUsable(entry: Idle): Boolean {
         if (!entry.connection.isActive) return false
         val timeoutMillis = config.idleTimeoutMillis
