@@ -85,14 +85,28 @@ internal suspend fun drainPumpThenRelease(
 /**
  * Pipeline handler names of every HTTP/1.1 codec stage any keel HTTP
  * server installs ahead of its dispatch handler — `keel-server-http`
- * (`h1-decoder` / `h1-encoder` / `http-server`) and the ktor adapter
- * (`h1-decoder` / `h1-encoder` / `h1-aggregator` / `bridge`). [runWebSocketUpgrade]
- * removes each before installing the WS codec; `runCatching` tolerates
- * the names a given server does not use. The `h1-` names come from
- * [Http1ServerCodec], the contract for the codec's stage names.
+ * (`h1-decoder` / `h1-encoder` / `http-server`, plus the optional
+ * `h1-request-deadline` / `h1-body-rate-floor` when the connector configures
+ * timeouts) and the ktor adapter (`h1-decoder` / `h1-encoder` /
+ * `h1-aggregator` / `bridge`). [runWebSocketUpgrade] removes each before
+ * installing the WS codec; `runCatching` tolerates the names a given server
+ * does not use. The `h1-` names come from [Http1ServerCodec], the contract
+ * for the codec's stage names.
+ *
+ * The deadline stages must go too: they force-close the channel when a
+ * request deadline elapses, and once the decoder is removed no
+ * `HttpBodyEnd` can arrive to disarm them — leaving one installed would let
+ * an HTTP request deadline kill the upgraded WebSocket session.
  */
-private val HTTP_CODEC_HANDLER_NAMES =
-    listOf("http-server", "bridge", Http1ServerCodec.AGGREGATOR, Http1ServerCodec.DECODER, Http1ServerCodec.ENCODER)
+internal val HTTP_CODEC_HANDLER_NAMES = listOf(
+    "http-server",
+    "bridge",
+    Http1ServerCodec.AGGREGATOR,
+    Http1ServerCodec.REQUEST_DEADLINE,
+    Http1ServerCodec.BODY_RATE_FLOOR,
+    Http1ServerCodec.DECODER,
+    Http1ServerCodec.ENCODER,
+)
 
 /**
  * Server-wide `permessage-deflate` configuration handed to

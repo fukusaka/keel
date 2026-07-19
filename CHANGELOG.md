@@ -42,6 +42,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `server-websocket`: the WebSocket upgrade now also strips the HTTP `request-deadline` and
+  `body-rate-floor` stages, so a connector configured with `requestTimeoutMillis` /
+  `minBodyRateBytesPerSec` can no longer force-close an upgraded WebSocket session when the
+  leftover HTTP deadline elapses (#980)
 - `client-http`: retry a request only on a stale-connection failure (the peer dropped the
   kept-alive connection before responding), not on any exception — a response-level error such
   as a malformed response now surfaces immediately instead of being re-sent on a fresh
