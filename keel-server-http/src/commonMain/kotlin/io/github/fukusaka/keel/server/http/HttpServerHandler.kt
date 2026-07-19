@@ -601,7 +601,7 @@ internal class Http1Call(
     /** True when this request is a protocol upgrade (see [HttpServerHandler.onRequestHead]). */
     internal val isUpgrade: Boolean,
     /**
-     * When true, the matched route negotiates on `Accept` (router R-5), so
+     * When true, the matched route negotiates on `Accept`, so
      * this call's response is tagged `Vary: Accept` (RFC 9110 §12.5.5) for
      * cache correctness. See [RouteMatch.varyOnAccept].
      */

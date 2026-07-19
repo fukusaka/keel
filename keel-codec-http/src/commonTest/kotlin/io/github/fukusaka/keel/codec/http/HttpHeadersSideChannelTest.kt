@@ -9,14 +9,14 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Correctness of the **IntArray-slot string side-channel** (L7-a-ii
- * Variant Y): range entries (byte-range views over a retained recv
+ * Correctness of the **IntArray-slot string side-channel**: range
+ * entries (byte-range views over a retained recv
  * buffer) coexisting with string entries (`add` / `set` / cross-read
  * fallback, stored in `stringBacking` via the `STRING_SENTINEL` slot),
  * plus the recv-buffer retain/release lifecycle.
  *
  * The existing [HttpHeadersTest] covers the all-string path
- * (`add` / `of`); these tests cover what is new in Variant Y: the
+ * (`add` / `of`); these tests cover the byte-range storage: the
  * `addRange` parse path, range/string mixing, the cross-buffer
  * materialisation fallback, and pooled-reuse state reset.
  */

@@ -452,7 +452,7 @@ if [ "$PARSER" = "wsbench" ]; then
     #
     # The wsbench binary is .gitignore'd and platform-specific (Go output
     # is Mach-O on macOS, ELF on Linux). When the repo is rsync'd from a
-    # development host to the bench host (e.g. macOS -> luna), the
+    # development host to the bench host (e.g. macOS -> Linux), the
     # source-side Mach-O overwrites whatever was last built on the
     # destination host and `./wsbench` aborts with `Exec format error`
     # at the kernel exec stage. Historically this silently produced

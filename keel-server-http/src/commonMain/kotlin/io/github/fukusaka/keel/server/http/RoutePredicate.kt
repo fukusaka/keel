@@ -7,8 +7,8 @@ import io.github.fukusaka.keel.codec.http.HttpRequestHead
  * A predicate evaluated against a request to select between routes
  * registered for the same method × path.
  *
- * Predicate routing is keel's realisation of the design's ④ axis
- * (predicate routing — see design.md §38.9.4). The [Router] resolves a
+ * Predicate routing lets several handlers share one method × path and be
+ * told apart by the request itself. The [Router] resolves a
  * leaf by walking its segment trie, then scans the candidate handlers
  * registered for the request method in registration order; the first one
  * whose [RoutePredicate] accepts the request (a `null` predicate always
@@ -43,10 +43,10 @@ public fun header(name: String, value: String): RoutePredicate =
  *
  * The query string is the part of the request URI after `?` (keel's
  * [HttpRequestHead.queryString]); it is split on `&` into pairs and each
- * pair on its first `=`. Percent-decoding is **out of scope for R-4** —
+ * pair on its first `=`. Percent-decoding is **deliberately not applied** —
  * the [name] and [value] are matched against the raw, still-encoded query
- * tokens (see design.md §38.9.4). A caller needing decoded comparison
- * decodes [value] to match the wire form, or writes a custom predicate.
+ * tokens. A caller needing decoded comparison encodes [value] to match
+ * the wire form, or writes a custom predicate.
  */
 public fun query(name: String, value: String): RoutePredicate =
     RoutePredicate { head -> queryContains(head.queryString, name, value) }
@@ -61,8 +61,8 @@ public fun query(name: String, value: String): RoutePredicate =
  * [contentType] itself.
  *
  * This is a deliberate simplification: q-value weighting and precise
- * media-range precedence (RFC 7231 §5.3.2) are **not** applied — R-4
- * defers q-value precision (design.md §38.9.4). The match is a plain
+ * media-range precedence (RFC 7231 §5.3.2) are **not** applied here; this
+ * predicate deliberately defers q-value precision. The match is a plain
  * token / wildcard test, which covers the dominant exact-type and
  * "any type" cases.
  */
@@ -119,7 +119,8 @@ private fun queryContains(queryString: String?, name: String, value: String): Bo
 private fun acceptMatches(acceptHeader: String?, wantedType: String, wantedFull: String): Boolean {
     if (acceptHeader == null) return true
     for (rawRange in acceptHeader.split(',')) {
-        // Drop any q-value / media-range parameter; R-4 ignores q-weighting.
+        // Drop any q-value / media-range parameter; this predicate is a
+        // membership test and ignores q-weighting.
         val range = rawRange.substringBefore(';').trim().lowercase()
         if (range.isEmpty()) continue
         when {

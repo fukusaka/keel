@@ -7,8 +7,8 @@ import io.github.fukusaka.keel.io.parseDecLongAt
 import io.github.fukusaka.keel.io.toDecLongOrNull
 
 /**
- * HTTP header fields (RFC 7230 §3.2) — **L7-a-ii Variant (Y): IntArray-slot
- * storage with lazy allocation + small-N linear scan**.
+ * HTTP header fields (RFC 7230 §3.2) — **IntArray-slot storage with lazy
+ * allocation + small-N linear scan**.
  *
  * Storage model:
  * - `slots: IntArray?`, stride 5 per header
@@ -362,7 +362,8 @@ class HttpHeaders {
 
     /**
      * Adds a header whose name and value are byte ranges in [buf] (the
-     * Variant Y parse path). Writes five ints into [slots] without
+     * parse path that never materialises a `String`). Writes five ints
+     * into [slots] without
      * allocating any per-header object. The first range-add captures
      * `[segmentLog2] = log2(buf.capacity)` and retains [buf] as the primary
      * backing (chain index 0). A subsequent range-add with the same [buf]
@@ -943,8 +944,8 @@ class HttpHeaders {
 
         /**
          * Case-insensitive name hash computed directly over an [IoBuf]
-         * byte range (Variant Y parse path), matching [caseInsensitiveHash]
-         * char-for-char for ASCII names.
+         * byte range (the range-add parse path), matching
+         * [caseInsensitiveHash] char-for-char for ASCII names.
          */
         internal fun caseInsensitiveHashOfBuf(buf: IoBuf, start: Int, length: Int): Int {
             var h = 0
@@ -1024,8 +1025,8 @@ enum class ContentLengthValidity { ABSENT, VALID, INVALID }
  * A single well-known HTTP header `(name, value)` pair held by
  * [StaticHeaderTable] (HPACK / QPACK static entries + H1 intern table).
  *
- * In the Variant Y storage model the per-request [HttpHeaders] no longer
- * uses `HeaderEntry`; it survives as the shape of the static / HPACK
+ * Under byte-range storage the per-request [HttpHeaders] no longer uses
+ * `HeaderEntry`; it survives as the shape of the static / HPACK
  * table entries that Phase 13 (`keel-codec-http2`) decodes by index.
  */
 internal class HeaderEntry(

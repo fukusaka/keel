@@ -18,8 +18,8 @@ import platform.posix.pthread_equal
 import platform.posix.pthread_self
 
 /**
- * Seam-level test for the **I/O ownership invariant funnel** (design.md
- * §36, D1: "all I/O syscalls run on the owning EventLoop thread").
+ * Seam-level test for the **I/O ownership invariant funnel**: every I/O
+ * syscall runs on the EventLoop thread that owns the fd.
  *
  * `EpollEventLoop.register` / `registerCallback` route the actual
  * `epoll_ctl(EPOLL_CTL_ADD/MOD)` submission through:

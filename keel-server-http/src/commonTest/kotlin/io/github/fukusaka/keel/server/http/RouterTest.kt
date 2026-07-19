@@ -454,7 +454,7 @@ class RouterTest {
         assertEquals("v1", router.match(HttpMethod.GET, "/v1")?.pathParameters?.get("id"))
     }
 
-    // --- predicate routing (design.md §38.9.4) ---
+    // --- predicate routing ---
 
     @Test
     fun `a predicate selects between two handlers on one method and path`() {
@@ -498,7 +498,8 @@ class RouterTest {
         val router = Router()
         router.register(HttpMethod.GET, "/r", header("X-Key", "secret"), handler = handler)
         // The path and method are registered, but no predicate accepts the
-        // request — design §38.9.4 routes this to Unmatched (a 404), not 405.
+        // request. A predicate-only miss is Unmatched (a 404), not 405 —
+        // the method is registered, so it is not a method mismatch.
         assertEquals(
             RouteResolution.Unmatched,
             router.resolve(HttpMethod.GET, "/r", headFor(HttpMethod.GET, "/r")),

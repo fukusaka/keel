@@ -16,7 +16,7 @@ import kotlin.test.assertEquals
  * Red-Green regression test for the `headers.release()` leak in
  * [installPipelineHttpHandlers]' routing terminal.
  *
- * Background: PR #596 (Variant Y byte-range header storage) gave
+ * Background: PR #596 (byte-range header storage) gave
  * `HttpHeaders` a buffer-lifetime contract — the parsed `HttpHeaders`
  * retains the recv `IoBuf` until `release()` is called, because name /
  * value slots point into the recv buffer's byte range.

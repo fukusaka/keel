@@ -472,7 +472,7 @@ class HttpRequestDecoder(
         val valStart = trimLeftInBuf(buf, colon + 1, end)
         val valEnd = trimRightInBuf(buf, valStart, end)
 
-        // L7-a-ii Variant B: store byte ranges into [buf] as zero-copy
+        // Store byte ranges into [buf] as zero-copy
         // views instead of materialising name/value into `String`s. The
         // recv buffer is retained by [HttpHeaders.addRange] for the
         // lifetime of the views.

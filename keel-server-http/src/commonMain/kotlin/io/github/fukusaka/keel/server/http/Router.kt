@@ -47,8 +47,8 @@ public class RouteMatch internal constructor(
 
 /**
  * Outcome of a [Router.resolve] call — a sealed result distinguishing a
- * match, a method mismatch on an otherwise-registered path, and a total
- * miss (design.md §38.9.5).
+ * match, a method mismatch on an otherwise-registered path, a match whose
+ * producible media types the `Accept` header refuses, and a total miss.
  *
  * Modelled on keel's other sealed-result types (such as
  * `WsAggregateResult`): the caller exhaustively branches on the variant
@@ -76,7 +76,7 @@ public sealed interface RouteResolution {
     /**
      * The path and method matched predicate-accepting handlers, but every
      * one of them declared a `produces` media type and none is acceptable
-     * under the request's `Accept` header (design.md §38.9.11 / router R-5).
+     * under the request's `Accept` header.
      * The caller answers `406 Not Acceptable`. [producibleTypes] lists the
      * media types those handlers can emit, for diagnostics.
      *
@@ -90,9 +90,9 @@ public sealed interface RouteResolution {
 
     /**
      * No route matched. Either the path reaches no trie leaf at all, or it
-     * does but every candidate handler's predicate rejected the request
-     * (design §38.9.4 routes a predicate-only miss here, as WebFlux does).
-     * The caller answers `404 Not Found`.
+     * does but every candidate handler's predicate rejected the request —
+     * a predicate-only miss is a miss, as it is in WebFlux, not a method
+     * mismatch. The caller answers `404 Not Found`.
      */
     public data object Unmatched : RouteResolution
 }
@@ -140,18 +140,18 @@ public sealed interface RouteResolution {
  * unconstrained `:id` shadow a constrained `:id(int)` sibling.
  *
  * **Predicate routing**: a method × path may carry several handlers, each
- * guarded by a [RoutePredicate] (design §38.9.4). [resolve] reaches the
- * trie leaf, then scans that method's handler list in order — the first
- * handler whose predicate accepts the request wins; a handler with neither
- * a predicate nor a `produces` list is the unconditional catch-all. The
- * list is kept predicate-first, catch-all last (see [register]), so
+ * guarded by a [RoutePredicate]. [resolve] reaches the trie leaf, then
+ * scans that method's handler list in order — the first handler whose
+ * predicate accepts the request wins; a handler with neither a predicate
+ * nor a `produces` list is the unconditional catch-all. The list is kept
+ * predicate-first, catch-all last (see [register]), so
  * registration order cannot let a catch-all shadow a later predicated
  * route. Upgrades are predicated the same way.
  *
- * **Content negotiation** (router R-5, design §38.9.11): a handler may
- * instead (or also) declare the media types it `produces`. When the
- * request carries an `Accept` header, [resolve] scores every
- * predicate-accepting candidate by how much that header prefers its
+ * **Content negotiation**: a handler may instead (or also) declare the
+ * media types it `produces`. When the request carries an `Accept` header,
+ * [resolve] scores every predicate-accepting candidate by how much that
+ * header prefers its
  * produced types (RFC 9110 §12.5.1 q-value + specificity, see
  * [scoreProducedType]) and picks the best — not first-match. A
  * `produces`-declaring handler whose types the `Accept` header refuses is
@@ -433,7 +433,7 @@ public class Router {
      * The handler is chosen by [selectHandler] — first accepting predicate
      * when [accept] is null (no `Accept` header → produces ignored),
      * otherwise the predicate-accepting candidate whose `produces` the
-     * `Accept` header most prefers (router R-5). Upgrades carry no
+     * `Accept` header most prefers. Upgrades carry no
      * `produces` and stay first-accepting-predicate.
      */
     private fun Node.matchAt(
@@ -639,7 +639,7 @@ public class Router {
 
     /**
      * A [RouteHandler] guarded by an optional [predicate] and an optional
-     * [produces] media-type list (content negotiation, router R-5). A
+     * [produces] media-type list (content negotiation). A
      * handler with neither is the unconditional catch-all; a `produces`
      * list makes it eligible only when the `Accept` header accepts one of
      * its types (a `produces`-declaring handler is therefore not a
