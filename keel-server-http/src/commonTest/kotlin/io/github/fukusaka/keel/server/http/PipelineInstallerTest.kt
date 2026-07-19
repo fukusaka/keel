@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.http
 
+import io.github.fukusaka.keel.codec.http.Http1ServerCodec
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.InboundHandler
@@ -59,8 +60,8 @@ class PipelineInstallerTest {
         assertNotNull(pipeline.get("inst-a"))
         assertNotNull(pipeline.get("inst-b"))
         // The codec and terminal handler are still present around the installers.
-        assertNotNull(pipeline.get("decoder"))
-        assertNotNull(pipeline.get("encoder"))
+        assertNotNull(pipeline.get(Http1ServerCodec.DECODER))
+        assertNotNull(pipeline.get(Http1ServerCodec.ENCODER))
         assertNotNull(pipeline.get(HTTP_SERVER_HANDLER_NAME))
     }
 
@@ -71,7 +72,7 @@ class PipelineInstallerTest {
         val pipeline = channel.pipeline
         assertNull(pipeline.get("compression"))
         assertNull(pipeline.get("request-decompression"))
-        assertNotNull(pipeline.get("decoder"))
+        assertNotNull(pipeline.get(Http1ServerCodec.DECODER))
         assertNotNull(pipeline.get(HTTP_SERVER_HANDLER_NAME))
     }
 

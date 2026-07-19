@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.server.ktor
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.codec.http.Http1ServerCodec
 import io.github.fukusaka.keel.codec.http.HttpBody
 import io.github.fukusaka.keel.codec.http.HttpBodyEnd
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
@@ -170,9 +171,9 @@ internal class KeelApplicationResponse(
             pipelinedChannel.awaitFlushComplete()
 
             runCatching { pipelinedChannel.pipeline.remove("bridge") }
-            runCatching { pipelinedChannel.pipeline.remove("aggregator") }
-            runCatching { pipelinedChannel.pipeline.remove("decoder") }
-            runCatching { pipelinedChannel.pipeline.remove("encoder") }
+            runCatching { pipelinedChannel.pipeline.remove(Http1ServerCodec.AGGREGATOR) }
+            runCatching { pipelinedChannel.pipeline.remove(Http1ServerCodec.DECODER) }
+            runCatching { pipelinedChannel.pipeline.remove(Http1ServerCodec.ENCODER) }
             pipelinedChannel.pipeline.addLast("raw-bridge", rawBridge)
         }
 

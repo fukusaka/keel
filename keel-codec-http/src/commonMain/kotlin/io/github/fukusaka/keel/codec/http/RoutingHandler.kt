@@ -21,8 +21,8 @@ import kotlin.reflect.KClass
  * bodies, so it must sit after the decoder on the inbound path while still
  * preceding this handler for outbound propagation):
  * ```
- * pipeline.addLast("decoder", HttpRequestDecoder())
- * pipeline.addLast("encoder", HttpResponseEncoder())
+ * pipeline.addLast("h1-decoder", HttpRequestDecoder())
+ * pipeline.addLast("h1-encoder", HttpResponseEncoder())
  * pipeline.addLast("routing", RoutingHandler(mapOf(
  *     "/hello" to { _ -> HttpResponse.ok("Hello, World!") },
  * )))

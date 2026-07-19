@@ -18,9 +18,9 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  *
  * Intended to be called immediately after the HTTP/1.1 handshake hands
  * the connection over to the WS protocol — typically by removing the
- * HTTP codec stack first (`pipeline.remove("decoder") / .remove("encoder")
- * / .remove("aggregator")`), then calling this helper to install the WS
- * stack on top of the now-empty pipeline.
+ * HTTP codec stack first (`pipeline.remove("h1-decoder") / .remove("h1-encoder")
+ * / .remove("h1-aggregator")` — the `Http1ServerCodec` stage names), then
+ * calling this helper to install the WS stack on top of the now-empty pipeline.
  *
  * Consumers add their own frame-handling stage after this call (e.g. a
  * server application's echo loop, or a future `WsFrameAggregator` for

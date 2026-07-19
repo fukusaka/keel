@@ -24,7 +24,10 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  * is skipped; the encoder intercepts outbound writes as expected.
  *
  * Consumers add their own request-handling stage after this call (e.g.
- * routing, a `SuspendMessageBridge`, or a custom inbound handler).
+ * routing, a `SuspendMessageBridge`, or a custom inbound handler). The
+ * installed stage names are exposed as [Http1ServerCodec] constants, so a
+ * custom handler can be placed relative to a stage — e.g.
+ * `pipeline.addBefore(Http1ServerCodec.DECODER, "wire-log", handler)`.
  *
  * @param aggregateBody when true (default), inserts `HttpBodyAggregator`
  *   so downstream handlers receive [HttpRequest] (head + aggregated
@@ -54,15 +57,47 @@ public fun PipelinedChannel.addHttp1ServerCodec(
     requestTimeoutMillis: Long = 0,
     minBodyRateBytesPerSec: Long = 0,
 ) {
-    pipeline.addLast("decoder", HttpRequestDecoder(headerLimits))
+    pipeline.addLast(Http1ServerCodec.DECODER, HttpRequestDecoder(headerLimits))
     if (headerTimeoutMillis > 0 || requestTimeoutMillis > 0) {
-        pipeline.addLast("request-deadline", RequestDeadlineHandler(headerTimeoutMillis, requestTimeoutMillis))
+        pipeline.addLast(
+            Http1ServerCodec.REQUEST_DEADLINE,
+            RequestDeadlineHandler(headerTimeoutMillis, requestTimeoutMillis),
+        )
     }
     if (minBodyRateBytesPerSec > 0) {
-        pipeline.addLast("body-rate-floor", BodyRateFloorHandler(minBodyRateBytesPerSec))
+        pipeline.addLast(Http1ServerCodec.BODY_RATE_FLOOR, BodyRateFloorHandler(minBodyRateBytesPerSec))
     }
-    pipeline.addLast("encoder", HttpResponseEncoder())
+    pipeline.addLast(Http1ServerCodec.ENCODER, HttpResponseEncoder())
     if (aggregateBody) {
-        pipeline.addLast("aggregator", HttpBodyAggregator())
+        pipeline.addLast(Http1ServerCodec.AGGREGATOR, HttpBodyAggregator())
     }
+}
+
+/**
+ * Stable pipeline stage names installed by [addHttp1ServerCodec].
+ *
+ * These are the public contract for positioning custom handlers relative to
+ * the server codec — pass them to [io.github.fukusaka.keel.pipeline.Pipeline]
+ * `addBefore` / `addAfter` / `remove` / `replace` instead of hardcoding the
+ * string literals. [REQUEST_DEADLINE] and [BODY_RATE_FLOOR] are present only
+ * when their corresponding limits are configured. The values carry an `h1-`
+ * prefix so they never collide with another protocol codec on the same
+ * pipeline (`ws-` for WebSocket, and future `h2-` / `h3-` for HTTP/2 / HTTP/3).
+ */
+public object Http1ServerCodec {
+
+    /** The [HttpRequestDecoder] stage (inbound parse; outbound HEAD snoop). */
+    public const val DECODER: String = "h1-decoder"
+
+    /** The [RequestDeadlineHandler] stage (present only when a header/request timeout is set). */
+    public const val REQUEST_DEADLINE: String = "h1-request-deadline"
+
+    /** The [BodyRateFloorHandler] stage (present only when a minimum body rate is set). */
+    public const val BODY_RATE_FLOOR: String = "h1-body-rate-floor"
+
+    /** The outbound [HttpResponseEncoder] stage. */
+    public const val ENCODER: String = "h1-encoder"
+
+    /** The [HttpBodyAggregator] stage (present only when `aggregateBody` is true). */
+    public const val AGGREGATOR: String = "h1-aggregator"
 }

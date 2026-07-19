@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.websocket
 
+import io.github.fukusaka.keel.codec.http.Http1ServerCodec
 import io.github.fukusaka.keel.codec.http.HttpBodyEnd
 import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
@@ -84,12 +85,14 @@ internal suspend fun drainPumpThenRelease(
 /**
  * Pipeline handler names of every HTTP/1.1 codec stage any keel HTTP
  * server installs ahead of its dispatch handler — `keel-server-http`
- * (`decoder` / `encoder` / `http-server`) and the ktor adapter
- * (`decoder` / `encoder` / `aggregator` / `bridge`). [runWebSocketUpgrade]
+ * (`h1-decoder` / `h1-encoder` / `http-server`) and the ktor adapter
+ * (`h1-decoder` / `h1-encoder` / `h1-aggregator` / `bridge`). [runWebSocketUpgrade]
  * removes each before installing the WS codec; `runCatching` tolerates
- * the names a given server does not use.
+ * the names a given server does not use. The `h1-` names come from
+ * [Http1ServerCodec], the contract for the codec's stage names.
  */
-private val HTTP_CODEC_HANDLER_NAMES = listOf("http-server", "bridge", "aggregator", "decoder", "encoder")
+private val HTTP_CODEC_HANDLER_NAMES =
+    listOf("http-server", "bridge", Http1ServerCodec.AGGREGATOR, Http1ServerCodec.DECODER, Http1ServerCodec.ENCODER)
 
 /**
  * Server-wide `permessage-deflate` configuration handed to
