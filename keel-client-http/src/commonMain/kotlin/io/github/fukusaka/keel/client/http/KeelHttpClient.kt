@@ -41,8 +41,10 @@ import kotlinx.coroutines.withTimeout
  * followed (up to `maxRedirects`, default 20; `followRedirects = false` returns
  * the 3xx instead). `303` redirects to a GET, `301` / `302` rewrite POST to GET
  * and drop the body, and `307` / `308` preserve both (RFC 9110 §15.4). A
- * relative `Location` is resolved against the current URL, and `Authorization`
- * is dropped when a hop crosses to another origin.
+ * relative `Location` is resolved against the current URL. A hop that crosses to
+ * another origin drops the per-request `Authorization` and `Host` — both are
+ * scoped to the origin they were addressed to. A `Host` set through
+ * `defaultHeaders` is client-wide by definition and still applies to every hop.
  *
  * **Timeout**: with `requestTimeoutMillis` set, a request that has not produced
  * a complete response within the budget fails with
@@ -132,8 +134,15 @@ public class KeelHttpClient internal constructor(
                 currentHeaders = withoutHeaders(currentHeaders, HttpHeaderName.CONTENT_LENGTH)
             }
             if (currentUrl.isCrossOrigin(next)) {
-                // Credentials are scoped to the origin they were sent to.
-                currentHeaders = withoutHeaders(currentHeaders, HttpHeaderName.AUTHORIZATION)
+                // Both are scoped to the origin they were addressed to: credentials
+                // must not follow the user to another host, and a caller-supplied
+                // Host would otherwise name the previous origin's virtual host on
+                // the new one. Dropping Host lets buildRequest re-derive it.
+                currentHeaders = withoutHeaders(
+                    currentHeaders,
+                    HttpHeaderName.AUTHORIZATION,
+                    HttpHeaderName.HOST,
+                )
             }
             currentMethod = nextMethod
             currentUrl = next

@@ -184,6 +184,38 @@ class RedirectTest {
     }
 
     @Test
+    fun `a caller-supplied Host does not follow to another origin`() = runTest(timeout = budget) {
+        val engine = InMemoryEngine()
+        val firstLog = Log()
+        val otherLog = Log()
+        val other = startServer(engine, otherLog) { null }
+        val otherAddr = other.localAddress as InetSocketAddress
+        val server = startServer(engine, firstLog) { path ->
+            if (path == "/leave") {
+                HttpStatus.FOUND to "http://${otherAddr.hostString}:${otherAddr.port}/landed"
+            } else {
+                null
+            }
+        }
+        val client = keelHttpClient(engine)
+        try {
+            // An explicit Host addresses a virtual host on the *first* origin; it
+            // must not name that host to the origin the redirect points at.
+            val vhost = HttpHeaders().apply { add("Host", "app.example") }
+            client.get(urlOf(server, "/leave"), vhost)
+
+            assertEquals("app.example", firstLog.requests[0].header("Host"), "honoured on the origin it was for")
+            assertEquals(
+                "${otherAddr.hostString}:${otherAddr.port}",
+                otherLog.requests[0].header("Host"),
+                "the new origin gets its own Host, not the previous one's",
+            )
+        } finally {
+            client.close(); other.close(); server.close(); engine.close()
+        }
+    }
+
+    @Test
     fun `a redirect cycle fails once the cap is spent`() = runTest(timeout = budget) {
         val engine = InMemoryEngine()
         val log = Log()
