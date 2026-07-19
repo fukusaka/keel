@@ -80,22 +80,24 @@ public fun PipelinedChannel.addHttp1ServerCodec(
  * the server codec — pass them to [io.github.fukusaka.keel.pipeline.Pipeline]
  * `addBefore` / `addAfter` / `remove` / `replace` instead of hardcoding the
  * string literals. [REQUEST_DEADLINE] and [BODY_RATE_FLOOR] are present only
- * when their corresponding limits are configured.
+ * when their corresponding limits are configured. The values carry an `h1-`
+ * prefix so they never collide with another protocol codec on the same
+ * pipeline (`ws-` for WebSocket, and future `h2-` / `h3-` for HTTP/2 / HTTP/3).
  */
 public object Http1ServerCodec {
 
     /** The [HttpRequestDecoder] stage (inbound parse; outbound HEAD snoop). */
-    public const val DECODER: String = "decoder"
+    public const val DECODER: String = "h1-decoder"
 
     /** The [RequestDeadlineHandler] stage (present only when a header/request timeout is set). */
-    public const val REQUEST_DEADLINE: String = "request-deadline"
+    public const val REQUEST_DEADLINE: String = "h1-request-deadline"
 
     /** The [BodyRateFloorHandler] stage (present only when a minimum body rate is set). */
-    public const val BODY_RATE_FLOOR: String = "body-rate-floor"
+    public const val BODY_RATE_FLOOR: String = "h1-body-rate-floor"
 
     /** The outbound [HttpResponseEncoder] stage. */
-    public const val ENCODER: String = "encoder"
+    public const val ENCODER: String = "h1-encoder"
 
     /** The [HttpBodyAggregator] stage (present only when `aggregateBody` is true). */
-    public const val AGGREGATOR: String = "aggregator"
+    public const val AGGREGATOR: String = "h1-aggregator"
 }

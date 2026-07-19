@@ -66,16 +66,18 @@ public fun PipelinedChannel.addHttp1ClientCodec(
  * These are the public contract for positioning custom handlers relative to
  * the client codec — pass them to [io.github.fukusaka.keel.pipeline.Pipeline]
  * `addBefore` / `addAfter` / `remove` / `replace` instead of hardcoding the
- * string literals.
+ * string literals. The values carry an `h1-` prefix so they never collide
+ * with another protocol codec on the same pipeline (`ws-` for WebSocket,
+ * and future `h2-` / `h3-` for HTTP/2 / HTTP/3).
  */
 public object Http1ClientCodec {
 
     /** The outbound [HttpRequestEncoder] stage. */
-    public const val ENCODER: String = "encoder"
+    public const val ENCODER: String = "h1-encoder"
 
     /** The [HttpResponseDecoder] stage (inbound parse; outbound request-method snoop). */
-    public const val DECODER: String = "decoder"
+    public const val DECODER: String = "h1-decoder"
 
     /** The [HttpResponseBodyAggregator] stage (present only when `aggregateBody` is true). */
-    public const val AGGREGATOR: String = "aggregator"
+    public const val AGGREGATOR: String = "h1-aggregator"
 }

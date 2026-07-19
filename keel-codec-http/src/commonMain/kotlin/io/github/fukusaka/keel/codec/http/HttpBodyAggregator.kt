@@ -15,10 +15,10 @@ import kotlin.reflect.KClass
  * handlers that expect the complete [HttpRequest] type:
  *
  * ```
- * pipeline.addLast("encoder",     HttpResponseEncoder())
- * pipeline.addLast("decoder",     HttpRequestDecoder())
- * pipeline.addLast("aggregator",  HttpBodyAggregator())
- * pipeline.addLast("routing",     RoutingHandler(routes))
+ * pipeline.addLast("h1-encoder",    HttpResponseEncoder())
+ * pipeline.addLast("h1-decoder",    HttpRequestDecoder())
+ * pipeline.addLast("h1-aggregator", HttpBodyAggregator())
+ * pipeline.addLast("routing",       RoutingHandler(routes))
  * ```
  *
  * **Size limit**: if the accumulated body exceeds [maxContentLength],
