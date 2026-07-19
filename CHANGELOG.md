@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `client-http`: `defaultHeaders { }` on the `keelHttpClient` DSL — headers sent with every request;
+  a per-request header of the same name replaces the default instead of being appended (#982)
+- `client-http`: `requestTimeoutMillis` on the `keelHttpClient` DSL — bounds a whole call (lease,
+  exchange, stale-connection retry) and fails it with `HttpRequestTimeoutException`, closing the
+  connection rather than pooling it. `0` (default) keeps the previous no-timeout behaviour (#982)
 - `codec-http`: `Http1ClientCodec` / `Http1ServerCodec` — public constants for the HTTP/1.1 codec
   pipeline stage names, so custom handlers can be positioned with `addBefore` / `addAfter` instead
   of hardcoded strings (#980)

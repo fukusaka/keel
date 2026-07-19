@@ -7,14 +7,15 @@ connection's pipeline, writes a typed `HttpRequest`, and returns the aggregated
 `HttpResponse` as a plain, GC-owned `KeelHttpResponse`. It is the client-side
 counterpart of `:keel-server-http`.
 
-## Scope: fresh connect
+## Scope
 
-This first layer opens a fresh connection per request and closes it afterwards —
-no connection pool, no keep-alive reuse. That is the honest baseline for
-connection-setup cost and the floor a pooled layer improves on. `http://` only;
-`https://` is rejected until the native-stack client TLS prerequisite lands.
-Keep-alive + connection pool, redirect following, and cookie / auth / cache
-plugins are later additions.
+Requests are served from a route-keyed keep-alive connection pool: a request
+leases an idle connection for its `host:port` when one is usable and opens a
+fresh one otherwise, and returns it afterwards if the response left the
+connection reusable. `http://` only; `https://` is rejected until the
+native-stack client TLS prerequisite lands. Redirect following and cookie /
+auth / cache plugins are later additions — the latter belong above this client
+(see the pipeline section below).
 
 ## Usage
 
@@ -35,12 +36,36 @@ val posted = client.post(
 )
 ```
 
-Each call opens a connection, drives one request/response through
+Each call leases a connection, drives one request/response through
 `addHttp1ClientCodec` (`HttpRequestEncoder` / `HttpResponseDecoder` /
 `HttpResponseBodyAggregator`), materialises the decoder's zero-copy pooled
-headers into a GC-owned `HttpHeaders`, releases the pooled buffers, and closes
-the connection. There is no built-in timeout — bound a call with `withTimeout`
-so a hung peer cannot suspend the caller indefinitely.
+headers into a GC-owned `HttpHeaders`, releases the pooled buffers, and returns
+the connection to the pool.
+
+### Default headers and a request timeout
+
+```kotlin
+val client = keelHttpClient(engine) {
+    defaultHeaders {
+        add("User-Agent", "my-app/1.0")
+        add("Accept", "application/json")
+    }
+    requestTimeoutMillis = 30_000
+    pool { maxIdleConnectionsPerRoute = 8 }
+}
+```
+
+`defaultHeaders` are sent with every request; a per-request header of the same
+name **replaces** the default rather than being appended next to it, and the
+auto-filled `Host` / `Content-Length` step aside for either source.
+
+`requestTimeoutMillis` bounds a whole call — lease, exchange, and any
+stale-connection retry. On elapse the call fails with
+`HttpRequestTimeoutException` (deliberately *not* a `CancellationException`, so
+a surrounding `catch (e: CancellationException)` cannot swallow it) and the
+connection is closed instead of pooled. It defaults to `0` (disabled); leave it
+so and bound the call with `withTimeout` if you prefer to manage deadlines
+yourself.
 
 ## Custom clients at the pipeline layer
 

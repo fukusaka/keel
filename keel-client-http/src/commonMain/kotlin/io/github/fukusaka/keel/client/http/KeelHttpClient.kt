@@ -4,6 +4,8 @@ import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpRequest
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 
 /**
  * A native HTTP/1.1 client built directly on a keel [StreamEngine] — the
@@ -29,13 +31,23 @@ import io.github.fukusaka.keel.codec.http.HttpRequest
  * **Lifecycle**: [close] closes every pooled connection. The engine is owned
  * by the caller and is never closed by the client.
  *
- * **Timeout**: [request] suspends until the complete response has been
- * decoded or the connection closes / errors — there is no built-in
- * timeout, so callers should bound a request with `withTimeout` (a hung
- * peer would otherwise suspend the caller indefinitely).
+ * **Default headers**: headers configured with `defaultHeaders { }` are added
+ * to every request. A per-request header of the same name **wins** — the
+ * default is then not added at all, so a caller can override a default rather
+ * than end up with both values.
+ *
+ * **Timeout**: with `requestTimeoutMillis` set, a request that has not produced
+ * a complete response within the budget fails with
+ * [HttpRequestTimeoutException] and its connection is closed rather than
+ * pooled. The budget covers the whole call including a stale-connection retry.
+ * It defaults to `0` (disabled), in which case [request] suspends until the
+ * response arrives or the connection closes / errors — bound such a call with
+ * `withTimeout` so a hung peer cannot suspend the caller indefinitely.
  */
 public class KeelHttpClient internal constructor(
     private val pool: ConnectionPool,
+    private val defaultHeaders: HttpHeaders = HttpHeaders.EMPTY,
+    private val requestTimeoutMillis: Long = 0,
 ) {
 
     /**
@@ -55,6 +67,25 @@ public class KeelHttpClient internal constructor(
         url: String,
         headers: HttpHeaders = HttpHeaders.EMPTY,
         body: ByteArray? = null,
+    ): KeelHttpResponse {
+        if (requestTimeoutMillis <= 0) return exchange(method, url, headers, body)
+        // The budget covers lease + exchange + any stale-connection retry. On
+        // elapse the exchange's own cleanup closes the connection (it is never
+        // released to the pool), so a timed-out request leaves nothing pooled.
+        return try {
+            withTimeout(requestTimeoutMillis) { exchange(method, url, headers, body) }
+        } catch (e: TimeoutCancellationException) {
+            // Keep the original as the cause: the timeout is reported as a request
+            // failure, but the coroutines-level detail stays available for debugging.
+            throw HttpRequestTimeoutException(url, requestTimeoutMillis, e)
+        }
+    }
+
+    private suspend fun exchange(
+        method: HttpMethod,
+        url: String,
+        headers: HttpHeaders,
+        body: ByteArray?,
     ): KeelHttpResponse {
         val parsed = RequestUrl.parse(url)
         val route = RouteKey(parsed.host, parsed.port)
@@ -98,6 +129,14 @@ public class KeelHttpClient internal constructor(
             if (!disposed) connection.close()
         }
     }
+
+    /**
+     * Whether [name] is already set for this request — by the caller or by the
+     * client's default headers. Auto-filled headers (`Host`, `Content-Length`)
+     * must not overwrite either source.
+     */
+    private fun supplied(headers: HttpHeaders, name: String): Boolean =
+        name in headers || name in defaultHeaders
 
     /** Closes every pooled connection. The caller-owned engine is not closed. */
     public suspend fun close() {
@@ -162,11 +201,16 @@ public class KeelHttpClient internal constructor(
         body: ByteArray?,
     ): HttpRequest {
         val requestHeaders = HttpHeaders()
-        if (headers[HttpHeaderName.HOST] == null) {
+        if (!supplied(headers, HttpHeaderName.HOST)) {
             requestHeaders.add(HttpHeaderName.HOST, url.authority)
         }
+        // A per-request header wins over a default of the same name: skip the
+        // default entirely rather than emit both values.
+        defaultHeaders.forEach { name, value ->
+            if (name !in headers) requestHeaders.add(name, value)
+        }
         headers.forEach { name, value -> requestHeaders.add(name, value) }
-        if (body != null && headers[HttpHeaderName.CONTENT_LENGTH] == null) {
+        if (body != null && !supplied(headers, HttpHeaderName.CONTENT_LENGTH)) {
             requestHeaders.add(HttpHeaderName.CONTENT_LENGTH, body.size.toString())
         }
         return HttpRequest(method, url.target, headers = requestHeaders, body = body)
