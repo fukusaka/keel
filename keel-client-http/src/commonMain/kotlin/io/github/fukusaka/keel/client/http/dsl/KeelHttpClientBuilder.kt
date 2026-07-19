@@ -1,21 +1,53 @@
 package io.github.fukusaka.keel.client.http.dsl
 
 import io.github.fukusaka.keel.client.http.ConnectionPool
+import io.github.fukusaka.keel.client.http.HttpRequestTimeoutException
 import io.github.fukusaka.keel.client.http.KeelHttpClient
 import io.github.fukusaka.keel.client.http.PoolConfig
+import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.core.StreamEngine
 
 /**
  * Builder for [keelHttpClient].
  *
- * The client is defined by the injected [StreamEngine] plus an optional
- * [pool] block for keep-alive tuning. Default headers, per-request
- * timeouts, and redirects arrive later; keeping the builder now means
- * those additions do not change the call shape.
+ * The client is defined by the injected [StreamEngine] plus optional
+ * [pool] / [defaultHeaders] blocks and [requestTimeoutMillis]. Redirects
+ * arrive later; keeping the builder means those additions do not change
+ * the call shape.
  */
 public class KeelHttpClientBuilder internal constructor() {
 
     private val poolBuilder = PoolConfigBuilder()
+    private val headers = HttpHeaders()
+
+    /**
+     * Time budget for a whole request — lease, exchange, and any
+     * stale-connection retry — in milliseconds. On elapse the request fails
+     * with [HttpRequestTimeoutException] and its connection is closed rather
+     * than pooled. `0` (default) disables the built-in timeout, leaving the
+     * caller to bound a call with `withTimeout`.
+     */
+    public var requestTimeoutMillis: Long = 0
+
+    /**
+     * Adds headers sent with every request:
+     *
+     * ```
+     * keelHttpClient(engine) {
+     *     defaultHeaders {
+     *         add("User-Agent", "my-app/1.0")
+     *         add("Accept", "application/json")
+     *     }
+     * }
+     * ```
+     *
+     * A per-request header of the same name wins — the default is then not
+     * added at all, so a caller overrides rather than duplicates it. Repeated
+     * blocks accumulate.
+     */
+    public fun defaultHeaders(configure: HttpHeaders.() -> Unit) {
+        headers.apply(configure)
+    }
 
     /**
      * Configures the connection pool (keep-alive reuse):
@@ -34,7 +66,7 @@ public class KeelHttpClientBuilder internal constructor() {
     }
 
     internal fun build(engine: StreamEngine): KeelHttpClient =
-        KeelHttpClient(ConnectionPool(engine, poolBuilder.build()))
+        KeelHttpClient(ConnectionPool(engine, poolBuilder.build()), headers, requestTimeoutMillis)
 }
 
 /**
