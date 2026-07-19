@@ -1,7 +1,9 @@
 package io.github.fukusaka.keel.client.http
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.client.http.dsl.keelHttpClient
+import io.github.fukusaka.keel.codec.http.HttpParseException
 import io.github.fukusaka.keel.codec.http.HttpRequest
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpStatus
@@ -72,6 +74,73 @@ class StaleConnectionRetryTest {
             channel.pipeline.addLast("drop-on-second", DropOnSecondRequest(counter))
         }
 
+    /**
+     * Server handler: respond keep-alive to a connection's first request, then
+     * write an unparseable response on its second (raw bytes past the encoder,
+     * which passes non-`HttpResponse` messages through). The reused connection
+     * fails with a response-level error, not a stale connection.
+     */
+    private class MalformedOnSecondRequest(private val counter: RequestCounter) : InboundHandler {
+        private var requests = 0
+
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+            if (msg is HttpRequest) {
+                requests++
+                counter.total++
+                if (requests == 1) {
+                    ctx.propagateWriteAndFlush(HttpResponse.of(HttpStatus.OK, "ok"))
+                } else {
+                    val garbage = "not-a-valid-http-response\r\n\r\n".encodeToByteArray()
+                    val buf = DefaultAllocator.allocate(garbage.size)
+                    buf.writeByteArray(garbage, 0, garbage.size)
+                    ctx.propagateWriteAndFlush(buf)
+                }
+            } else {
+                ctx.propagateRead(msg)
+            }
+        }
+    }
+
+    private fun startMalformedServer(engine: InMemoryEngine, counter: RequestCounter): PipelinedStreamServer =
+        engine.bindPipeline(InetSocketAddress("127.0.0.1", 0), BindConfig()) { channel ->
+            channel.addHttp1ServerCodec()
+            channel.pipeline.addLast("malformed-on-second", MalformedOnSecondRequest(counter))
+        }
+
+    /**
+     * Server handler: respond keep-alive to a connection's first request, then on
+     * its second write a well-formed head promising a body but close before the
+     * body completes. The client decoder hits EOF mid-response — a connection
+     * failure (not a malformed response), so a fresh connection should recover.
+     */
+    private class TruncateOnSecondRequest(private val counter: RequestCounter) : InboundHandler {
+        private var requests = 0
+
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+            if (msg is HttpRequest) {
+                requests++
+                counter.total++
+                if (requests == 1) {
+                    ctx.propagateWriteAndFlush(HttpResponse.of(HttpStatus.OK, "ok"))
+                } else {
+                    val partial = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nxx".encodeToByteArray()
+                    val buf = DefaultAllocator.allocate(partial.size)
+                    buf.writeByteArray(partial, 0, partial.size)
+                    ctx.propagateWriteAndFlush(buf)
+                    ctx.channel.pipeline.requestClose()
+                }
+            } else {
+                ctx.propagateRead(msg)
+            }
+        }
+    }
+
+    private fun startTruncatingServer(engine: InMemoryEngine, counter: RequestCounter): PipelinedStreamServer =
+        engine.bindPipeline(InetSocketAddress("127.0.0.1", 0), BindConfig()) { channel ->
+            channel.addHttp1ServerCodec()
+            channel.pipeline.addLast("truncate-on-second", TruncateOnSecondRequest(counter))
+        }
+
     @Test
     fun `a reused connection failing an idempotent request retries once on a fresh connection`() =
         runTest(timeout = budget) {
@@ -131,5 +200,62 @@ class StaleConnectionRetryTest {
                 engine.close()
             }
             assertEquals(0, tracking.outstandingCount, "the failed non-idempotent request leaked pooled buffers")
+        }
+
+    @Test
+    fun `a reused connection returning a malformed response is not retried`() =
+        runTest(timeout = budget) {
+            val engine = InMemoryEngine()
+            val counter = RequestCounter()
+            val server = startMalformedServer(engine, counter)
+            val addr = server.localAddress as InetSocketAddress
+            val url = "http://${addr.hostString}:${addr.port}/"
+            val client = keelHttpClient(engine) { pool { maxIdleConnectionsPerRoute = 4 } }
+            try {
+                // Request 1 pools a connection.
+                assertEquals(HttpStatus.OK, client.get(url).status)
+                // Request 2 (idempotent GET) reuses it, but the server replies with
+                // an unparseable response. That is a response-level failure, not a
+                // stale connection, so the client must NOT retry it — retrying would
+                // just re-send and hit the same malformed reply. The parse error
+                // surfaces instead.
+                assertFailsWith<HttpParseException> { client.get(url) }
+                // Proof there was no retry: the server saw the pooled connection's
+                // first request and its malformed second = 2, with no fresh retry
+                // (a retry would make it 3 and the request would have succeeded).
+                assertEquals(2, counter.total, "a malformed response must not trigger a fresh-connection retry")
+            } finally {
+                client.close()
+                server.close()
+                engine.close()
+            }
+        }
+
+    @Test
+    fun `a reused connection dropped mid-response is retried`() =
+        runTest(timeout = budget) {
+            val engine = InMemoryEngine()
+            val counter = RequestCounter()
+            val server = startTruncatingServer(engine, counter)
+            val addr = server.localAddress as InetSocketAddress
+            val url = "http://${addr.hostString}:${addr.port}/"
+            val client = keelHttpClient(engine) { pool { maxIdleConnectionsPerRoute = 4 } }
+            try {
+                // Request 1 pools a connection.
+                assertEquals(HttpStatus.OK, client.get(url).status)
+                // Request 2 (idempotent GET) reuses it; the server sends a head then
+                // drops the connection mid-body. That is a connection failure (EOF
+                // mid-response), not a malformed reply, so the client retries once
+                // on a fresh connection and succeeds.
+                val retried = client.get(url)
+                assertEquals(HttpStatus.OK, retried.status)
+                assertEquals("ok", retried.bodyText())
+                // reuse → mid-response drop → retry on fresh = 3 server-side requests.
+                assertEquals(3, counter.total, "a mid-response drop must retry on a fresh connection")
+            } finally {
+                client.close()
+                server.close()
+                engine.close()
+            }
         }
 }

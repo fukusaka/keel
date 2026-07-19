@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.codec.http.addHttp1ClientCodec
 import io.github.fukusaka.keel.codec.http.materializeReleasingHeaders
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.io.KeelEofException
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
 import kotlinx.coroutines.NonCancellable
@@ -61,10 +62,18 @@ internal class ClientConnection private constructor(
         channel.pipeline.requestWriteAndFlush(request)
         val result = bridge.receiveCatching()
         val response = result.getOrNull()
-            ?: throw (
-                result.exceptionOrNull()
-                    ?: IllegalStateException("connection closed before a complete response arrived")
-                )
+            ?: when (val cause = result.exceptionOrNull()) {
+                // No cause, or an EOF, means the connection itself failed before a
+                // complete response arrived — the peer dropped the kept-alive
+                // connection (while idle, or mid-response). A reused connection
+                // failing this way is safe to retry on a fresh one.
+                null -> throw StaleConnectionException()
+                is KeelEofException -> throw StaleConnectionException(cause)
+                // Any other cause is response/application level (a decoder
+                // HttpParseException on a malformed response, etc.): a fresh
+                // connection would hit the same reply, so surface it unretried.
+                else -> throw cause
+            }
         // Materialise the pooled headers to GC-owned and release them here
         // (release-in-finally, on the EventLoop thread); isReusable reads the
         // pooled headers inside the block while they are still valid.
@@ -169,3 +178,13 @@ internal class ClientConnection private constructor(
 
 /** The outcome of [ClientConnection.exchange]: the materialised response and whether the connection may be reused. */
 internal class Exchanged(val response: KeelHttpResponse, val reusable: Boolean)
+
+/**
+ * The connection failed before delivering a complete response — the peer closed
+ * it (a kept-alive connection dropped while idle, or an EOF mid-response). A
+ * reused connection failing this way is safe to retry on a fresh connection;
+ * response-level failures (a malformed response, a materialisation error) do
+ * not throw this and must not be retried.
+ */
+internal class StaleConnectionException(cause: Throwable? = null) :
+    IllegalStateException("connection closed before a complete response arrived", cause)
