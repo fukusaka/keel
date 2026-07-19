@@ -18,7 +18,7 @@ import platform.posix.pthread_mutex_unlock
  * Variant bench for the per-size-class **freelist** used by `SlabAllocator`
  * (Native) on the allocation hot path.
  *
- * Context: Phase 1 of the chunk-based allocator roadmap unifies the size-class
+ * Context: the chunk-based allocator roadmap unifies the size-class
  * map (decided: lock-free `IntArrayScan`). The freelist underneath each class is
  * a separate concurrency-bearing structure. On Native it must be thread-safe
  * because NWConnection releases buffers on a GCD thread distinct from the

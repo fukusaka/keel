@@ -52,7 +52,7 @@ class SizeClassesTest {
         assertEquals(8, sc.size2SizeIdx(129), "129 -> 160")
         assertEquals(31, sc.size2SizeIdx(8192), "8192 -> 8192")
         assertEquals(32, sc.size2SizeIdx(8193), "8193 -> 10240")
-        // Measured unpooled-bypass sizes from the Phase 0 profile land in a class:
+        // Measured unpooled-bypass sizes from the allocation profile land in a class:
         assertEquals(35, sc.size2SizeIdx(16384), "TLS plaintext 16384 -> 16384")
         assertTrue(sc.sizeIdx2size(sc.size2SizeIdx(17408)) >= 17408, "TLS ciphertext 17408 pools")
         assertTrue(sc.sizeIdx2size(sc.size2SizeIdx(1031)) >= 1031, "SSE 1031 pools")

@@ -10,7 +10,7 @@ import kotlin.time.measureTime
  * Variant bench for the `pools` size-class lookup used by `SlabAllocator`
  * (Native) / `PooledDirectAllocator` (JVM) on the allocation hot path.
  *
- * Motivation: Phase 1 of the chunk-based allocator roadmap unifies the two
+ * Motivation: the chunk-based allocator roadmap unifies the two
  * allocators into commonMain. The `pools` map (`Int size -> Pool`) is the only
  * concurrency-bearing structure that must be re-homed. Its access pattern is
  * **read-mostly** (lookups on every `allocate` / `returnToPool`; writes only at

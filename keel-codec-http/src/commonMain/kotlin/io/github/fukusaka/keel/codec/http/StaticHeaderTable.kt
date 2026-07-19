@@ -12,7 +12,7 @@ package io.github.fukusaka.keel.codec.http
  *    [HeaderEntry] (24 B saved per hit).
  * 2. **HTTP/2 HPACK** / **HTTP/3 QPACK** indexed-entry decode —
  *    numeric index lookup via [hpackStaticEntry] / [qpackStaticEntry]
- *    for the keel-codec-http2 (Phase 13) / keel-codec-http3 (Phase 14)
+ *    for the future keel-codec-http2 / keel-codec-http3
  *    decoders. The decoder hands the shared instance directly to
  *    [HttpHeaders.entries] for zero allocation on indexed decode.
  *
@@ -39,7 +39,7 @@ package io.github.fukusaka.keel.codec.http
  *   `X-Frame-Options: DENY` uppercase, etc.) — empirically confirmed
  *   against a public BigQuery HTTP Archive crawl (>5% per-name
  *   value-frequency threshold, the same methodology QPACK's own static
- *   table was built with; keel-codec-http/scripts/bigquery-l7-stage3/RESULTS.md
+ *   table was built with; keel-codec-http/scripts/bigquery-static-header-table/RESULTS.md
  *   has the full per-entry results). Title-Case matches the H1 wire
  *   convention preserved by Netty `DefaultHttpHeaders` and OkHttp
  *   `Headers`, so the [tryInternAt] exact-case compare hits H1
@@ -91,15 +91,15 @@ internal object StaticHeaderTable {
 
     /**
      * Number of HPACK static-table entries (RFC 7541 Appendix A).
-     * Indices `1..HPACK_STATIC_COUNT` are HPACK-spec — Phase 13
-     * `keel-codec-http2` consumes them by index via [hpackStaticEntry].
+     * Indices `1..HPACK_STATIC_COUNT` are HPACK-spec — a future
+     * `keel-codec-http2` will consume them by index via [hpackStaticEntry].
      */
     internal const val HPACK_STATIC_COUNT: Int = 61
 
     /**
      * Number of QPACK static-table entries (RFC 9204 Appendix A).
      * QPACK uses 0-based indexing (`0..QPACK_STATIC_COUNT - 1`).
-     * Phase 14 `keel-codec-http3` consumes them via [qpackStaticEntry].
+     * A future `keel-codec-http3` will consume them via [qpackStaticEntry].
      */
     internal const val QPACK_STATIC_COUNT: Int = 99
 
@@ -190,7 +190,7 @@ internal object StaticHeaderTable {
 
         // QPACK static table (RFC 9204 Appendix A) — indices 0..98
         // (0-based). Lowercase names per RFC 9114 §4.2 wire mandate.
-        // Phase 14 `keel-codec-http3` decoder consumes by index.
+        // A future `keel-codec-http3` decoder will consume these by index.
         fun qpack(name: String, value: String) = entries.add(make(name, value))
         qpack(":authority", "") // 0
         qpack(":path", "/") // 1
@@ -454,7 +454,7 @@ internal object StaticHeaderTable {
         // on `type="html"` document navigations, response headers on
         // `type IN ("html","css","script")` (cost-bounded; `xhr`/`fetch`/
         // `json`-typed resources were out of scope). Full per-entry results:
-        // keel-codec-http/scripts/bigquery-l7-stage3/RESULTS.md.
+        // keel-codec-http/scripts/bigquery-static-header-table/RESULTS.md.
 
         // Browser default Accept (Chrome / Firefox H1 navigation request).
         // Confirmed 50.72% — but the value itself was stale (pre-AVIF/WebP/
@@ -608,7 +608,7 @@ internal object StaticHeaderTable {
 
     /**
      * Returns the HPACK static-table entry at 1-based index [n]
-     * (RFC 7541 Appendix A). Phase 13 `keel-codec-http2` decoder
+     * (RFC 7541 Appendix A). A future `keel-codec-http2` decoder
      * uses this for indexed-entry decode.
      *
      * @throws IllegalArgumentException if [n] is not in `1..HPACK_STATIC_COUNT`
@@ -622,7 +622,7 @@ internal object StaticHeaderTable {
 
     /**
      * Returns the QPACK static-table entry at 0-based index [n]
-     * (RFC 9204 Appendix A). Phase 14 `keel-codec-http3` decoder
+     * (RFC 9204 Appendix A). A future `keel-codec-http3` decoder
      * uses this for indexed-entry decode.
      *
      * QPACK entries occupy positions `HPACK_STATIC_COUNT..

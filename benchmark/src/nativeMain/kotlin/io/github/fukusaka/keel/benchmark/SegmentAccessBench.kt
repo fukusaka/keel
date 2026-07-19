@@ -26,7 +26,7 @@ import kotlin.time.measureTime
  * Three structurally identical classes, differing only in the access path:
  * - **direct**: holds the `CPointer` directly (models today's `NativeIoBuf`).
  * - **cached-base**: a view that copies `segment.ptr` into its own field in
- *   the constructor (models the Phase 1 design).
+ *   the constructor (models the proposed view design).
  * - **indirect**: a view that dereferences `segment.ptr` on every access
  *   (models a naive view with no caching).
  *
@@ -60,7 +60,7 @@ fun runSegmentAccessBench() {
 
         val segment = FakeSegment(region)
         val cached = CachedView(segment)
-        benchVariant("cached-base (view caches segment.ptr)", "Phase 1 design") {
+        benchVariant("cached-base (view caches segment.ptr)", "proposed view design") {
             scanCached(cached)
         }
 
@@ -94,7 +94,7 @@ private class DirectBuf(private val ptr: CPointer<ByteVar>) {
 private class FakeSegment(val ptr: CPointer<ByteVar>)
 
 /**
- * Models the Phase 1 design: a view over a [FakeSegment] that copies the
+ * Models the proposed view design: a view over a [FakeSegment] that copies the
  * segment base pointer into its own [cachedBase] field in the constructor,
  * so per-byte access skips the `view.segment.ptr` field load.
  */

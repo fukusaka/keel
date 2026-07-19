@@ -5,7 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Verifies Phase 5 cache trim + chunk reclaim — the footprint-correctness layer.
+ * Verifies cache trim + chunk reclaim — the footprint-correctness layer.
  * Cached views pin their chunks, so without a trim pass that returns cold cache
  * entries' runs, chunks would never become reclaimable and the footprint would
  * only grow. [PooledAllocator.trimNow] forces the pass deterministically (in

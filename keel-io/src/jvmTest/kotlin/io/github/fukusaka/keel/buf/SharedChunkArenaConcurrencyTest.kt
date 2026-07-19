@@ -11,8 +11,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Cross-thread seam test for the shared [ChunkArena] (Stage 2-1: thread-safe arena
- * + `createChild` sharing). Exercises the off-EventLoop-safety the sharing targets:
+ * Cross-thread seam test for the shared [ChunkArena] — a thread-safe arena
+ * shared by `createChild`. Exercises the off-EventLoop-safety the sharing targets:
  * a buffer carved on one thread (a producer simulating EventLoop A) is released on
  * another (a consumer simulating EventLoop B), so the shared arena's [carve] and
  * [returnRun] run concurrently under the [ArenaLock].
@@ -38,7 +38,7 @@ class SharedChunkArenaConcurrencyTest {
     @Test
     fun `cross-thread carve and release on a shared arena stays consistent`() {
         val root = PooledDirectAllocator()
-        // Per-EventLoop children that all share the root's chunk arena (Stage 2-1 b).
+        // Per-EventLoop children that all share the root's chunk arena.
         val children = Array(CHILDREN) { root.createChild() }
         val errors = AtomicInteger(0)
         val firstError = AtomicReference<Throwable?>(null)

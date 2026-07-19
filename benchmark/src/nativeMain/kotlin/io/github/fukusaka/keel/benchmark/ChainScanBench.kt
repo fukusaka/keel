@@ -15,13 +15,13 @@ import kotlin.time.measureTime
  * Native micro-benchmark for the sequential-scan cost of a *composite* buffer
  * in the upcoming `IoBuf` redesign. Invoked via `--bench=chain-scan`.
  *
- * Phase 2 of the `IoBuf` redesign introduces a composite buffer: a logical
+ * The `IoBuf` redesign introduces a composite buffer: a logical
  * buffer made of a **chain of fixed-size segments**. The codec scans bytes
  * sequentially (HTTP header parsing scans forward for `\n`). A flat
  * (single contiguous) buffer scans with a plain pointer increment; a chained
  * buffer needs, per byte, a "am I at the current segment's end? if so advance
  * to the next segment" check. This bench MEASURES that chain-walk tax so the
- * Phase 2 design can be decided: keep flat as the common case and use
+ * composite-buffer design can be decided: keep flat as the common case and use
  * composite only for accumulation, or go composite-everywhere if it is cheap.
  *
  * Six variants, each scanning the same total of 65536 bytes sequentially
@@ -41,7 +41,7 @@ import kotlin.time.measureTime
  *   from the boundary base reload.
  * - **seggran-8x8k**: the same 8x8192B chain as chain-8x8k scanned at
  *   SEGMENT GRANULARITY (outer loop over segments, tight flat inner loop
- *   per segment). The scan strategy Phase 2's composite must expose.
+ *   per segment). The scan strategy the composite buffer must expose.
  *
  * Methodology:
  * - One op = one full 65536-byte sequential scan (65536 `nextByte` calls
@@ -200,7 +200,7 @@ private fun scanChain(cursor: ChainCursor) {
  * Segment-granularity scan: an outer loop over the segments, each scanned
  * with a tight flat inner loop over a hoistable local `base`. No per-byte
  * boundary check — the boundary work is O([segments].size). This is the
- * scan strategy Phase 2's composite buffer must expose for the codec.
+ * scan strategy the composite buffer must expose for the codec.
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun scanSegmentGranular(segments: Array<CPointer<ByteVar>>, segmentLen: Int) {

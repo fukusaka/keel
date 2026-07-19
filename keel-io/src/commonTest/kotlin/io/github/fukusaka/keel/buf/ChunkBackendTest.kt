@@ -7,7 +7,7 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * Verifies the Phase 4 chunk back-end: a pool miss carves a run/subpage view out
+ * Verifies the chunk back-end: a pool miss carves a run/subpage view out
  * of a chunk instead of a per-buffer allocation, and the view returns its run to
  * the chunk when finally freed. The key check is **memory safety** — carved views
  * must address distinct, non-overlapping regions (the `byteOffset` math), with no

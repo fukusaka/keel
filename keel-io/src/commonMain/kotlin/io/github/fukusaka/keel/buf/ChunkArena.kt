@@ -31,8 +31,9 @@ internal fun interface ChunkViewFactory {
  *
  * **Lifecycle**: [carve] retains the chunk backing once per view; the view's
  * `freeBacking` (via [ChunkBackedIoBuf.returnChunkRun] → [returnRun]) releases it
- * and returns the run. Chunks are **not reclaimed** in this phase — they are held
- * for the allocator's lifetime (idle-chunk reclaim / trim is a later phase).
+ * and returns the run. A chunk whose runs are all free is reclaimed by [reclaim],
+ * which the allocator's cache trim drives; a warm reserve is kept to avoid
+ * thrashing.
  *
  * **Thread safety**: guarded by an [ArenaLock]. Every mutation of the chunk
  * bookkeeping ([carve] / [returnRun] / [reclaim] / [close]) runs under the lock,

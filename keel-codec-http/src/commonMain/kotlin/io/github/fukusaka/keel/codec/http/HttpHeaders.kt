@@ -1027,7 +1027,7 @@ enum class ContentLengthValidity { ABSENT, VALID, INVALID }
  *
  * Under byte-range storage the per-request [HttpHeaders] no longer uses
  * `HeaderEntry`; it survives as the shape of the static / HPACK
- * table entries that Phase 13 (`keel-codec-http2`) decodes by index.
+ * table entries that a future `keel-codec-http2` will decode by index.
  */
 internal class HeaderEntry(
     val hashLower: Int,

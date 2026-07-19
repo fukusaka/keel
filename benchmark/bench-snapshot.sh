@@ -2,7 +2,7 @@
 # Snapshot benchmark results used in a summary.
 #
 # Usage: ./benchmark/bench-snapshot.sh <summary-name>
-#   e.g.: ./benchmark/bench-snapshot.sh 2026-03-24-phase5b-final
+#   e.g.: ./benchmark/bench-snapshot.sh 2026-03-24-baseline
 #
 # Copies the latest results from all hosts into
 # benchmark/results-summary/<summary-name>/ alongside the .md file.
@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <summary-name>"
-    echo "  e.g.: $0 2026-03-24-phase5b-final"
+    echo "  e.g.: $0 2026-03-24-baseline"
     exit 1
 fi
 

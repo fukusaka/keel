@@ -31,10 +31,10 @@ import platform.darwin.dispatch_queue_t
  * pool ownership across worker-thread migrations?
  *
  * **Why this scenario is different from the tight-loop synthetics.** The
- * other Phase 4 tests in this module (`PocHeadersPoolGcdRaceTest`) drive
- * borrow/release inside `dispatch_async { ... }` blocks. Each block is
- * atomic — no suspension between borrow and release. The cross-queue header-pool race in production
- * involves **HttpServerHandler** coroutines that:
+ * sibling `PocHeadersPoolGcdRaceTest` in this module drives borrow/release
+ * inside `dispatch_async { ... }` blocks. Each block is atomic — no
+ * suspension between borrow and release. The cross-queue header-pool race
+ * in production involves **HttpServerHandler** coroutines that:
  *
  * 1. Parse a request → `HttpHeadersPool.borrow()` returns h1 on worker A.
  * 2. Hand h1 to user handler logic.
@@ -46,8 +46,8 @@ import platform.darwin.dispatch_queue_t
  *    `h1.release()` (often via `try { } finally { }` cleanup).
  *
  * The borrow happened on worker A's `@ThreadLocal nativeStack`; the release
- * pushes onto B's. The other Phase 4 tests showed this fragmentation does
- * NOT crash by itself. What it might do, under keep-alive pipelining or
+ * pushes onto B's. The sibling test showed this fragmentation does NOT
+ * crash by itself. What it might do, under keep-alive pipelining or
  * HTTP/1.1 connection reuse, is allow a **subsequent request on the same
  * connection** to borrow from B's pool and obtain an instance that some
  * other (still suspended) handler is mid-mutation on.
