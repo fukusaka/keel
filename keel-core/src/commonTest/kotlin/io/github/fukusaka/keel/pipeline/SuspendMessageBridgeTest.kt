@@ -2,6 +2,8 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -117,6 +119,33 @@ class SuspendMessageBridgeTest {
             pipeline.notifyInactive()
 
             assertEquals(listOf("x", "y"), released)
+        }
+    }
+
+    @Test
+    fun `a message buffered after the consumer gave up is reclaimed on close`() {
+        runTest {
+            val released = mutableListOf<String>()
+            val bridge = SuspendMessageBridge(TestMessage::class, releaseUndelivered = { released.add(it.value) })
+            val pipeline = createPipeline(bridge)
+
+            // The consumer suspends waiting on the empty channel, then is
+            // cancelled (e.g. a request timeout) before any message arrives —
+            // this removes it as the waiting receiver.
+            val consumer = launch(start = CoroutineStart.UNDISPATCHED) {
+                bridge.receiveCatching()
+            }
+            consumer.cancel()
+
+            // A message the EventLoop decoded after the consumer gave up is then
+            // buffered (no live receiver). Connection teardown must reclaim its
+            // pooled payload rather than leak it — the reachable cancellation
+            // path (the atomic dequeue-then-cancel window is additionally
+            // covered by the channel's onUndeliveredElement hook).
+            pipeline.notifyRead(TestMessage("stranded"))
+            pipeline.notifyInactive()
+
+            assertEquals(listOf("stranded"), released)
         }
     }
 

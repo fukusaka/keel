@@ -61,7 +61,20 @@ class SuspendMessageBridge<T : Any>(
 
     override val acceptedType: KClass<*> get() = type
 
-    private val messages = Channel<T>(capacity)
+    // onUndeliveredElement closes the prompt-cancellation window: when a message
+    // is handed to a receiver that is cancelled before receiveCatching() returns
+    // it, the channel reports it here so its pooled payload is released rather
+    // than lost. This does not double-release with the other paths: a graceful
+    // close() keeps buffered elements receivable (drained by releaseBuffered),
+    // and a failed trySend never accepts the element — so onUndeliveredElement
+    // fires only for the receiver-cancellation case those two do not cover.
+    // Thread affinity: the hook runs on the receiving coroutine's own thread (it
+    // fires while that receive unwinds), which for keel consumers is the channel
+    // EventLoop thread — they confine receiveCatching to ioDispatcher — so a
+    // pooled release here stays on the buffer-owning thread even when the cancel
+    // originates elsewhere (verified: a cancel from another thread still fires
+    // the hook on the confined receiver's thread).
+    private val messages = Channel<T>(capacity, onUndeliveredElement = { releaseUndelivered?.invoke(it) })
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         if (type.isInstance(msg)) {
