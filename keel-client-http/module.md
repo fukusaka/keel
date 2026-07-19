@@ -81,7 +81,13 @@ val channel = engine.connectPipeline("127.0.0.1", 8080) {
 try {
     channel.pipeline.requestWriteAndFlush(HttpRequest(HttpMethod.GET, "/hello"))
     val response = bridge.receiveCatching().getOrThrow()
-    println(response.status)
+    // The delivered response owns the decoder's pooled headers; materialise
+    // them to a GC-owned copy and release the pooled ones (as KeelHttpClient
+    // does). `response.status` / `response.body` are already GC-owned.
+    response.materializeReleasingHeaders { headers ->
+        println(response.status)
+        println(headers[HttpHeaderName.CONTENT_TYPE])
+    }
 } finally {
     channel.close()
 }

@@ -36,7 +36,8 @@ import kotlinx.coroutines.withContext
  *   EventLoop thread.
  * @return the configured [PipelinedChannel].
  * @throws UnsupportedOperationException if the engine's [connect] does not
- *   return a [PipelinedChannel].
+ *   return a [PipelinedChannel], or if a non-null [config] carries socket
+ *   options the engine does not support.
  */
 public suspend fun StreamEngine.connectPipeline(
     address: SocketAddress,
