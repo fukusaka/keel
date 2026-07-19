@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `codec-http`: `HttpResponse.materializeReleasingHeaders { }` — materialise a response's pooled
+  headers to a GC-owned copy and release the pooled ones in a `finally`, on the calling thread;
+  centralises the materialise + release-in-finally seam shared by the HTTP client and test client (#975)
 - `codec-http`: `HttpResponse.isKeepAlive` — the response-side counterpart of
   `HttpRequestHead.isKeepAlive`, so a client can decide connection reuse from a response (#971)
 - `client-http`: new `keel-client-http` module — a standalone HTTP/1.1 client on a keel

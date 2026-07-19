@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpRequest
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.addHttp1ClientCodec
+import io.github.fukusaka.keel.codec.http.materializeReleasingHeaders
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
@@ -101,20 +102,10 @@ public class KeelHttpTestClient internal constructor(
                         result.exceptionOrNull()
                             ?: IllegalStateException("connection closed before a complete response arrived")
                         )
-                // The decoder's zero-copy headers are pooled and view the
-                // retained recv buffer via addRange; the connection closes in
-                // `finally` and releases that buffer. Materialise the fields to
-                // a plain, GC-owned HttpHeaders (String values) while the buffer
-                // is still valid, then release the pooled one in a finally — the
-                // aggregator relinquished the head at emit, so this is the sole
-                // owner and a throw mid-materialisation must still fulfil the
-                // release contract.
-                try {
-                    val detachedHeaders = HttpHeaders()
-                    response.headers.forEach { name, value -> detachedHeaders.add(name, value) }
-                    TestHttpResponse(response.status, detachedHeaders, response.body ?: EMPTY_BODY)
-                } finally {
-                    response.headers.release()
+                // Materialise the pooled headers to GC-owned and release them
+                // here (release-in-finally, on the EventLoop thread).
+                response.materializeReleasingHeaders { detached ->
+                    TestHttpResponse(response.status, detached, response.body ?: EMPTY_BODY)
                 }
             }
         } finally {
