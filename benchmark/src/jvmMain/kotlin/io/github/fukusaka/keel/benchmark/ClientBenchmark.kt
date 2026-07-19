@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.EmptyCoroutineContext
 import org.HdrHistogram.Histogram
 import java.lang.management.ManagementFactory
 import java.net.URI
@@ -54,6 +55,10 @@ import kotlin.concurrent.thread
  * connections, so it is the warm-path peer of the pooling reference clients.
  */
 fun runClientBenchmark(config: BenchmarkConfig) {
+    if (config.client.clientType.startsWith("floor-")) {
+        runJvmRawFloor(config.client)
+        return
+    }
     val cc = config.client
     require(cc.connections >= 1) { "--client-connections must be >= 1 (got ${cc.connections})" }
     val targets = requireTargets(cc)
@@ -101,6 +106,20 @@ fun runClientBenchmark(config: BenchmarkConfig) {
  * drift on what a target URL is.
  */
 private fun requireTargets(cc: ClientConfig): List<String> = clientTargets(cc)
+
+/** Transport-only floor on the JVM engine, the counterpart of the native one. */
+private fun runJvmRawFloor(cc: ClientConfig) {
+    val target = clientTargets(cc).first().removeSuffix(cc.endpoint).removePrefix("http://")
+    runRawClientFloor(
+        engine = io.github.fukusaka.keel.engine.nio.NioEngine(),
+        host = target.substringBefore(':'),
+        port = target.substringAfter(':').toInt(),
+        path = cc.endpoint,
+        durationSeconds = cc.durationSec,
+        warmupSeconds = cc.warmupSec,
+        label = cc.clientType,
+    )
+}
 
 /** Fails fast if the external fixture is not reachable before the run starts. */
 private fun probeReady(target: String) {
@@ -550,7 +569,17 @@ private fun driveCoroutines(driver: ClientDriver, targets: List<String>, cc: Cli
 
     val allocStart = totalAllocatedBytes()
     val runStart = System.nanoTime()
-    runBlocking(Dispatchers.Default) {
+    // KEEL_BENCH_CLIENT_CALLER=single drives every worker from one thread
+    // instead of Dispatchers.Default. The coroutine-native clients hop to their
+    // own I/O dispatcher regardless, so the caller's thread count is a
+    // methodology choice that measurably moves the result — this makes the two
+    // comparable on both platforms rather than fixed differently per platform.
+    val callerContext = if (getEnvVar("KEEL_BENCH_CLIENT_CALLER") == "single") {
+        EmptyCoroutineContext
+    } else {
+        Dispatchers.Default
+    }
+    runBlocking(callerContext) {
         coroutineScope {
             repeat(cc.connections) { worker ->
                 val pinned = if (cc.targetMode == "pinned") targets[worker % targets.size] else null

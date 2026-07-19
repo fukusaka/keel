@@ -4,9 +4,13 @@ import io.github.fukusaka.keel.client.http.KeelHttpClient
 import io.github.fukusaka.keel.client.http.dsl.keelHttpClient
 import io.github.fukusaka.keel.core.StreamEngine
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlin.concurrent.AtomicLong
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.time.TimeSource
 
 /**
@@ -35,6 +39,12 @@ import kotlin.time.TimeSource
  */
 internal fun runNativeClientBenchmark(config: BenchmarkConfig) {
     val cc = config.client
+    // "floor-<engine>" measures the transport with no client layers on top; see
+    // runRawClientFloor for what it deliberately does not do.
+    if (cc.clientType.startsWith(FLOOR_PREFIX)) {
+        runNativeRawFloor(cc)
+        return
+    }
     val targets = clientTargets(cc)
     val engineName = nativeClientEngineName(cc.clientType)
 
@@ -58,11 +68,11 @@ private fun runNativeClientRun(
 ): NativeRunResult {
     val seconds = if (warmup) cc.warmupSec else cc.durationSec
     val budget = if (warmup) 0L else cc.requests.toLong()
-    val histogram = LatencyHistogram()
-    var completed = 0L
-    var errors = 0L
-    var issued = 0L
-    var pick = 0L
+    // Shared across workers, so atomic: the budget gate must not lose an
+    // increment (it would overrun the request count) and the target cursor must
+    // not hand two workers the same index.
+    val issued = AtomicLong(0)
+    val pick = AtomicLong(0)
 
     val engine = createNativeClientEngine(engineName)
     val client = keelHttpClient(engine) {
@@ -75,19 +85,34 @@ private fun runNativeClientRun(
     val clock = TimeSource.Monotonic
     val runStart = clock.markNow()
     val deadlineNanos = seconds.toLong() * NANOS_PER_SECOND
-    runBlocking {
+    // Dispatchers.Default, matching the JVM harness. A bare runBlocking would
+    // confine every worker coroutine to this one thread, so the native side
+    // would be measured under a concurrency model the JVM side is not — the
+    // asymmetry this harness exists to avoid.
+    // Each worker accumulates into its own histogram and counters and hands them
+    // back; the merge happens here, after every worker has finished. Merging
+    // inside the workers would race — Dispatchers.Default spreads them across
+    // threads and LatencyHistogram is deliberately not thread-safe — and the
+    // symptom is quiet: lost counter updates read as lower throughput, and a
+    // torn counts array reads as a plausible p50 beside a zero p99.
+    val callerContext = if (getEnvVar("KEEL_BENCH_CLIENT_CALLER") == "single") {
+        EmptyCoroutineContext
+    } else {
+        Dispatchers.Default
+    }
+    val perWorker = runBlocking(callerContext) {
         coroutineScope {
-            repeat(cc.connections) { worker ->
+            (0 until cc.connections).map { worker ->
                 val pinned = if (cc.targetMode == "pinned") targets[worker % targets.size] else null
-                launch {
+                async {
                     val local = LatencyHistogram()
                     var localCompleted = 0L
                     var localErrors = 0L
                     while (true) {
                         if (runStart.elapsedNow().inWholeNanoseconds >= deadlineNanos) break
-                        if (budget > 0 && issued >= budget) break
-                        issued++
-                        val target = pinned ?: targets[(pick++ % targets.size).toInt()]
+                        if (budget > 0 && issued.value >= budget) break
+                        issued.getAndIncrement()
+                        val target = pinned ?: targets[(pick.getAndIncrement() % targets.size).toInt()]
                         val started = clock.markNow()
                         try {
                             issueClientGet(client, target)
@@ -100,12 +125,18 @@ private fun runNativeClientRun(
                             localErrors++
                         }
                     }
-                    histogram.add(local)
-                    completed += localCompleted
-                    errors += localErrors
+                    WorkerResult(local, localCompleted, localErrors)
                 }
-            }
+            }.awaitAll()
         }
+    }
+    val histogram = LatencyHistogram()
+    var completed = 0L
+    var errors = 0L
+    for (w in perWorker) {
+        histogram.add(w.latency)
+        completed += w.completed
+        errors += w.errors
     }
     val elapsed = runStart.elapsedNow().inWholeNanoseconds
     runBlocking {
@@ -121,6 +152,9 @@ private suspend fun issueClientGet(client: KeelHttpClient, target: String) {
     val size = client.get(target).body.size
     check(size >= 0) { "negative body size" }
 }
+
+/** One worker's tally, merged single-threaded after the run. */
+private class WorkerResult(val latency: LatencyHistogram, val completed: Long, val errors: Long)
 
 /** Outcome of one measured run. */
 private class NativeRunResult(
@@ -156,6 +190,24 @@ private fun printNativeClientReport(cc: ClientConfig, clientName: String, r: Nat
     )
 }
 
+/** Runs the transport-only floor for `--client-type=floor-<engine>`. */
+private fun runNativeRawFloor(cc: ClientConfig) {
+    val engineName = nativeClientEngineName("keel-" + cc.clientType.removePrefix(FLOOR_PREFIX))
+    val target = clientTargets(cc).first().removeSuffix(cc.endpoint).removePrefix("http://")
+    val host = target.substringBefore(':')
+    val port = target.substringAfter(':').toInt()
+    runRawClientFloor(
+        engine = createNativeClientEngine(engineName),
+        host = host,
+        port = port,
+        path = cc.endpoint,
+        durationSeconds = cc.durationSec,
+        warmupSeconds = cc.warmupSec,
+        label = cc.clientType,
+    )
+}
+
+private const val FLOOR_PREFIX = "floor-"
 private const val NANOS_PER_SECOND = 1_000_000_000L
 private const val NANOS_PER_MILLI = 1_000_000.0
 private const val MAX_REPORTED_ERRORS = 3
