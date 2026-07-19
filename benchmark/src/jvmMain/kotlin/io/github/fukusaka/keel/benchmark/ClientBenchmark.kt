@@ -96,20 +96,11 @@ fun runClientBenchmark(config: BenchmarkConfig) {
  * target concentrates all concurrency on a single route (its worst case), while
  * many targets drop each route toward the conns=1 regime where even CIO reuses.
  */
-private fun requireTargets(cc: ClientConfig): List<String> {
-    val raw = cc.targetUrl
-        ?: error(
-            "client bench requires --client-target=<url>[,<url>...] pointing at SEPARATE fixture " +
-                "process(es) (e.g. rust-bench on loopback). bench-client.sh starts / stops the fixture. " +
-                "In-process fixtures are unsupported: sharing the client JVM contaminates the numbers.",
-        )
-    val targets = raw.split(',')
-        .map { it.trim() }
-        .filter { it.isNotEmpty() }
-        .map { it.trimEnd('/') + cc.endpoint }
-    require(targets.isNotEmpty()) { "no target URL parsed from --client-target='$raw'" }
-    return targets
-}
+/**
+ * Delegates to the shared [clientTargets] so the JVM and Native harnesses cannot
+ * drift on what a target URL is.
+ */
+private fun requireTargets(cc: ClientConfig): List<String> = clientTargets(cc)
 
 /** Fails fast if the external fixture is not reachable before the run starts. */
 private fun probeReady(target: String) {
@@ -655,9 +646,15 @@ private fun printReport(cc: ClientConfig, clientName: String, r: RunResult) {
     // Machine-parseable line (mirrors the server bench `<name>|<rps>|...` shape),
     // extended with p99.9/max/bytes-per-op/errors for the client axes.
     println(
-        "%s|%.0f|%.3f|%.3f|%.3f|%.3f|%s|%d".format(
-            "$clientName${cc.endpoint}",
-            r.reqPerSec, ms(50.0), ms(99.0), ms(99.9), ms(100.0), alloc, r.errors,
+        formatClientResultLine(
+            name = "$clientName${cc.endpoint}",
+            reqPerSec = r.reqPerSec,
+            p50 = ms(50.0),
+            p99 = ms(99.0),
+            p999 = ms(99.9),
+            max = ms(100.0),
+            bytesPerOp = alloc,
+            errors = r.errors,
         ),
     )
     System.err.println(

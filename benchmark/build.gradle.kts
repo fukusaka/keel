@@ -120,6 +120,13 @@ kotlin {
         }
         nativeMain {
             dependsOn(commonForKtorServerMain)
+            dependencies {
+                // The keel HTTP client under test on a native engine
+                // (--role=client). Its JVM counterpart is declared in jvmMain;
+                // without this the client could only ever be measured on the
+                // JVM, leaving kqueue / epoll / io_uring unmeasured.
+                implementation(project(":keel-client-http"))
+            }
         }
         jsMain {
             dependencies {

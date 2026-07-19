@@ -94,6 +94,13 @@ fun main(args: Array<String>) {
     val config = BenchmarkConfig.parse(args)
     validateTlsBackend(config)
 
+    // The client role drives an external fixture and needs no server engine, so
+    // it dispatches before the engine registry is consulted.
+    if (config.role == "client") {
+        runNativeClientBenchmark(config)
+        return
+    }
+
     val registry = engineRegistry()
     val eb = registry[config.engine]
     if (eb == null) {

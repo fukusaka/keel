@@ -34,10 +34,17 @@
 #                         keep-alive), ktor-cio (churns, KTOR-6503). Native refs
 #                         (separate binaries, auto-built): rust-reqwest,
 #                         rust-hyper, go-nethttp, go-fasthttp, libcurl,
-#                         swift-nsurlsession (macOS). keel: the standalone
-#                         keel HTTP client under test (L1, fresh-connect, on a
-#                         NioEngine) — a JVM driver, so read it against the
-#                         other fresh-connect numbers, not the keep-alive pool.
+#                         swift-nsurlsession (macOS). keel-kqueue /
+#                         keel-nwconnection (macOS) and keel-epoll /
+#                         keel-io-uring (Linux) run the SAME keel client on a
+#                         native engine — the comparison that isolates the
+#                         engine, since only the transport differs from `keel`.
+#                         keel: the standalone
+#                         keel HTTP client under test, on a NioEngine — a JVM
+#                         driver reusing keep-alive connections from its pool,
+#                         so read it against the other pooling clients (okhttp,
+#                         apache5, java, rust-reqwest, go-nethttp), not against
+#                         a fresh-connect number.
 #   BENCH_CLIENT_ENDPOINT fixture path (default /hello; /large for throughput)
 #   BENCH_CLIENT_CONNS    concurrent connections / pool size (default 50)
 #   BENCH_CLIENT_WARMUP   warm-up seconds, discarded (default 3)
@@ -53,6 +60,14 @@
 #
 # Raw results auto-save to benchmark/results/{host}/{client}-{endpoint}-{conns}c
 # [-open{rate}]-{timestamp}.txt (raw runs + median), mirroring the server bench.
+#
+# Redirect policy: every driver runs at its library default — keel, okhttp,
+# apache5, java, rust-reqwest, go-nethttp and swift-nsurlsession follow
+# redirects; libcurl and rust-hyper do not (neither sets a policy explicitly).
+# The fixture never redirects, so no driver actually takes a second hop and the
+# comparison stays like-for-like; what the followers pay is the per-request cost
+# of the wrapper that would handle one. Comparing defaults is deliberate — it is
+# what a user gets out of the box.
 #
 # Methodology guardrails (coordinated omission, SUT isolation):
 #   - Default latency is CLOSED-loop (coordinated-omission susceptible), which is
@@ -141,8 +156,19 @@ wait_ready "$TARGET"
 # C libcurl) that accept the SAME CLI flags as the JVM harness and print the
 # SAME result line, so they share the drain + median + fixture logic below.
 # Returns the binary path for a native type, or empty for a JVM driver type.
+# The keel client on a native engine is the keel benchmark binary itself, driven
+# with --role=client. It is host-specific: kqueue / NWConnection on macOS,
+# epoll / io_uring on Linux.
+keel_native_kexe() {
+  if [ "$(uname)" = "Darwin" ]; then
+    echo "benchmark/build/bin/macosArm64/releaseExecutable/benchmark.kexe"
+  else
+    echo "benchmark/build/bin/linuxX64/releaseExecutable/benchmark.kexe"
+  fi
+}
 native_bin() {
   case "$1" in
+    keel-kqueue|keel-nwconnection|keel-epoll|keel-io-uring) keel_native_kexe ;;
     rust-reqwest) echo "benchmark/rust-bench/target/release/client" ;;
     rust-hyper) echo "benchmark/rust-bench/target/release/client-hyper" ;;
     go-nethttp) echo "benchmark/go-bench/client-bench" ;;
@@ -154,6 +180,18 @@ native_bin() {
 }
 build_native() {
   case "$1" in
+    keel-kqueue|keel-nwconnection|keel-epoll|keel-io-uring)
+      # Not auto-built: the kexe comes from Gradle, and silently triggering a
+      # link here would hide a minute of build time inside a bench run.
+      [ -x "$(native_bin "$1")" ] || {
+        echo "missing $(native_bin "$1") — build it first:" >&2
+        if [ "$(uname)" = "Darwin" ]; then
+          echo "  ./gradlew --no-configuration-cache -Pbenchmark :benchmark:linkReleaseExecutableMacosArm64" >&2
+        else
+          echo "  ./gradlew --no-configuration-cache -Pbenchmark :benchmark:linkReleaseExecutableLinuxX64" >&2
+        fi
+        exit 1
+      } ;;
     rust-reqwest) [ -x "$(native_bin "$1")" ] ||
       ( cd benchmark/rust-bench && cargo build --release --bin client >/dev/null 2>&1 ) ;;
     rust-hyper) [ -x "$(native_bin "$1")" ] ||
@@ -215,7 +253,14 @@ for type in $TYPES; do
   for run in $(seq 1 "$RUNS"); do
     drain_ports # each run starts on clean ports (no cross-run port poisoning)
     if [ -n "$bin" ]; then
-      "$bin" \
+      # The keel native driver is the keel benchmark binary, so it needs the
+      # role and engine selector the reference binaries do not have.
+      case "$type" in
+        keel-*) keel_role_args="--role=client --client-type=$type" ;;
+        *) keel_role_args="" ;;
+      esac
+      # shellcheck disable=SC2086  # deliberate word-splitting of the optional args
+      "$bin" $keel_role_args \
         --client-target="$TARGET" --client-target-mode="$TARGET_MODE" \
         --client-endpoint="$ENDPOINT" --client-connections="$CONNS" \
         --client-warmup="$WARMUP" --client-duration="$DURATION" 2>/dev/null \
