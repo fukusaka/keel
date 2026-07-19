@@ -196,15 +196,17 @@ private fun runNativeRawFloor(cc: ClientConfig) {
     val target = clientTargets(cc).first().removeSuffix(cc.endpoint).removePrefix("http://")
     val host = target.substringBefore(':')
     val port = target.substringAfter(':').toInt()
-    runRawClientFloor(
-        engine = createNativeClientEngine(engineName),
-        host = host,
-        port = port,
-        path = cc.endpoint,
-        durationSeconds = cc.durationSec,
-        warmupSeconds = cc.warmupSec,
-        label = cc.clientType,
-    )
+    runBlocking {
+        runRawClientFloor(
+            engine = createNativeClientEngine(engineName),
+            host = host,
+            port = port,
+            path = cc.endpoint,
+            durationSeconds = cc.durationSec,
+            warmupSeconds = cc.warmupSec,
+            label = cc.clientType,
+        )
+    }
 }
 
 private const val FLOOR_PREFIX = "floor-"

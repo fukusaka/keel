@@ -45,6 +45,13 @@
 #                         so read it against the other pooling clients (okhttp,
 #                         apache5, java, rust-reqwest, go-nethttp), not against
 #                         a fresh-connect number.
+#                         floor-nio / floor-kqueue / floor-epoll /
+#                         floor-io-uring drive the transport alone — same
+#                         connect, PipelinedChannel and bridge as the client,
+#                         no HTTP codec, pool or client wrappers — so the gap
+#                         between a floor and its client is what those layers
+#                         cost. Single connection by design; --client-connections
+#                         is ignored.
 #   BENCH_CLIENT_ENDPOINT fixture path (default /hello; /large for throughput)
 #   BENCH_CLIENT_CONNS    concurrent connections / pool size (default 50)
 #   BENCH_CLIENT_WARMUP   warm-up seconds, discarded (default 3)
@@ -60,6 +67,13 @@
 #
 # Raw results auto-save to benchmark/results/{host}/{client}-{endpoint}-{conns}c
 # [-open{rate}]-{timestamp}.txt (raw runs + median), mirroring the server bench.
+#
+# Caller concurrency: KEEL_BENCH_CLIENT_CALLER=single drives every worker
+# coroutine from one thread instead of Dispatchers.Default (the default). The
+# coroutine-native clients hop to their own I/O dispatcher regardless, so this is
+# a methodology choice rather than a correctness one — but it moves the native
+# result by 20-27% while barely touching the JVM, so a comparison should say
+# which setting produced it.
 #
 # Redirect policy: every driver runs at its library default — keel, okhttp,
 # apache5, java, rust-reqwest, go-nethttp and swift-nsurlsession follow

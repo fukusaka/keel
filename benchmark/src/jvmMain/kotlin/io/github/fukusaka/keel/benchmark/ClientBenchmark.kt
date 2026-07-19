@@ -107,18 +107,28 @@ fun runClientBenchmark(config: BenchmarkConfig) {
  */
 private fun requireTargets(cc: ClientConfig): List<String> = clientTargets(cc)
 
-/** Transport-only floor on the JVM engine, the counterpart of the native one. */
+/**
+ * Transport-only floor on the JVM engine, the counterpart of the native one.
+ * Only `floor-nio` exists here: NIO is the JVM's own transport, and the Netty
+ * engine wraps a channel keel does not own, so a floor over it would measure
+ * something other than keel's path.
+ */
 private fun runJvmRawFloor(cc: ClientConfig) {
+    require(cc.clientType == "floor-nio") {
+        "unsupported --client-type='${cc.clientType}' on the JVM (expected floor-nio)"
+    }
     val target = clientTargets(cc).first().removeSuffix(cc.endpoint).removePrefix("http://")
-    runRawClientFloor(
-        engine = io.github.fukusaka.keel.engine.nio.NioEngine(),
-        host = target.substringBefore(':'),
-        port = target.substringAfter(':').toInt(),
-        path = cc.endpoint,
-        durationSeconds = cc.durationSec,
-        warmupSeconds = cc.warmupSec,
-        label = cc.clientType,
-    )
+    runBlocking {
+        runRawClientFloor(
+            engine = NioEngine(),
+            host = target.substringBefore(':'),
+            port = target.substringAfter(':').toInt(),
+            path = cc.endpoint,
+            durationSeconds = cc.durationSec,
+            warmupSeconds = cc.warmupSec,
+            label = cc.clientType,
+        )
+    }
 }
 
 /** Fails fast if the external fixture is not reachable before the run starts. */

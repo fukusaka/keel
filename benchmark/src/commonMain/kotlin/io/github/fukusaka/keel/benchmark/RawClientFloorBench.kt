@@ -4,7 +4,6 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.pipeline.SuspendMessageBridge
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlin.time.TimeSource
 
@@ -33,7 +32,7 @@ import kotlin.time.TimeSource
  * one inbound buffer, true for a loopback fixture returning a few hundred bytes.
  * It is not an HTTP client and must not be used as one.
  */
-internal fun runRawClientFloor(
+internal suspend fun runRawClientFloor(
     engine: StreamEngine,
     host: String,
     port: Int,
@@ -43,7 +42,7 @@ internal fun runRawClientFloor(
     label: String,
 ) {
     val request = "GET $path HTTP/1.1\r\nHost: $host:$port\r\nConnection: keep-alive\r\n\r\n".encodeToByteArray()
-    runBlocking {
+    run {
         val channel = engine.connect(host, port)
         try {
             check(channel is PipelinedChannel) {
