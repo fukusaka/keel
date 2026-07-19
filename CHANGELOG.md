@@ -28,6 +28,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`codec-http`): the HTTP/1.1 codec's pipeline stage names are now `h1-` prefixed
+  (`decoder` → `h1-decoder`, `encoder` → `h1-encoder`, `aggregator` → `h1-aggregator`,
+  `request-deadline` / `body-rate-floor` likewise) so they cannot collide with another protocol
+  codec on the same pipeline; reference them through the new `Http1ClientCodec` /
+  `Http1ServerCodec` constants. Code using the old names must be updated — note that a
+  `runCatching { pipeline.remove("decoder") }` now silently leaves the stage installed (#980)
 - `client-http`: `keel-client-http` now reuses keep-alive connections through a per-route
   connection pool (configurable via `pool { }`, closed by `KeelHttpClient.close()`) instead of
   opening a fresh connection per request, recovering warm-path throughput under concurrency (#972)
