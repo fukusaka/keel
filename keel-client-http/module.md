@@ -42,6 +42,56 @@ headers into a GC-owned `HttpHeaders`, releases the pooled buffers, and closes
 the connection. There is no built-in timeout — bound a call with `withTimeout`
 so a hung peer cannot suspend the caller indefinitely.
 
+## Custom clients at the pipeline layer
+
+`KeelHttpClient` is a deliberately thin convenience. Anything richer — a
+wire-level handler that observes or rewrites the raw exchange (the equivalent of
+an OkHttp *network* interceptor) — is assembled directly on the connection's
+pipeline, using public primitives, without a bespoke interceptor API:
+
+- `StreamEngine.connectPipeline(host, port) { channel -> ... }` connects and runs
+  the initializer on the channel's EventLoop thread (the client counterpart of
+  `bindPipeline`).
+- `PipelinedChannel.addHttp1ClientCodec()` installs the codec; its stages are
+  named by the `Http1ClientCodec` constants, so a custom handler is positioned
+  with `addBefore` / `addAfter` instead of hardcoded strings.
+- `suspendMessageBridge<HttpResponse>()` bridges the pipeline back to a suspend
+  call; the `releaseUndelivered` hook releases pooled headers on teardown.
+
+```kotlin
+// A wire-level handler runs on the EventLoop thread and MUST NOT block or
+// suspend (like a Netty ChannelHandler). It sees raw inbound IoBuf here,
+// before the decoder, then propagates it on.
+class WireLog : InboundHandler {
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+        // observe msg ...
+        ctx.propagateRead(msg)
+    }
+}
+
+val bridge = suspendMessageBridge<HttpResponse>(
+    releaseUndelivered = { it.headers.release() },
+)
+val channel = engine.connectPipeline("127.0.0.1", 8080) {
+    it.addHttp1ClientCodec()
+    it.pipeline.addBefore(Http1ClientCodec.DECODER, "wire-log", WireLog())
+    it.pipeline.addLast("bridge", bridge)
+    it.readEnabled = true
+}
+try {
+    channel.pipeline.requestWriteAndFlush(HttpRequest(HttpMethod.GET, "/hello"))
+    val response = bridge.receiveCatching().getOrThrow()
+    println(response.status)
+} finally {
+    channel.close()
+}
+```
+
+Because handlers cannot suspend, call-level concerns that span retries or
+redirects (an OkHttp *application* interceptor, a cookie jar, auth) do not
+belong here — layer those above the client, or reach for a Ktor `HttpClientEngine`
+adapter.
+
 # Package io.github.fukusaka.keel.client.http
 
 The client runtime and its result type: `KeelHttpClient`, `KeelHttpResponse`,
