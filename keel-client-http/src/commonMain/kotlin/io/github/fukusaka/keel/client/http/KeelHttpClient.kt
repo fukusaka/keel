@@ -78,32 +78,22 @@ public class KeelHttpClient internal constructor(
     }
 
     /**
-     * Runs one request/response on [connection], materialises the response,
-     * and disposes the connection: on success it is [released][ConnectionPool.release]
-     * to the pool (kept if reusable, else closed); on any failure it is closed.
+     * Runs one request/response on [connection] and disposes it: on success the
+     * connection is [released][ConnectionPool.release] to the pool (kept if
+     * reusable, else closed); on any failure it is closed. The response is
+     * materialised (and its pooled headers released) on the EventLoop thread
+     * inside [ClientConnection.exchange], so nothing pooled is handled here.
      */
     private suspend fun roundTrip(connection: ClientConnection, request: HttpRequest): KeelHttpResponse {
         var disposed = false
         try {
-            val response = connection.exchange(request)
-            // Decide reuse before releasing the pooled headers (isReusable reads them).
-            val reusable = ClientConnection.isReusable(response)
-            // The decoder's zero-copy headers view the retained recv buffer; copy the
-            // fields to a plain, GC-owned HttpHeaders, then release the pooled one in a
-            // finally so a throw mid-materialisation still fulfils the release contract.
-            val result = try {
-                val detachedHeaders = HttpHeaders()
-                response.headers.forEach { name, value -> detachedHeaders.add(name, value) }
-                KeelHttpResponse(response.status, detachedHeaders, response.body ?: EMPTY_BODY)
-            } finally {
-                response.headers.release()
-            }
-            pool.release(connection, reusable)
+            val exchanged = connection.exchange(request)
+            pool.release(connection, exchanged.reusable)
             disposed = true
-            return result
+            return exchanged.response
         } finally {
-            // Exchange or materialisation failed before the connection was released
-            // to the pool — close it rather than pooling a broken connection.
+            // The exchange failed before the connection was released to the pool —
+            // close it rather than pooling a broken connection.
             if (!disposed) connection.close()
         }
     }
@@ -179,10 +169,5 @@ public class KeelHttpClient internal constructor(
             requestHeaders.add(HttpHeaderName.CONTENT_LENGTH, body.size.toString())
         }
         return HttpRequest(method, url.target, headers = requestHeaders, body = body)
-    }
-
-    private companion object {
-        /** Shared empty body for bodyless responses. */
-        private val EMPTY_BODY = ByteArray(0)
     }
 }
