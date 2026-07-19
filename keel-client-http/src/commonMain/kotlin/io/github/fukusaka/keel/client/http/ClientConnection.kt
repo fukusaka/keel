@@ -1,10 +1,10 @@
 package io.github.fukusaka.keel.client.http
 
-import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpRequest
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.addHttp1ClientCodec
+import io.github.fukusaka.keel.codec.http.materializeReleasingHeaders
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -65,16 +65,11 @@ internal class ClientConnection private constructor(
                 result.exceptionOrNull()
                     ?: IllegalStateException("connection closed before a complete response arrived")
                 )
-        // Everything that reads the pooled headers runs inside the try so a
-        // throw mid-materialisation still fulfils the release contract — this
-        // is their sole owner once the aggregator relinquished the head at emit.
-        try {
-            val reusable = isReusable(response)
-            val detached = HttpHeaders()
-            response.headers.forEach { name, value -> detached.add(name, value) }
-            Exchanged(KeelHttpResponse(response.status, detached, response.body ?: EMPTY_BODY), reusable)
-        } finally {
-            response.headers.release()
+        // Materialise the pooled headers to GC-owned and release them here
+        // (release-in-finally, on the EventLoop thread); isReusable reads the
+        // pooled headers inside the block while they are still valid.
+        response.materializeReleasingHeaders { detached ->
+            Exchanged(KeelHttpResponse(response.status, detached, response.body ?: EMPTY_BODY), isReusable(response))
         }
     }
 
