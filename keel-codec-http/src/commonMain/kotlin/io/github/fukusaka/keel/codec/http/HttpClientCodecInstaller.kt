@@ -29,7 +29,12 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
  *
  * Consumers add their own response-handling stage after this call (e.g. a
  * [io.github.fukusaka.keel.pipeline.SuspendMessageBridge] carrying
- * [HttpResponse], or a custom inbound handler).
+ * [HttpResponse], or a custom inbound handler). The installed stage names
+ * are exposed as [Http1ClientCodec] constants, so a custom handler can be
+ * placed relative to a stage — e.g.
+ * `pipeline.addBefore(Http1ClientCodec.DECODER, "wire-log", handler)` to
+ * observe raw response bytes before decoding, or
+ * `pipeline.addAfter(Http1ClientCodec.AGGREGATOR, ...)` for decoded responses.
  *
  * @param aggregateBody when true (default), inserts
  *   [HttpResponseBodyAggregator] so downstream handlers receive
@@ -48,9 +53,29 @@ public fun PipelinedChannel.addHttp1ClientCodec(
     headerLimits: HttpHeaderLimitsConfig = HttpHeaderLimitsConfig.DEFAULT,
     maxContentLength: Int = HttpResponseBodyAggregator.DEFAULT_MAX_CONTENT_LENGTH,
 ) {
-    pipeline.addLast("encoder", HttpRequestEncoder())
-    pipeline.addLast("decoder", HttpResponseDecoder(headerLimits))
+    pipeline.addLast(Http1ClientCodec.ENCODER, HttpRequestEncoder())
+    pipeline.addLast(Http1ClientCodec.DECODER, HttpResponseDecoder(headerLimits))
     if (aggregateBody) {
-        pipeline.addLast("aggregator", HttpResponseBodyAggregator(maxContentLength))
+        pipeline.addLast(Http1ClientCodec.AGGREGATOR, HttpResponseBodyAggregator(maxContentLength))
     }
+}
+
+/**
+ * Stable pipeline stage names installed by [addHttp1ClientCodec].
+ *
+ * These are the public contract for positioning custom handlers relative to
+ * the client codec — pass them to [io.github.fukusaka.keel.pipeline.Pipeline]
+ * `addBefore` / `addAfter` / `remove` / `replace` instead of hardcoding the
+ * string literals.
+ */
+public object Http1ClientCodec {
+
+    /** The outbound [HttpRequestEncoder] stage. */
+    public const val ENCODER: String = "encoder"
+
+    /** The [HttpResponseDecoder] stage (inbound parse; outbound request-method snoop). */
+    public const val DECODER: String = "decoder"
+
+    /** The [HttpResponseBodyAggregator] stage (present only when `aggregateBody` is true). */
+    public const val AGGREGATOR: String = "aggregator"
 }
