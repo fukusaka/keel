@@ -29,6 +29,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `client-http`: retry a request only on a stale-connection failure (the peer dropped the
+  kept-alive connection before responding), not on any exception — a response-level error such
+  as a malformed response now surfaces immediately instead of being re-sent on a fresh
+  connection (idempotent requests only, as before) (#978)
 - `core`: `SuspendMessageBridge` releases a bridged message's pooled payload when the consumer's
   receive is cancelled in the atomic dequeue-then-cancel window (now wires the channel's
   `onUndeliveredElement`), closing a pooled-buffer leak under request-cancellation races (#974)
