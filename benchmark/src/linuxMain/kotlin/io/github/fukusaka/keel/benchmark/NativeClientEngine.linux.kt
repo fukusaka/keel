@@ -14,6 +14,10 @@ import io.github.fukusaka.keel.engine.iouring.IoUringEngine
  * difference differently from a server's accept-and-serve loop. Both are
  * offered so the client side can be measured on its own terms rather than
  * inheriting the server sweep's conclusion.
+ *
+ * A type this host cannot serve is rejected rather than silently falling back
+ * to the default, so a run started with another platform's engine name fails
+ * where it is written instead of measuring something else.
  */
 internal actual fun nativeClientEngineName(clientType: String): String = when (clientType) {
     "keel", "keel-epoll" -> EPOLL
@@ -24,6 +28,11 @@ internal actual fun nativeClientEngineName(clientType: String): String = when (c
     )
 }
 
+/**
+ * Builds the named Linux engine (epoll / io_uring). The name has already been
+ * validated by [nativeClientEngineName], so an unknown one here is a wiring
+ * error rather than bad operator input.
+ */
 internal actual fun createNativeClientEngine(engineName: String): StreamEngine {
     val config = IoEngineConfig(loggerFactory = benchmarkLoggerFactory())
     return when (engineName) {

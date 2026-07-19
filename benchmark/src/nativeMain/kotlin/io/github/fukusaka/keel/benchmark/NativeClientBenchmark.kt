@@ -186,8 +186,9 @@ private fun printNativeClientReport(cc: ClientConfig, clientName: String, r: Nat
         ),
     )
     printErr(
-        "  req/s=${r.reqPerSec.roundTo(0)}  p50=${ms(P50).roundTo(3)}ms p99=${ms(P99).roundTo(3)}ms " +
-            "p99.9=${ms(P999).roundTo(3)}ms max=${ms(P100).roundTo(3)}ms  bytes/op=n/a  errors=${r.errors}  " +
+        "  req/s=${r.reqPerSec.roundTo(RPS_DECIMALS)}  p50=${ms(P50).roundTo(LATENCY_DECIMALS)}ms " +
+            "p99=${ms(P99).roundTo(LATENCY_DECIMALS)}ms p99.9=${ms(P999).roundTo(LATENCY_DECIMALS)}ms " +
+            "max=${ms(P100).roundTo(LATENCY_DECIMALS)}ms  bytes/op=n/a  errors=${r.errors}  " +
             "(completed=${r.completed})",
     )
 }
@@ -217,6 +218,7 @@ private fun runNativeRawFloor(cc: ClientConfig) {
 }
 
 private const val FLOOR_PREFIX = "floor-"
+private const val RPS_DECIMALS = 0
 private const val NANOS_PER_SECOND = 1_000_000_000L
 private const val NANOS_PER_MILLI = 1_000_000.0
 private const val MAX_REPORTED_ERRORS = 3

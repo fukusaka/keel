@@ -14,6 +14,10 @@ import io.github.fukusaka.keel.engine.nwconnection.NwEngine
  * Network.framework and receives on a dispatch queue. Which one a client should
  * prefer is exactly the question a client benchmark exists to answer, and
  * neither had ever been measured in that role.
+ *
+ * A type this host cannot serve is rejected rather than silently falling back
+ * to the default, so a run started with another platform's engine name fails
+ * where it is written instead of measuring something else.
  */
 internal actual fun nativeClientEngineName(clientType: String): String = when (clientType) {
     "keel", "keel-kqueue" -> KQUEUE
@@ -24,6 +28,11 @@ internal actual fun nativeClientEngineName(clientType: String): String = when (c
     )
 }
 
+/**
+ * Builds the named macOS engine (kqueue / NWConnection). The name has already been
+ * validated by [nativeClientEngineName], so an unknown one here is a wiring
+ * error rather than bad operator input.
+ */
 internal actual fun createNativeClientEngine(engineName: String): StreamEngine {
     val config = IoEngineConfig(loggerFactory = benchmarkLoggerFactory())
     return when (engineName) {

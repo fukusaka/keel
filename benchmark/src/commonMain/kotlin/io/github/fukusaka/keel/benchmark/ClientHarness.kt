@@ -93,7 +93,8 @@ internal fun Double.roundTo(decimals: Int): String {
     return "$sign$whole.${frac.toString().padStart(decimals, '0')}"
 }
 
-private const val LATENCY_DECIMALS = 3
+/** Decimal places every latency column uses, machine-readable line and log alike. */
+internal const val LATENCY_DECIMALS = 3
 private const val HALF = 0.5
 
 /**
