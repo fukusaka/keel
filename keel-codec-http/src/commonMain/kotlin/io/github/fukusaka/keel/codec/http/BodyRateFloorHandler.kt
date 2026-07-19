@@ -93,6 +93,17 @@ class BodyRateFloorHandler(
         ctx.propagateInactive()
     }
 
+    /**
+     * Disarms on removal. The window check closes the **channel** — the task
+     * holds the channel, not this handler's place in the pipeline — so a handler
+     * detached mid-window would keep a body-rate check pointed at a connection
+     * that no longer carries an HTTP body. A protocol switch that swaps out the
+     * HTTP codec (the WebSocket upgrade) removes this stage exactly in that state.
+     */
+    override fun handlerRemoved(ctx: PipelineHandlerContext) {
+        cancelCheck()
+    }
+
     /** Clears all per-request state for a new request on a keep-alive connection. */
     private fun reset() {
         cancelCheck()

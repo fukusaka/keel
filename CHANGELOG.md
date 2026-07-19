@@ -28,6 +28,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`codec-http`): the HTTP/1.1 codec's pipeline stage names are now `h1-` prefixed
+  (`decoder` → `h1-decoder`, `encoder` → `h1-encoder`, `aggregator` → `h1-aggregator`,
+  `request-deadline` / `body-rate-floor` likewise) so they cannot collide with another protocol
+  codec on the same pipeline; reference them through the new `Http1ClientCodec` /
+  `Http1ServerCodec` constants. Code using the old names must be updated — note that a
+  `runCatching { pipeline.remove("decoder") }` now silently leaves the stage installed (#980)
 - `client-http`: `keel-client-http` now reuses keep-alive connections through a per-route
   connection pool (configurable via `pool { }`, closed by `KeelHttpClient.close()`) instead of
   opening a fresh connection per request, recovering warm-path throughput under concurrency (#972)
@@ -36,6 +42,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `codec-http`: `RequestDeadlineHandler` / `BodyRateFloorHandler` now disarm their scheduled
+  deadline when the handler is removed from the pipeline. The scheduled task closes the
+  channel, so a handler detached mid-request — as a WebSocket upgrade does when it swaps out
+  the HTTP codec — used to leave a timer that could still force-close the connection (#981)
+- `server-websocket`: the WebSocket upgrade now also strips the HTTP `request-deadline` and
+  `body-rate-floor` stages, so a connector configured with `requestTimeoutMillis` /
+  `minBodyRateBytesPerSec` leaves no HTTP guard on the upgraded WebSocket session (#981)
 - `client-http`: retry a request only on a stale-connection failure (the peer dropped the
   kept-alive connection before responding), not on any exception — a response-level error such
   as a malformed response now surfaces immediately instead of being re-sent on a fresh
