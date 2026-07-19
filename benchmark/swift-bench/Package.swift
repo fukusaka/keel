@@ -7,6 +7,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.0.0"),
+        .package(url: "https://github.com/ordo-one/package-histogram", from: "0.1.2"),
     ],
     targets: [
         .executableTarget(
@@ -20,9 +21,13 @@ let package = Package(
             path: "Sources",
             exclude: ["client"]
         ),
-        // Client benchmark (URLSession / NSURLSession) — no external deps.
+        // Client benchmark (URLSession / NSURLSession). Depends only on the
+        // HdrHistogram port for comparable latency percentiles.
         .executableTarget(
             name: "swift-client",
+            dependencies: [
+                .product(name: "Histogram", package: "package-histogram"),
+            ],
             path: "Sources/client"
         ),
     ]

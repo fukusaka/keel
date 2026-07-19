@@ -114,11 +114,11 @@ pub async fn run_phase<C: HttpGet>(client: C, cfg: &Config, secs: u64) -> Phase 
 }
 
 pub fn report(name: &str, cfg: &Config, p: &Phase) {
-    // NOTE: the Rust benches use HdrHistogram (3 significant figures, matching the
-    // JVM harness), while the Go / C / Swift benches use exact sorted samples.
-    // The percentiles agree to ~0.1% (HdrHistogram's quantisation), far below the
-    // 2-6x differences these benches surface; unifying every language on one
-    // method is not worth that gap. Kept as a documented methodology difference.
+    // Every driver (JVM org.HdrHistogram, Rust hdrhistogram, Go hdrhistogram-go,
+    // C HdrHistogram_c, Swift package-histogram) records latency in an
+    // HdrHistogram with 3 significant figures, so the reported percentiles are
+    // directly comparable — sigfigs alone fix the bucketing, independent of each
+    // port's tracked value range.
     let ms = |q: f64| p.hist.value_at_quantile(q) as f64 / 1e6;
     println!(
         "{}{}|{:.0}|{:.3}|{:.3}|{:.3}|{:.3}|n/a|{}",

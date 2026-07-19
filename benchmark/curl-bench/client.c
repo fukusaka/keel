@@ -8,9 +8,16 @@
  * Accepts the same CLI flags as the JVM harness and prints the same result
  * line, so bench-client.sh can drive it like any other client type:
  *   <name><endpoint>|<rps>|<p50ms>|<p99ms>|<p99.9ms>|<maxms>|<b/op>|<errors>
- * bytes/op is n/a for native clients; percentiles are exact (sorted samples).
+ * bytes/op is n/a for native clients; percentiles use HdrHistogram (3
+ * significant figures, vendored HdrHistogram_c) — the same method as the JVM /
+ * Rust / Go / Swift drivers, so the reported p50/p99/p99.9 are directly
+ * comparable.
  */
+/* Declare strdup under -std=c11 on glibc (POSIX.1-2008) — without this its
+ * implicit int return truncates the pointer on 64-bit Linux. */
+#define _POSIX_C_SOURCE 200809L
 #include <curl/curl.h>
+#include <hdr/hdr_histogram.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -81,15 +88,16 @@ static void *worker_fn(void *arg) {
     return NULL;
 }
 
-static int cmp_i64(const void *a, const void *b) {
-    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
-    return (x > y) - (x < y);
-}
+/* Latency histogram bounds shared by every driver: 1 ns to 60 s, 3 significant
+ * figures. The range only bounds allocation; sigfigs=3 fixes the percentile
+ * values so every driver's HdrHistogram reports comparable numbers. */
+#define LAT_LOWEST 1
+#define LAT_HIGHEST 60000000000LL
+#define LAT_SIGFIGS 3
 
 typedef struct {
     double rps;
-    int64_t *lat;
-    size_t nlat;
+    struct hdr_histogram *hist;
     int64_t errors;
 } phase_t;
 
@@ -119,29 +127,28 @@ static phase_t run_phase(char **targets, int ntargets, int pinned, int conns, in
         errors += ws[i].errors;
         completed += ws[i].completed;
     }
-    int64_t *all = malloc((total ? total : 1) * sizeof(int64_t));
-    size_t off = 0;
+    (void)total;
+    struct hdr_histogram *hist = NULL;
+    hdr_init(LAT_LOWEST, LAT_HIGHEST, LAT_SIGFIGS, &hist);
     for (int i = 0; i < conns; i++) {
-        if (ws[i].nlat) memcpy(all + off, ws[i].lat, ws[i].nlat * sizeof(int64_t));
-        off += ws[i].nlat;
+        for (size_t j = 0; j < ws[i].nlat; j++) {
+            hdr_record_value(hist, ws[i].lat[j]);
+        }
         free(ws[i].lat);
     }
-    qsort(all, total, sizeof(int64_t), cmp_i64);
     free(ws);
     free(th);
 
     phase_t p;
     p.rps = (double)completed / elapsed;
-    p.lat = all;
-    p.nlat = total;
+    p.hist = hist;
     p.errors = errors;
     return p;
 }
 
-static double pct_ms(const int64_t *sorted, size_t n, double q) {
-    if (n == 0) return 0.0;
-    size_t idx = (size_t)(q * (double)(n - 1));
-    return (double)sorted[idx] / 1e6;
+/* q is a percentile in 0..100. */
+static double pct_ms(const struct hdr_histogram *h, double q) {
+    return (double)hdr_value_at_percentile(h, q) / 1e6;
 }
 
 int main(int argc, char **argv) {
@@ -193,15 +200,15 @@ int main(int argc, char **argv) {
             NAME, ntargets, conns, warmup, duration);
     if (warmup > 0) {
         phase_t w = run_phase(targets, ntargets, pinned, conns, warmup);
-        free(w.lat);
+        hdr_close(w.hist);
     }
     phase_t p = run_phase(targets, ntargets, pinned, conns, duration);
-    double max_ms = p.nlat ? (double)p.lat[p.nlat - 1] / 1e6 : 0.0;
+    double max_ms = (double)hdr_max(p.hist) / 1e6;
     printf("%s%s|%.0f|%.3f|%.3f|%.3f|%.3f|n/a|%lld\n",
            NAME, endpoint, p.rps,
-           pct_ms(p.lat, p.nlat, 0.50), pct_ms(p.lat, p.nlat, 0.99),
-           pct_ms(p.lat, p.nlat, 0.999), max_ms, (long long)p.errors);
-    free(p.lat);
+           pct_ms(p.hist, 50), pct_ms(p.hist, 99),
+           pct_ms(p.hist, 99.9), max_ms, (long long)p.errors);
+    hdr_close(p.hist);
     for (int i = 0; i < ntargets; i++) free(targets[i]);
     free(targets);
     curl_global_cleanup();
