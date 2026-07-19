@@ -26,6 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: `SuspendMessageBridge` releases a bridged message's pooled payload when the consumer's
+  receive is cancelled in the atomic dequeue-then-cancel window (now wires the channel's
+  `onUndeliveredElement`), closing a pooled-buffer leak under request-cancellation races (#974)
 - `client-http`: release each response's pooled headers on the connection's EventLoop thread
   (not the caller's coroutine thread), fixing thread-local header-pool corruption that caused
   sporadic errors under concurrency on real multi-worker engines (#973)
