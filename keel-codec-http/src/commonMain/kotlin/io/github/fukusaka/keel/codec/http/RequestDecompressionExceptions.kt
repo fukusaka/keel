@@ -99,7 +99,9 @@ public class UnsupportedContentEncodingException(
  *
  * Default is [UnsupportedMediaType] — the closest semantic match in RFC
  * 9110 §15.5.16 ("the resource… does not support the [request] body
- * encoding"). Mirrors the `keel-codec-http` design.md §35.10 decision.
+ * encoding"). As everywhere else in this module, the handler does not
+ * write the response: it raises [UnsupportedContentEncodingException] and
+ * the caller maps the policy to a status.
  */
 public enum class UnknownEncodingPolicy {
     /**

@@ -2,8 +2,9 @@ package io.github.fukusaka.keel.codec.http
 
 /*
  * Shared HTTP "weight" (q-value) primitive (RFC 9110 §12.4.2), used by
- * every Accept-family content negotiation: `Accept` (media types, router
- * R-5), `Accept-Encoding` (content codings, [negotiateContentEncoding]),
+ * every Accept-family content negotiation: `Accept` (media types, the
+ * router's `produces` selection), `Accept-Encoding` (content codings,
+ * [negotiateContentEncoding]),
  * and any future `Accept-Language` / `TE`. The grammar
  *
  *   weight = OWS ";" OWS "q=" qvalue

@@ -13,7 +13,7 @@ package io.github.fukusaka.keel.buf
  * physical identity that is fixed for the buffer's life, so it must survive that
  * reset. Keeping it in a field (not the owner) makes it immune to the reset by
  * construction. (The owner field doubling as the decorator hook is a separate,
- * orthogonal concern — see task_d887d332.)
+ * orthogonal concern.)
  *
  * `null` [chunkPool] means the buffer is not chunk-backed (a fresh owns-memory
  * allocation, an external wrap, or a chunk backing itself), so its `freeBacking`

@@ -15,8 +15,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 
 /**
- * Seam-level test for the **I/O ownership invariant funnel** (design.md
- * §36, D1: "all I/O syscalls run on the owning EventLoop thread").
+ * Seam-level test for the **I/O ownership invariant funnel**: every I/O
+ * syscall runs on the EventLoop thread that owns the fd.
  *
  * `KqueueEventLoop.register` / `registerCallback` route the actual
  * `kevent(EV_ADD)` submission through:

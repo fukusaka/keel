@@ -142,8 +142,7 @@ private suspend fun keelEncodePump(
  * [KeelGZipEncoder.decode] / [KeelDeflateEncoder.decode] directly; use
  * the upcoming `HttpRequestDecompressionHandler` /
  * `KeelContentEncodingPlugin` (follow-up PR) which applies a dual-gate
- * cap (absolute byte limit + decoded:input ratio + burst tolerance) per
- * design.md §35.10.
+ * cap (absolute byte limit + decoded:input ratio + burst tolerance).
  */
 private suspend fun keelDecodePump(
     decoder: KeelDecoder,

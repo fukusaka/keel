@@ -5,8 +5,9 @@ import kotlin.test.assertEquals
 
 /**
  * Unit tests for the shared HTTP weight (q-value) parse [weightMillisOf]
- * (RFC 9110 §12.4.2), the primitive both `Accept` (router R-5) and
- * `Accept-Encoding` negotiation build on. Pure synchronous logic.
+ * (RFC 9110 §12.4.2), the primitive both `Accept` (the router's
+ * `produces` selection) and `Accept-Encoding` negotiation build on.
+ * Pure synchronous logic.
  *
  * The input is an element already split on `;`, with `params[0]` the token
  * (ignored here) and any `q=` weight in a later part.

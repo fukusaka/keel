@@ -41,7 +41,8 @@ import platform.posix.pthread_mutex_unlock
  *   spin lock — the current `SlabAllocator` freelist shape (NWConnection-safe).
  * - **IntrusiveTreiber**: lock-free CAS stack via the element's `nextLink` field
  *   (the JVM `PooledDirectAllocator` shape; would unify Native with JVM but
- *   reverses design.md's "Native ArrayDeque has no benefit from intrusive").
+ *   reverses the earlier finding that Native ArrayDeque gains nothing from an
+ *   intrusive freelist).
  *
  * Invocation: `benchmark.kexe --bench=freelist-variants`
  */

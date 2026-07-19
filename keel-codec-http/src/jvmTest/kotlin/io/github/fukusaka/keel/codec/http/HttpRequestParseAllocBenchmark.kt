@@ -17,8 +17,8 @@ import kotlin.test.Test
  * buffer driven through [HttpRequestDecoder] into an [HttpHeaders],
  * mirroring what the server does per request before the handler runs.
  *
- * This is the comparison vehicle for the L7-a-ii experiment (design.md
- * §50): the dominant parse-time cost is materializing each header
+ * This is the comparison vehicle for the header-materialisation
+ * experiment: the dominant parse-time cost is materializing each header
  * name/value into a `String` (`bufRangeToString` = `decodeToString` +
  * `copyOfRange`), surfaced by the real-load JFR profile as the largest
  * keel-side allocation lever. The same benchmark runs unchanged on:

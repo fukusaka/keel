@@ -9,7 +9,7 @@ import kotlin.test.assertEquals
  * `caseInsensitiveHash(CharSequence)` and `caseInsensitiveHashOfBuf(IoBuf,
  * start, length)` must produce the same hash for the same ASCII byte
  * sequence. Without this invariant a name parsed straight off the recv
- * buffer (the Variant Y / range-entry path) would land in a different
+ * buffer (the range-entry path) would land in a different
  * hash bucket than the same name materialised to a `String` for lookup,
  * silently breaking every header lookup the codec performs.
  *

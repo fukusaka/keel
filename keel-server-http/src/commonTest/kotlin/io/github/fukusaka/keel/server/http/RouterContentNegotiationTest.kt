@@ -11,8 +11,8 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * Unit tests for the [Router]'s `produces` content negotiation (router
- * R-5, design.md §38.9.9): q-value best-match selection across handlers
+ * Unit tests for the [Router]'s `produces` content negotiation: q-value
+ * best-match selection across handlers
  * sharing a method × path, and the `406 Not Acceptable` resolution.
  * Pure synchronous logic — no timeout needed.
  */

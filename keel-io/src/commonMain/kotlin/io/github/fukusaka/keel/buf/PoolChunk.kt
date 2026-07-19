@@ -80,7 +80,7 @@ internal class PoolChunk(val sizeClasses: SizeClasses) {
         // or a [splitLargeRun] under-flow that produced a degenerate run handle —
         // and the right place to make the violation loud is the trust boundary
         // between the queue and the chunk's allocator state. Validating here
-        // catches the previous task #75 surface (`handle = 0L`), plus future
+        // catches the degenerate-handle surface fixed earlier (`handle = 0L`), plus future
         // regressions that would otherwise slip through `splitLargeRun` and
         // surface several layers downstream (in `PoolSubpage`, `ChunkArena`,
         // or `PooledAllocator.close()`) where the originating bug is hard to

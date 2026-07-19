@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 /**
  * Unit tests for the [parseAcceptHeader] / [scoreProducedType] content
  * negotiation core (RFC 9110 §12.5.1) backing the Router's `produces`
- * best-match (router R-5).
+ * best-match.
  */
 class ContentNegotiationTest {
 

@@ -4,8 +4,7 @@ import io.github.fukusaka.keel.codec.http.weightMillisOf
 
 /*
  * Server-driven content negotiation against the request `Accept` header
- * (RFC 9110 §12.5.1), backing the Router's `produces` best-match selection
- * (design.md §38.9.11 / router R-5).
+ * (RFC 9110 §12.5.1), backing the Router's `produces` best-match selection.
  *
  * A route may declare the media type(s) it `produces`; when several
  * candidates match a method × path, the router picks the one whose

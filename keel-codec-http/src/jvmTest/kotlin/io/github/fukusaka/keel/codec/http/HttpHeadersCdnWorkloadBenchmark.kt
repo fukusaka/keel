@@ -23,10 +23,10 @@ import kotlin.test.Test
  *
  * → typical production backend request: ~25 headers + ~5 server-side lookups.
  *
- * This bench fixture models that distribution. The numbers feed
- * design.md §46 storage-structure decision (list-of-entries vs
- * hash-chained) — at N=25, the O(N) vs O(1) lookup gap matters more
- * than for the minimal `/hello` benchmark.
+ * This bench fixture models that distribution. The numbers inform the
+ * header storage structure (list-of-entries vs hash-chained) — at N=25,
+ * the O(N) vs O(1) lookup gap matters more than for the minimal `/hello`
+ * benchmark.
  */
 // @Ignore: one-time measurement (no functional assertion) — a decision
 // aid that caught no regression, so it is not run in the gate / CI; kept
