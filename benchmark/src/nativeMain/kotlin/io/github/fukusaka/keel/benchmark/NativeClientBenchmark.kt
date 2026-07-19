@@ -110,8 +110,10 @@ private fun runNativeClientRun(
                     var localErrors = 0L
                     while (true) {
                         if (runStart.elapsedNow().inWholeNanoseconds >= deadlineNanos) break
-                        if (budget > 0 && issued.value >= budget) break
-                        issued.getAndIncrement()
+                        // Claim the slot and decide in one operation: reading
+                        // then incrementing lets N workers all pass the read
+                        // before any of them increments, overrunning the budget.
+                        if (budget > 0 && issued.getAndIncrement() >= budget) break
                         val target = pinned ?: targets[(pick.getAndIncrement() % targets.size).toInt()]
                         val started = clock.markNow()
                         try {
@@ -192,10 +194,15 @@ private fun printNativeClientReport(cc: ClientConfig, clientName: String, r: Nat
 
 /** Runs the transport-only floor for `--client-type=floor-<engine>`. */
 private fun runNativeRawFloor(cc: ClientConfig) {
-    val engineName = nativeClientEngineName("keel-" + cc.clientType.removePrefix(FLOOR_PREFIX))
-    val target = clientTargets(cc).first().removeSuffix(cc.endpoint).removePrefix("http://")
-    val host = target.substringBefore(':')
-    val port = target.substringAfter(':').toInt()
+    val transport = cc.clientType.removePrefix(FLOOR_PREFIX)
+    // Report the string the operator actually typed: mapping floor-nio to
+    // "keel-nio" and erroring on that names something they never wrote.
+    val engineName = try {
+        nativeClientEngineName("keel-$transport")
+    } catch (@Suppress("TooGenericExceptionCaught") e: IllegalStateException) {
+        error("unsupported --client-type='${cc.clientType}' on this host (${e.message})")
+    }
+    val (host, port) = floorHostPort(clientTargets(cc).first().removeSuffix(cc.endpoint))
     runBlocking {
         runRawClientFloor(
             engine = createNativeClientEngine(engineName),

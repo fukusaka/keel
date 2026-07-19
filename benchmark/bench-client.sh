@@ -183,6 +183,7 @@ keel_native_kexe() {
 native_bin() {
   case "$1" in
     keel-kqueue|keel-nwconnection|keel-epoll|keel-io-uring) keel_native_kexe ;;
+    floor-kqueue|floor-nwconnection|floor-epoll|floor-io-uring) keel_native_kexe ;;
     rust-reqwest) echo "benchmark/rust-bench/target/release/client" ;;
     rust-hyper) echo "benchmark/rust-bench/target/release/client-hyper" ;;
     go-nethttp) echo "benchmark/go-bench/client-bench" ;;
@@ -194,7 +195,8 @@ native_bin() {
 }
 build_native() {
   case "$1" in
-    keel-kqueue|keel-nwconnection|keel-epoll|keel-io-uring)
+    keel-kqueue|keel-nwconnection|keel-epoll|keel-io-uring|\
+    floor-kqueue|floor-nwconnection|floor-epoll|floor-io-uring)
       # Not auto-built: the kexe comes from Gradle, and silently triggering a
       # link here would hide a minute of build time inside a bench run.
       [ -x "$(native_bin "$1")" ] || {
@@ -270,7 +272,8 @@ for type in $TYPES; do
       # The keel native driver is the keel benchmark binary, so it needs the
       # role and engine selector the reference binaries do not have.
       case "$type" in
-        keel-*) keel_role_args="--role=client --client-type=$type" ;;
+        keel-*|floor-kqueue|floor-nwconnection|floor-epoll|floor-io-uring)
+          keel_role_args="--role=client --client-type=$type" ;;
         *) keel_role_args="" ;;
       esac
       # shellcheck disable=SC2086  # deliberate word-splitting of the optional args

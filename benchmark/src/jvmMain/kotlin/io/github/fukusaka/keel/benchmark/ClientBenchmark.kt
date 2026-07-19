@@ -117,12 +117,12 @@ private fun runJvmRawFloor(cc: ClientConfig) {
     require(cc.clientType == "floor-nio") {
         "unsupported --client-type='${cc.clientType}' on the JVM (expected floor-nio)"
     }
-    val target = clientTargets(cc).first().removeSuffix(cc.endpoint).removePrefix("http://")
+    val (host, port) = floorHostPort(clientTargets(cc).first().removeSuffix(cc.endpoint))
     runBlocking {
         runRawClientFloor(
             engine = NioEngine(),
-            host = target.substringBefore(':'),
-            port = target.substringAfter(':').toInt(),
+            host = host,
+            port = port,
             path = cc.endpoint,
             durationSeconds = cc.durationSec,
             warmupSeconds = cc.warmupSec,

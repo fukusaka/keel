@@ -95,9 +95,21 @@ internal class LatencyHistogram(
         return true
     }
 
-    /** Merges [other] into this histogram. Both must share the same configuration. */
+    /**
+     * Merges [other] into this histogram. Both must share the same
+     * configuration — checked on the configuration itself, not on the array
+     * size, which is not a proxy for it: at three significant figures
+     * `(lowest=1, highest=60e9)` and `(lowest=2, highest=120e9)` both produce
+     * 27,648 counts under different value-to-index mappings, so a size-only
+     * check would merge them into silently wrong percentiles.
+     */
     fun add(other: LatencyHistogram) {
-        require(other.counts.size == counts.size) { "cannot merge histograms with different configurations" }
+        require(
+            other.lowestDiscernibleValue == lowestDiscernibleValue &&
+                other.highestTrackableValue == highestTrackableValue &&
+                other.unitMagnitude == unitMagnitude &&
+                other.counts.size == counts.size,
+        ) { "cannot merge histograms with different configurations" }
         for (i in counts.indices) counts[i] += other.counts[i]
         totalCount += other.totalCount
         if (other.rawMaxValue > rawMaxValue) rawMaxValue = other.rawMaxValue

@@ -68,9 +68,18 @@ internal fun formatClientResultLine(
  * formatter (Kotlin/Native has no `String.format`). Keeps the trailing zeros the
  * JVM's `%.3f` produces so both platforms emit the same column widths.
  *
- * Ties round away from zero, matching `String.format`'s HALF_UP — not
- * `kotlin.math.round`, which breaks ties towards even and would render 0.0005
- * as `0.000` where the JVM has always written `0.001`.
+ * Ties round away from zero rather than to even, which is what `String.format`
+ * does and `kotlin.math.round` does not — the latter renders 0.0005 as `0.000`
+ * where the JVM has always written `0.001`.
+ *
+ * The match is not exact in general: scaling happens in binary first, so a value
+ * whose exact decimal sits just below a tie can be lifted onto it (0.0045
+ * formats as `0.004` and renders here as `0.005`). It is exact for what this
+ * harness formats. Latency comes from a histogram whose reported values are
+ * always one below a power of two, which never lands on a decimal tie, and the
+ * throughput column uses zero decimals, where the multiply is exact. Widening
+ * the inputs — a different histogram precision, or decimals on the rps column —
+ * would need this revisited rather than assumed.
  */
 internal fun Double.roundTo(decimals: Int): String {
     if (isNaN() || isInfinite()) return "0"
@@ -86,3 +95,19 @@ internal fun Double.roundTo(decimals: Int): String {
 
 private const val LATENCY_DECIMALS = 3
 private const val HALF = 0.5
+
+/**
+ * Splits a transport-floor target into host and port, rejecting anything but
+ * `http://`. Without the check an `https://` target reaches the port parse as
+ * `"//host:port"` and fails with a bare `NumberFormatException` that says
+ * nothing about what was wrong.
+ */
+internal fun floorHostPort(target: String): Pair<String, Int> {
+    require(target.startsWith(HTTP_SCHEME)) { "the floor supports http:// targets only; got '$target'" }
+    val authority = target.removePrefix(HTTP_SCHEME)
+    val port = authority.substringAfter(':', "").toIntOrNull()
+        ?: error("floor target needs an explicit port: '$target'")
+    return authority.substringBefore(':') to port
+}
+
+private const val HTTP_SCHEME = "http://"
