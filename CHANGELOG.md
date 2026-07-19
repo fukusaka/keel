@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `client-http`: follow `301` / `302` / `303` / `307` / `308` redirects (RFC 9110 §15.4) — `303` and a
+  redirected POST become GET, `307` / `308` preserve method and body, a relative `Location` is resolved,
+  and `Authorization` is dropped on a cross-origin hop. Configurable via `followRedirects` /
+  `maxRedirects` (default 20); exceeding the cap fails with `TooManyRedirectsException` (#984)
 - `client-http`: `defaultHeaders { }` on the `keelHttpClient` DSL — headers sent with every request;
   a per-request header of the same name replaces the default instead of being appended (#982)
 - `client-http`: `requestTimeoutMillis` on the `keelHttpClient` DSL — bounds a whole call (lease,

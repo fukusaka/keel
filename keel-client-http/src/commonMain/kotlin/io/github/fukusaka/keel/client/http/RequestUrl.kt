@@ -20,6 +20,44 @@ internal class RequestUrl private constructor(
     val target: String,
     val authority: String,
 ) {
+
+    /** The path part of [target], without the query. */
+    private val path: String get() = target.substringBefore('?')
+
+    /** True when [other] is a different origin — a different host or port (the scheme is always http). */
+    fun isCrossOrigin(other: RequestUrl): Boolean = host != other.host || port != other.port
+
+    /**
+     * Resolves a `Location` value against this URL, per RFC 3986 §5.
+     *
+     * Handles the four reference forms a redirect actually uses: absolute
+     * (`http://elsewhere/x`), network-path (`//elsewhere/x`, inheriting the
+     * scheme), absolute-path (`/x`), and relative-path (`x`, `../x`, `?q=1`),
+     * with dot segments removed. A fragment is dropped — it is not sent on the
+     * wire.
+     *
+     * @throws UnsupportedOperationException if the target is `https://`.
+     * @throws IllegalArgumentException if [location] is empty or malformed.
+     */
+    fun resolve(location: String): RequestUrl {
+        val ref = location.substringBefore('#')
+        require(ref.isNotEmpty()) { "empty Location header" }
+        val origin = "$HTTP_PREFIX$authority"
+        return when {
+            // "//host/path" inherits our scheme rather than naming one.
+            ref.startsWith("//") -> parse("http:$ref")
+            hasScheme(ref) -> parse(ref)
+            ref.startsWith('/') -> parse("$origin$ref")
+            else -> {
+                val refPath = ref.substringBefore('?')
+                val refQuery = ref.substring(refPath.length)
+                // A query-only reference ("?q=1") keeps this URL's path.
+                val merged = if (refPath.isEmpty()) path else mergePath(path, refPath)
+                parse("$origin$merged$refQuery")
+            }
+        }
+    }
+
     companion object {
         private const val HTTP_PREFIX = "http://"
         private const val HTTPS_PREFIX = "https://"
@@ -71,6 +109,53 @@ internal class RequestUrl private constructor(
             val hostForHeader = if (host.contains(':')) "[$host]" else host
             val headerAuthority = if (port == DEFAULT_PORT) hostForHeader else "$hostForHeader:$port"
             return RequestUrl(host, port, target, headerAuthority)
+        }
+
+        /**
+         * Whether [ref] begins with a URI scheme (RFC 3986 §3.1). A colon that
+         * appears after a slash belongs to a path segment, not a scheme, so
+         * `a/b:c` stays a relative reference.
+         */
+        private fun hasScheme(ref: String): Boolean {
+            val colon = ref.indexOf(':')
+            if (colon <= 0) return false
+            val slash = ref.indexOf('/')
+            if (slash in 0 until colon) return false
+            val scheme = ref.substring(0, colon)
+            return scheme[0].isLetter() &&
+                scheme.all { it.isLetter() || it.isDigit() || it == '+' || it == '-' || it == '.' }
+        }
+
+        /** Merges a relative path onto [basePath] (RFC 3986 §5.2.3) and removes dot segments (§5.2.4). */
+        private fun mergePath(basePath: String, refPath: String): String {
+            val merged = if (basePath.isEmpty()) {
+                "/$refPath"
+            } else {
+                basePath.substring(0, basePath.lastIndexOf('/') + 1) + refPath
+            }
+            return removeDotSegments(merged)
+        }
+
+        /**
+         * RFC 3986 §5.2.4: resolves `.` and `..` segments. A trailing `.` or
+         * `..` leaves a trailing slash, and `..` never escapes above the root.
+         */
+        private fun removeDotSegments(path: String): String {
+            val segments = path.split('/')
+            val out = ArrayList<String>(segments.size)
+            for ((i, segment) in segments.withIndex()) {
+                val last = i == segments.lastIndex
+                when (segment) {
+                    "." -> if (last) out.add("")
+                    ".." -> {
+                        if (out.size > 1) out.removeAt(out.lastIndex)
+                        if (last) out.add("")
+                    }
+                    else -> out.add(segment)
+                }
+            }
+            val resolved = out.joinToString("/")
+            return if (resolved.startsWith('/')) resolved else "/$resolved"
         }
 
         private fun splitHostPort(hostPort: String, url: String): Pair<String, Int> {

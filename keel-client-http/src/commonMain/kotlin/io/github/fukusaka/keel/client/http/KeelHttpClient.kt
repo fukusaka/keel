@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.codec.http.HttpHeaderName
 import io.github.fukusaka.keel.codec.http.HttpHeaders
 import io.github.fukusaka.keel.codec.http.HttpMethod
 import io.github.fukusaka.keel.codec.http.HttpRequest
+import io.github.fukusaka.keel.codec.http.HttpStatus
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 
@@ -36,6 +37,15 @@ import kotlinx.coroutines.withTimeout
  * default is then not added at all, so a caller can override a default rather
  * than end up with both values.
  *
+ * **Redirects**: `301` / `302` / `303` / `307` / `308` with a `Location` are
+ * followed (up to `maxRedirects`, default 20; `followRedirects = false` returns
+ * the 3xx instead). `303` redirects to a GET, `301` / `302` rewrite POST to GET
+ * and drop the body, and `307` / `308` preserve both (RFC 9110 §15.4). A
+ * relative `Location` is resolved against the current URL. A hop that crosses to
+ * another origin drops the per-request `Authorization` and `Host` — both are
+ * scoped to the origin they were addressed to. A `Host` set through
+ * `defaultHeaders` is client-wide by definition and still applies to every hop.
+ *
  * **Timeout**: with `requestTimeoutMillis` set, a request that has not produced
  * a complete response within the budget fails with
  * [HttpRequestTimeoutException] and its connection is closed rather than
@@ -48,6 +58,8 @@ public class KeelHttpClient internal constructor(
     private val pool: ConnectionPool,
     private val defaultHeaders: HttpHeaders = HttpHeaders.EMPTY,
     private val requestTimeoutMillis: Long = 0,
+    private val followRedirects: Boolean = true,
+    private val maxRedirects: Int = DEFAULT_MAX_REDIRECTS,
 ) {
 
     /**
@@ -68,12 +80,16 @@ public class KeelHttpClient internal constructor(
         headers: HttpHeaders = HttpHeaders.EMPTY,
         body: ByteArray? = null,
     ): KeelHttpResponse {
-        if (requestTimeoutMillis <= 0) return exchange(method, url, headers, body)
-        // The budget covers lease + exchange + any stale-connection retry. On
-        // elapse the exchange's own cleanup closes the connection (it is never
-        // released to the pool), so a timed-out request leaves nothing pooled.
+        val parsed = RequestUrl.parse(url)
+        if (requestTimeoutMillis <= 0) return exchangeFollowingRedirects(method, parsed, headers, body, url)
+        // The budget covers lease + exchange + any stale-connection retry and
+        // every redirect hop. On elapse the exchange's own cleanup closes the
+        // connection (it is never released to the pool), so a timed-out request
+        // leaves nothing pooled.
         return try {
-            withTimeout(requestTimeoutMillis) { exchange(method, url, headers, body) }
+            withTimeout(requestTimeoutMillis) {
+                exchangeFollowingRedirects(method, parsed, headers, body, url)
+            }
         } catch (e: TimeoutCancellationException) {
             // Keep the original as the cause: the timeout is reported as a request
             // failure, but the coroutines-level detail stays available for debugging.
@@ -81,13 +97,96 @@ public class KeelHttpClient internal constructor(
         }
     }
 
+    /**
+     * Drives [exchange] and follows any redirect the response asks for, until a
+     * non-redirect response arrives or [maxRedirects] hops are spent.
+     *
+     * [originalUrl] is only for error messages — it names what the caller asked
+     * for rather than whichever hop failed.
+     */
+    private suspend fun exchangeFollowingRedirects(
+        method: HttpMethod,
+        url: RequestUrl,
+        headers: HttpHeaders,
+        body: ByteArray?,
+        originalUrl: String,
+    ): KeelHttpResponse {
+        var currentMethod = method
+        var currentUrl = url
+        var currentHeaders = headers
+        var currentBody = body
+        var hops = 0
+        while (true) {
+            val response = exchange(currentMethod, currentUrl, currentHeaders, currentBody)
+            if (!followRedirects) return response
+            // A 3xx without a Location is not something to follow — hand it back.
+            val location = redirectLocation(response) ?: return response
+            if (hops >= maxRedirects) throw TooManyRedirectsException(originalUrl, maxRedirects)
+            hops++
+
+            val next = currentUrl.resolve(location)
+            val nextMethod = redirectMethod(currentMethod, response.status)
+            if (nextMethod != currentMethod) {
+                // The method was rewritten to GET, so the body does not carry
+                // over; a caller-supplied Content-Length would now misdescribe
+                // the request.
+                currentBody = null
+                currentHeaders = withoutHeaders(currentHeaders, HttpHeaderName.CONTENT_LENGTH)
+            }
+            if (currentUrl.isCrossOrigin(next)) {
+                // Both are scoped to the origin they were addressed to: credentials
+                // must not follow the user to another host, and a caller-supplied
+                // Host would otherwise name the previous origin's virtual host on
+                // the new one. Dropping Host lets buildRequest re-derive it.
+                currentHeaders = withoutHeaders(
+                    currentHeaders,
+                    HttpHeaderName.AUTHORIZATION,
+                    HttpHeaderName.HOST,
+                )
+            }
+            currentMethod = nextMethod
+            currentUrl = next
+        }
+    }
+
+    /** The `Location` of a redirect this client follows, or null if the response is not one. */
+    private fun redirectLocation(response: KeelHttpResponse): String? {
+        if (response.status !in REDIRECT_STATUSES) return null
+        return response.headers.getString(HttpHeaderName.LOCATION)?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * The method for the next hop (RFC 9110 §15.4).
+     *
+     * `303 See Other` always redirects to a GET — that is the status's whole
+     * purpose — except for HEAD, which stays HEAD so the caller still gets no
+     * body. `301` / `302` rewrite POST to GET, which is what every major client
+     * does and what servers expect. `307` / `308` exist precisely to preserve
+     * the method and body, so they change nothing.
+     */
+    private fun redirectMethod(method: HttpMethod, status: HttpStatus): HttpMethod = when (status) {
+        HttpStatus.SEE_OTHER -> if (method == HttpMethod.HEAD) method else HttpMethod.GET
+        HttpStatus.MOVED_PERMANENTLY, HttpStatus.FOUND ->
+            if (method == HttpMethod.POST) HttpMethod.GET else method
+        else -> method
+    }
+
+    /** [headers] without [names], or [headers] itself when it carries none of them. */
+    private fun withoutHeaders(headers: HttpHeaders, vararg names: String): HttpHeaders {
+        if (names.none { it in headers }) return headers
+        val kept = HttpHeaders()
+        headers.forEach { name, value ->
+            if (names.none { it.equals(name, ignoreCase = true) }) kept.add(name, value)
+        }
+        return kept
+    }
+
     private suspend fun exchange(
         method: HttpMethod,
-        url: String,
+        parsed: RequestUrl,
         headers: HttpHeaders,
         body: ByteArray?,
     ): KeelHttpResponse {
-        val parsed = RequestUrl.parse(url)
         val route = RouteKey(parsed.host, parsed.port)
         val request = buildRequest(method, parsed, headers, body)
         val lease = pool.lease(route)
@@ -137,6 +236,20 @@ public class KeelHttpClient internal constructor(
      */
     private fun supplied(headers: HttpHeaders, name: String): Boolean =
         name in headers || name in defaultHeaders
+
+    private companion object {
+        /** Redirect hops allowed by default — OkHttp's cap, comfortably above any sane chain. */
+        const val DEFAULT_MAX_REDIRECTS = 20
+
+        /** The 3xx statuses that name a single new target to re-request. */
+        val REDIRECT_STATUSES = setOf(
+            HttpStatus.MOVED_PERMANENTLY,
+            HttpStatus.FOUND,
+            HttpStatus.SEE_OTHER,
+            HttpStatus.TEMPORARY_REDIRECT,
+            HttpStatus.PERMANENT_REDIRECT,
+        )
+    }
 
     /** Closes every pooled connection. The caller-owned engine is not closed. */
     public suspend fun close() {
