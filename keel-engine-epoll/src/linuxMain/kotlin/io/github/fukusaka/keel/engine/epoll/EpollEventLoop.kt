@@ -50,7 +50,9 @@ import platform.posix.pthread_mutex_unlock
 import platform.posix.pthread_self
 import platform.posix.pthread_t
 import platform.posix.pthread_tVar
+import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
@@ -225,6 +227,13 @@ internal class EpollEventLoop(
 
     private val wakeupFd: Int
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
+
+    // Set once [loop] has drained for the last time. `running` cannot answer
+    // "will anything still run my task": it is 0 from the moment close() asks
+    // the loop to stop, well before the thread is joined, and it stays 1 when
+    // the loop breaks out on a fatal epoll_wait() error. Only this flag means
+    // the queue is dead for good.
+    private val loopFinished = AtomicInt(0)
     private val threadPtr = arena.alloc<pthread_tVar>()
 
     @kotlin.concurrent.Volatile
@@ -339,6 +348,85 @@ internal class EpollEventLoop(
         if (!inEventLoop()) {
             wakeup()
         }
+    }
+
+    /**
+     * Runs [onLoop] on this EventLoop's thread and waits for it to finish; if
+     * the loop is already gone, runs [ifStopped] on the caller instead.
+     *
+     * Listener teardown uses this so the `close(2)` for a watched fd is issued
+     * by the thread that owns the epoll set, never by a caller racing that
+     * thread's `epoll_wait()` park — the shape Netty gets by executing every channel
+     * close on its EventLoop (`AbstractChannelHandlerContext.close` dispatches
+     * to the executor when off-loop). Running the close there also orders it
+     * after any registration already queued for the same fd, so a dispatched
+     * arm cannot land on a descriptor number the kernel has since handed to
+     * someone else (the reuse hazard Netty guards with its `isOpen()` check
+     * before every submit).
+     *
+     * The two blocks exist because the fallback runs off the loop. [onLoop] may
+     * touch loop-owned state ([regMutex]-guarded registries), because it only
+     * ever runs on the loop thread — either drained here or, once [loopFinished]
+     * says the queue is dead, never at all. [ifStopped] runs on the caller when
+     * the loop has stopped, so it must be self-contained: the registries are
+     * moot (nothing will read them again) and their backing mutex may already be
+     * destroyed by `EventLoop.close()`, so touching them would be a
+     * use-after-free. Releasing the fd is the one thing still required, and it is
+     * thread-safe anywhere. Default [ifStopped] to [onLoop] only when [onLoop] is
+     * itself loop-state-free.
+     *
+     * A shared `claimed` CAS runs exactly one of the two: a lost CAS means the
+     * loop owns [onLoop] and will publish completion, so this never returns
+     * before the fd is closed. An exception from [onLoop] is rethrown rather
+     * than swallowed by the loop's task guard.
+     *
+     * **Thread safety**: safe from any thread. Blocks the caller; keep it to
+     * cold paths (teardown), never per-I/O.
+     */
+    internal fun runOnLoopBlocking(onLoop: () -> Unit, ifStopped: () -> Unit = onLoop) {
+        if (inEventLoop()) {
+            onLoop()
+            return
+        }
+        val claimed = AtomicInt(0)
+        val done = AtomicInt(0)
+        val failure = AtomicReference<Throwable?>(null)
+        dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                if (claimed.compareAndSet(0, 1)) {
+                    try {
+                        onLoop()
+                    } catch (t: Throwable) {
+                        failure.value = t
+                    } finally {
+                        done.value = 1
+                    }
+                }
+            },
+        )
+        var waitedMicros = 0L
+        while (done.value == 0) {
+            if (loopFinished.value != 0 && claimed.compareAndSet(0, 1)) {
+                // The loop is gone and never drained [onLoop]. Its registries
+                // are dead and their mutex may already be freed, so run the
+                // loop-state-free [ifStopped] here rather than [onLoop].
+                ifStopped()
+                return
+            }
+            usleep(LOOP_HANDOFF_POLL_MICROS)
+            waitedMicros += LOOP_HANDOFF_POLL_MICROS.toLong()
+            if (waitedMicros >= LOOP_HANDOFF_WARN_MICROS && waitedMicros - LOOP_HANDOFF_POLL_MICROS.toLong() < LOOP_HANDOFF_WARN_MICROS) {
+                // A teardown this slow means the loop is stuck in a syscall.
+                // Say so, otherwise the only symptom is a thread spinning here
+                // instead of the blocked thread that shows the real cause.
+                logger.warn {
+                    "EventLoop teardown handoff pending after " +
+                        "${LOOP_HANDOFF_WARN_MICROS / MICROS_PER_MILLI}ms — the loop may be stuck in a syscall"
+                }
+            }
+        }
+        failure.value?.let { throw it }
     }
 
     /**
@@ -704,6 +792,19 @@ internal class EpollEventLoop(
 
     internal fun loop() {
         eventLoopThread = pthread_self()
+        try {
+            loopBody()
+        } finally {
+            // Drain once more so a teardown dispatched just before the loop
+            // stopped still runs here, on the thread that owns the registry,
+            // then declare the queue dead so a later caller runs its own block
+            // rather than waiting for a drain that will never come.
+            drainTasks()
+            loopFinished.value = 1
+        }
+    }
+
+    private fun loopBody() {
         while (running.value != 0) {
             drainTasks()
 
@@ -1066,6 +1167,14 @@ internal class EpollEventLoop(
     }
 
     companion object {
+        /** Poll step while a teardown hands off to the loop (cold path). */
+        private const val LOOP_HANDOFF_POLL_MICROS: UInt = 50u
+
+        /** How long a teardown handoff may take before it is worth a WARN. */
+        private const val LOOP_HANDOFF_WARN_MICROS = 5_000_000L
+
+        private const val MICROS_PER_MILLI = 1_000L
+
         /** Initial capacity of the shared writev scratch arrays (grows 1.5x). */
         const val INITIAL_WRITEV_CAPACITY = 8
 

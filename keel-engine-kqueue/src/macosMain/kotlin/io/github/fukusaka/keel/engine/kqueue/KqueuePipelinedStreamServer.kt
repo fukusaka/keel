@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlin.concurrent.AtomicInt
 
 /**
  * Pipeline server channel for kqueue-based connection acceptance.
@@ -46,8 +47,13 @@ internal class KqueuePipelinedStreamServer(
     override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
     override val isActive: Boolean get() = !closed
 
-    @kotlin.concurrent.Volatile
-    private var closed = false
+    // CAS rather than a volatile check-then-set: two concurrent close() calls
+    // could both observe false and both tear down, closing each listener fd
+    // twice — and by the second close the kernel may have handed that
+    // descriptor number to a new socket.
+    private val closedFlag = AtomicInt(0)
+
+    private val closed: Boolean get() = closedFlag.value != 0
     private var workerIndex = 0 // Single boss thread only — no atomicity needed.
 
     /**
@@ -138,17 +144,34 @@ internal class KqueuePipelinedStreamServer(
     }
 
     /**
-     * Stops accepting and closes every listener's server socket fd.
-     * The kernel drops a closed fd from the kqueue interest set, so no
-     * boss-loop coordination is needed. Pending accept callbacks become
-     * no-ops (closed flag check). Idempotent.
+     * Stops accepting and closes every listener's server socket fd, on the boss
+     * EventLoop thread.
+     *
+     * Closing from the caller's thread meant issuing `close(2)` for a fd the
+     * boss loop was watching while that loop sat parked in `kevent()` — and a
+     * registration dispatched moments earlier could still be queued for the
+     * same fd. Handing the teardown to the loop removes both: the close is
+     * issued by the thread that owns the kqueue, and the queue's order puts it
+     * after any pending arm. Netty reaches the same state by executing every
+     * channel close on its EventLoop. Pending accept callbacks become no-ops
+     * (closed flag check). Idempotent.
      */
     override fun close() {
-        if (closed) return
-        closed = true
-        for (listener in listeners) {
-            closeFdSafely(listener.serverFd, logger, "pipelined server close")
-        }
+        if (!closedFlag.compareAndSet(0, 1)) return
+        bossLoop.runOnLoopBlocking(
+            onLoop = {
+                for (listener in listeners) {
+                    bossLoop.unregisterCallback(listener.serverFd, KqueueEventLoop.Interest.READ)
+                    closeFdSafely(listener.serverFd, logger, "pipelined server close")
+                }
+            },
+            // Loop gone: the callback registry is dead, so only release the fd.
+            ifStopped = {
+                for (listener in listeners) {
+                    closeFdSafely(listener.serverFd, logger, "pipelined server close")
+                }
+            },
+        )
     }
 
     /**
