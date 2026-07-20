@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.EmptyCoroutineContext
 import org.HdrHistogram.Histogram
 import java.lang.management.ManagementFactory
 import java.net.URI
@@ -54,6 +55,10 @@ import kotlin.concurrent.thread
  * connections, so it is the warm-path peer of the pooling reference clients.
  */
 fun runClientBenchmark(config: BenchmarkConfig) {
+    if (config.client.clientType.startsWith("floor-")) {
+        runJvmRawFloor(config.client)
+        return
+    }
     val cc = config.client
     require(cc.connections >= 1) { "--client-connections must be >= 1 (got ${cc.connections})" }
     val targets = requireTargets(cc)
@@ -96,19 +101,34 @@ fun runClientBenchmark(config: BenchmarkConfig) {
  * target concentrates all concurrency on a single route (its worst case), while
  * many targets drop each route toward the conns=1 regime where even CIO reuses.
  */
-private fun requireTargets(cc: ClientConfig): List<String> {
-    val raw = cc.targetUrl
-        ?: error(
-            "client bench requires --client-target=<url>[,<url>...] pointing at SEPARATE fixture " +
-                "process(es) (e.g. rust-bench on loopback). bench-client.sh starts / stops the fixture. " +
-                "In-process fixtures are unsupported: sharing the client JVM contaminates the numbers.",
+/**
+ * Delegates to the shared [clientTargets] so the JVM and Native harnesses cannot
+ * drift on what a target URL is.
+ */
+private fun requireTargets(cc: ClientConfig): List<String> = clientTargets(cc)
+
+/**
+ * Transport-only floor on the JVM engine, the counterpart of the native one.
+ * Only `floor-nio` exists here: NIO is the JVM's own transport, and the Netty
+ * engine wraps a channel keel does not own, so a floor over it would measure
+ * something other than keel's path.
+ */
+private fun runJvmRawFloor(cc: ClientConfig) {
+    require(cc.clientType == "floor-nio") {
+        "unsupported --client-type='${cc.clientType}' on the JVM (expected floor-nio)"
+    }
+    val (host, port) = floorHostPort(clientTargets(cc).first().removeSuffix(cc.endpoint))
+    runBlocking {
+        runRawClientFloor(
+            engine = NioEngine(),
+            host = host,
+            port = port,
+            path = cc.endpoint,
+            durationSeconds = cc.durationSec,
+            warmupSeconds = cc.warmupSec,
+            label = cc.clientType,
         )
-    val targets = raw.split(',')
-        .map { it.trim() }
-        .filter { it.isNotEmpty() }
-        .map { it.trimEnd('/') + cc.endpoint }
-    require(targets.isNotEmpty()) { "no target URL parsed from --client-target='$raw'" }
-    return targets
+    }
 }
 
 /** Fails fast if the external fixture is not reachable before the run starts. */
@@ -559,7 +579,17 @@ private fun driveCoroutines(driver: ClientDriver, targets: List<String>, cc: Cli
 
     val allocStart = totalAllocatedBytes()
     val runStart = System.nanoTime()
-    runBlocking(Dispatchers.Default) {
+    // KEEL_BENCH_CLIENT_CALLER=single drives every worker from one thread
+    // instead of Dispatchers.Default. The coroutine-native clients hop to their
+    // own I/O dispatcher regardless, so the caller's thread count is a
+    // methodology choice that measurably moves the result — this makes the two
+    // comparable on both platforms rather than fixed differently per platform.
+    val callerContext = if (getEnvVar("KEEL_BENCH_CLIENT_CALLER") == "single") {
+        EmptyCoroutineContext
+    } else {
+        Dispatchers.Default
+    }
+    runBlocking(callerContext) {
         coroutineScope {
             repeat(cc.connections) { worker ->
                 val pinned = if (cc.targetMode == "pinned") targets[worker % targets.size] else null
@@ -655,9 +685,15 @@ private fun printReport(cc: ClientConfig, clientName: String, r: RunResult) {
     // Machine-parseable line (mirrors the server bench `<name>|<rps>|...` shape),
     // extended with p99.9/max/bytes-per-op/errors for the client axes.
     println(
-        "%s|%.0f|%.3f|%.3f|%.3f|%.3f|%s|%d".format(
-            "$clientName${cc.endpoint}",
-            r.reqPerSec, ms(50.0), ms(99.0), ms(99.9), ms(100.0), alloc, r.errors,
+        formatClientResultLine(
+            name = "$clientName${cc.endpoint}",
+            reqPerSec = r.reqPerSec,
+            p50 = ms(50.0),
+            p99 = ms(99.0),
+            p999 = ms(99.9),
+            max = ms(100.0),
+            bytesPerOp = alloc,
+            errors = r.errors,
         ),
     )
     System.err.println(
