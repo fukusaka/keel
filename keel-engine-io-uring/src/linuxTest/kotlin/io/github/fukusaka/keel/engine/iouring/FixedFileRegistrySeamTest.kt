@@ -20,7 +20,9 @@ import kotlin.test.assertTrue
  *
  * Part of the io_uring native API seam effort. The registry is driven
  * pre-`start()`, where [IoUringEventLoop.assertInEventLoop] no-ops
- * (`eventLoopThread == null`), so the tests run synchronously on the
+ * (`eventLoopThread == null`, which this engine's assert still permits — its
+ * register-class init legitimately runs before the loop), so the tests run
+ * synchronously on the
  * test thread without spawning the EventLoop pthread — no timeout is
  * needed (no async / dispatch / I/O).
  */

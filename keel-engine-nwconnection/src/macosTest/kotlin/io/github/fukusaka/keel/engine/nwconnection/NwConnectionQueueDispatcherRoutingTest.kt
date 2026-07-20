@@ -23,7 +23,7 @@ import platform.darwin.dispatch_queue_create
  * single-thread invariant is enforced by funnelling all coroutine
  * resumptions and callbacks onto the per-connection GCD serial queue via
  * [NwConnectionQueueDispatcher]. The POSIX engines' funnel decision
- * `if (eventLoopThread == null || inEventLoop()) inline else dispatch`
+ * `if (inEventLoop()) inline else dispatch`
  * is here the dispatcher's [NwConnectionQueueDispatcher.isDispatchNeeded]
  * (`dispatch_get_specific(marker) != marker`) plus
  * [NwConnectionQueueDispatcher.dispatch] (`dispatch_async(queue)`).

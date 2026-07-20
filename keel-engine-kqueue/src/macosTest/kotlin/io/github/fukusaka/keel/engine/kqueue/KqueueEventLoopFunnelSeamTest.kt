@@ -22,7 +22,7 @@ import kotlinx.coroutines.withTimeout
  * `kevent(EV_ADD)` submission through:
  *
  * ```
- * if (eventLoopThread == null || inEventLoop()) submitInline()
+ * if (inEventLoop()) submitInline()
  * else dispatch { submitOnEventLoopThread() }
  * ```
  *
@@ -39,9 +39,9 @@ import kotlinx.coroutines.withTimeout
  * fake captures the thread id (raw `pthread_self()` pointer as a Long) on
  * which `addFilter` runs ([FakeKqueueSyscallOps.lastAddFilterThreadId]);
  * the test compares it with the caller thread id. A dispatched barrier
- * task gates the cross-thread call so `eventLoopThread` is guaranteed
- * assigned (otherwise the `eventLoopThread == null` inline branch would
- * be taken).
+ * task gates the cross-thread call, so the loop is demonstrably running by
+ * the time it happens — what this pins is the funnel under contention, not
+ * the pre-start case (the first test in this file covers that one).
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)
 class KqueueEventLoopFunnelSeamTest {
@@ -50,6 +50,61 @@ class KqueueEventLoopFunnelSeamTest {
 
     private val noopListener = object : KqueueEventLoop.FdReadyListener {
         override fun onReady(interest: KqueueEventLoop.Interest) { /* no-op */ }
+    }
+
+    /**
+     * A registration issued before the loop starts must be queued, not run on
+     * the caller's thread.
+     *
+     * The funnel used to carry an escape hatch — `eventLoopThread == null ||
+     * inEventLoop()` — that sent pre-start registrations down the inline path,
+     * on the reasoning that nothing but single-threaded construction could be
+     * there. `accept()` disproved it: it builds a transport, and registers its
+     * fd, on whatever thread the caller is on. Between `pthread_create`
+     * returning and `loop()` assigning the handle, that read saw null, took the
+     * inline branch, and then `assertInEventLoop` re-read a handle the loop had
+     * meanwhile assigned — two reads, one decision each, disagreeing. It
+     * surfaced as roughly one failed run in twenty-five of the full suite; with
+     * the assert absent it would instead have been a `kevent` issued off-loop,
+     * silently.
+     *
+     * So this pins the property the escape hatch broke: off-loop registration
+     * funnels, whether or not the loop has started yet.
+     */
+    @Test
+    fun `a registration made before the loop starts is queued rather than run on the caller`() = runBlocking {
+        withTimeout(FUNNEL_BUDGET) {
+            val fake = FakeKqueueSyscallOps().apply { liveMode = true; watchedFd = FD_UNDER_TEST }
+            val el = KqueueEventLoop(logger, syscallOps = fake)
+            try {
+                val beforeCalls = fake.addFilterCalls.size
+
+                // Registering before start(): the loop's thread handle is unset,
+                // which is exactly the window the escape hatch used to treat as
+                // "safe to run inline".
+                el.registerCallback(FD_UNDER_TEST, KqueueEventLoop.Interest.READ, noopListener)
+                assertEquals(
+                    beforeCalls,
+                    fake.addFilterCalls.size,
+                    "pre-start registration must not reach kevent on the caller thread — it belongs on the loop",
+                )
+
+                // Starting the loop drains what was queued, on the loop's own
+                // thread, which is where the syscall belonged all along.
+                el.start()
+                // Gated on lastAddFilterThreadId, the fake's only @Volatile
+                // member: addFilterCalls is a plain list the loop appends to,
+                // so polling it from here would be an unsynchronised read.
+                while (fake.lastAddFilterThreadId == 0L) delay(POLL_MS)
+                assertNotEquals(
+                    currentThreadId(),
+                    fake.lastAddFilterThreadId,
+                    "the queued registration must fire on the EventLoop thread, not the caller's",
+                )
+            } finally {
+                el.close()
+            }
+        }
     }
 
     /**

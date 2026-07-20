@@ -357,15 +357,24 @@ internal class EpollEventLoop(
      * internal state transitions that are not guarded by [regMutex]
      * (task queue drain, epoll_wait event processing, etc).
      *
-     * Returns without checking if the EventLoop has not yet started —
-     * engine construction runs before [loop] sets the thread handle,
-     * and constructor-time initialisation is inherently single-threaded.
+     * Holds unconditionally, including before [loop] runs. It used to return
+     * without checking while the thread handle was unset, on the reasoning that
+     * only single-threaded construction could get there. That reasoning was
+     * wrong: `accept()` builds a transport — and registers its fd — on whatever
+     * thread the caller is on, so a registration could reach the submit path
+     * from off-loop during the window between `pthread_create` returning and
+     * [loop] assigning the handle. [register] and [registerCallback] now funnel
+     * through [dispatch] when off-loop, so every caller of a submit path
+     * arrives on the EventLoop thread and the check can be absolute.
      *
-     * Matches the pattern established in `IoUringEventLoop.assertInEventLoop`.
+     * That covers the submit paths, not every `epoll_ctl` the engine issues. Two
+     * places call the syscall directly and never reach this check: this class's
+     * constructor registers its own wakeup fd via `epollAdd`, and `bind` adds the
+     * server fd to the boss loop.
      */
     internal fun assertInEventLoop(operation: String) {
-        val t = eventLoopThread ?: return
-        check(pthread_equal(pthread_self(), t) != 0) {
+        val t = eventLoopThread
+        check(t != null && pthread_equal(pthread_self(), t) != 0) {
             "$operation must run on the EventLoop thread"
         }
     }
@@ -438,11 +447,12 @@ internal class EpollEventLoop(
         // every fd-registration syscall runs on a single thread per
         // loop so concurrent EL-thread `EPOLL_CTL_DEL` (issued from
         // dispatchReady for a stale event) cannot reorder against a
-        // user-thread `EPOLL_CTL_ADD` for the same fd. Engine init /
-        // seam-driven tests run before [start] sets [eventLoopThread];
-        // in that window submit inline so the eventually-drained task
-        // does not pile up on a queue that never runs.
-        if (eventLoopThread == null || inEventLoop()) {
+        // user-thread `EPOLL_CTL_ADD` for the same fd. A caller arriving
+        // before [start] dispatches like any other off-loop caller —
+        // dispatch() queues and loop() drains on its first iteration, so
+        // the registration waits for the loop instead of running on
+        // whichever thread happened to call.
+        if (inEventLoop()) {
             submitAddOrModifyEpoll(fd, events)
         } else {
             dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
@@ -587,7 +597,7 @@ internal class EpollEventLoop(
         }
 
         // Same funnel idiom as [register] — see its KDoc for rationale.
-        if (eventLoopThread == null || inEventLoop()) {
+        if (inEventLoop()) {
             submitAddOrModifyEpoll(fd, events)
         } else {
             dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })

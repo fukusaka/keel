@@ -8,6 +8,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -25,7 +26,7 @@ import platform.posix.pthread_self
  * `epoll_ctl(EPOLL_CTL_ADD/MOD)` submission through:
  *
  * ```
- * if (eventLoopThread == null || inEventLoop()) submitAddOrModifyEpoll()
+ * if (inEventLoop()) submitAddOrModifyEpoll()
  * else dispatch { submitAddOrModifyEpoll() }
  * ```
  *
@@ -44,9 +45,9 @@ import platform.posix.pthread_self
  * watched fd only (so the construction-time wakeup-eventfd `EPOLL_CTL_ADD`
  * does not pollute the capture); the test compares it via `pthread_equal`
  * — the same idiom `EpollEventLoop.inEventLoop` uses. A dispatched barrier
- * task gates the cross-thread call so `eventLoopThread` is guaranteed
- * assigned (otherwise the `eventLoopThread == null` inline branch would be
- * taken).
+ * task gates the cross-thread call, so the loop is demonstrably running by
+ * the time it happens — what this pins is the funnel under contention, not
+ * the pre-start case (the first test in this file covers that one).
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)
 class EpollEventLoopFunnelSeamTest {
@@ -55,6 +56,57 @@ class EpollEventLoopFunnelSeamTest {
 
     private val noopListener = object : EpollEventLoop.FdReadyListener {
         override fun onReady(interest: EpollEventLoop.Interest) { /* no-op */ }
+    }
+
+    /**
+     * A registration issued before the loop starts must be queued, not run on
+     * the caller's thread.
+     *
+     * The funnel used to carry an escape hatch — `eventLoopThread == null ||
+     * inEventLoop()` — that sent pre-start registrations down the inline path,
+     * on the reasoning that nothing but single-threaded construction could be
+     * there. `accept()` disproves it: it builds a transport, and registers its
+     * fd, on whatever thread the caller is on. Between `pthread_create`
+     * returning and `loop()` assigning the handle, that read sees null, takes
+     * the inline branch, and then `assertInEventLoop` re-reads a handle the
+     * loop has meanwhile assigned — two reads, one decision each, disagreeing.
+     * It surfaced on the kqueue engine as roughly one failed run in
+     * twenty-five of its suite; this engine carried the identical shape and had
+     * simply not been caught yet.
+     *
+     * So this pins the property the escape hatch broke: off-loop registration
+     * funnels, whether or not the loop has started yet.
+     */
+    @Test
+    fun `a registration made before the loop starts is queued rather than run on the caller`() = runBlocking {
+        withTimeout(FUNNEL_BUDGET) {
+            val fake = FakeEpollSyscallOps().apply { liveMode = true; watchedFd = FD_UNDER_TEST }
+            val el = EpollEventLoop(logger, syscallOps = fake)
+            val callerThread = pthread_self()
+            try {
+                // Registering before start(): the loop's thread handle is unset,
+                // which is exactly the window the escape hatch used to treat as
+                // "safe to run inline".
+                el.registerCallback(FD_UNDER_TEST, EpollEventLoop.Interest.READ, noopListener)
+                assertNull(
+                    fake.lastAddInterestThread,
+                    "pre-start registration must not reach epoll_ctl on the caller thread — it belongs on the loop",
+                )
+
+                // Starting the loop drains what was queued, on the loop's own
+                // thread, which is where the syscall belonged all along.
+                el.start()
+                while (fake.lastAddInterestThread == null) delay(POLL_MS)
+                val execThread = assertNotNull(fake.lastAddInterestThread)
+                assertEquals(
+                    0,
+                    pthread_equal(execThread, callerThread),
+                    "the queued registration must fire on the EventLoop thread, not the caller's",
+                )
+            } finally {
+                el.close()
+            }
+        }
     }
 
     /**

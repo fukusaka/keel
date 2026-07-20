@@ -362,15 +362,24 @@ internal class KqueueEventLoop(
      * internal state transitions that are not guarded by [regMutex]
      * (task queue drain, kevent event processing, etc).
      *
-     * Returns without checking if the EventLoop has not yet started —
-     * engine construction runs before [loop] sets the thread handle,
-     * and constructor-time initialisation is inherently single-threaded.
+     * Holds unconditionally, including before [loop] runs. It used to return
+     * without checking while the thread handle was unset, on the reasoning that
+     * only single-threaded construction could get there. That reasoning was
+     * wrong: `accept()` builds a transport — and registers its fd — on whatever
+     * thread the caller is on, so a registration could reach the submit path
+     * from off-loop during the window between `pthread_create` returning and
+     * [loop] assigning the handle. [register] and [registerCallback] now funnel
+     * through [dispatch] when off-loop, so every caller of a submit path
+     * arrives on the EventLoop thread and the check can be absolute.
      *
-     * Matches the pattern established in `IoUringEventLoop.assertInEventLoop`.
+     * That covers the submit paths, not every `kevent` the engine issues. Two
+     * places call the syscall directly and never reach this check: this class's
+     * constructor registers its own wakeup fd via `addReadFilter`, and `bind` adds the
+     * server fd to the boss loop.
      */
     internal fun assertInEventLoop(operation: String) {
-        val t = eventLoopThread ?: return
-        check(pthread_equal(pthread_self(), t) != 0) {
+        val t = eventLoopThread
+        check(t != null && pthread_equal(pthread_self(), t) != 0) {
             "$operation must run on the EventLoop thread"
         }
     }
@@ -442,10 +451,11 @@ internal class KqueueEventLoop(
         // the I/O thread" model. When register() is called from the
         // EventLoop thread itself (e.g., a chained suspend register from
         // within onReady), submit inline to keep the fast path lock-free.
-        // Engine init / seam-driven tests run before [start] sets
-        // [eventLoopThread] — in that window, submit inline too, otherwise
-        // the dispatched task would never be drained.
-        if (eventLoopThread == null || inEventLoop()) {
+        // Every other caller dispatches, including one that arrives before
+        // [start] — dispatch() queues and loop() drains on its first
+        // iteration, so a pre-start registration waits rather than running
+        // on whichever thread happened to call.
+        if (inEventLoop()) {
             submitAddFilter(fd, interest, key, newReg, cont)
         } else {
             dispatch(EmptyCoroutineContext, Runnable { submitAddFilter(fd, interest, key, newReg, cont) })
@@ -598,7 +608,7 @@ internal class KqueueEventLoop(
 
         // EventLoop-funneled submission fix (Option D). See [register]
         // for the rationale.
-        if (eventLoopThread == null || inEventLoop()) {
+        if (inEventLoop()) {
             submitAddCallbackFilter(fd, interest, key)
         } else {
             dispatch(EmptyCoroutineContext, Runnable { submitAddCallbackFilter(fd, interest, key) })

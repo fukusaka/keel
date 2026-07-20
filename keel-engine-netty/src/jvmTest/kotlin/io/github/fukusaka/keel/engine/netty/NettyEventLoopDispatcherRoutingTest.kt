@@ -25,7 +25,7 @@ import kotlin.time.Duration.Companion.seconds
  * `pendingBytes` without an explicit `if (inEventLoop())` guard — they
  * are only ever invoked from coroutines already dispatched onto the
  * EventLoop. The POSIX engines' funnel decision
- * `if (eventLoopThread == null || inEventLoop()) inline else dispatch`
+ * `if (inEventLoop()) inline else dispatch`
  * is here the dispatcher's [NettyEventLoopDispatcher.isDispatchNeeded]
  * (`!eventLoop.inEventLoop()`) plus
  * [NettyEventLoopDispatcher.dispatch] (`eventLoop.execute(block)`).

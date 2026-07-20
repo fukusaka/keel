@@ -3,6 +3,14 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Runnable
 import platform.linux.EPOLLERR
@@ -13,12 +21,7 @@ import platform.posix.EAGAIN
 import platform.posix.EBADF
 import platform.posix.EINTR
 import platform.posix.EMFILE
-import kotlin.coroutines.EmptyCoroutineContext
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import platform.posix.usleep
 
 /**
  * Seam-level unit tests for `EpollEventLoop` syscall error branches
@@ -135,10 +138,17 @@ class EpollEventLoopSeamTest {
             scriptAddResult(platform.posix.EEXIST)
             scriptModResult(0)
         }
+        fake.liveMode = true
+        fake.watchedFd = 2000
         val el = EpollEventLoop(logger, syscallOps = fake)
         try {
             // Trigger addOrModifyEpoll via registerCallback (fd 2000, READ).
+            // Registration funnels to the loop, so the loop must be running for
+            // the syscall to happen at all — this test is about the EEXIST
+            // fallback, not about which thread performs it.
             el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ, listener = NoOpListener)
+            el.start()
+            awaitCtlCalls(fake, expected = 3)
             val ctl = fake.ctlCalls
             // init ADD (wakeup, 1001), then ADD (2000) -> EEXIST, then MOD (2000).
             assertEquals(3, ctl.size)
@@ -153,42 +163,44 @@ class EpollEventLoopSeamTest {
 
     // --- EventLoop-thread funnel pin ---
     //
-    // PR #514 changed `register` / `registerCallback` to funnel the
-    // `epoll_ctl` syscall through the owning EventLoop thread:
+    // `register` / `registerCallback` funnel the `epoll_ctl` syscall through
+    // the owning EventLoop thread:
     //
-    //   if (eventLoopThread == null || inEventLoop()) {
-    //       submitAddOrModifyEpoll(fd, events)
-    //   } else {
-    //       dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
-    //   }
+    //   if (inEventLoop()) submitAddOrModifyEpoll(fd, events)
+    //   else dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
     //
-    // The pre-start window (where seam tests live — `start()` has not run,
-    // so `eventLoopThread == null`) must take the inline branch:
-    // `submitAddOrModifyEpoll` runs synchronously on the caller thread,
-    // `assertInEventLoop` no-ops (its `eventLoopThread ?: return` short-
-    // circuits), and `addOrModifyEpoll` reaches `FakeEpollSyscallOps`
-    // immediately. Regression guard against an accidental return to the
-    // A-case (mutex-gate) wiring, or against breaking the
-    // `eventLoopThread == null` shortcut and stranding the task on a
-    // never-drained queue.
+    // These two pin the pre-start case. It used to be an exception: an extra
+    // disjunct, `eventLoopThread == null`, sent registrations issued before the
+    // loop started down the inline path, and the tests here asserted that as the
+    // contract. It was not safe — `accept()` registers on the caller's thread,
+    // so the window between `pthread_create` returning and `loop()` assigning
+    // the handle let a registration read null, go inline, and then fail its own
+    // `assertInEventLoop` when the loop assigned the handle in between. The
+    // funnel now holds without exception, and what these guard is that a
+    // pre-start registration waits for the loop rather than running on whoever
+    // happened to call.
 
     @Test
-    fun `registerCallback READ pre-start runs submitAddOrModifyEpoll inline`() {
+    fun `registerCallback READ pre-start queues the syscall for the loop`() {
         val fake = FakeEpollSyscallOps().apply {
             scriptEpollCreateFd(fd = 1000)
             scriptEventfdCreateFd(fd = 1001)
             scriptAddResult(0) // init ADD (wakeupFd)
             scriptAddResult(0) // ADD for fd 2000
         }
+        fake.liveMode = true
+        fake.watchedFd = 2000
         val el = EpollEventLoop(logger, syscallOps = fake)
         try {
-            // Before start(), eventLoopThread is null — register must take
-            // the `eventLoopThread == null || inEventLoop()` inline branch.
             el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ, listener = NoOpListener)
-            // The syscall must have fired SYNCHRONOUSLY: if the funnel
-            // mistakenly dispatched, the task would sit on taskQueue with
-            // no EL thread to drain it and `ctlCalls.size` would still be 1.
-            assertEquals(2, fake.ctlCalls.size, "init ADD + register ADD must both fire on the caller thread pre-start")
+            assertEquals(
+                1,
+                fake.ctlCalls.size,
+                "only the init ADD may have run — the registration belongs on the loop, not the caller",
+            )
+
+            el.start()
+            awaitCtlCalls(fake, expected = 2)
             assertEquals(2000, fake.ctlCalls[1].fd)
             assertEquals(FakeEpollSyscallOps.CtlOp.ADD, fake.ctlCalls[1].op)
         } finally {
@@ -197,17 +209,26 @@ class EpollEventLoopSeamTest {
     }
 
     @Test
-    fun `registerCallback WRITE pre-start runs submitAddOrModifyEpoll inline`() {
+    fun `registerCallback WRITE pre-start queues the syscall for the loop`() {
         val fake = FakeEpollSyscallOps().apply {
             scriptEpollCreateFd(fd = 1000)
             scriptEventfdCreateFd(fd = 1001)
             scriptAddResult(0) // init ADD (wakeupFd)
             scriptAddResult(0) // ADD for fd 3000 (callback path)
         }
+        fake.liveMode = true
+        fake.watchedFd = 3000
         val el = EpollEventLoop(logger, syscallOps = fake)
         try {
             el.registerCallback(fd = 3000, interest = EpollEventLoop.Interest.WRITE, listener = NoOpListener)
-            assertEquals(2, fake.ctlCalls.size, "registerCallback pre-start must fire epoll_ctl synchronously")
+            assertEquals(
+                1,
+                fake.ctlCalls.size,
+                "only the init ADD may have run — the registration belongs on the loop, not the caller",
+            )
+
+            el.start()
+            awaitCtlCalls(fake, expected = 2)
             assertEquals(3000, fake.ctlCalls[1].fd)
             assertEquals(FakeEpollSyscallOps.CtlOp.ADD, fake.ctlCalls[1].op)
         } finally {
@@ -519,5 +540,36 @@ class EpollEventLoopSeamTest {
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
             if (level == LogLevel.WARN) sink.add(message.toString())
         }
+    }
+
+    /**
+     * Waits until the EventLoop has recorded [expected] `epoll_ctl` calls,
+     * bounded by wall clock.
+     *
+     * Gated on [FakeEpollSyscallOps.ctlCallCount], which the fake publishes
+     * *after* appending to `ctlCalls`. That ordering is what makes the list
+     * safe to read once this returns — the volatile's release edge covers the
+     * append, so an acquire of it here makes the entry visible. Polling
+     * `ctlCalls.size` directly would be an unsynchronised read of a plain
+     * `MutableList` the loop thread is appending to; polling either without a
+     * deadline would be an unbounded spin, which is a MUST violation for
+     * anything waiting on dispatch to complete.
+     */
+    private fun awaitCtlCalls(fake: FakeEpollSyscallOps, expected: Int) {
+        val deadline = TimeSource.Monotonic.markNow() + DRAIN_BUDGET
+        while (fake.ctlCallCount < expected) {
+            check(deadline.hasNotPassedNow()) {
+                "the EventLoop recorded ${fake.ctlCallCount} of $expected epoll_ctl calls within $DRAIN_BUDGET"
+            }
+            usleep(POLL_US)
+        }
+    }
+
+    private companion object {
+        /** Poll step while waiting for the loop to drain a queued registration. */
+        const val POLL_US = 2_000u
+
+        /** Wall-clock bound on that wait; generous, since it only has to exclude a hang. */
+        val DRAIN_BUDGET = 15.seconds
     }
 }
