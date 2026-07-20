@@ -367,10 +367,10 @@ internal class EpollEventLoop(
      * through [dispatch] when off-loop, so every caller of a submit path
      * arrives on the EventLoop thread and the check can be absolute.
      *
-     * That covers the submit paths, not every `epoll_ctl` the engine issues. Two
-     * places call the syscall directly and never reach this check: this class's
-     * constructor registers its own wakeup fd via `epollAdd`, and `bind` adds the
-     * server fd to the boss loop.
+     * That covers the submit paths, not every `epoll_ctl` the engine issues.
+     * One place still calls the syscall directly and never reaches this check:
+     * this class's constructor registers its own wakeup fd via `epollAdd`,
+     * before the thread it would be checking against exists.
      */
     internal fun assertInEventLoop(operation: String) {
         val t = eventLoopThread
@@ -453,9 +453,9 @@ internal class EpollEventLoop(
         // the registration waits for the loop instead of running on
         // whichever thread happened to call.
         if (inEventLoop()) {
-            submitAddOrModifyEpoll(fd, events)
+            submitRegisterEpoll(fd, events, key, newReg, cont)
         } else {
-            dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
+            dispatch(EmptyCoroutineContext, Runnable { submitRegisterEpoll(fd, events, key, newReg, cont) })
         }
         return newReg
     }
@@ -476,6 +476,29 @@ internal class EpollEventLoop(
     private fun submitAddOrModifyEpoll(fd: Int, events: Int) {
         assertInEventLoop("EpollEventLoop.submitAddOrModifyEpoll")
         addOrModifyEpoll(fd, events)
+    }
+
+    /**
+     * EventLoop-thread submission for the suspend path. On failure the
+     * [Registration] is removed and [cont] is resumed with the error, so a
+     * waiter never suspends forever on an fd the loop failed to watch — the
+     * same contract as `KqueueEventLoop.submitAddFilter`.
+     */
+    private fun submitRegisterEpoll(
+        fd: Int,
+        events: Int,
+        key: Long,
+        reg: Registration,
+        cont: CancellableContinuation<Unit>,
+    ) {
+        assertInEventLoop("EpollEventLoop.submitRegisterEpoll")
+        val err = addOrModifyEpoll(fd, events)
+        if (err != 0) {
+            withRegLock { removeRegistration(key, reg) }
+            cont.resumeWithException(
+                IllegalStateException("epoll_ctl(ADD, fd=$fd) failed: ${errnoMessage(err)}"),
+            )
+        }
     }
 
     /**
@@ -948,26 +971,37 @@ internal class EpollEventLoop(
      * Skips epoll_ctl entirely when the requested events are already active
      * (e.g., re-arming READ after a Pipeline callback — zero syscall overhead).
      */
-    private fun addOrModifyEpoll(fd: Int, newEvents: Int) {
+    private fun addOrModifyEpoll(fd: Int, newEvents: Int): Int {
+        var previous = 0
         val (combined, changed) = withRegLock {
             val current = fdEvents[fd] ?: 0
+            previous = current
             val merged = current or newEvents
             fdEvents[fd] = merged
             merged to (merged != current)
         }
-        if (!changed) return // same interest already registered — skip epoll_ctl
-        val addErr = syscallOps.epollAdd(epFd, fd, combined)
-        if (addErr == 0) return
-        if (addErr == EEXIST) {
-            val modErr = syscallOps.epollMod(epFd, fd, combined)
-            if (modErr != 0) {
-                logger.debug { "epoll_ctl(MOD, fd=$fd) fallback failed: ${errnoMessage(modErr)}" }
+        if (!changed) return 0 // same interest already registered — skip epoll_ctl
+        var err = syscallOps.epollAdd(epFd, fd, combined)
+        if (err == EEXIST) {
+            err = syscallOps.epollMod(epFd, fd, combined)
+            if (err != 0) {
+                logger.debug { "epoll_ctl(MOD, fd=$fd) fallback failed: ${errnoMessage(err)}" }
             }
-        } else {
+        } else if (err != 0) {
             // ENOSPC / EBADF / EPERM etc. — unexpected for an fd that
             // was just opened by the engine. Log for diagnostics.
-            logger.debug { "epoll_ctl(ADD, fd=$fd) failed: ${errnoMessage(addErr)}" }
+            logger.debug { "epoll_ctl(ADD, fd=$fd) failed: ${errnoMessage(err)}" }
         }
+        if (err != 0) {
+            // Undo the optimistic bookkeeping: leaving the merged value in
+            // place would make a later arm for this fd see no change and skip
+            // its epoll_ctl, so one failed arm would silently disable every
+            // subsequent one for the same fd.
+            withRegLock {
+                if (previous == 0) fdEvents.remove(fd) else fdEvents[fd] = previous
+            }
+        }
+        return err
     }
 
     /**

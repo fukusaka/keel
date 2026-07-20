@@ -372,10 +372,10 @@ internal class KqueueEventLoop(
      * through [dispatch] when off-loop, so every caller of a submit path
      * arrives on the EventLoop thread and the check can be absolute.
      *
-     * That covers the submit paths, not every `kevent` the engine issues. Two
-     * places call the syscall directly and never reach this check: this class's
-     * constructor registers its own wakeup fd via `addReadFilter`, and `bind` adds the
-     * server fd to the boss loop.
+     * That covers the submit paths, not every `kevent` the engine issues.
+     * One place still calls the syscall directly and never reaches this check:
+     * this class's constructor registers its own wakeup fd via `addReadFilter`,
+     * before the thread it would be checking against exists.
      */
     internal fun assertInEventLoop(operation: String) {
         val t = eventLoopThread

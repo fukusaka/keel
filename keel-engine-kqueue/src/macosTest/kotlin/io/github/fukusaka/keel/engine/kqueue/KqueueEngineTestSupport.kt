@@ -1,6 +1,9 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.PosixRawClient
+import kotlin.concurrent.AtomicReference
 import platform.posix.getpid
 
 /**
@@ -64,3 +67,32 @@ internal fun connectRawClient(port: Int): Int = PosixRawClient.rawConnect(port)
 internal fun rawWrite(fd: Int, data: String): Unit = PosixRawClient.rawWrite(fd, data)
 
 internal fun rawRead(fd: Int, size: Int): String = PosixRawClient.rawRead(fd, size)
+
+/**
+ * A [Logger] that records the messages logged at [captured] so a test can
+ * assert on them.
+ *
+ * The engine logs from its EventLoop threads while the test asserts from its
+ * own, so the sink is an immutable list swapped under CAS rather than a
+ * `MutableList`: an unsynchronised list gives the reader no guarantee of
+ * seeing what the loop appended, which would let an assertion on a missing
+ * message pass for the wrong reason.
+ */
+internal class RecordingLogger(private val captured: LogLevel) : Logger {
+
+    private val sink = AtomicReference<List<String>>(emptyList())
+
+    /** Every message logged at [captured] so far, oldest first. */
+    val messages: List<String> get() = sink.value
+
+    override fun isLoggable(level: LogLevel): Boolean = level == captured
+
+    override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+        if (level != captured) return
+        val text = message.toString()
+        while (true) {
+            val current = sink.value
+            if (sink.compareAndSet(current, current + text)) return
+        }
+    }
+}

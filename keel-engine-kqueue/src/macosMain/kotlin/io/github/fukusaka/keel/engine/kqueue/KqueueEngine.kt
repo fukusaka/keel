@@ -28,17 +28,9 @@ import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
-import kqueue.keel_ev_set
-import platform.darwin.EVFILT_READ
-import platform.darwin.EV_ADD
-import platform.darwin.kevent
 import platform.posix.errno
 import kotlin.coroutines.CoroutineContext
 
@@ -118,9 +110,11 @@ class KqueueEngine(
     /**
      * Binds a TCP server on [host]:[port] and returns a [StreamServer].
      *
-     * Creates a server socket, registers it with the boss EventLoop's kqueue,
-     * and returns a [KqueueStreamServer] whose [accept][StreamServer.accept]
-     * distributes connections to worker EventLoops in round-robin.
+     * Creates a server socket and returns a [KqueueStreamServer] whose
+     * [accept][StreamServer.accept] distributes connections to worker EventLoops
+     * in round-robin. The listener is armed on the boss EventLoop's kqueue by
+     * `accept()`, not here, so binding alone does not leave a watch with no
+     * waiter behind it.
      *
      * @throws IllegalStateException if the engine is already closed.
      */
@@ -138,21 +132,10 @@ class KqueueEngine(
         val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog)
 
         try {
-            memScoped {
-                val kev = alloc<kevent>()
-                keel_ev_set(
-                    kev.ptr,
-                    serverFd.convert(),
-                    EVFILT_READ.convert(),
-                    EV_ADD.convert(),
-                    0u,
-                    0,
-                    null,
-                )
-                val result = kevent(bossLoop.kqFd, kev.ptr, 1, null, 0, null)
-                check(result >= 0) { "kevent(EV_ADD server) failed: ${errnoMessage(errno)}" }
-            }
-
+            // The listener is left unarmed here; accept() arms it through
+            // [KqueueEventLoop.register] once it has a waiter to hand the event
+            // to. Arming earlier would break the loop's armed-implies-handler
+            // invariant, whose no-handler branch clears the watch again.
             logger.debug { "Bound to $address" }
             return KqueueStreamServer(
                 serverFd,
@@ -178,23 +161,10 @@ class KqueueEngine(
         val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog)
 
         try {
-            // Register server fd with the boss EventLoop's kqueue so that
-            // accept() readiness is notified on the boss thread.
-            memScoped {
-                val kev = alloc<kevent>()
-                keel_ev_set(
-                    kev.ptr,
-                    serverFd.convert(),
-                    EVFILT_READ.convert(),
-                    EV_ADD.convert(),
-                    0u,
-                    0,
-                    null,
-                )
-                val result = kevent(bossLoop.kqFd, kev.ptr, 1, null, 0, null)
-                check(result >= 0) { "kevent(EV_ADD server) failed: ${errnoMessage(errno)}" }
-            }
-
+            // The listener is left unarmed here; accept() arms it through
+            // [KqueueEventLoop.register] once it has a waiter to hand the event
+            // to. Arming earlier would break the loop's armed-implies-handler
+            // invariant, whose no-handler branch clears the watch again.
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
             return KqueueStreamServer(

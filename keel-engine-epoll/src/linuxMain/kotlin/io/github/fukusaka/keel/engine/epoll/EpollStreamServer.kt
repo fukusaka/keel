@@ -171,6 +171,13 @@ internal class EpollStreamServer(
         }
         if (!shouldClose) return
         bossLoop.cancelAll(serverFd, EpollEventLoop.Interest.READ, CancellationException("StreamServer closed"))
+        // Drop the loop's own interest bookkeeping for this fd before the
+        // number becomes reusable. Closing the fd clears the kernel's epoll
+        // set but not [EpollEventLoop.fdEvents]; a stale entry makes the
+        // loop believe a recycled fd is already registered and skip the
+        // epoll_ctl for it, so the next listener on that number is watched
+        // by nobody and its accept() never fires.
+        bossLoop.cleanupFd(serverFd)
         closeFdSafely(serverFd, logger, "server close")
         val destroyRet = pthread_mutex_destroy(mutex.ptr)
         if (destroyRet != 0) {
