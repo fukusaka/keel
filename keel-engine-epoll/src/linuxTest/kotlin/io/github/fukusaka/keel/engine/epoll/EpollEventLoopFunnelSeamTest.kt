@@ -7,8 +7,8 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -26,7 +26,7 @@ import platform.posix.pthread_self
  * `epoll_ctl(EPOLL_CTL_ADD/MOD)` submission through:
  *
  * ```
- * if (eventLoopThread == null || inEventLoop()) submitAddOrModifyEpoll()
+ * if (inEventLoop()) submitAddOrModifyEpoll()
  * else dispatch { submitAddOrModifyEpoll() }
  * ```
  *
@@ -46,7 +46,7 @@ import platform.posix.pthread_self
  * does not pollute the capture); the test compares it via `pthread_equal`
  * — the same idiom `EpollEventLoop.inEventLoop` uses. A dispatched barrier
  * task gates the cross-thread call so `eventLoopThread` is guaranteed
- * assigned (otherwise the `eventLoopThread == null` inline branch would be
+ * demonstrably running by then — the call under test is genuinely
  * taken).
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)

@@ -368,9 +368,13 @@ internal class KqueueEventLoop(
      * wrong: `accept()` builds a transport — and registers its fd — on whatever
      * thread the caller is on, so a registration could reach the submit path
      * from off-loop during the window between `pthread_create` returning and
-     * [loop] assigning the handle. Registration now always funnels through
-     * [dispatch] when off-loop, so anything reaching a submit path is on the
-     * EventLoop thread by construction and the check can be absolute.
+     * [loop] assigning the handle. [register] and [registerCallback] now funnel
+     * through [dispatch] when off-loop, so every caller of a submit path
+     * arrives on the EventLoop thread and the check can be absolute.
+     *
+     * That covers the submit paths, not every `kevent` the engine issues:
+     * `bind` adds the server fd to the boss loop with a direct call that does
+     * not pass through here.
      */
     internal fun assertInEventLoop(operation: String) {
         val t = eventLoopThread
@@ -864,13 +868,7 @@ internal class KqueueEventLoop(
      * Draining in the same iteration prevents starvation where tasks
      * accumulate faster than kevent() cycles can process them.
      */
-    /**
-     * Runs queued tasks. Called from [loop] on every iteration, and directly by
-     * seam tests that exercise a loop they never start — those queue their work
-     * through [dispatch] like any other off-loop caller and then drain it here,
-     * rather than relying on a shortcut that let registration bypass the funnel.
-     */
-    internal fun drainTasks() {
+    private fun drainTasks() {
         assertInEventLoop("KqueueEventLoop.drainTasks")
         while (true) {
             drainBatch.clear()

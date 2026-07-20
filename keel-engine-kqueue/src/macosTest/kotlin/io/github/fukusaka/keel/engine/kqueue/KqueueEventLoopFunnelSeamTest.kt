@@ -22,7 +22,7 @@ import kotlinx.coroutines.withTimeout
  * `kevent(EV_ADD)` submission through:
  *
  * ```
- * if (eventLoopThread == null || inEventLoop()) submitInline()
+ * if (inEventLoop()) submitInline()
  * else dispatch { submitOnEventLoopThread() }
  * ```
  *
@@ -92,7 +92,10 @@ class KqueueEventLoopFunnelSeamTest {
                 // Starting the loop drains what was queued, on the loop's own
                 // thread, which is where the syscall belonged all along.
                 el.start()
-                while (fake.addFilterCalls.size == beforeCalls) delay(POLL_MS)
+                // Gated on lastAddFilterThreadId, the fake's only @Volatile
+                // member: addFilterCalls is a plain list the loop appends to,
+                // so polling it from here would be an unsynchronised read.
+                while (fake.lastAddFilterThreadId == 0L) delay(POLL_MS)
                 assertNotEquals(
                     currentThreadId(),
                     fake.lastAddFilterThreadId,
@@ -103,7 +106,6 @@ class KqueueEventLoopFunnelSeamTest {
             }
         }
     }
-
 
     /**
      * A `registerCallback` issued from a non-EventLoop thread must funnel

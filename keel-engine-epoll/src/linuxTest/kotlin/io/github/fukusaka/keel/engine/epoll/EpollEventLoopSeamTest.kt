@@ -3,6 +3,14 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Runnable
 import platform.linux.EPOLLERR
@@ -13,13 +21,7 @@ import platform.posix.EAGAIN
 import platform.posix.EBADF
 import platform.posix.EINTR
 import platform.posix.EMFILE
-import kotlin.coroutines.EmptyCoroutineContext
-import kotlin.test.Test
 import platform.posix.usleep
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 /**
  * Seam-level unit tests for `EpollEventLoop` syscall error branches
@@ -137,6 +139,7 @@ class EpollEventLoopSeamTest {
             scriptModResult(0)
         }
         fake.liveMode = true
+        fake.watchedFd = 2000
         val el = EpollEventLoop(logger, syscallOps = fake)
         try {
             // Trigger addOrModifyEpoll via registerCallback (fd 2000, READ).
@@ -145,8 +148,8 @@ class EpollEventLoopSeamTest {
             // fallback, not about which thread performs it.
             el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ, listener = NoOpListener)
             el.start()
+            awaitWatchedFdRegistered(fake)
             val ctl = fake.ctlCalls
-            while (ctl.size < 3) usleep(POLL_US)
             // init ADD (wakeup, 1001), then ADD (2000) -> EEXIST, then MOD (2000).
             assertEquals(3, ctl.size)
             assertEquals(FakeEpollSyscallOps.CtlOp.ADD, ctl[1].op)
@@ -186,6 +189,7 @@ class EpollEventLoopSeamTest {
             scriptAddResult(0) // ADD for fd 2000
         }
         fake.liveMode = true
+        fake.watchedFd = 2000
         val el = EpollEventLoop(logger, syscallOps = fake)
         try {
             el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ, listener = NoOpListener)
@@ -196,7 +200,7 @@ class EpollEventLoopSeamTest {
             )
 
             el.start()
-            while (fake.ctlCalls.size < 2) usleep(POLL_US)
+            awaitWatchedFdRegistered(fake)
             assertEquals(2000, fake.ctlCalls[1].fd)
             assertEquals(FakeEpollSyscallOps.CtlOp.ADD, fake.ctlCalls[1].op)
         } finally {
@@ -213,6 +217,7 @@ class EpollEventLoopSeamTest {
             scriptAddResult(0) // ADD for fd 3000 (callback path)
         }
         fake.liveMode = true
+        fake.watchedFd = 3000
         val el = EpollEventLoop(logger, syscallOps = fake)
         try {
             el.registerCallback(fd = 3000, interest = EpollEventLoop.Interest.WRITE, listener = NoOpListener)
@@ -223,7 +228,7 @@ class EpollEventLoopSeamTest {
             )
 
             el.start()
-            while (fake.ctlCalls.size < 2) usleep(POLL_US)
+            awaitWatchedFdRegistered(fake)
             assertEquals(3000, fake.ctlCalls[1].fd)
             assertEquals(FakeEpollSyscallOps.CtlOp.ADD, fake.ctlCalls[1].op)
         } finally {
@@ -537,9 +542,30 @@ class EpollEventLoopSeamTest {
         }
     }
 
+    /**
+     * Waits for the EventLoop to run a queued registration, bounded by
+     * wall clock.
+     *
+     * Gated on [FakeEpollSyscallOps.lastAddInterestThread], the fake's only
+     * `@Volatile` field and so its only member safe to read while the loop
+     * thread writes: `ctlCalls` is a plain `MutableList` the loop appends to,
+     * and polling *that* from here would be both unsynchronised and, without a
+     * deadline, an unbounded spin — which `testing.md` makes a MUST for
+     * anything waiting on dispatch. The list is only read after this returns.
+     */
+    private fun awaitWatchedFdRegistered(fake: FakeEpollSyscallOps) {
+        val deadline = TimeSource.Monotonic.markNow() + DRAIN_BUDGET
+        while (fake.lastAddInterestThread == null) {
+            check(deadline.hasNotPassedNow()) { "the EventLoop did not run the queued registration within $DRAIN_BUDGET" }
+            usleep(POLL_US)
+        }
+    }
+
     private companion object {
         /** Poll step while waiting for the loop to drain a queued registration. */
         const val POLL_US = 2_000u
-    }
 
+        /** Wall-clock bound on that wait; generous, since it only has to exclude a hang. */
+        val DRAIN_BUDGET = 15.seconds
+    }
 }
