@@ -139,14 +139,21 @@ internal class EpollPipelinedStreamServer(
 
     /**
      * Stops accepting and closes every listener's server socket fd.
-     * The kernel drops a closed fd from the epoll interest set, so no
-     * boss-loop coordination is needed. Pending accept callbacks become
-     * no-ops (closed flag check). Idempotent.
+     *
+     * Closing an fd drops it from the kernel's epoll interest set, but not
+     * from the loop's own bookkeeping, so each listener is withdrawn from
+     * [EpollEventLoop] first. A left-behind interest entry makes the loop
+     * treat a recycled fd number as already registered and skip the
+     * `epoll_ctl` for it, leaving the next listener on that number watched
+     * by nobody. Pending accept callbacks become no-ops (closed flag
+     * check). Idempotent.
      */
     override fun close() {
         if (closed) return
         closed = true
         for (listener in listeners) {
+            bossLoop.unregisterCallback(listener.serverFd, EpollEventLoop.Interest.READ)
+            bossLoop.cleanupFd(listener.serverFd)
             closeFdSafely(listener.serverFd, logger, "pipelined server close")
         }
     }
