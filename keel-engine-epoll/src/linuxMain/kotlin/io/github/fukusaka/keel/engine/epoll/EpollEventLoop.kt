@@ -446,10 +446,11 @@ internal class EpollEventLoop(
         // every fd-registration syscall runs on a single thread per
         // loop so concurrent EL-thread `EPOLL_CTL_DEL` (issued from
         // dispatchReady for a stale event) cannot reorder against a
-        // user-thread `EPOLL_CTL_ADD` for the same fd. Engine init /
-        // seam-driven tests run before [start] sets [eventLoopThread];
-        // in that window submit inline so the eventually-drained task
-        // does not pile up on a queue that never runs.
+        // user-thread `EPOLL_CTL_ADD` for the same fd. A caller arriving
+        // before [start] dispatches like any other off-loop caller —
+        // dispatch() queues and loop() drains on its first iteration, so
+        // the registration waits for the loop instead of running on
+        // whichever thread happened to call.
         if (inEventLoop()) {
             submitAddOrModifyEpoll(fd, events)
         } else {

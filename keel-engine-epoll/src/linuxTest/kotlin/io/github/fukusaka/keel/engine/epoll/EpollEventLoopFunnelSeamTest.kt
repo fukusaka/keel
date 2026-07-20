@@ -45,9 +45,9 @@ import platform.posix.pthread_self
  * watched fd only (so the construction-time wakeup-eventfd `EPOLL_CTL_ADD`
  * does not pollute the capture); the test compares it via `pthread_equal`
  * — the same idiom `EpollEventLoop.inEventLoop` uses. A dispatched barrier
- * task gates the cross-thread call so `eventLoopThread` is guaranteed
- * demonstrably running by then — the call under test is genuinely
- * taken).
+ * task gates the cross-thread call, so the loop is demonstrably running by
+ * the time it happens — what this pins is the funnel under contention, not
+ * the pre-start case (the first test in this file covers that one).
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)
 class EpollEventLoopFunnelSeamTest {

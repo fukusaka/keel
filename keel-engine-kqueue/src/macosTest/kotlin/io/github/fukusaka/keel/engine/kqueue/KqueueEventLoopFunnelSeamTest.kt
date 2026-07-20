@@ -39,9 +39,9 @@ import kotlinx.coroutines.withTimeout
  * fake captures the thread id (raw `pthread_self()` pointer as a Long) on
  * which `addFilter` runs ([FakeKqueueSyscallOps.lastAddFilterThreadId]);
  * the test compares it with the caller thread id. A dispatched barrier
- * task gates the cross-thread call so `eventLoopThread` is guaranteed
- * assigned (otherwise the `eventLoopThread == null` inline branch would
- * be taken).
+ * task gates the cross-thread call, so the loop is demonstrably running by
+ * the time it happens — what this pins is the funnel under contention, not
+ * the pre-start case (the first test in this file covers that one).
  */
 @OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)
 class KqueueEventLoopFunnelSeamTest {

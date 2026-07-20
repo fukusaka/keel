@@ -450,9 +450,10 @@ internal class KqueueEventLoop(
         // the I/O thread" model. When register() is called from the
         // EventLoop thread itself (e.g., a chained suspend register from
         // within onReady), submit inline to keep the fast path lock-free.
-        // Engine init / seam-driven tests run before [start] sets
-        // [eventLoopThread] — in that window, submit inline too, otherwise
-        // the dispatched task would never be drained.
+        // Every other caller dispatches, including one that arrives before
+        // [start] — dispatch() queues and loop() drains on its first
+        // iteration, so a pre-start registration waits rather than running
+        // on whichever thread happened to call.
         if (inEventLoop()) {
             submitAddFilter(fd, interest, key, newReg, cont)
         } else {
