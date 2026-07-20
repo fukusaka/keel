@@ -367,9 +367,10 @@ internal class EpollEventLoop(
      * through [dispatch] when off-loop, so every caller of a submit path
      * arrives on the EventLoop thread and the check can be absolute.
      *
-     * That covers the submit paths, not every `epoll_ctl` the engine issues:
-     * `bind` adds the server fd to the boss loop with a direct call that does
-     * not pass through here.
+     * That covers the submit paths, not every `epoll_ctl` the engine issues. Two
+     * places call the syscall directly and never reach this check: this class's
+     * constructor registers its own wakeup fd via `epollAdd`, and `bind` adds the
+     * server fd to the boss loop.
      */
     internal fun assertInEventLoop(operation: String) {
         val t = eventLoopThread

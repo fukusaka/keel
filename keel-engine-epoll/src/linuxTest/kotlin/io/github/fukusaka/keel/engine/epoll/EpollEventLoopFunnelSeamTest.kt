@@ -59,10 +59,6 @@ class EpollEventLoopFunnelSeamTest {
     }
 
     /**
-     * A `registerCallback` issued from a non-EventLoop thread must funnel
-     * its `epoll_ctl` syscall onto the EventLoop thread.
-     */
-    /**
      * A registration issued before the loop starts must be queued, not run on
      * the caller's thread.
      *
@@ -113,6 +109,10 @@ class EpollEventLoopFunnelSeamTest {
         }
     }
 
+    /**
+     * A `registerCallback` issued from a non-EventLoop thread must funnel
+     * its `epoll_ctl` syscall onto the EventLoop thread.
+     */
     @Test
     fun `cross-thread registerCallback funnels epoll_ctl to the EventLoop thread`() = runBlocking {
         withTimeout(FUNNEL_BUDGET) {

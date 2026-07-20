@@ -148,7 +148,7 @@ class EpollEventLoopSeamTest {
             // fallback, not about which thread performs it.
             el.registerCallback(fd = 2000, interest = EpollEventLoop.Interest.READ, listener = NoOpListener)
             el.start()
-            awaitWatchedFdRegistered(fake)
+            awaitCtlCalls(fake, expected = 3)
             val ctl = fake.ctlCalls
             // init ADD (wakeup, 1001), then ADD (2000) -> EEXIST, then MOD (2000).
             assertEquals(3, ctl.size)
@@ -169,7 +169,7 @@ class EpollEventLoopSeamTest {
     //   if (inEventLoop()) submitAddOrModifyEpoll(fd, events)
     //   else dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
     //
-    // These two pin the pre-start case. It used to be an exception: a third
+    // These two pin the pre-start case. It used to be an exception: an extra
     // disjunct, `eventLoopThread == null`, sent registrations issued before the
     // loop started down the inline path, and the tests here asserted that as the
     // contract. It was not safe — `accept()` registers on the caller's thread,
@@ -200,7 +200,7 @@ class EpollEventLoopSeamTest {
             )
 
             el.start()
-            awaitWatchedFdRegistered(fake)
+            awaitCtlCalls(fake, expected = 2)
             assertEquals(2000, fake.ctlCalls[1].fd)
             assertEquals(FakeEpollSyscallOps.CtlOp.ADD, fake.ctlCalls[1].op)
         } finally {
@@ -228,7 +228,7 @@ class EpollEventLoopSeamTest {
             )
 
             el.start()
-            awaitWatchedFdRegistered(fake)
+            awaitCtlCalls(fake, expected = 2)
             assertEquals(3000, fake.ctlCalls[1].fd)
             assertEquals(FakeEpollSyscallOps.CtlOp.ADD, fake.ctlCalls[1].op)
         } finally {
@@ -543,20 +543,24 @@ class EpollEventLoopSeamTest {
     }
 
     /**
-     * Waits for the EventLoop to run a queued registration, bounded by
-     * wall clock.
+     * Waits until the EventLoop has recorded [expected] `epoll_ctl` calls,
+     * bounded by wall clock.
      *
-     * Gated on [FakeEpollSyscallOps.lastAddInterestThread], the fake's only
-     * `@Volatile` field and so its only member safe to read while the loop
-     * thread writes: `ctlCalls` is a plain `MutableList` the loop appends to,
-     * and polling *that* from here would be both unsynchronised and, without a
-     * deadline, an unbounded spin — which `testing.md` makes a MUST for
-     * anything waiting on dispatch. The list is only read after this returns.
+     * Gated on [FakeEpollSyscallOps.ctlCallCount], which the fake publishes
+     * *after* appending to `ctlCalls`. That ordering is what makes the list
+     * safe to read once this returns — the volatile's release edge covers the
+     * append, so an acquire of it here makes the entry visible. Polling
+     * `ctlCalls.size` directly would be an unsynchronised read of a plain
+     * `MutableList` the loop thread is appending to; polling either without a
+     * deadline would be an unbounded spin, which is a MUST violation for
+     * anything waiting on dispatch to complete.
      */
-    private fun awaitWatchedFdRegistered(fake: FakeEpollSyscallOps) {
+    private fun awaitCtlCalls(fake: FakeEpollSyscallOps, expected: Int) {
         val deadline = TimeSource.Monotonic.markNow() + DRAIN_BUDGET
-        while (fake.lastAddInterestThread == null) {
-            check(deadline.hasNotPassedNow()) { "the EventLoop did not run the queued registration within $DRAIN_BUDGET" }
+        while (fake.ctlCallCount < expected) {
+            check(deadline.hasNotPassedNow()) {
+                "the EventLoop recorded ${fake.ctlCallCount} of $expected epoll_ctl calls within $DRAIN_BUDGET"
+            }
             usleep(POLL_US)
         }
     }

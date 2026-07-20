@@ -65,6 +65,14 @@ internal class FakeEpollSyscallOps(
      */
     @Volatile
     var lastAddInterestThread: pthread_t? = null
+
+    /**
+     * Number of recorded `ctlCalls` at the moment [lastAddInterestThread] was
+     * last published, for a reader that must wait for a specific call to have
+     * landed rather than merely for the first one.
+     */
+    @Volatile
+    var ctlCallCount: Int = 0
         private set
 
     // --- epollCreate ---
@@ -120,14 +128,26 @@ internal class FakeEpollSyscallOps(
     }
 
     override fun epollAdd(epFd: Int, fd: Int, events: Int): Int {
-        if (fd == watchedFd) lastAddInterestThread = pthread_self()
         ctlCalls.add(CtlCall(CtlOp.ADD, epFd, fd, events))
+        // Published after the append, not before: a reader that waits on this
+        // volatile is waiting to see the call recorded, and the release edge
+        // only covers writes that precede it.
+        if (fd == watchedFd) {
+            ctlCallCount = ctlCalls.size
+            lastAddInterestThread = pthread_self()
+        }
         return if (addResults.isEmpty()) 0 else addResults.removeFirst()
     }
 
     override fun epollMod(epFd: Int, fd: Int, events: Int): Int {
-        if (fd == watchedFd) lastAddInterestThread = pthread_self()
         ctlCalls.add(CtlCall(CtlOp.MOD, epFd, fd, events))
+        // Published after the append, not before: a reader that waits on this
+        // volatile is waiting to see the call recorded, and the release edge
+        // only covers writes that precede it.
+        if (fd == watchedFd) {
+            ctlCallCount = ctlCalls.size
+            lastAddInterestThread = pthread_self()
+        }
         return if (modResults.isEmpty()) 0 else modResults.removeFirst()
     }
 
