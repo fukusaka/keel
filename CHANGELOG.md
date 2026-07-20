@@ -51,6 +51,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: `accept()` could fail with "must run on the EventLoop thread" when a
+  connection arrived while the engine's EventLoop was still starting. fd registration now funnels through
+  the EventLoop unconditionally, instead of running inline while the loop's thread handle was unset (#988)
 - `codec-http`: `RequestDeadlineHandler` / `BodyRateFloorHandler` now disarm their scheduled
   deadline when the handler is removed from the pipeline. The scheduled task closes the
   channel, so a handler detached mid-request — as a WebSocket upgrade does when it swaps out

@@ -103,7 +103,13 @@ class KqueueEventLoopSeamTest {
             scriptAddFilterResult(0) // init succeeds
             scriptAddFilterResult(ENFILE) // the register() we drive below fails
         }
+        // Registration funnels to the EventLoop thread, so the loop has to be
+        // running for the failing addWriteFilter to happen at all. What this
+        // pins is the failure's effect — the continuation resumes with the
+        // error — not which thread performs the syscall.
+        fake.liveMode = true
         val el = KqueueEventLoop(logger, syscallOps = fake)
+        el.start()
         try {
             val ex = assertFailsWith<IllegalStateException> {
                 runBlocking { withTimeout(15.seconds) { el.awaitWriteReady(fd = 5000, logger = logger) } }
@@ -111,7 +117,6 @@ class KqueueEventLoopSeamTest {
             assertTrue(ex.message!!.contains("kevent"))
             assertTrue(ex.message!!.contains("5000"))
         } finally {
-            // Engine not started; close() is still safe (idempotent running flag).
             el.close()
         }
     }

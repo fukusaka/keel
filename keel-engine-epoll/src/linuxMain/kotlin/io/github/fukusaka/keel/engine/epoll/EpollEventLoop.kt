@@ -357,15 +357,19 @@ internal class EpollEventLoop(
      * internal state transitions that are not guarded by [regMutex]
      * (task queue drain, epoll_wait event processing, etc).
      *
-     * Returns without checking if the EventLoop has not yet started —
-     * engine construction runs before [loop] sets the thread handle,
-     * and constructor-time initialisation is inherently single-threaded.
-     *
-     * Matches the pattern established in `IoUringEventLoop.assertInEventLoop`.
+     * Holds unconditionally, including before [loop] runs. It used to return
+     * without checking while the thread handle was unset, on the reasoning that
+     * only single-threaded construction could get there. That reasoning was
+     * wrong: `accept()` builds a transport — and registers its fd — on whatever
+     * thread the caller is on, so a registration could reach the submit path
+     * from off-loop during the window between `pthread_create` returning and
+     * [loop] assigning the handle. Registration now always funnels through
+     * [dispatch] when off-loop, so anything reaching a submit path is on the
+     * EventLoop thread by construction and the check can be absolute.
      */
     internal fun assertInEventLoop(operation: String) {
-        val t = eventLoopThread ?: return
-        check(pthread_equal(pthread_self(), t) != 0) {
+        val t = eventLoopThread
+        check(t != null && pthread_equal(pthread_self(), t) != 0) {
             "$operation must run on the EventLoop thread"
         }
     }
@@ -442,7 +446,7 @@ internal class EpollEventLoop(
         // seam-driven tests run before [start] sets [eventLoopThread];
         // in that window submit inline so the eventually-drained task
         // does not pile up on a queue that never runs.
-        if (eventLoopThread == null || inEventLoop()) {
+        if (inEventLoop()) {
             submitAddOrModifyEpoll(fd, events)
         } else {
             dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
@@ -587,7 +591,7 @@ internal class EpollEventLoop(
         }
 
         // Same funnel idiom as [register] — see its KDoc for rationale.
-        if (eventLoopThread == null || inEventLoop()) {
+        if (inEventLoop()) {
             submitAddOrModifyEpoll(fd, events)
         } else {
             dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
@@ -763,7 +767,13 @@ internal class EpollEventLoop(
      * Draining in the same iteration prevents starvation where tasks
      * accumulate faster than epoll_wait() cycles can process them.
      */
-    private fun drainTasks() {
+    /**
+     * Runs queued tasks. Called from [loop] on every iteration, and directly by
+     * seam tests that exercise a loop they never start — those queue their work
+     * through [dispatch] like any other off-loop caller and then drain it here,
+     * rather than relying on a shortcut that let registration bypass the funnel.
+     */
+    internal fun drainTasks() {
         assertInEventLoop("EpollEventLoop.drainTasks")
         while (true) {
             drainBatch.clear()

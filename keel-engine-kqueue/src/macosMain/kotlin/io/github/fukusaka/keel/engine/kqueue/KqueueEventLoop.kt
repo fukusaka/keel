@@ -362,15 +362,19 @@ internal class KqueueEventLoop(
      * internal state transitions that are not guarded by [regMutex]
      * (task queue drain, kevent event processing, etc).
      *
-     * Returns without checking if the EventLoop has not yet started —
-     * engine construction runs before [loop] sets the thread handle,
-     * and constructor-time initialisation is inherently single-threaded.
-     *
-     * Matches the pattern established in `IoUringEventLoop.assertInEventLoop`.
+     * Holds unconditionally, including before [loop] runs. It used to return
+     * without checking while the thread handle was unset, on the reasoning that
+     * only single-threaded construction could get there. That reasoning was
+     * wrong: `accept()` builds a transport — and registers its fd — on whatever
+     * thread the caller is on, so a registration could reach the submit path
+     * from off-loop during the window between `pthread_create` returning and
+     * [loop] assigning the handle. Registration now always funnels through
+     * [dispatch] when off-loop, so anything reaching a submit path is on the
+     * EventLoop thread by construction and the check can be absolute.
      */
     internal fun assertInEventLoop(operation: String) {
-        val t = eventLoopThread ?: return
-        check(pthread_equal(pthread_self(), t) != 0) {
+        val t = eventLoopThread
+        check(t != null && pthread_equal(pthread_self(), t) != 0) {
             "$operation must run on the EventLoop thread"
         }
     }
@@ -445,7 +449,7 @@ internal class KqueueEventLoop(
         // Engine init / seam-driven tests run before [start] sets
         // [eventLoopThread] — in that window, submit inline too, otherwise
         // the dispatched task would never be drained.
-        if (eventLoopThread == null || inEventLoop()) {
+        if (inEventLoop()) {
             submitAddFilter(fd, interest, key, newReg, cont)
         } else {
             dispatch(EmptyCoroutineContext, Runnable { submitAddFilter(fd, interest, key, newReg, cont) })
@@ -598,7 +602,7 @@ internal class KqueueEventLoop(
 
         // EventLoop-funneled submission fix (Option D). See [register]
         // for the rationale.
-        if (eventLoopThread == null || inEventLoop()) {
+        if (inEventLoop()) {
             submitAddCallbackFilter(fd, interest, key)
         } else {
             dispatch(EmptyCoroutineContext, Runnable { submitAddCallbackFilter(fd, interest, key) })
@@ -860,7 +864,13 @@ internal class KqueueEventLoop(
      * Draining in the same iteration prevents starvation where tasks
      * accumulate faster than kevent() cycles can process them.
      */
-    private fun drainTasks() {
+    /**
+     * Runs queued tasks. Called from [loop] on every iteration, and directly by
+     * seam tests that exercise a loop they never start — those queue their work
+     * through [dispatch] like any other off-loop caller and then drain it here,
+     * rather than relying on a shortcut that let registration bypass the funnel.
+     */
+    internal fun drainTasks() {
         assertInEventLoop("KqueueEventLoop.drainTasks")
         while (true) {
             drainBatch.clear()
