@@ -109,13 +109,14 @@ private suspend fun roundTrips(
     val latency = LatencyHistogram()
     var completed = 0L
     var errors = 0L
+    val shape = ReplyShape()
     while (started.elapsedNow().inWholeNanoseconds < deadline) {
         val mark = clock.markNow()
         // The pipeline takes ownership of the buffer, as the codec's output does.
         val out = allocator.allocate(request.size)
         out.writeByteArray(request, 0, request.size)
         channel.pipeline.requestWriteAndFlush(out)
-        if (!receiveWholeReply(bridge)) {
+        if (!receiveWholeReply(bridge, shape)) {
             errors++
             break // the peer went away, or the reply was unframeable; either way a
             // partial run reported as a full one would lie
@@ -130,41 +131,97 @@ private suspend fun roundTrips(
  * Receives one complete reply, releasing every buffer it consumes. Returns false
  * when the connection ends first, or when the first buffer does not carry a
  * whole header — this deliberately reports that rather than guessing at framing.
+ *
+ * The header scan works on bytes and allocates nothing per request. An earlier
+ * version decoded the first buffer to a `String` and used `indexOf`, which cost
+ * a `ByteArray` and a `String` on every round trip — real work, in the one place
+ * that is supposed to be the cheap baseline everything else is measured against.
+ * It moved the floor by 19 % on the 32-core host, which in turn quadrupled the
+ * apparent transport gap between engines. An instrument that expensive is
+ * measuring itself.
  */
-private suspend fun receiveWholeReply(bridge: SuspendMessageBridge<IoBuf>): Boolean {
+private suspend fun receiveWholeReply(bridge: SuspendMessageBridge<IoBuf>, state: ReplyShape): Boolean {
     val first = bridge.receiveCatching().getOrNull() ?: return false
     val firstLength = first.readableBytes
-    val header = first.peekAscii()
-    first.release()
 
-    val headerEnd = header.indexOf(HEADER_TERMINATOR)
-    if (headerEnd < 0) return false // header spans buffers: out of scope, not guessed
-    val contentLength = contentLengthOf(header.substring(0, headerEnd)) ?: return true
-    var remaining = contentLength - (firstLength - (headerEnd + HEADER_TERMINATOR.length))
-    while (remaining > 0) {
+    if (state.totalBytes < 0) {
+        // First reply only: learn the shape by scanning the header.
+        val scanLength = minOf(firstLength, MAX_HEADER_PEEK)
+        first.readByteArray(scanBuffer, 0, scanLength)
+        first.release()
+        val headerEnd = indexOfHeaderEnd(scanBuffer, scanLength)
+        if (headerEnd < 0) return false // header spans buffers: out of scope, not guessed
+        val contentLength = contentLengthOf(scanBuffer, headerEnd)
+        state.totalBytes = if (contentLength == null) {
+            firstLength.toLong() // no declared body; one buffer is the whole reply
+        } else {
+            headerEnd + HEADER_TERMINATOR_LENGTH + contentLength
+        }
+    } else {
+        first.release()
+    }
+
+    // Later replies are the same shape — the fixture answers one fixed endpoint —
+    // so counting bytes is enough and the measured loop does no parsing at all.
+    var seen = firstLength.toLong()
+    while (seen < state.totalBytes) {
         val next = bridge.receiveCatching().getOrNull() ?: return false
-        remaining -= next.readableBytes
+        seen += next.readableBytes
         next.release()
     }
     return true
 }
 
-/** The buffer's readable bytes as ASCII, for header inspection only. */
-private fun IoBuf.peekAscii(): String {
-    val n = minOf(readableBytes, MAX_HEADER_PEEK)
-    val bytes = ByteArray(n)
-    readByteArray(bytes, 0, n)
-    return bytes.decodeToString()
+/**
+ * The reply's byte length, learned from the first round trip and reused for the
+ * rest. The floor drives one fixed endpoint on one connection, so the shape does
+ * not change; re-deriving it every time would put a header scan inside the loop
+ * this exists to keep minimal.
+ */
+private class ReplyShape {
+    var totalBytes: Long = -1
 }
 
-/** `Content-Length` from a header block, or null when the reply declares none. */
-private fun contentLengthOf(header: String): Long? {
-    val idx = header.indexOf(CONTENT_LENGTH, ignoreCase = true)
-    if (idx < 0) return null
-    val valueStart = idx + CONTENT_LENGTH.length
-    val lineEnd = header.indexOf('\r', valueStart).let { if (it < 0) header.length else it }
-    return header.substring(valueStart, lineEnd).trim().toLongOrNull()
+/**
+ * Scratch space for the header scan, reused across round trips. The floor is
+ * single-connection and strictly sequential, so one buffer per process is safe
+ * and keeps the measured loop allocation-free.
+ */
+private val scanBuffer = ByteArray(MAX_HEADER_PEEK)
+
+/** Index of the `CRLF CRLF` that ends the header block, or -1. */
+private fun indexOfHeaderEnd(bytes: ByteArray, length: Int): Int {
+    for (i in 0..length - HEADER_TERMINATOR_LENGTH) {
+        if (bytes[i] == CR && bytes[i + 1] == LF && bytes[i + 2] == CR && bytes[i + 3] == LF) return i
+    }
+    return -1
 }
+
+/** `Content-Length` from the header block, scanned case-insensitively over bytes. */
+private fun contentLengthOf(bytes: ByteArray, headerEnd: Int): Long? {
+    var i = 0
+    outer@ while (i <= headerEnd - CONTENT_LENGTH.size) {
+        for (j in CONTENT_LENGTH.indices) {
+            if (lowerAscii(bytes[i + j]) != CONTENT_LENGTH[j]) {
+                i++
+                continue@outer
+            }
+        }
+        var v = 0L
+        var k = i + CONTENT_LENGTH.size
+        while (k < headerEnd && (bytes[k] == SPACE || bytes[k] == TAB)) k++
+        var sawDigit = false
+        while (k < headerEnd && bytes[k] >= ZERO && bytes[k] <= NINE) {
+            v = v * DECIMAL_RADIX + (bytes[k] - ZERO)
+            sawDigit = true
+            k++
+        }
+        return if (sawDigit) v else null
+    }
+    return null
+}
+
+private fun lowerAscii(b: Byte): Byte = if (b in UPPER_A..UPPER_Z) (b + ASCII_CASE_GAP).toByte() else b
 
 private class FloorResult(
     val completed: Long,
@@ -179,8 +236,18 @@ private class FloorResult(
 private const val NANOS_PER_SECOND_FLOOR = 1_000_000_000L
 private const val NANOS_PER_MILLI = 1_000_000.0
 private const val MAX_HEADER_PEEK = 2048
-private const val HEADER_TERMINATOR = "\r\n\r\n"
-private const val CONTENT_LENGTH = "content-length:"
+private const val HEADER_TERMINATOR_LENGTH = 4
+private val CONTENT_LENGTH = "content-length:".encodeToByteArray()
+private const val CR: Byte = 13
+private const val LF: Byte = 10
+private const val SPACE: Byte = 32
+private const val TAB: Byte = 9
+private const val ZERO: Byte = 48
+private const val NINE: Byte = 57
+private const val UPPER_A: Byte = 65
+private const val UPPER_Z: Byte = 90
+private const val ASCII_CASE_GAP = 32
+private const val DECIMAL_RADIX = 10
 private const val FLOOR_P50 = 50.0
 private const val FLOOR_P99 = 99.0
 private const val FLOOR_P999 = 99.9
