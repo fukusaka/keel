@@ -27,16 +27,9 @@ import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
-import platform.linux.EPOLLIN
-import platform.linux.EPOLL_CTL_ADD
-import platform.linux.epoll_ctl
-import platform.linux.epoll_event
 import platform.posix.errno
 import kotlin.coroutines.CoroutineContext
 
@@ -116,9 +109,10 @@ class EpollEngine(
     /**
      * Binds a suspend-based server on [host]:[port].
      *
-     * Creates a server socket, registers it with the boss EventLoop's epoll,
-     * and returns an [EpollStreamServer] whose [accept][EpollStreamServer.accept]
-     * returns [EpollPipelinedChannel] instances.
+     * Creates a server socket and returns an [EpollStreamServer] whose
+     * [accept][EpollStreamServer.accept] returns [EpollPipelinedChannel]
+     * instances. The listener is registered with the boss EventLoop's epoll by
+     * `accept()`, not here, so it is never watched without a waiter behind it.
      *
      * @throws IllegalStateException if the engine is closed.
      */
@@ -133,14 +127,9 @@ class EpollEngine(
         val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog)
 
         try {
-            memScoped {
-                val ev = alloc<epoll_event>()
-                ev.events = EPOLLIN.toUInt()
-                ev.data.fd = serverFd
-                val result = epoll_ctl(bossLoop.epFd, EPOLL_CTL_ADD, serverFd, ev.ptr)
-                check(result >= 0) { "epoll_ctl(ADD server) failed: ${errnoMessage(errno)}" }
-            }
-
+            // The listener is left unarmed here; accept() arms it through
+            // [EpollEventLoop.register] once it has a waiter to hand the event
+            // to. See [EpollStreamServer] for why that ordering matters.
             logger.debug { "Bound to $address" }
             return EpollStreamServer(
                 serverFd,
@@ -166,16 +155,9 @@ class EpollEngine(
         val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog)
 
         try {
-            // Register server fd with the boss EventLoop's epoll so that
-            // accept() readiness is notified on the boss thread.
-            memScoped {
-                val ev = alloc<epoll_event>()
-                ev.events = EPOLLIN.toUInt()
-                ev.data.fd = serverFd
-                val result = epoll_ctl(bossLoop.epFd, EPOLL_CTL_ADD, serverFd, ev.ptr)
-                check(result >= 0) { "epoll_ctl(ADD server) failed: ${errnoMessage(errno)}" }
-            }
-
+            // The listener is left unarmed here; accept() arms it through
+            // [EpollEventLoop.register] once it has a waiter to hand the event
+            // to. See [EpollStreamServer] for why that ordering matters.
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
             return EpollStreamServer(
