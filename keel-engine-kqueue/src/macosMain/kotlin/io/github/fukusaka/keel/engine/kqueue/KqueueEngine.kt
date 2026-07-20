@@ -113,7 +113,8 @@ class KqueueEngine(
      * Creates a server socket and returns a [KqueueStreamServer] whose
      * [accept][StreamServer.accept] distributes connections to worker EventLoops
      * in round-robin. The listener is armed on the boss EventLoop's kqueue by
-     * `accept()`, not here, so it is never watched without a waiter behind it.
+     * `accept()`, not here, so binding alone does not leave a watch with no
+     * waiter behind it.
      *
      * @throws IllegalStateException if the engine is already closed.
      */
@@ -133,7 +134,8 @@ class KqueueEngine(
         try {
             // The listener is left unarmed here; accept() arms it through
             // [KqueueEventLoop.register] once it has a waiter to hand the event
-            // to. See [KqueueStreamServer] for why that ordering matters.
+            // to. Arming earlier would break the loop's armed-implies-handler
+            // invariant, whose no-handler branch clears the watch again.
             logger.debug { "Bound to $address" }
             return KqueueStreamServer(
                 serverFd,
@@ -161,7 +163,8 @@ class KqueueEngine(
         try {
             // The listener is left unarmed here; accept() arms it through
             // [KqueueEventLoop.register] once it has a waiter to hand the event
-            // to. See [KqueueStreamServer] for why that ordering matters.
+            // to. Arming earlier would break the loop's armed-implies-handler
+            // invariant, whose no-handler branch clears the watch again.
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
             return KqueueStreamServer(

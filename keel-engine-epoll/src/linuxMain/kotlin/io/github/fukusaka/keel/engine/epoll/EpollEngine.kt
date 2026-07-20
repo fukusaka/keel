@@ -112,7 +112,8 @@ class EpollEngine(
      * Creates a server socket and returns an [EpollStreamServer] whose
      * [accept][EpollStreamServer.accept] returns [EpollPipelinedChannel]
      * instances. The listener is registered with the boss EventLoop's epoll by
-     * `accept()`, not here, so it is never watched without a waiter behind it.
+     * `accept()`, not here, so binding alone does not leave a watch with no
+     * waiter behind it.
      *
      * @throws IllegalStateException if the engine is closed.
      */
@@ -127,9 +128,11 @@ class EpollEngine(
         val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog)
 
         try {
-            // The listener is left unarmed here; accept() arms it through
-            // [EpollEventLoop.register] once it has a waiter to hand the event
-            // to. See [EpollStreamServer] for why that ordering matters.
+            // The listener is left unregistered here; accept() registers it
+            // through [EpollEventLoop.register] once it has a waiter to hand the
+            // event to. Registering earlier would break the loop's
+            // registered-implies-handler invariant, whose no-handler branch
+            // removes the interest again.
             logger.debug { "Bound to $address" }
             return EpollStreamServer(
                 serverFd,
@@ -155,9 +158,11 @@ class EpollEngine(
         val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog)
 
         try {
-            // The listener is left unarmed here; accept() arms it through
-            // [EpollEventLoop.register] once it has a waiter to hand the event
-            // to. See [EpollStreamServer] for why that ordering matters.
+            // The listener is left unregistered here; accept() registers it
+            // through [EpollEventLoop.register] once it has a waiter to hand the
+            // event to. Registering earlier would break the loop's
+            // registered-implies-handler invariant, whose no-handler branch
+            // removes the interest again.
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
             return EpollStreamServer(

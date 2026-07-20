@@ -52,8 +52,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `engine-kqueue`, `engine-epoll`: arm the listener fd when `accept()` has a waiter for it rather than during
-  `bind()`, so the boss loop never watches a listener with no handler behind it and cannot disarm a freshly
-  bound one while clearing that stale watch (#989)
+  `bind()`, removing the stale watch every bind used to leave and the risk that clearing it disarms a
+  freshly bound listener on the same recycled fd number (#989)
+- `engine-epoll`: withdraw a listener from the event loop's interest bookkeeping when the server closes.
+  A leftover entry made the loop treat a recycled fd number as already registered and skip its `epoll_ctl`,
+  so the next listener on that number was watched by nobody and its `accept()` never fired (#989)
+- `engine-epoll`: surface a failed `epoll_ctl` to the suspended caller instead of only logging it at debug
+  level, so a registration failure raises rather than leaving `accept()` / `connect()` suspended forever (#989)
 - `engine-kqueue`, `engine-epoll`: `accept()` could fail with "must run on the EventLoop thread" when a
   connection arrived while the engine's EventLoop was still starting. `register` / `registerCallback` now
   funnel to the EventLoop whenever the caller is off-loop, instead of running inline while the loop's
