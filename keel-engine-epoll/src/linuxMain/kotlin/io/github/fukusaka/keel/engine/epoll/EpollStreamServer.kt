@@ -4,7 +4,6 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.Logger
-import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
@@ -14,17 +13,10 @@ import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
-import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import platform.posix.pthread_mutex_destroy
-import platform.posix.pthread_mutex_init
-import platform.posix.pthread_mutex_lock
-import platform.posix.pthread_mutex_t
-import platform.posix.pthread_mutex_unlock
+import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.resumeWithException
 
@@ -60,17 +52,15 @@ internal class EpollStreamServer(
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
 ) : StreamServer {
 
-    // [_active] flips false on the first close() and is checked atomically
-    // with the EventLoop register() call in accept()'s WouldBlock branch
-    // (both inside [withLock]). Without that atomicity, an accept could
-    // register with [bossLoop] after close() ran [bossLoop.cancelAll],
-    // leaving the continuation stranded in the registration chain.
-    // @Volatile on [_active] lets [isActive] read without taking the mutex.
-    private val arena = Arena()
-    private val mutex = arena.alloc<pthread_mutex_t>().apply {
-        val initRet = pthread_mutex_init(ptr, null)
-        check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
-    }
+    // [_active] flips false on the first close() and is re-checked inside
+    // registerIf, under the loop's registration lock — the same lock
+    // cancelAll takes. That is what makes "still open?" and "append the
+    // waiter" one step, so a registration cannot land after cancelAll and
+    // strand its continuation. @Volatile lets isActive read it directly.
+    // close() runs its teardown once; a CAS is enough because the
+    // accept/close interlock now lives on the loop's registration lock
+    // (see registerIf), not on a mutex this object would have to outlive.
+    private val closeClaimed = AtomicInt(0)
 
     @Volatile
     private var _active = true
@@ -115,21 +105,17 @@ internal class EpollStreamServer(
                 }
                 AcceptResult.WouldBlock -> {
                     suspendCancellableCoroutine<Unit> { cont ->
-                        // Atomically check _active and register: a concurrent
-                        // close() that flipped _active to false would also
-                        // have run [bossLoop.cancelAll], so registering after
-                        // that point would strand the continuation. Lock
-                        // order is StreamServer.mutex (outer) -> EventLoop.
-                        // regMutex (inner via register); close() uses the
-                        // same order (mutex briefly, then cancelAll
-                        // separately) so no deadlock is possible.
-                        val reg = withLock {
-                            if (!_active) {
-                                null
-                            } else {
-                                bossLoop.register(serverFd, EpollEventLoop.Interest.READ, cont)
-                            }
-                        }
+                        // Check _active and append as one step: a concurrent
+                        // close() runs [bossLoop.cancelAll], and a
+                        // registration landing after it is never resumed.
+                        // registerIf does both under the loop's registration
+                        // lock — the lock cancelAll takes — so this server
+                        // needs no lock of its own to order them.
+                        val reg = bossLoop.registerIf(
+                            serverFd,
+                            EpollEventLoop.Interest.READ,
+                            cont,
+                        ) { _active }
                         if (reg == null) {
                             cont.resumeWithException(CancellationException("StreamServer closed"))
                             return@suspendCancellableCoroutine
@@ -157,34 +143,20 @@ internal class EpollStreamServer(
      * chain for this fd — is resumed with [CancellationException] via
      * [EpollEventLoop.cancelAll].
      *
-     * **Thread safety**: safe to call from any thread. The [_active] flip
-     * is serialised under [mutex]; [bossLoop.cancelAll] takes the
-     * EventLoop's own `regMutex` separately (lock order matches accept(),
-     * so no deadlock). POSIX `close(fd)` is thread-safe per the POSIX
+     * **Thread safety**: safe to call from any thread. [_active] is published before the
+     * teardown is queued, and the accept-side check reads it inside the
+     * EventLoop's own `regMutex` — the lock [cancelAll] takes — so this server
+     * owns no lock of its own. POSIX `close(fd)` is thread-safe per the POSIX
      * contract.
      */
     override fun close() {
-        val shouldClose = withLock {
-            if (!_active) return
-            _active = false
-            true
-        }
-        if (!shouldClose) return
-        // Destroying the mutex and freeing its arena is the last step of the
-        // teardown, **after** the listener fd is closed, because accept() takes
-        // this mutex on its WouldBlock branch: while the fd is still open a
-        // resumed accept() can reach that branch and lock it, so freeing first
-        // is a use-after-free. Once the fd is closed that path gets EBADF and
-        // fails without touching the lock. Kept inline in close() so the arena
-        // ownership stays visible at the only place that ends this object.
-        fun releaseLock() {
-            val destroyRet = pthread_mutex_destroy(mutex.ptr)
-            if (destroyRet != 0) {
-                logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyRet)}" }
-            }
-            arena.clear()
-        }
-
+        // Publish "not accepting" before claiming the teardown, so every caller
+        // — including one whose CAS loses — returns with isActive already
+        // false. An accept() reaching registerIf after this point is refused by
+        // the predicate under the loop's registration lock, the same lock
+        // cancelAll takes.
+        _active = false
+        if (!closeClaimed.compareAndSet(0, 1)) return
         // cancelAll, cleanupFd and close all run on the boss loop below: the
         // first two take the loop's regMutex, which EventLoop.close() destroys,
         // so issuing them off the loop would be a use-after-free once the engine
@@ -204,23 +176,12 @@ internal class EpollStreamServer(
                 )
                 bossLoop.cleanupFd(serverFd)
                 closeFdSafely(serverFd, logger, "server close")
-                releaseLock()
             },
             // Loop gone: its registry is dead (any waiters died with it) and the
             // regMutex may be freed, so only release the fd.
             ifStopped = {
                 closeFdSafely(serverFd, logger, "server close")
-                releaseLock()
             },
         )
-    }
-
-    private inline fun <T> withLock(block: () -> T): T {
-        pthread_mutex_lock(mutex.ptr)
-        try {
-            return block()
-        } finally {
-            pthread_mutex_unlock(mutex.ptr)
-        }
     }
 }
