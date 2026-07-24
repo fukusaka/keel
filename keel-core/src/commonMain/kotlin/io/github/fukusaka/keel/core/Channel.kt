@@ -174,6 +174,12 @@ interface Channel : AutoCloseable {
      * required. Writes issued *after* it are discarded — the caller declared
      * it had nothing more to send. Use [awaitFlushComplete] to observe the
      * data leaving; the FIN follows it.
+     *
+     * Ordering the FIN behind the data also makes it as slow as the data: a
+     * peer that stops reading holds both back, bounded only by the engine's
+     * idle timeout (disabled by default). Call [close] instead when the FIN
+     * has to go out regardless — it supersedes a pending half-close and
+     * discards what was still queued.
      */
     fun shutdownOutput()
 

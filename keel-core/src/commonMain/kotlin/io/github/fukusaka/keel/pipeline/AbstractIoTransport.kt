@@ -310,6 +310,10 @@ abstract class AbstractIoTransport(
      * equivalent of — the loss here could only be silent, so keel sends the
      * data instead of dropping it.
      *
+     * A [close] that arrives before the drain finishes supersedes the
+     * half-close: [sendFinIfDrained] sees `opened == false` and the teardown
+     * releases the buffers, as `close` has always discarded unsent output.
+     *
      * Idempotent. Subclasses provide the FIN itself via [sendFin].
      */
     protected fun shutdownOutputOwned() {
@@ -320,11 +324,18 @@ abstract class AbstractIoTransport(
             return
         }
         finDeferred = true
-        flush()
-        // Covers a flush that drained synchronously — engines whose flush
-        // completes asynchronously reach sendFinIfDrained from their
-        // completion path instead.
-        sendFinIfDrained()
+        // `finally` because a throwing flush would otherwise wedge the
+        // transport for good: [write] is already gated by outputShutdown, so
+        // nothing would ever refill the queue and no completion path would run
+        // to release the deferred FIN.
+        try {
+            flush()
+        } finally {
+            // Covers a flush that drained synchronously — engines whose flush
+            // completes asynchronously reach sendFinIfDrained from their
+            // completion path instead.
+            sendFinIfDrained()
+        }
     }
 
     /**
