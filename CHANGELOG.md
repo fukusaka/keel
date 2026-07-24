@@ -37,6 +37,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `engine-kqueue`, `engine-epoll`, `engine-io-uring`: `shutdownOutput()` now sends FIN from the EventLoop
+  thread instead of the caller's, matching `close()`. On io_uring the direct-alloc path submitted through an
+  EventLoop-only API that takes a non-atomic slot and an SQE from the shared ring; on all three the
+  `outputShutdown` guard is a plain field two callers could both pass. `IoTransport.shutdownOutput` and
+  `Channel.shutdownOutput` now document that the FIN may be sent after the call returns, and that buffered
+  writes are not flushed first (#992)
 - **BREAKING** (`core`): `StreamServer.close()` / `PipelinedStreamServer.close()` now release the listening
   port asynchronously on every engine, and both interfaces document it. `engine-kqueue` / `engine-epoll` used
   to release it before returning; `engine-io-uring` and `engine-nio` never did. A caller that rebinds the same

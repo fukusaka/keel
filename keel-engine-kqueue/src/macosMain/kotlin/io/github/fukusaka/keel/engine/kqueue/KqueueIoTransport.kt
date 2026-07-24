@@ -39,7 +39,9 @@ import kotlin.coroutines.resume
  * **Write path**: buffers outbound [IoBuf] writes and flushes via POSIX
  * `write()` / `writev()`. On EAGAIN, registers EVFILT_WRITE and retries.
  *
- * **Thread safety**: all methods must be called on the [eventLoop] thread.
+ * **Thread safety**: methods run on the [eventLoop] thread. [close] and
+ * [shutdownOutput] may be called from any thread — they dispatch when the
+ * caller is off-loop — and everything else must already be on it.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueIoTransport(
@@ -196,14 +198,35 @@ internal class KqueueIoTransport(
 
     private var outputShutdown = false
 
+    /**
+     * Sends FIN on the EventLoop thread, like [close] does.
+     *
+     * `shutdown(2)` acts on an fd the loop owns and is watching, so it follows
+     * the same rule as every other operation on that descriptor: the owning
+     * thread issues it. Issuing it from the caller also raced [outputShutdown]
+     * — a plain `var` read and written without synchronisation — so two callers
+     * could both pass the guard and both shut the socket down. Confining it to
+     * the loop makes the flag EventLoop-local, which is what the rest of this
+     * class already assumes of its non-volatile state.
+     *
+     * Idempotent, and safe to call from any thread. The FIN is sent
+     * asynchronously when the caller is off-loop.
+     */
     override fun shutdownOutput() {
-        if (!outputShutdown && opened) {
-            outputShutdown = true
-            when (val result = nativeSocket.shutdown(fd, SHUT_WR)) {
-                ShutdownResult.Ok -> Unit
-                is ShutdownResult.Failed -> eventLoop.logger.warn {
-                    "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(result.errno)}"
-                }
+        if (eventLoop.inEventLoop()) {
+            shutdownOutputOnEventLoop()
+        } else {
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOnEventLoop() })
+        }
+    }
+
+    private fun shutdownOutputOnEventLoop() {
+        if (outputShutdown || !opened) return
+        outputShutdown = true
+        when (val result = nativeSocket.shutdown(fd, SHUT_WR)) {
+            ShutdownResult.Ok -> Unit
+            is ShutdownResult.Failed -> eventLoop.logger.warn {
+                "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(result.errno)}"
             }
         }
     }

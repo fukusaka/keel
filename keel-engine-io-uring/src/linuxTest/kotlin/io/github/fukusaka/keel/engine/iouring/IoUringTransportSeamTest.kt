@@ -19,6 +19,10 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlinx.coroutines.Runnable
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlinx.coroutines.CompletableDeferred
+import io.github.fukusaka.keel.logging.LogLevel
 
 /**
  * Seam-level unit tests for [IoUringIoTransport] — synchronous
@@ -56,8 +60,9 @@ class IoUringTransportSeamTest {
 
     @AfterTest
     fun tearDown() {
-        close(fd)
+        // Stop the loop before closing the fd it may still be polling.
         eventLoop.close()
+        close(fd)
     }
 
     private fun newTransport(fake: FakeNativeSocket): IoUringIoTransport =
@@ -76,8 +81,26 @@ class IoUringTransportSeamTest {
 
     // --- shutdownOutput (non-direct-alloc path) ---
 
+    /**
+     * Returns once the loop has run everything dispatched so far.
+     *
+     * A marker task goes through the same FIFO queue, so when it completes the
+     * work queued before it has already run. Awaiting the deferred also
+     * publishes the loop thread's writes to this one — [FakeNativeSocket] is
+     * documented single-threaded, so its counters must not be polled while the
+     * loop may still be touching them.
+     */
+    private suspend fun awaitLoopDrained() {
+        val marker = CompletableDeferred<Unit>()
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable { marker.complete(Unit) })
+        withTimeout(SEAM_TIMEOUT_MILLIS) { marker.await() }
+    }
+
     @Test
-    fun `shutdownOutput with Ok invokes nativeSocket once`() {
+    fun `shutdownOutput with Ok invokes nativeSocket once`() = runBlocking {
+        // shutdown(2) runs on the EventLoop like every other op on this fd, so
+        // the loop has to be running and the assertion has to wait for it.
+        eventLoop.start()
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
@@ -85,12 +108,14 @@ class IoUringTransportSeamTest {
 
         transport.shutdownOutput()
 
+        awaitLoopDrained()
         assertEquals(1, fake.shutdownCalls)
         fake.assertAllConsumed()
     }
 
     @Test
-    fun `shutdownOutput is idempotent`() {
+    fun `shutdownOutput is idempotent`() = runBlocking {
+        eventLoop.start()
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
@@ -100,19 +125,55 @@ class IoUringTransportSeamTest {
         transport.shutdownOutput()
         transport.shutdownOutput()
 
+        // All three dispatches have run by now (FIFO marker), so a lost
+        // short-circuit shows up as 2 or 3 rather than passing on timing.
+        awaitLoopDrained()
         assertEquals(1, fake.shutdownCalls)
     }
 
     @Test
-    fun `shutdownOutput with Failed EPIPE does not throw`() {
-        val fake = FakeNativeSocket().apply {
-            enqueueShutdown(fd, ShutdownResult.Failed(EPIPE))
+    fun `shutdownOutput with Failed EPIPE does not throw`() = runBlocking {
+        // The body now runs inside a dispatched task, and drainTasks catches
+        // whatever a task throws. So "does not throw" can no longer be observed
+        // by the call returning — assert on the loop's own guard log instead.
+        val warns = RecordingLogger(LogLevel.WARN)
+        val loop = IoUringEventLoop(warns, capabilities)
+        loop.start()
+        try {
+            val fake = FakeNativeSocket().apply {
+                enqueueShutdown(fd, ShutdownResult.Failed(EPIPE))
+            }
+            val transport = IoUringIoTransport(
+                fd = fd,
+                eventLoop = loop,
+                capabilities = capabilities,
+                writeModeSelector = IoModeSelectors.FALLBACK_CQE,
+                allocator = DefaultAllocator,
+                bufferRing = null,
+                fixedFileRegistry = null,
+                registeredBufferTable = DisabledRegisteredBufferRegistry,
+                preAllocatedIndex = -1,
+                nativeSocket = fake,
+            )
+
+            transport.shutdownOutput()
+
+            val marker = CompletableDeferred<Unit>()
+            loop.dispatch(EmptyCoroutineContext, Runnable { marker.complete(Unit) })
+            withTimeout(SEAM_TIMEOUT_MILLIS) { marker.await() }
+
+            assertEquals(1, fake.shutdownCalls)
+            assertTrue(
+                warns.messages.any { "shutdown(SHUT_WR) failed" in it },
+                "the EPIPE must be reported by the transport, got: ${warns.messages}",
+            )
+            assertTrue(
+                warns.messages.none { "dispatched task threw" in it },
+                "shutdownOutput must not throw out of the dispatched task, got: ${warns.messages}",
+            )
+        } finally {
+            loop.close()
         }
-        val transport = newTransport(fake)
-
-        transport.shutdownOutput()
-
-        assertEquals(1, fake.shutdownCalls)
     }
 
     // --- flushDirectSendSingle (FALLBACK_CQE, single-buffer synchronous path) ---
@@ -251,5 +312,9 @@ class IoUringTransportSeamTest {
         withTimeout(2000) {
             transport.awaitPendingFlush()
         }
+    }
+
+    private companion object {
+        const val SEAM_TIMEOUT_MILLIS = 5_000L
     }
 }

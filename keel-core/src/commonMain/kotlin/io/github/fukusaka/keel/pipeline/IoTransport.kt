@@ -204,6 +204,14 @@ interface IoTransport {
      *
      * The read side remains open so the peer's remaining data can be
      * consumed. Implementations must be idempotent.
+     *
+     * **Safe to call from any thread, and the FIN may be sent after this
+     * returns.** Engines that own an EventLoop issue the syscall on that
+     * thread, so an off-loop caller only queues the request. Observe the
+     * effect through the peer, not through the call returning.
+     *
+     * Does **not** wait for buffered writes. Data still queued when this is
+     * called may not reach the peer.
      */
     fun shutdownOutput()
 
