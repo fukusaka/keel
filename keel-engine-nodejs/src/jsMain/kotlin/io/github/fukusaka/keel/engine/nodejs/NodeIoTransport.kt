@@ -144,17 +144,21 @@ internal class NodeIoTransport(
 
     // --- Lifecycle ---
 
-    private var outputShutdown = false
-
     /**
      * Sends TCP FIN to the peer via Node.js `socket.end()`.
-     * Fire-and-forget: no blocking or suspend needed.
+     *
+     * Node's writable stream already orders `end()` behind the writes it has
+     * accepted, so the only output that could be overtaken is what is still
+     * in keel's own [pendingWrites] — the shared half-close path drains that
+     * first. Fire-and-forget: no blocking or suspend needed, and no thread
+     * hop (Node is single-threaded).
      */
     override fun shutdownOutput() {
-        if (!outputShutdown && opened) {
-            outputShutdown = true
-            socket.end()
-        }
+        shutdownOutputOwned()
+    }
+
+    override fun sendFin() {
+        socket.end()
     }
 
     // --- Write path ---
@@ -230,6 +234,7 @@ internal class NodeIoTransport(
         // pendingBytes returns to 0 here (this cancels any seam-driven write-idle).
         updatePendingBytes(-totalFlushed)
         onFlushComplete?.invoke()
+        sendFinIfDrained()
         // Drive the write-idle timer from Node's real back-pressure instead: arm it
         // when a write stalled (peer not draining), to be cancelled by the 'drain'
         // listener when the buffer empties — or to fire and force-close a peer that

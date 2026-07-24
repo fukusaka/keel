@@ -76,6 +76,9 @@ class PipelineHttpRoutesBackpressureTest {
 
         override fun flush(): Boolean = true
         override fun shutdownOutput() {}
+
+        /** No FIN to order: this double captures writes instead of sending them. */
+        override fun sendFin() {}
         override fun close() {
             if (!markClosing()) return
             if (!markTeardownStarted()) return

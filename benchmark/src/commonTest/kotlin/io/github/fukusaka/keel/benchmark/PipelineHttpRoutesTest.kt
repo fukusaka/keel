@@ -32,6 +32,9 @@ class PipelineHttpRoutesTest {
         override fun write(buf: IoBuf) { buf.retain(); written.add(buf) }
         override fun flush(): Boolean = true
         override fun shutdownOutput() {}
+
+        /** No FIN to order: this double captures writes instead of sending them. */
+        override fun sendFin() {}
         override fun close() {
             if (!markClosing()) return
             if (!markTeardownStarted()) return

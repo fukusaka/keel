@@ -316,6 +316,40 @@ class EpollEngineReadWriteTest {
     }
 
     @Test
+    fun `shutdownOutput sends buffered writes before the FIN`() = runBlocking {
+        // `write()` buffers without sending, so a half-close that follows it has
+        // to drain the buffer before shutting the write side down. Issuing the
+        // FIN first strands the bytes in `pendingWrites`: the peer observes EOF
+        // with nothing before it, and the eventual flush writes to a socket
+        // that is already shut down (EPIPE, logged and dropped).
+        withTimeout(IO_OP_TIMEOUT_MS) {
+            val engine = EpollEngine()
+            val server = engine.bind("0.0.0.0", 0)
+            val port = (server.localAddress as InetSocketAddress).port
+
+            val clientFd = connectRawClient(port)
+            val ch = server.accept()
+
+            val payload = "final"
+            val bytes = payload.encodeToByteArray()
+            val buf = DefaultAllocator.allocate(16)
+            buf.writeByteArray(bytes, 0, bytes.size)
+            ch.write(buf)
+
+            // No flush() — the half-close is what has to get these bytes out.
+            ch.shutdownOutput()
+
+            assertEquals(payload, rawRead(clientFd, payload.length))
+            assertEquals(ReadResult.Eof, PosixRawClient.rawReadOnce(clientFd, 1))
+
+            ch.close()
+            close(clientFd)
+            server.close()
+            engine.close()
+        }
+    }
+
+    @Test
     fun readAfterShutdownOutputStillWorks() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()

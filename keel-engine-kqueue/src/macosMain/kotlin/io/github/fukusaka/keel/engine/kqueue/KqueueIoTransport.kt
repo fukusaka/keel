@@ -196,33 +196,31 @@ internal class KqueueIoTransport(
 
     // --- Lifecycle ---
 
-    private var outputShutdown = false
-
     /**
      * Sends FIN on the EventLoop thread, like [close] does.
      *
      * `shutdown(2)` acts on an fd the loop owns and is watching, so it follows
      * the same rule as every other operation on that descriptor: the owning
-     * thread issues it. Issuing it from the caller also raced [outputShutdown]
-     * — a plain `var` read and written without synchronisation — so two callers
-     * could both pass the guard and both shut the socket down. Confining it to
-     * the loop makes the flag EventLoop-local, which is what the rest of this
-     * class already assumes of its non-volatile state.
+     * thread issues it. Issuing it from the caller also raced the
+     * `outputShutdown` guard — a plain `var` read and written without
+     * synchronisation — so two callers could both pass it and both shut the
+     * socket down. Confining it to the loop makes the flag EventLoop-local,
+     * which is what the rest of this class already assumes of its
+     * non-volatile state.
      *
      * Idempotent, and safe to call from any thread. The FIN is sent
-     * asynchronously when the caller is off-loop.
+     * asynchronously when the caller is off-loop, and after any buffered
+     * writes have drained.
      */
     override fun shutdownOutput() {
         if (eventLoop.inEventLoop()) {
-            shutdownOutputOnEventLoop()
+            shutdownOutputOwned()
         } else {
-            eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOnEventLoop() })
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOwned() })
         }
     }
 
-    private fun shutdownOutputOnEventLoop() {
-        if (outputShutdown || !opened) return
-        outputShutdown = true
+    override fun sendFin() {
         when (val result = nativeSocket.shutdown(fd, SHUT_WR)) {
             ShutdownResult.Ok -> Unit
             is ShutdownResult.Failed -> eventLoop.logger.warn {
@@ -263,6 +261,7 @@ internal class KqueueIoTransport(
                         cont.resume(Unit)
                     }
                     transport.onFlushComplete?.invoke()
+                    transport.sendFinIfDrained()
                 }
             },
         )
@@ -446,6 +445,7 @@ internal class KqueueIoTransport(
                 cont.resume(Unit)
             }
             onFlushComplete?.invoke()
+            sendFinIfDrained()
         }
     }
 
@@ -475,6 +475,7 @@ internal class KqueueIoTransport(
                             flushScheduled = false
                             val done = performFlush()
                             if (done && pendingWrites.isEmpty()) {
+                                sendFinIfDrained()
                                 cont.resume(Unit)
                                 return@Runnable
                             }

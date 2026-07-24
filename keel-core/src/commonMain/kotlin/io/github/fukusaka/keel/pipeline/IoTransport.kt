@@ -210,8 +210,15 @@ interface IoTransport {
      * thread, so an off-loop caller only queues the request. Observe the
      * effect through the peer, not through the call returning.
      *
-     * Does **not** wait for buffered writes. Data still queued when this is
-     * called may not reach the peer.
+     * Buffered writes are sent first: whatever [write] queued before this
+     * call reaches the peer ahead of the FIN. Writes issued *after* it are
+     * discarded — the caller declared it had nothing more to send.
+     *
+     * Ordering the FIN behind the data also makes it as slow as the data: a
+     * peer that stops reading holds both back. `idleTimeoutMillis` bounds
+     * that (the write-idle timer force-closes a peer that never drains) and
+     * is disabled by default. A [close] before the drain finishes supersedes
+     * the half-close and discards what was still queued.
      */
     fun shutdownOutput()
 

@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
@@ -156,6 +157,82 @@ class KqueueTransportSeamTest {
         } finally {
             loop.close()
         }
+    }
+
+    // --- Half-close ordering (deferred FIN) ---
+
+    @Test
+    fun `shutdownOutput holds the FIN back while the flush is stalled`() = runBlocking {
+        // A half-close issued on top of buffered output must not overtake it:
+        // the FIN goes out only once the bytes have been written. The two
+        // WouldBlock results keep the socket stalled across both the caller's
+        // flush and the retry the half-close itself drives.
+        eventLoop.start()
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.WouldBlock, WriteResult.Written(PAYLOAD_BYTES))
+            enqueueShutdown(fd, ShutdownResult.Ok)
+        }
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+
+        // Observed inside the same loop task as the half-close. The fixture fd is
+        // an unconnected socket, so arming it for write readiness can make the
+        // loop report it writable straight away — reading the counter from a
+        // later task would race that retry rather than test the deferral.
+        val finCallsAtHalfClose = CompletableDeferred<Int>()
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES)
+                buf.writerIndex = PAYLOAD_BYTES
+                transport.write(buf)
+                transport.flush()
+                transport.shutdownOutput()
+                finCallsAtHalfClose.complete(fake.shutdownCalls)
+            },
+        )
+        assertEquals(
+            0,
+            withTimeout(SEAM_TIMEOUT_MS) { finCallsAtHalfClose.await() },
+            "FIN must wait for the stalled write",
+        )
+
+        // Socket becomes writable — the retry drains the queue and releases the FIN.
+        // Harmless if the loop already delivered write readiness on its own: the
+        // second pass finds the queue empty and the FIN already sent.
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.onReady(KqueueEventLoop.Interest.WRITE) })
+        awaitLoopDrained()
+        assertEquals(1, fake.shutdownCalls, "FIN must follow the completed write")
+        fake.assertAllConsumed()
+    }
+
+    @Test
+    fun `write after shutdownOutput is discarded rather than queued`() = runBlocking {
+        // The caller declared it had nothing more to send, so a later write
+        // must not slip in behind the FIN. The buffer's ownership was still
+        // transferred, so it has to be released rather than leaked.
+        eventLoop.start()
+        val fake = FakeNativeSocket().apply {
+            enqueueShutdown(fd, ShutdownResult.Ok)
+        }
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val tracker = TrackingAllocator()
+
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                transport.shutdownOutput()
+                val buf = tracker.allocate(PAYLOAD_BYTES)
+                buf.writerIndex = PAYLOAD_BYTES
+                transport.write(buf)
+                transport.flush()
+            },
+        )
+        awaitLoopDrained()
+
+        assertEquals(1, fake.shutdownCalls)
+        assertEquals(0, fake.writeCalls, "nothing may be sent after the FIN")
+        assertEquals(0, tracker.outstandingCount, "the discarded write must still be released")
+        fake.assertAllConsumed()
     }
 
     // --- flush / flushSingle ---
@@ -466,5 +543,8 @@ class KqueueTransportSeamTest {
 
     private companion object {
         const val SEAM_TIMEOUT_MS = 5_000L
+
+        /** Payload size for the half-close ordering tests. */
+        const val PAYLOAD_BYTES = 5
     }
 }

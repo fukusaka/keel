@@ -17,6 +17,10 @@ import kotlin.concurrent.Volatile
  *   buffer after [write] returns.
  * - **Write backpressure**: [pendingBytes] / [isWritable] / [updatePendingBytes]
  *   track buffered data and invoke [onWritabilityChanged] at high/low water marks.
+ * - **Half-close ordering**: [shutdownOutputOwned] holds the FIN back until
+ *   [outputDrained], so buffered writes reach the peer first, and gates [write]
+ *   afterwards. Subclasses supply the FIN via [sendFin] and call
+ *   [sendFinIfDrained] from their flush-completion paths.
  * - **Open state**: [opened] flag with [isOpen] property for idempotent close.
  * - **Callback properties**: [onRead], [onReadClosed], [onFlushComplete],
  *   [onWritabilityChanged] initialized to `null`.
@@ -240,7 +244,12 @@ abstract class AbstractIoTransport(
         // Discard writes that arrive after close() — the fd is already released
         // and may have been reused by a new connection. Writing to a reused fd
         // would silently corrupt the new connection's data stream.
-        if (!opened) {
+        //
+        // Writes after shutdownOutput() are discarded for the same reason in a
+        // milder form: the caller declared it had nothing more to send, so the
+        // FIN is on its way and anything queued behind it would either be
+        // rejected by the kernel (EPIPE) or reorder past the half-close.
+        if (!opened || outputShutdown) {
             buf.release()
             return
         }
@@ -253,6 +262,101 @@ abstract class AbstractIoTransport(
         pendingWrites.add(PendingWrite(buf, offset, bytes))
         updatePendingBytes(bytes)
     }
+
+    // --- Half-close ---
+
+    /**
+     * True once a half-close has been accepted on the owning thread.
+     *
+     * Gates [write] so nothing new is queued behind the FIN, and makes the
+     * FIN itself at-most-once. Owning-thread-local like [pendingWrites]:
+     * subclasses funnel [IoTransport.shutdownOutput] onto that thread before
+     * calling [shutdownOutputOwned].
+     */
+    protected var outputShutdown: Boolean = false
+        private set
+
+    /** Set while a FIN is waiting for [outputDrained] to become true. */
+    private var finDeferred = false
+
+    /**
+     * True when everything this transport buffered has reached the platform,
+     * so a deferred FIN would not overtake it.
+     *
+     * The base definition covers [pendingWrites] alone. Subclasses that hand
+     * buffers to an asynchronous layer (io_uring send chains, NWConnection
+     * sends) and track them separately must widen this — an empty
+     * [pendingWrites] only means the bytes left *this* queue.
+     */
+    protected open val outputDrained: Boolean
+        get() = pendingWrites.isEmpty()
+
+    /**
+     * Half-closes on the owning thread: stops accepting further output, then
+     * sends the FIN — immediately when nothing is buffered, otherwise once the
+     * buffered writes have drained.
+     *
+     * [write] buffers without sending, so a half-close issued right after it
+     * would otherwise strand those bytes: the peer sees EOF with nothing
+     * before it, and the eventual flush writes to a socket that is already
+     * shut down. Draining first is also why this triggers [flush] itself —
+     * a caller that half-closes without flushing still expects what it wrote
+     * to arrive, and nothing else would ever send it.
+     *
+     * Netty resolves the same conflict the other way: `shutdownOutput` fails
+     * every queued write with `ChannelOutputShutdownException` and fires
+     * `ChannelOutputShutdownEvent`. That reports the loss through the
+     * per-write `ChannelFuture`, which keel's `Unit`-returning [write] has no
+     * equivalent of — the loss here could only be silent, so keel sends the
+     * data instead of dropping it.
+     *
+     * A [close] that arrives before the drain finishes supersedes the
+     * half-close: [sendFinIfDrained] sees `opened == false` and the teardown
+     * releases the buffers, as `close` has always discarded unsent output.
+     *
+     * Idempotent. Subclasses provide the FIN itself via [sendFin].
+     */
+    protected fun shutdownOutputOwned() {
+        if (outputShutdown || !opened) return
+        outputShutdown = true
+        if (outputDrained) {
+            sendFin()
+            return
+        }
+        finDeferred = true
+        // `finally` because a throwing flush would otherwise wedge the
+        // transport for good: [write] is already gated by outputShutdown, so
+        // nothing would ever refill the queue and no completion path would run
+        // to release the deferred FIN.
+        try {
+            flush()
+        } finally {
+            // Covers a flush that drained synchronously — engines whose flush
+            // completes asynchronously reach sendFinIfDrained from their
+            // completion path instead.
+            sendFinIfDrained()
+        }
+    }
+
+    /**
+     * Sends a FIN that [shutdownOutputOwned] deferred, once [outputDrained]
+     * turns true. Subclasses call this from every flush-completion path;
+     * it is a no-op unless a FIN is actually pending.
+     *
+     * **MUST** be invoked from the owning thread.
+     */
+    protected fun sendFinIfDrained() {
+        if (!finDeferred || !opened || !outputDrained) return
+        finDeferred = false
+        sendFin()
+    }
+
+    /**
+     * Issues the TCP FIN. Called on the owning thread, at most once per
+     * transport, and only while [opened] — implementations do not need their
+     * own idempotency guard.
+     */
+    protected abstract fun sendFin()
 
     // --- Write backpressure ---
 

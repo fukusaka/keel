@@ -135,6 +135,12 @@ public open class TestIoTransport(
 
     override fun shutdownOutput() {}
 
+    /**
+     * No-op: this double captures writes in [written] rather than sending
+     * them, so there is no FIN to order against buffered output.
+     */
+    override fun sendFin() {}
+
     override fun close() {
         if (!markClosing()) return
         if (!markTeardownStarted()) return
