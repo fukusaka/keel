@@ -734,7 +734,7 @@ internal class IoUringIoTransport(
      * alone does not mean the bytes have reached the ring.
      */
     override val outputDrained: Boolean
-        get() = pendingWrites.isEmpty() && !asyncFlushPending
+        get() = pendingWrites.isEmpty() && asyncFlushesInFlight == 0
 
     override fun sendFin() {
         if (useDirectAlloc) {
@@ -894,7 +894,7 @@ internal class IoUringIoTransport(
                     // callbacks (the same ownership-snapshot contract the
                     // partial-writev remainder path uses).
                     flushHadEagain = true
-                    asyncFlushPending = true
+                    asyncFlushesInFlight++
                     asyncPendingFlushBytes += totalBytes
                     submitAsyncSendChain(pendingWriteSnapshotPool.borrow(pendingWrites), 0)
                     return false
@@ -943,7 +943,7 @@ internal class IoUringIoTransport(
             }
         }
         // Submit remaining from splitIndex as async chain.
-        asyncFlushPending = true
+        asyncFlushesInFlight++
         val alreadySentInSplit = (writtenBytes - consumed).coerceAtLeast(0)
         val remainingBytes = totalBytes - writtenBytes
         asyncPendingFlushBytes += remainingBytes
@@ -978,6 +978,12 @@ internal class IoUringIoTransport(
                     // Decrement sync-written portion; async remainder tracked via asyncPendingFlushBytes.
                     updatePendingBytes(-written)
                     val asyncBytes = pw.length - written
+                    // Same bookkeeping the gather / CQE / ZC paths do: the SQE below
+                    // outlives this call and flush()'s finally clears pendingWrites,
+                    // so the queue emptying is not evidence the bytes have gone.
+                    // Without this, awaitPendingFlush resumes early and the half-close
+                    // sends its FIN ahead of the outstanding send.
+                    asyncFlushesInFlight++
                     asyncPendingFlushBytes += asyncBytes
                     // Transfer buffer ownership to submitAsyncSend.
                     // Do NOT release here — submitAsyncSend manages the lifecycle.
@@ -1120,7 +1126,7 @@ internal class IoUringIoTransport(
      * Single buffer uses SEND SQE; multiple buffers use WRITEV SQE (gather write).
      */
     private fun flushCqe() {
-        asyncFlushPending = true
+        asyncFlushesInFlight++
         val totalBytes = pendingWrites.sumOf { it.length }
         asyncPendingFlushBytes += totalBytes
         if (pendingWrites.size == 1) {
@@ -1262,7 +1268,7 @@ internal class IoUringIoTransport(
      * [flushSendmsgZc] (SENDMSG_ZC, kernel 6.1+).
      */
     private fun flushSendZc() {
-        asyncFlushPending = true
+        asyncFlushesInFlight++
         asyncPendingFlushBytes += pendingWrites.sumOf { it.length }
         // Snapshot before submitting: flush() clears pendingWrites the moment
         // this returns, but the chain advances asynchronously across CQE
@@ -1390,7 +1396,7 @@ internal class IoUringIoTransport(
      * second CQE (notification) arrives.
      */
     private fun flushSendmsgZc() {
-        asyncFlushPending = true
+        asyncFlushesInFlight++
         val totalBytes = pendingWrites.sumOf { it.length }
         asyncPendingFlushBytes += totalBytes
 
@@ -1458,15 +1464,29 @@ internal class IoUringIoTransport(
 
     // --- Await pending async flush (Coroutine mode) ---
 
-    private var asyncFlushPending = false
+    /**
+     * Number of async send chains submitted but not yet completed.
+     *
+     * A count rather than a flag because [flush] has no in-flight guard: a
+     * write arriving while an earlier chain is outstanding submits a second
+     * one, and the first completion must not report the whole flush done.
+     * [outputDrained] gates the half-close FIN on this and [awaitPendingFlush]
+     * resumes on it, so a flag would let both run while bytes are still in the
+     * ring. The sibling [asyncPendingFlushBytes] already accumulates with `+=`
+     * for the same reason.
+     */
+    private var asyncFlushesInFlight = 0
     private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
 
     /**
-     * Called when all async sends in a flush chain complete.
-     * Resumes the Coroutine mode continuation and invokes [onFlushComplete].
+     * Called when an async send chain completes. Reports the flush done —
+     * resuming the Coroutine mode continuation, invoking [onFlushComplete] and
+     * releasing a deferred half-close FIN — only once the last outstanding
+     * chain has finished.
      */
     private fun onAsyncFlushDone() {
-        asyncFlushPending = false
+        asyncFlushesInFlight--
+        if (asyncFlushesInFlight > 0) return
         val flushed = asyncPendingFlushBytes
         asyncPendingFlushBytes = 0
         updatePendingBytes(-flushed)
@@ -1482,8 +1502,8 @@ internal class IoUringIoTransport(
      * Suspends until all pending async flush operations complete.
      *
      * Dispatches the check+register lambda to the EventLoop so the
-     * [asyncFlushPending] check and [flushContinuation] store are atomic
-     * with the write-CQE handler that clears the flag. If the flush already
+     * [asyncFlushesInFlight] check and [flushContinuation] store are atomic
+     * with the write-CQE handler that decrements it. If the flush already
      * completed before the lambda executes, [cont] is resumed immediately
      * rather than stored, avoiding a TOCTOU deadlock.
      */
@@ -1492,7 +1512,7 @@ internal class IoUringIoTransport(
             val register = Runnable {
                 when {
                     !opened -> cont.cancel()
-                    !asyncFlushPending -> cont.resume(Unit)
+                    asyncFlushesInFlight == 0 -> cont.resume(Unit)
                     else -> {
                         flushContinuation = cont
                         cont.invokeOnCancellation { flushContinuation = null }
