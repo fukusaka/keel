@@ -151,10 +151,15 @@ internal class InMemoryIoTransport(
 
     /**
      * Half-closes the outbound direction: the peer observes EOF on its
-     * read side ([onReadClosed]). The inbound direction stays open so a
-     * final response from the peer can still be read. Idempotent.
+     * read side ([onReadClosed]) — after any buffered writes have been
+     * delivered, matching the real engines. The inbound direction stays
+     * open so a final response from the peer can still be read. Idempotent.
      */
     override fun shutdownOutput() {
+        shutdownOutputOwned()
+    }
+
+    override fun sendFin() {
         notifyPeerEof()
     }
 
