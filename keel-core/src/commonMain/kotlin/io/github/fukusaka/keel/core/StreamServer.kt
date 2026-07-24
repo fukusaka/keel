@@ -39,6 +39,15 @@ interface StreamServer : AutoCloseable {
      */
     suspend fun accept(): PipelinedChannel
 
-    /** Stops listening and releases the server socket. */
+    /**
+     * Stops listening and releases the server socket.
+     *
+     * **The listening port is released asynchronously** — see
+     * [PipelinedStreamServer.close][io.github.fukusaka.keel.pipeline.PipelinedStreamServer.close]
+     * for the full contract. Suspended [accept] callers are resumed with a
+     * cancellation before the socket goes away.
+     *
+     * Idempotent.
+     */
     override fun close()
 }

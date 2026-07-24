@@ -41,6 +41,24 @@ interface PipelinedStreamServer : AutoCloseable {
     /** True if the server is listening for connections. */
     val isActive: Boolean
 
-    /** Stops listening and releases resources. */
+    /**
+     * Stops listening and releases resources.
+     *
+     * **The listening port is released asynchronously.** `close()` returns once
+     * the teardown has been handed to the engine, not once the kernel has
+     * dropped the socket, so a `bind()` for the same port immediately afterwards
+     * may still fail with "address already in use". The release is prompt —
+     * bounded by one event-loop turn plus the kernel's own work — so a caller
+     * that must rebind should retry briefly rather than assume either outcome
+     * on the first attempt.
+     *
+     * This is the contract every engine implements: the ones backed by
+     * io_uring, `Selector` or a framework loop cannot make it synchronous
+     * without blocking their loop, and the readiness engines follow the same
+     * rule so callers do not have to know which engine they hold.
+     *
+     * Idempotent. Connections already accepted are unaffected and continue
+     * until they close on their own.
+     */
     override fun close()
 }

@@ -24,7 +24,7 @@ import kotlin.time.Duration.Companion.seconds
  * the rolled-back port claimable again, whole-server close releasing every
  * port, the accepted channel reporting the local address of the listener
  * it arrived on, and the empty-list rejection. Native listener close
- * releases the port synchronously (no deferred kernel close), so release
+ * releases the port asynchronously, so release
  * is asserted by rebinding directly.
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -52,9 +52,28 @@ class EpollMultiAddressBindTest {
         }
     }
 
-    /** Native close releases the port synchronously — claim it by rebinding. */
-    private fun assertPortRebindable(engine: EpollEngine, port: Int) {
-        engine.bindPipeline(InetSocketAddress("127.0.0.1", port)) { }.close()
+    /**
+     * Claims [port] again under a bounded retry, failing if the budget runs out.
+     *
+     * `close()` releases the port asynchronously by contract — it hands the
+     * teardown to the boss EventLoop and returns — so the rebind can lose a
+     * race with a listener that is still one dispatch away from being closed.
+     * The same retry shape the io_uring and NIO suites use for the same reason.
+     */
+    private fun assertPortReleased(engine: EpollEngine, port: Int, budgetMillis: Long = PORT_RELEASE_BUDGET_MS) {
+        val mark = kotlin.time.TimeSource.Monotonic.markNow()
+        var last: Throwable? = null
+        while (mark.elapsedNow().inWholeMilliseconds < budgetMillis) {
+            val server = runCatching { engine.bindPipeline(InetSocketAddress("127.0.0.1", port)) { } }
+                .onFailure { last = it }
+                .getOrNull()
+            if (server != null) {
+                server.close()
+                return
+            }
+            platform.posix.usleep(PORT_RELEASE_POLL_MICROS)
+        }
+        throw AssertionError("port $port still bound ${budgetMillis}ms after the listener was closed", last)
     }
 
     @Test
@@ -108,16 +127,19 @@ class EpollMultiAddressBindTest {
                 // Occupies the second entry's port so its bind deterministically fails.
                 val blocker = engine.bindPipeline(InetSocketAddress("127.0.0.1", 0)) { }
                 try {
-                    // A port that is free right now (native close releases synchronously).
+                    // A port that was just freed. close() releases asynchronously, so wait
+                    // for it before reusing the number as the multi-bind's first entry —
+                    // otherwise that entry fails and the rollback path under test never runs.
                     val probe = engine.bindPipeline(InetSocketAddress("127.0.0.1", 0)) { }
                     val freePort = portOf(probe.localAddress)
                     probe.close()
+                    assertPortReleased(engine, freePort)
                     assertFailsWith<IllegalStateException> {
                         engine.bindPipeline(
                             listOf(loopbackSpec(freePort), loopbackSpec(portOf(blocker.localAddress))),
                         ) { }
                     }
-                    assertPortRebindable(engine, freePort)
+                    assertPortReleased(engine, freePort)
                 } finally {
                     blocker.close()
                 }
@@ -135,7 +157,7 @@ class EpollMultiAddressBindTest {
                 val server = engine.bindPipeline(listOf(loopbackSpec(), loopbackSpec())) { }
                 val ports = server.localAddresses.map { portOf(it) }
                 server.close()
-                ports.forEach { assertPortRebindable(engine, it) }
+                ports.forEach { assertPortReleased(engine, it) }
             } finally {
                 engine.close()
             }
@@ -177,5 +199,10 @@ class EpollMultiAddressBindTest {
                 engine.close()
             }
         }
+    }
+
+    private companion object {
+        const val PORT_RELEASE_BUDGET_MS = 2_000L
+        const val PORT_RELEASE_POLL_MICROS: UInt = 20_000u
     }
 }
