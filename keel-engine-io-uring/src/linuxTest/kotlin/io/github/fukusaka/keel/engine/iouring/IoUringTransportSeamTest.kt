@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.ShutdownResult
@@ -176,6 +177,72 @@ class IoUringTransportSeamTest {
         }
     }
 
+    // --- Half-close ordering (deferred FIN) ---
+
+    @Test
+    fun `shutdownOutput holds the FIN back while a send SQE is outstanding`() = runBlocking {
+        // EAGAIN on the single-buffer direct send hands the remainder to an
+        // async SEND SQE and flush() then clears pendingWrites, so an empty
+        // queue is not evidence the bytes have gone. The half-close has to
+        // wait for the chain, not for the queue.
+        eventLoop.start()
+        val fake = FakeNativeSocket().apply {
+            enqueueSend(fd, WriteResult.WouldBlock)
+            enqueueShutdown(fd, ShutdownResult.Ok)
+        }
+        val transport = newTransport(fake)
+
+        // Observed inside the same loop task as the half-close, so a CQE
+        // arriving afterwards cannot be mistaken for the deferral working.
+        val finCallsAtHalfClose = CompletableDeferred<Int>()
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES)
+                buf.writerIndex = PAYLOAD_BYTES
+                transport.write(buf)
+                transport.flush()
+                transport.shutdownOutput()
+                finCallsAtHalfClose.complete(fake.shutdownCalls)
+            },
+        )
+        assertEquals(
+            0,
+            withTimeout(SEAM_TIMEOUT_MILLIS) { finCallsAtHalfClose.await() },
+            "FIN must wait for the outstanding send",
+        )
+    }
+
+    @Test
+    fun `write after shutdownOutput is discarded rather than queued`() = runBlocking {
+        // The caller declared it had nothing more to send, so a later write
+        // must not slip in behind the FIN. Ownership was still transferred,
+        // so the buffer has to be released rather than leaked.
+        eventLoop.start()
+        val fake = FakeNativeSocket().apply {
+            enqueueShutdown(fd, ShutdownResult.Ok)
+        }
+        val transport = newTransport(fake)
+        val tracker = TrackingAllocator()
+
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                transport.shutdownOutput()
+                val buf = tracker.allocate(PAYLOAD_BYTES)
+                buf.writerIndex = PAYLOAD_BYTES
+                transport.write(buf)
+                transport.flush()
+            },
+        )
+        awaitLoopDrained()
+
+        assertEquals(1, fake.shutdownCalls)
+        assertEquals(0, fake.sendCalls, "nothing may be sent after the FIN")
+        assertEquals(0, tracker.outstandingCount, "the discarded write must still be released")
+        fake.assertAllConsumed()
+    }
+
     // --- flushDirectSendSingle (FALLBACK_CQE, single-buffer synchronous path) ---
 
     @Test
@@ -316,5 +383,8 @@ class IoUringTransportSeamTest {
 
     private companion object {
         const val SEAM_TIMEOUT_MILLIS = 5_000L
+
+        /** Payload size for the half-close ordering tests. */
+        const val PAYLOAD_BYTES = 5
     }
 }

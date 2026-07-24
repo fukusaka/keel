@@ -174,6 +174,11 @@ class EpollTransportSeamTest {
         }
         val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
+        // Observed inside the same loop task as the half-close. The fixture fd is
+        // an unconnected socket, so arming it for write readiness can make the
+        // loop report it writable straight away — reading the counter from a
+        // later task would race that retry rather than test the deferral.
+        val finCallsAtHalfClose = CompletableDeferred<Int>()
         eventLoop.dispatch(
             EmptyCoroutineContext,
             Runnable {
@@ -182,12 +187,18 @@ class EpollTransportSeamTest {
                 transport.write(buf)
                 transport.flush()
                 transport.shutdownOutput()
+                finCallsAtHalfClose.complete(fake.shutdownCalls)
             },
         )
-        awaitLoopDrained()
-        assertEquals(0, fake.shutdownCalls, "FIN must wait for the stalled write")
+        assertEquals(
+            0,
+            withTimeout(SEAM_TIMEOUT_MS) { finCallsAtHalfClose.await() },
+            "FIN must wait for the stalled write",
+        )
 
         // Socket becomes writable — the retry drains the queue and releases the FIN.
+        // Harmless if the loop already delivered write readiness on its own: the
+        // second pass finds the queue empty and the FIN already sent.
         eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.onReady(EpollEventLoop.Interest.WRITE) })
         awaitLoopDrained()
         assertEquals(1, fake.shutdownCalls, "FIN must follow the completed write")
