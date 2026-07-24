@@ -71,7 +71,7 @@ class IoUringEngineLifecycleTest {
     fun `bind returns active server channel`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = IoUringEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             assertTrue(server.isActive)
             server.close()
             engine.close()
@@ -94,7 +94,7 @@ class IoUringEngineLifecycleTest {
     fun `server channel close stops listening`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = IoUringEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             server.close()
             assertFalse(server.isActive)
             engine.close()
@@ -104,7 +104,7 @@ class IoUringEngineLifecycleTest {
     @Test
     fun `channel lifecycle after close`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -124,7 +124,7 @@ class IoUringEngineLifecycleTest {
     @Test
     fun `double close is idempotent`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -212,7 +212,7 @@ class IoUringEngineLifecycleTest {
     @Test
     fun `write zero bytes returns zero`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)

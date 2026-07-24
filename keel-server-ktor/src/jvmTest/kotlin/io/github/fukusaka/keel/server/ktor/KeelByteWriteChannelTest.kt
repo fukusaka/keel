@@ -427,7 +427,12 @@ class KeelByteWriteChannelTest {
         keepAlive: Boolean = true,
         block: (port: Int) -> Unit,
     ) {
-        val server = embeddedServer(Keel, port = 0, module = module)
+        // Loopback, not the default wildcard: SO_REUSEADDR lets another process
+        // bind 127.0.0.1 on the same port after this server is already listening
+        // on the wildcard, and a connect to 127.0.0.1 then reaches that later,
+        // more specific listener instead of this server. Binding loopback makes
+        // the second bind fail with EADDRINUSE, so the port cannot be taken over.
+        val server = embeddedServer(Keel, host = "127.0.0.1", port = 0, module = module)
         val cfg = server.engine.configuration
         cfg.engine = NioEngine()
         cfg.keepAlive = keepAlive
@@ -448,7 +453,7 @@ class KeelByteWriteChannelTest {
         keepAlive: Boolean = true,
         block: (port: Int) -> Unit,
     ) {
-        val server = embeddedServer(Keel, port = 0, module = module)
+        val server = embeddedServer(Keel, host = "127.0.0.1", port = 0, module = module)
         val cfg = server.engine.configuration
         cfg.engine = NettyEngine()
         cfg.keepAlive = keepAlive
@@ -562,7 +567,7 @@ class KeelByteWriteChannelWrapPathTest {
         val big = ByteArray(100_000) { (it % 251).toByte() }
         // One byte below the threshold — pins the pooled copy path.
         val small = ByteArray(8_191) { (it % 13).toByte() }
-        val server = embeddedServer(Keel, port = 0) {
+        val server = embeddedServer(Keel, host = "127.0.0.1", port = 0) {
             routing {
                 get("/big") { call.respondBytesWriter { writeFully(big) } }
                 get("/small") { call.respondBytesWriter { writeFully(small) } }

@@ -22,7 +22,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `echo round trip`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -49,7 +49,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `read returns minus one on EOF`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -70,7 +70,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `write and flush`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -97,7 +97,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `multiple writes single flush`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -127,7 +127,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `read advances IoBuf writerIndex`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -247,7 +247,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `shutdownOutput sends FIN to peer`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -267,7 +267,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `read after shutdownOutput still works`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -293,7 +293,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `asSuspendSink writes data via BufferedSuspendSink`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -316,7 +316,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `asSuspendSink multiple writes in one flush`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -340,7 +340,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `asSuspendSource reads data via multishot recv`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -369,7 +369,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `asSuspendSource returns minus one on EOF`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -392,7 +392,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `asSuspendSource echo round trip`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -421,7 +421,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `asSuspendSource multiple reads from same connection`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -451,7 +451,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `asSuspendSource with BufferedSuspendSource readLine`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)

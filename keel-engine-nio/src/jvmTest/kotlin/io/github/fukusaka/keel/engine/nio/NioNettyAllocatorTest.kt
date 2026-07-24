@@ -26,7 +26,7 @@ class NioNettyAllocatorTest {
     fun `nio round-trips a Netty PooledByteBufAllocator-backed buffer`() = runTest {
         val alloc = nettyByteBufAllocator()
         val engine = NioEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)

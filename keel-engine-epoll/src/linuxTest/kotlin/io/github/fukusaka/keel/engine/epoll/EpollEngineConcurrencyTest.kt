@@ -25,7 +25,7 @@ class EpollEngineConcurrencyTest {
     fun concurrentReadOnMultipleChannels() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
             val clientCount = 5
 
@@ -58,7 +58,7 @@ class EpollEngineConcurrencyTest {
     @Test
     fun concurrentAcceptMultipleClients() = runBlocking {
         val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 10
 

@@ -47,7 +47,7 @@ class KeelEngineHttpsRegressionTest {
 
         val server = embeddedServer(Keel, configure = {
             engine = NioEngine()
-            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { port = 0 }
+            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { host = "127.0.0.1"; port = 0 }
         }) {
             routing {
                 get("/large") { call.respondText(largeBody) }
@@ -89,7 +89,7 @@ class KeelEngineHttpsRegressionTest {
 
         val server = embeddedServer(Keel, configure = {
             engine = NettyEngine()
-            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { port = 0 }
+            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { host = "127.0.0.1"; port = 0 }
         }) {
             routing {
                 get("/hello") { call.respondText("Hello, Netty HTTPS!") }
@@ -127,7 +127,7 @@ class KeelEngineHttpsRegressionTest {
 
         val server = embeddedServer(Keel, configure = {
             engine = NettyEngine()
-            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { port = 0 }
+            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { host = "127.0.0.1"; port = 0 }
         }) {
             routing {
                 get("/hello") { call.respondText("Hello, Netty HTTPS!") }

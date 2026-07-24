@@ -22,7 +22,7 @@ class IoUringEngineResourceTest {
     fun `no IoBuf leak when channel closed with pending writes`() = runBlocking {
         val tracking = TrackingAllocator(DefaultAllocator)
         val engine = IoUringEngine(IoEngineConfig(allocator = tracking))
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -58,7 +58,7 @@ class IoUringEngineResourceTest {
         val tracker = TrackingAllocator()
         val userAllocator = SlabAllocator(lifecycleListener = tracker)
         val engine = IoUringEngine(IoEngineConfig(allocator = userAllocator))
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -95,7 +95,7 @@ class IoUringEngineResourceTest {
     fun `no IoBuf leak on echo`() = runBlocking {
         val tracking = TrackingAllocator(DefaultAllocator)
         val engine = IoUringEngine(IoEngineConfig(allocator = tracking))
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
