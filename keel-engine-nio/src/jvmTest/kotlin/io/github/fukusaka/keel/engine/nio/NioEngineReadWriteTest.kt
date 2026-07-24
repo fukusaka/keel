@@ -292,7 +292,7 @@ class NioEngineReadWriteTest {
     @Test
     fun `multiple read-write cycles reuse SelectionKey`() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
@@ -325,7 +325,7 @@ class NioEngineReadWriteTest {
     @Test
     fun `flush large payload completes without data loss`() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
@@ -370,7 +370,7 @@ class NioEngineReadWriteTest {
     @Test
     fun `flush multiple large buffers with gather write`() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)

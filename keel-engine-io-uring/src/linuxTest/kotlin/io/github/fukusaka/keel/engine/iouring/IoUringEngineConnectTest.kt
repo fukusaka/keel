@@ -20,7 +20,7 @@ class IoUringEngineConnectTest {
     @Test
     fun `connect creates active channel`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val accepted = CompletableDeferred<io.github.fukusaka.keel.core.Channel>()
@@ -44,7 +44,7 @@ class IoUringEngineConnectTest {
             // 'localhost' comes from /etc/hosts, so getaddrinfo never leaves
             // the machine — this exercises the whole resolve + connect path
             // without depending on network DNS.
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val channel = engine.connect("localhost", port)

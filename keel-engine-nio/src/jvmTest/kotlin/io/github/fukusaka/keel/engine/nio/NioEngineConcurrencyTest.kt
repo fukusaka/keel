@@ -18,7 +18,7 @@ class NioEngineConcurrencyTest {
     @Test
     fun concurrentReadOnMultipleChannels() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 5
 
@@ -65,7 +65,7 @@ class NioEngineConcurrencyTest {
     @Test
     fun multipleConcurrentAcceptsAreFifoQueued() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val results = (1..8).map { i ->
@@ -107,7 +107,7 @@ class NioEngineConcurrencyTest {
     @Test
     fun concurrentAcceptMultipleClients() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 10
 
@@ -130,7 +130,7 @@ class NioEngineConcurrencyTest {
     @Test
     fun clientDisconnectDuringRead() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
@@ -159,7 +159,7 @@ class NioEngineConcurrencyTest {
     @Test
     fun cancelReadCoroutine() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = connectRawClient(port)
@@ -189,7 +189,7 @@ class NioEngineConcurrencyTest {
     @Test
     fun `close StreamServer cancels pending accept`() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
 
         val acceptJob = launch {
             server.accept()

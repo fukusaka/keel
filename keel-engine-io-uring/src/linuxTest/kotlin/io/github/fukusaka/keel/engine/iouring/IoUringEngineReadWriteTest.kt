@@ -151,7 +151,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `read write exact buffer size 8192 bytes`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -186,7 +186,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `read write buffer size plus one 8193 bytes`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -219,7 +219,7 @@ class IoUringEngineReadWriteTest {
     @Test
     fun `large payload flush writes all bytes`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)

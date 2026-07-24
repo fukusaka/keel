@@ -238,7 +238,7 @@ class KqueueEngineLifecycleTest {
     @Test
     fun clientDisconnectDuringRead() = runBlocking {
         val engine = KqueueEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -270,7 +270,7 @@ class KqueueEngineLifecycleTest {
     @Test
     fun cancelReadCoroutine() = runBlocking {
         val engine = KqueueEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -356,7 +356,7 @@ class KqueueEngineLifecycleTest {
     fun `connect and echo round trip`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             // Non-blocking connect (EINPROGRESS on non-loopback, immediate on loopback)

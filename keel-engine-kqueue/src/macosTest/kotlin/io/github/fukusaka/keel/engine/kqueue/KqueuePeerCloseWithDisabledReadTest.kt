@@ -49,7 +49,7 @@ class KqueuePeerCloseWithDisabledReadTest {
     @Test
     fun `peer FIN fires onReadClosed when readEnabled stays false`() = runBlocking {
         val engine = KqueueEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = engine.connect("127.0.0.1", port)
@@ -107,7 +107,7 @@ class KqueuePeerCloseWithDisabledReadTest {
     @Test
     fun `data with readEnabled=false stays in kernel buffer — back-pressure`() = runBlocking {
         val engine = KqueueEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = engine.connect("127.0.0.1", port)

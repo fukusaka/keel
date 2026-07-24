@@ -228,7 +228,7 @@ class IoUringEngineUringSpecificTest {
     fun `multishot accept handles concurrent accept callers`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = IoUringEngine(IoEngineConfig(threads = 4))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val results = (1..8).map { i ->

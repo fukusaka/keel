@@ -15,7 +15,7 @@ class NioEngineConnectTest {
     @Test
     fun connectToListeningServer() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
@@ -33,7 +33,7 @@ class NioEngineConnectTest {
     @Test
     fun connectRemoteAddress() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
@@ -51,7 +51,7 @@ class NioEngineConnectTest {
     @Test
     fun connectLocalAddress() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val ch = engine.connect("127.0.0.1", port)
@@ -69,7 +69,7 @@ class NioEngineConnectTest {
     @Test
     fun `connect and echo round trip`() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         // Non-blocking connect (OP_CONNECT on non-loopback, immediate on loopback)

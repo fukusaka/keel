@@ -84,7 +84,7 @@ class EpollEngineConcurrencyTest {
     fun `channel ioDispatcher returns EventLoop`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -104,7 +104,7 @@ class EpollEngineConcurrencyTest {
     fun `dispatch executes task on EventLoop thread`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -132,7 +132,7 @@ class EpollEngineConcurrencyTest {
     fun `echo round trip on EventLoop dispatcher`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -164,7 +164,7 @@ class EpollEngineConcurrencyTest {
     fun `multiple dispatches are executed in FIFO order`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -193,7 +193,7 @@ class EpollEngineConcurrencyTest {
     fun `dispatch from within EventLoop thread`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -220,7 +220,7 @@ class EpollEngineConcurrencyTest {
     fun `concurrent dispatch from multiple coroutines`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -267,7 +267,7 @@ class EpollEngineConcurrencyTest {
     fun `echo with multi-thread EventLoop`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine(IoEngineConfig(threads = 4))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             // Multiple clients to exercise round-robin distribution
@@ -306,7 +306,7 @@ class EpollEngineConcurrencyTest {
     fun `channels are distributed across worker EventLoops`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine(IoEngineConfig(threads = 4))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             // Accept 4 channels — should be assigned to 4 different workers

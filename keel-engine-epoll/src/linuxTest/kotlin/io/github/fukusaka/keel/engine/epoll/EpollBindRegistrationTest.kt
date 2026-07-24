@@ -40,7 +40,7 @@ class EpollBindRegistrationTest {
             val logger = RecordingLogger(LogLevel.WARN)
             val engine = EpollEngine(config = IoEngineConfig(loggerFactory = { logger }))
             try {
-                val server = engine.bind("127.0.0.1", 0)
+                val server = engine.bind(LOOPBACK_HOST, 0)
                 val port = (server.localAddress as InetSocketAddress).port
 
                 // Connect without calling accept() first. The kernel completes
@@ -79,7 +79,7 @@ class EpollBindRegistrationTest {
                 // reusable. delay() rather than a blocking sleep: the accept
                 // runs on this dispatcher, so blocking the thread would stop it
                 // ever reaching its suspend point.
-                val first = engine.bind("127.0.0.1", 0)
+                val first = engine.bind(LOOPBACK_HOST, 0)
                 val firstPort = (first.localAddress as InetSocketAddress).port
                 val pending = launch { runCatching { first.accept() } }
                 delay(SETTLE_MILLIS)
@@ -94,7 +94,7 @@ class EpollBindRegistrationTest {
 
                 // The next listen socket takes the lowest free descriptor, which
                 // is the number just released.
-                val second = engine.bind("127.0.0.1", 0)
+                val second = engine.bind(LOOPBACK_HOST, 0)
                 val port = (second.localAddress as InetSocketAddress).port
 
                 // Suspend the accept before connecting, so it has to go through
