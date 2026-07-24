@@ -215,6 +215,8 @@ internal class NwIoTransport(
     private val connQueueDispatcher = NwConnectionQueueDispatcher(connQueue)
     override val ioDispatcher: CoroutineDispatcher = connQueueDispatcher
 
+    override val inOwningContext: Boolean get() = connQueueDispatcher.inConnectionQueue
+
     init {
         // Per-connection-queue header-pool fix: install a per-connection-queue scoped
         // `HttpHeadersPool` stack on [connQueue]. Without this, the

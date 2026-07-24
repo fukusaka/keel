@@ -89,6 +89,8 @@ internal class NettyIoTransport(
 
     override val ioDispatcher: CoroutineDispatcher = NettyEventLoopDispatcher(nettyChannel.eventLoop())
 
+    override val inOwningContext: Boolean get() = nettyChannel.eventLoop().inEventLoop()
+
     /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
     override val idleTimeoutMillis: Long = idleTimeoutMillis
 

@@ -106,6 +106,8 @@ internal class KqueueIoTransport(
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
+    override val inOwningContext: Boolean get() = eventLoop.inEventLoop()
+
     // --- Read path ---
 
     override var readEnabled: Boolean = false

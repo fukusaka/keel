@@ -140,8 +140,15 @@ internal class NwConnectionQueueDispatcher(
      * on the hot path.
      */
     internal fun assertInConnectionQueue(operation: String) {
-        check(dispatch_get_specific(marker) == marker) {
+        check(inConnectionQueue) {
             "$operation must run on the NWConnection serial dispatch queue"
         }
     }
+
+    /**
+     * Predicate form of [assertInConnectionQueue], for callers that branch on
+     * the answer instead of failing — the same single queue-local lookup.
+     */
+    internal val inConnectionQueue: Boolean
+        get() = dispatch_get_specific(marker) == marker
 }

@@ -90,6 +90,8 @@ internal class NioIoTransport(
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
+    override val inOwningContext: Boolean get() = eventLoop.inEventLoop()
+
     /** Read/write idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
     override val idleTimeoutMillis: Long = idleTimeoutMillis
 
