@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlin.concurrent.AtomicInt
 
 /**
  * Pipeline server channel for epoll-based connection acceptance on Linux.
@@ -46,8 +47,13 @@ internal class EpollPipelinedStreamServer(
     override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
     override val isActive: Boolean get() = !closed
 
-    @kotlin.concurrent.Volatile
-    private var closed = false
+    // CAS rather than a volatile check-then-set: two concurrent close() calls
+    // could both observe false and both tear down, closing each listener fd
+    // twice — and by the second close the kernel may have handed that
+    // descriptor number to a new socket.
+    private val closedFlag = AtomicInt(0)
+
+    private val closed: Boolean get() = closedFlag.value != 0
     private var workerIndex = 0 // Single boss thread only — no atomicity needed.
 
     /**
@@ -149,13 +155,22 @@ internal class EpollPipelinedStreamServer(
      * check). Idempotent.
      */
     override fun close() {
-        if (closed) return
-        closed = true
-        for (listener in listeners) {
-            bossLoop.unregisterCallback(listener.serverFd, EpollEventLoop.Interest.READ)
-            bossLoop.cleanupFd(listener.serverFd)
-            closeFdSafely(listener.serverFd, logger, "pipelined server close")
-        }
+        if (!closedFlag.compareAndSet(0, 1)) return
+        bossLoop.runOnLoopBlocking(
+            onLoop = {
+                for (listener in listeners) {
+                    bossLoop.unregisterCallback(listener.serverFd, EpollEventLoop.Interest.READ)
+                    bossLoop.cleanupFd(listener.serverFd)
+                    closeFdSafely(listener.serverFd, logger, "pipelined server close")
+                }
+            },
+            // Loop gone: the interest registries are dead, so only release the fd.
+            ifStopped = {
+                for (listener in listeners) {
+                    closeFdSafely(listener.serverFd, logger, "pipelined server close")
+                }
+            },
+        )
     }
 
     /**

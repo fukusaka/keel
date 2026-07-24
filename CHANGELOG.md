@@ -51,6 +51,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: close a listener's fd on the EventLoop thread that owns its kqueue / epoll
+  set rather than on the caller's. Closing from another thread while that loop sat parked could wedge
+  `close(2)` in the kernel, leaving a process that no longer responds to `SIGKILL` (#990)
 - `engine-kqueue`, `engine-epoll`: arm the listener fd when `accept()` has a waiter for it rather than during
   `bind()`, removing the stale watch every bind used to leave and the risk that clearing it disarms a
   freshly bound listener on the same recycled fd number (#989)

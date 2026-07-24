@@ -185,8 +185,23 @@ internal class KqueueStreamServer(
             true
         }
         if (!shouldClose) return
-        bossLoop.cancelAll(serverFd, KqueueEventLoop.Interest.READ, CancellationException("StreamServer closed"))
-        closeFdSafely(serverFd, logger, "server close")
+        // cancelAll and close both run on the boss loop: cancelAll takes the
+        // loop's regMutex, which EventLoop.close() destroys, so issuing it off
+        // the loop would be a use-after-free once the engine has been closed
+        // first. See KqueuePipelinedStreamServer.close for the close(2) half.
+        bossLoop.runOnLoopBlocking(
+            onLoop = {
+                bossLoop.cancelAll(
+                    serverFd,
+                    KqueueEventLoop.Interest.READ,
+                    CancellationException("StreamServer closed"),
+                )
+                closeFdSafely(serverFd, logger, "server close")
+            },
+            // Loop gone: its registry is dead (any waiters died with it) and the
+            // regMutex may be freed, so only release the fd.
+            ifStopped = { closeFdSafely(serverFd, logger, "server close") },
+        )
         val destroyRet = pthread_mutex_destroy(mutex.ptr)
         if (destroyRet != 0) {
             logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyRet)}" }
