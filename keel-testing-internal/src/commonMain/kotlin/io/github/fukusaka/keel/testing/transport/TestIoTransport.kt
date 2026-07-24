@@ -118,7 +118,24 @@ public open class TestIoTransport(
         readEnabled = true
     }
 
-    override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
+    /**
+     * Backs [ioDispatcher]. Replaceable because a test that flips
+     * [owningContext] to `false` needs a dispatcher that accepts `dispatch` —
+     * the default [Dispatchers.Unconfined] rejects it.
+     */
+    public var dispatcher: CoroutineDispatcher = Dispatchers.Unconfined
+
+    override val ioDispatcher: CoroutineDispatcher get() = dispatcher
+
+    /**
+     * Reported by [inOwningContext]. Flip to `false` to make the pipeline take
+     * its off-context branch — the double's [ioDispatcher] is
+     * [Dispatchers.Unconfined], so the dispatched work still runs inline and
+     * the test observes the routing without needing a real EventLoop.
+     */
+    public var owningContext: Boolean = true
+
+    override val inOwningContext: Boolean get() = owningContext
 
     override fun write(buf: IoBuf) {
         // Ownership transferred from caller per AbstractIoTransport.write
