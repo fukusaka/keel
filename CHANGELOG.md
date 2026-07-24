@@ -62,6 +62,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: `StreamServer` no longer owns a mutex it destroys while a concurrent
+  `accept()` may be about to lock it. The accept/close interlock moves onto the event loop's registration
+  lock — the one `cancelAll` already takes — via a new predicated register (#993)
 - `engine-kqueue`, `engine-epoll`: close a listener's fd on the EventLoop thread that owns its kqueue / epoll
   set rather than on the caller's. Closing from another thread while that loop sat parked could wedge
   `close(2)` in the kernel, leaving a process that no longer responds to `SIGKILL` (#990)

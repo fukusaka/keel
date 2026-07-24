@@ -483,6 +483,51 @@ internal class EpollEventLoop(
     }
 
     /**
+     * [register]s only if [stillWanted] holds, evaluated under the same lock
+     * that [cancelAll] takes.
+     *
+     * `StreamServer.accept()` must decide "is my server still open?" and append
+     * its waiter as one step: `close()` runs [cancelAll], and a registration
+     * that lands after it is never resumed. Both sides already serialise on
+     * this loop's registration lock, so the check belongs here rather than
+     * behind a second mutex the server would have to own — and outlive.
+     *
+     * [stillWanted] runs **while this loop's registration lock is held**, so it
+     * must be a plain state read: taking another lock, or calling back into
+     * this loop, can deadlock. `StreamServer` passes a volatile flag read.
+     *
+     * @return the [Registration], or `null` if [stillWanted] returned false.
+     */
+    fun registerIf(
+        fd: Int,
+        interest: Interest,
+        cont: CancellableContinuation<Unit>,
+        stillWanted: () -> Boolean,
+    ): Registration? {
+        val events = when (interest) {
+            Interest.READ -> EPOLLIN
+            Interest.WRITE -> EPOLLOUT
+        }
+        val key = registrationKey(fd, interest)
+        val newReg = Registration(fd, interest, cont)
+        val appended = withRegLock {
+            if (!stillWanted()) {
+                false
+            } else {
+                appendRegistration(key, newReg)
+                true
+            }
+        }
+        if (!appended) return null
+        if (inEventLoop()) {
+            submitRegisterEpoll(fd, events, key, newReg, cont)
+        } else {
+            dispatch(EmptyCoroutineContext, Runnable { submitRegisterEpoll(fd, events, key, newReg, cont) })
+        }
+        return newReg
+    }
+
+    /**
      * Registers a file descriptor for read or write readiness notification.
      *
      * When `epoll_wait()` reports the fd as ready, the head [Registration]
@@ -569,6 +614,15 @@ internal class EpollEventLoop(
         cont: CancellableContinuation<Unit>,
     ) {
         assertInEventLoop("EpollEventLoop.submitRegisterEpoll")
+        // The arm is dispatched after the chain append releases the lock, so a
+        // close() can queue its teardown in between: cancelAll then resumes
+        // this waiter and the fd is closed before this runs. Arming here would
+        // touch a descriptor that is gone — or, once the kernel reuses the
+        // number, somebody else's — and leave a ledger entry for it, which is
+        // the stale-registration hang the teardown ordering exists to prevent.
+        // A waiter no longer in the chain has already been resumed; drop it.
+        if (!withRegLock { isRegistered(key, reg) }) return
+
         val err = addOrModifyEpoll(fd, events)
         if (err != 0) {
             withRegLock { removeRegistration(key, reg) }
@@ -609,6 +663,16 @@ internal class EpollEventLoop(
             }
         }
         for (reg in toResume) reg.continuation.resumeWithException(cause)
+    }
+
+    /** True if [reg] is still in the chain for [key]. Caller MUST hold [regMutex]. */
+    private fun isRegistered(key: Long, reg: Registration): Boolean {
+        var curr = registrations[key]
+        while (curr != null) {
+            if (curr === reg) return true
+            curr = curr.next
+        }
+        return false
     }
 
     /** Appends [reg] to the FIFO chain for [key]. Caller MUST hold [regMutex]. */
