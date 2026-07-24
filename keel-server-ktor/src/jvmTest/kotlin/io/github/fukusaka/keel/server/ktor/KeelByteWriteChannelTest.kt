@@ -487,7 +487,13 @@ class KeelByteWriteChannelTest {
     }
 
     private fun readHttpHeaders(reader: BufferedReader): Map<String, String> {
-        reader.readLine() ?: error("EOF before status line")
+        // Check the status line rather than skip it. Reading past a non-200
+        // reply pushes its body into the chunk parser, which then fails on
+        // whatever text it finds instead of naming the response that arrived.
+        val statusLine = reader.readLine() ?: error("EOF before status line")
+        check(statusLine.startsWith("HTTP/1.1 200") || statusLine.startsWith("HTTP/1.0 200")) {
+            "expected a 200 response, got \"$statusLine\""
+        }
         val headers = mutableMapOf<String, String>()
         while (true) {
             val line = reader.readLine() ?: break
@@ -502,7 +508,14 @@ class KeelByteWriteChannelTest {
 
     private fun readNextChunk(reader: BufferedReader): String? {
         val sizeLine = reader.readLine() ?: return null
-        val size = sizeLine.trim().toInt(HEX_RADIX)
+        // Report what was actually on the wire. A bare NumberFormatException
+        // names the offending token and nothing else, which leaves a one-off
+        // failure undiagnosable: there is no way to tell a mis-framed keel
+        // response from a reply that never came from keel at all.
+        val size = sizeLine.trim().toIntOrNull(HEX_RADIX) ?: error(
+            "expected a hex chunk size but read \"$sizeLine\"; remainder of the stream: " +
+                generateSequence { reader.readLine() }.take(REMAINDER_DUMP_LINES).joinToString("\\n"),
+        )
         if (size == 0) {
             reader.readLine()
             return null
@@ -521,6 +534,9 @@ class KeelByteWriteChannelTest {
     private companion object {
         private const val STREAM_TIMEOUT_MS = 5_000
         private const val HEX_RADIX = 16
+
+        /** Lines of the unparsed response to quote when chunk framing does not hold. */
+        private const val REMAINDER_DUMP_LINES = 20
 
         /**
          * Pause window for `slow-reader high-water audit — flush suspends slow-reader producer` tests.
