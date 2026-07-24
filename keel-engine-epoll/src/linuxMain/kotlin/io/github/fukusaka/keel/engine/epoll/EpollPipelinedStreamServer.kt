@@ -156,7 +156,7 @@ internal class EpollPipelinedStreamServer(
      */
     override fun close() {
         if (!closedFlag.compareAndSet(0, 1)) return
-        bossLoop.runOnLoopBlocking(
+        bossLoop.runOnLoop(
             onLoop = {
                 for (listener in listeners) {
                     bossLoop.unregisterCallback(listener.serverFd, EpollEventLoop.Interest.READ)

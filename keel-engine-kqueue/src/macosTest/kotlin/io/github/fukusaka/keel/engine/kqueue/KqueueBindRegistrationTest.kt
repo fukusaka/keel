@@ -79,10 +79,17 @@ class KqueueBindRegistrationTest {
                 // dispatcher, so blocking the thread would stop it ever reaching
                 // its suspend point.
                 val first = engine.bind("127.0.0.1", 0)
+                val firstPort = (first.localAddress as InetSocketAddress).port
                 val pending = launch { runCatching { first.accept() } }
                 delay(SETTLE_MILLIS)
                 first.close()
                 pending.join()
+                // join() only means the accept coroutine unwound; close()
+                // releases the fd asynchronously on the boss loop. Without
+                // waiting for the release the next bind can get a different
+                // descriptor and this stops testing fd reuse at all — while
+                // still passing.
+                awaitPortReleased(engine, firstPort)
 
                 // The next listen socket takes the lowest free descriptor, which
                 // is the number just released.
@@ -106,11 +113,36 @@ class KqueueBindRegistrationTest {
         }
     }
 
+
+    /**
+     * Waits until [port] can be bound again, i.e. until the asynchronous
+     * `close()` has actually released the listener's descriptor.
+     *
+     * The fd-reuse case below depends on the number being free before the next
+     * bind; without this the test still passes but silently stops covering
+     * reuse.
+     */
+    private suspend fun awaitPortReleased(engine: KqueueEngine, port: Int) {
+        val mark = kotlin.time.TimeSource.Monotonic.markNow()
+        while (mark.elapsedNow().inWholeMilliseconds < PORT_RELEASE_BUDGET_MS) {
+            val probe = runCatching { engine.bind("127.0.0.1", port) }.getOrNull()
+            if (probe != null) {
+                probe.close()
+                return
+            }
+            delay(PORT_RELEASE_POLL_MILLIS)
+        }
+        throw AssertionError("port $port still bound ${PORT_RELEASE_BUDGET_MS}ms after close()")
+    }
+
     private companion object {
         val TEST_TIMEOUT = 15.seconds
 
         /** Substring of the no-handler WARN in [KqueueEventLoop.dispatchReady]. */
         const val STALE_FILTER_MARKER = "no handler"
+
+        const val PORT_RELEASE_BUDGET_MS = 2_000L
+        const val PORT_RELEASE_POLL_MILLIS = 20L
 
         /** Lets a coroutine on this dispatcher reach its suspend point. */
         const val SETTLE_MILLIS = 300L

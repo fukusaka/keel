@@ -37,6 +37,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`core`): `StreamServer.close()` / `PipelinedStreamServer.close()` now release the listening
+  port asynchronously on every engine, and both interfaces document it. `engine-kqueue` / `engine-epoll` used
+  to release it before returning; `engine-io-uring` and `engine-nio` never did. A caller that rebinds the same
+  port immediately after `close()` should retry briefly instead of assuming the first attempt succeeds (#991)
+
 - **BREAKING** (`codec-http`): the HTTP/1.1 codec's pipeline stage names are now `h1-` prefixed
   (`decoder` → `h1-decoder`, `encoder` → `h1-encoder`, `aggregator` → `h1-aggregator`,
   `request-deadline` / `body-rate-floor` likewise) so they cannot collide with another protocol

@@ -170,6 +170,21 @@ internal class EpollStreamServer(
             true
         }
         if (!shouldClose) return
+        // Destroying the mutex and freeing its arena is the last step of the
+        // teardown, **after** the listener fd is closed, because accept() takes
+        // this mutex on its WouldBlock branch: while the fd is still open a
+        // resumed accept() can reach that branch and lock it, so freeing first
+        // is a use-after-free. Once the fd is closed that path gets EBADF and
+        // fails without touching the lock. Kept inline in close() so the arena
+        // ownership stays visible at the only place that ends this object.
+        fun releaseLock() {
+            val destroyRet = pthread_mutex_destroy(mutex.ptr)
+            if (destroyRet != 0) {
+                logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyRet)}" }
+            }
+            arena.clear()
+        }
+
         // cancelAll, cleanupFd and close all run on the boss loop below: the
         // first two take the loop's regMutex, which EventLoop.close() destroys,
         // so issuing them off the loop would be a use-after-free once the engine
@@ -180,7 +195,7 @@ internal class EpollStreamServer(
         // loop believe a recycled fd is already registered and skip the
         // epoll_ctl for it, so the next listener on that number is watched
         // by nobody and its accept() never fires.
-        bossLoop.runOnLoopBlocking(
+        bossLoop.runOnLoop(
             onLoop = {
                 bossLoop.cancelAll(
                     serverFd,
@@ -189,16 +204,15 @@ internal class EpollStreamServer(
                 )
                 bossLoop.cleanupFd(serverFd)
                 closeFdSafely(serverFd, logger, "server close")
+                releaseLock()
             },
             // Loop gone: its registry is dead (any waiters died with it) and the
             // regMutex may be freed, so only release the fd.
-            ifStopped = { closeFdSafely(serverFd, logger, "server close") },
+            ifStopped = {
+                closeFdSafely(serverFd, logger, "server close")
+                releaseLock()
+            },
         )
-        val destroyRet = pthread_mutex_destroy(mutex.ptr)
-        if (destroyRet != 0) {
-            logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyRet)}" }
-        }
-        arena.clear()
     }
 
     private inline fun <T> withLock(block: () -> T): T {
