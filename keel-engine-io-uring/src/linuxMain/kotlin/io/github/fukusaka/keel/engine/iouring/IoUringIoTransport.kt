@@ -704,8 +704,6 @@ internal class IoUringIoTransport(
 
     // --- Lifecycle ---
 
-    private var outputShutdown = false
-
     /**
      * Sends FIN on the EventLoop thread, like [close] does.
      *
@@ -714,49 +712,55 @@ internal class IoUringIoTransport(
      * takes a slot from a plain (non-atomic) freelist and an SQE from the shared
      * submission ring, both owned by the loop under `IORING_SETUP_SINGLE_ISSUER`.
      * Calling it from another thread corrupts that state. The plain path issues
-     * `shutdown(2)` directly, and its [outputShutdown] guard is a plain field —
+     * `shutdown(2)` directly, and its `outputShutdown` guard is a plain field —
      * two callers could both pass it. Confining the whole method to the loop
      * fixes both.
      *
      * Idempotent, and safe to call from any thread. The FIN is sent
-     * asynchronously when the caller is off-loop.
+     * asynchronously when the caller is off-loop, and after any buffered
+     * writes have drained.
      */
     override fun shutdownOutput() {
         if (eventLoop.inEventLoop()) {
-            shutdownOutputOnEventLoop()
+            shutdownOutputOwned()
         } else {
-            eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOnEventLoop() })
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOwned() })
         }
     }
 
-    private fun shutdownOutputOnEventLoop() {
-        if (!outputShutdown && opened) {
-            outputShutdown = true
-            if (useDirectAlloc) {
-                // Direct-allocated slots do not expose the raw fd; route
-                // through IORING_OP_SHUTDOWN + IOSQE_FIXED_FILE. Fire and
-                // forget — the CQE result is logged on failure only.
-                fixedOpSubmitted()
-                eventLoop.submitCallback(
-                    prepare = { sqe ->
-                        keel_prep_shutdown(sqe, sqeFd, SHUT_WR)
-                        keel_sqe_set_fixed_file(sqe)
-                    },
-                    onCqe = { res, _ ->
-                        fixedOpCompleted()
-                        if (res < 0) {
-                            eventLoop.logger.warn {
-                                "io_uring shutdown(SHUT_WR) failed: index=$sqeFd ${errnoMessage(-res)}"
-                            }
+    /**
+     * An async send chain owns its buffers outside [pendingWrites] (they move
+     * into a snapshot the moment the SQEs are submitted), so an empty queue
+     * alone does not mean the bytes have reached the ring.
+     */
+    override val outputDrained: Boolean
+        get() = pendingWrites.isEmpty() && !asyncFlushPending
+
+    override fun sendFin() {
+        if (useDirectAlloc) {
+            // Direct-allocated slots do not expose the raw fd; route
+            // through IORING_OP_SHUTDOWN + IOSQE_FIXED_FILE. Fire and
+            // forget — the CQE result is logged on failure only.
+            fixedOpSubmitted()
+            eventLoop.submitCallback(
+                prepare = { sqe ->
+                    keel_prep_shutdown(sqe, sqeFd, SHUT_WR)
+                    keel_sqe_set_fixed_file(sqe)
+                },
+                onCqe = { res, _ ->
+                    fixedOpCompleted()
+                    if (res < 0) {
+                        eventLoop.logger.warn {
+                            "io_uring shutdown(SHUT_WR) failed: index=$sqeFd ${errnoMessage(-res)}"
                         }
-                    },
-                )
-            } else {
-                when (val result = nativeSocket.shutdown(fd, SHUT_WR)) {
-                    ShutdownResult.Ok -> Unit
-                    is ShutdownResult.Failed -> eventLoop.logger.warn {
-                        "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(result.errno)}"
                     }
+                },
+            )
+        } else {
+            when (val result = nativeSocket.shutdown(fd, SHUT_WR)) {
+                ShutdownResult.Ok -> Unit
+                is ShutdownResult.Failed -> eventLoop.logger.warn {
+                    "shutdown(SHUT_WR) failed: fd=$fd ${errnoMessage(result.errno)}"
                 }
             }
         }
@@ -1471,6 +1475,7 @@ internal class IoUringIoTransport(
             cont.resume(Unit)
         }
         onFlushComplete?.invoke()
+        sendFinIfDrained()
     }
 
     /**
