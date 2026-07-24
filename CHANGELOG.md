@@ -41,8 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   thread instead of the caller's, matching `close()`. On io_uring the direct-alloc path submitted through an
   EventLoop-only API that takes a non-atomic slot and an SQE from the shared ring; on all three the
   `outputShutdown` guard is a plain field two callers could both pass. `IoTransport.shutdownOutput` and
-  `Channel.shutdownOutput` now document that the FIN may be sent after the call returns, and that buffered
-  writes are not flushed first (#992)
+  `Channel.shutdownOutput` now document that the FIN may be sent after the call returns (#992)
 - **BREAKING** (`core`): `StreamServer.close()` / `PipelinedStreamServer.close()` now release the listening
   port asynchronously on every engine, and both interfaces document it. `engine-kqueue` / `engine-epoll` used
   to release it before returning; `engine-io-uring` and `engine-nio` never did. A caller that rebinds the same
@@ -62,6 +61,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-*`, `core`: `shutdownOutput()` now sends buffered writes before the FIN instead of stranding them,
+  and discards writes issued after it (#994)
 - `engine-kqueue`, `engine-epoll`: `StreamServer` no longer owns a mutex it destroys while a concurrent
   `accept()` may be about to lock it. The accept/close interlock moves onto the event loop's registration
   lock — the one `cancelAll` already takes — via a new predicated register (#993)
