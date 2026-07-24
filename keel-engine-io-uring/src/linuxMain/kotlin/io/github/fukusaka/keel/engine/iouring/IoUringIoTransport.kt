@@ -706,7 +706,30 @@ internal class IoUringIoTransport(
 
     private var outputShutdown = false
 
+    /**
+     * Sends FIN on the EventLoop thread, like [close] does.
+     *
+     * The direct-alloc path submits `IORING_OP_SHUTDOWN` through
+     * [IoUringEventLoop.submitCallback], which is documented EventLoop-only: it
+     * takes a slot from a plain (non-atomic) freelist and an SQE from the shared
+     * submission ring, both owned by the loop under `IORING_SETUP_SINGLE_ISSUER`.
+     * Calling it from another thread corrupts that state. The plain path issues
+     * `shutdown(2)` directly, and its [outputShutdown] guard is a plain field —
+     * two callers could both pass it. Confining the whole method to the loop
+     * fixes both.
+     *
+     * Idempotent, and safe to call from any thread. The FIN is sent
+     * asynchronously when the caller is off-loop.
+     */
     override fun shutdownOutput() {
+        if (eventLoop.inEventLoop()) {
+            shutdownOutputOnEventLoop()
+        } else {
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOnEventLoop() })
+        }
+    }
+
+    private fun shutdownOutputOnEventLoop() {
         if (!outputShutdown && opened) {
             outputShutdown = true
             if (useDirectAlloc) {

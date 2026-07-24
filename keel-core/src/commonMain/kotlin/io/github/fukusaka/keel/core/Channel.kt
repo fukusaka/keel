@@ -164,6 +164,14 @@ interface Channel : AutoCloseable {
      * Shuts down the write side of this channel (TCP FIN),
      * signalling that no more output will be sent.
      * The read side remains open for consuming the peer's remaining data.
+     *
+     * **Safe to call from any thread, and the FIN may be sent after this
+     * returns.** Engines that own an EventLoop issue the syscall on that
+     * thread, so an off-loop caller only queues the request.
+     *
+     * Does **not** flush buffered writes first. Call [flush] and let it
+     * complete before half-closing if the peer must see everything written so
+     * far; data still queued when this is called may not reach it.
      */
     fun shutdownOutput()
 

@@ -1,13 +1,16 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -60,14 +63,34 @@ class EpollTransportSeamTest {
 
     @AfterTest
     fun tearDown() {
-        close(fd)
+        // Stop the loop first: the transport registered [fd] with it, so closing
+        // the descriptor while the loop thread is still polling or arming it is
+        // the recycled-fd hazard the engine funnels exist to avoid. Harmless
+        // until these tests started the loop; now it is not.
         eventLoop.close()
+        close(fd)
+    }
+
+    /**
+     * Returns once the loop has run everything dispatched so far.
+     *
+     * A marker task goes through the same FIFO queue, so when it completes the
+     * work queued before it has already run. Awaiting the deferred also
+     * publishes the loop thread's writes to this one — [FakeNativeSocket] is
+     * documented single-threaded, so its counters must not be polled while the
+     * loop may still be touching them.
+     */
+    private suspend fun awaitLoopDrained() {
+        val marker = CompletableDeferred<Unit>()
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable { marker.complete(Unit) })
+        withTimeout(SEAM_TIMEOUT_MS) { marker.await() }
     }
 
     // --- shutdownOutput ---
 
     @Test
-    fun `shutdownOutput with Ok response invokes nativeSocket once`() {
+    fun `shutdownOutput with Ok response invokes nativeSocket once`() = runBlocking {
+        eventLoop.start()
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
@@ -75,12 +98,14 @@ class EpollTransportSeamTest {
 
         transport.shutdownOutput()
 
+        awaitLoopDrained()
         assertEquals(1, fake.shutdownCalls)
         fake.assertAllConsumed()
     }
 
     @Test
-    fun `shutdownOutput is idempotent`() {
+    fun `shutdownOutput is idempotent`() = runBlocking {
+        eventLoop.start()
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
@@ -91,23 +116,46 @@ class EpollTransportSeamTest {
         transport.shutdownOutput()
 
         // Second and third calls must short-circuit on the `outputShutdown`
-        // flag — fake must see exactly one invocation.
+        // flag — fake must see exactly one invocation. Settle first so a lost
+        // guard shows up as 2 or 3 rather than passing on timing.
+        awaitLoopDrained()
         assertEquals(1, fake.shutdownCalls)
     }
 
     @Test
-    fun `shutdownOutput with Failed EPIPE does not throw`() {
-        // EPIPE here is representative of "peer already gone" — the
-        // engine must log-and-continue rather than propagate the error,
-        // because shutdown is a best-effort notification.
-        val fake = FakeNativeSocket().apply {
-            enqueueShutdown(fd, ShutdownResult.Failed(EPIPE))
+    fun `shutdownOutput with Failed EPIPE does not throw`() = runBlocking {
+        // The body now runs inside a dispatched task, and drainTasks catches
+        // whatever a task throws. So "does not throw" can no longer be observed
+        // by the call returning — assert on the loop's own guard log instead:
+        // a throw would surface as "dispatched task threw", and the failure has
+        // to surface as the transport's own shutdown warning.
+        val warns = RecordingLogger(LogLevel.WARN)
+        val loop = EpollEventLoop(warns, flushCoalescing = false)
+        loop.start()
+        try {
+            val fake = FakeNativeSocket().apply {
+                enqueueShutdown(fd, ShutdownResult.Failed(EPIPE))
+            }
+            val transport = EpollIoTransport(fd, loop, DefaultAllocator, fake)
+
+            transport.shutdownOutput()
+
+            val marker = CompletableDeferred<Unit>()
+            loop.dispatch(EmptyCoroutineContext, Runnable { marker.complete(Unit) })
+            withTimeout(SEAM_TIMEOUT_MS) { marker.await() }
+
+            assertEquals(1, fake.shutdownCalls)
+            assertTrue(
+                warns.messages.any { "shutdown(SHUT_WR) failed" in it },
+                "the EPIPE must be reported by the transport, got: ${warns.messages}",
+            )
+            assertTrue(
+                warns.messages.none { "dispatched task threw" in it },
+                "shutdownOutput must not throw out of the dispatched task, got: ${warns.messages}",
+            )
+        } finally {
+            loop.close()
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
-
-        transport.shutdownOutput()
-
-        assertEquals(1, fake.shutdownCalls)
     }
 
     // --- flush / flushSingle (single-buffer path) ---
@@ -497,5 +545,9 @@ class EpollTransportSeamTest {
         } finally {
             coalescingLoop.close()
         }
+    }
+
+    private companion object {
+        const val SEAM_TIMEOUT_MS = 5_000L
     }
 }
