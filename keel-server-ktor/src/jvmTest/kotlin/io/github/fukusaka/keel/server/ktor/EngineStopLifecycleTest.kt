@@ -42,7 +42,12 @@ class EngineStopLifecycleTest {
 
     @Test
     fun `stop with no clients completes promptly`() {
-        val server = embeddedServer(Keel, port = 0) {
+        // Loopback, not the default wildcard: SO_REUSEADDR lets another process
+        // bind 127.0.0.1 on the same port after this server is already listening
+        // on the wildcard, and a connect to 127.0.0.1 then reaches that later,
+        // more specific listener instead of this server. Binding loopback makes
+        // the second bind fail with EADDRINUSE, so the port cannot be taken over.
+        val server = embeddedServer(Keel, host = "127.0.0.1", port = 0) {
             routing { get("/") { call.respondText("OK") } }
         }
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
@@ -56,7 +61,7 @@ class EngineStopLifecycleTest {
 
     @Test
     fun `stop with single idle keep-alive connection completes within grace period`() {
-        val server = embeddedServer(Keel, port = 0) {
+        val server = embeddedServer(Keel, host = "127.0.0.1", port = 0) {
             routing { get("/") { call.respondText("OK") } }
         }
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
@@ -80,7 +85,7 @@ class EngineStopLifecycleTest {
 
     @Test
     fun `stop with many idle keep-alive connections completes within grace period`() {
-        val server = embeddedServer(Keel, port = 0) {
+        val server = embeddedServer(Keel, host = "127.0.0.1", port = 0) {
             routing { get("/") { call.respondText("OK") } }
         }
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
@@ -102,7 +107,7 @@ class EngineStopLifecycleTest {
 
     @Test
     fun `stop with in-flight suspending handler completes within grace period`() {
-        val server = embeddedServer(Keel, port = 0) {
+        val server = embeddedServer(Keel, host = "127.0.0.1", port = 0) {
             routing {
                 get("/slow") {
                     // Suspend far longer than the stop timeout so the
@@ -171,7 +176,7 @@ class EngineStopLifecycleTest {
      */
     @Test
     fun `stop with 50 idle WebSocket connections completes within grace period`() {
-        val server = embeddedServer(Keel, port = 0) {
+        val server = embeddedServer(Keel, host = "127.0.0.1", port = 0) {
             routing {
                 keelWebSocket("/idle") {
                     // Drain the inbound channel so the handler stays suspended

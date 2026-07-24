@@ -41,7 +41,7 @@ class NioServerCloseThreadSafetyTest {
     fun `concurrent close from many threads is idempotent and exception-free`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = NioEngine(IoEngineConfig(threads = 1))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val parallelism = 16
             val latch = CountDownLatch(parallelism)
             val executor = Executors.newFixedThreadPool(parallelism)
@@ -81,7 +81,7 @@ class NioServerCloseThreadSafetyTest {
     @Test
     fun `close while accept is suspended cancels accept without fatal exceptions`() = runBlocking {
         val engine = NioEngine(IoEngineConfig(threads = 1))
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val fatals = CopyOnWriteArrayList<Throwable>()
         val prev = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { _, t -> fatals.add(t) }

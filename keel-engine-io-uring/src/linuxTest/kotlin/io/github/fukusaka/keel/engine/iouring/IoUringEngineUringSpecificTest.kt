@@ -188,7 +188,7 @@ class IoUringEngineUringSpecificTest {
     @Test
     fun `multishot accept delivers multiple connections`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFds = IntArray(5) { connectRawClient(port) }
@@ -228,7 +228,7 @@ class IoUringEngineUringSpecificTest {
     fun `multishot accept handles concurrent accept callers`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = IoUringEngine(IoEngineConfig(threads = 4))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val results = (1..8).map { i ->
@@ -264,7 +264,7 @@ class IoUringEngineUringSpecificTest {
     @Test
     fun `multishot accept echo works for each connection`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         repeat(3) { i ->
@@ -295,7 +295,7 @@ class IoUringEngineUringSpecificTest {
     @Test
     fun `close server channel while multishot armed`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         // Accept one connection to arm the multishot SQE.
@@ -314,7 +314,7 @@ class IoUringEngineUringSpecificTest {
     @Test
     fun `accepted channels are assigned to worker EventLoops in round-robin order`() = runBlocking {
         val engine = IoUringEngine(IoEngineConfig(threads = 2))
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         // Accept 4 connections: should cycle through 2 workers
@@ -336,7 +336,7 @@ class IoUringEngineUringSpecificTest {
     @Test
     fun `close channel while multishot recv armed`() = runBlocking {
         val engine = IoUringEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)

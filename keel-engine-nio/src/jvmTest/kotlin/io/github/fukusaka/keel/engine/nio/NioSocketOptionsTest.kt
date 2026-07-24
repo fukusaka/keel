@@ -32,7 +32,7 @@ class NioSocketOptionsTest {
     @Test
     fun `connect with ConnectConfig applies socket options to client SocketChannel`() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
         try {
             val client = engine.connect(
@@ -101,7 +101,7 @@ class NioSocketOptionsTest {
     @Test
     fun `connect without ConnectConfig applies SocketOptions DEFAULT with TCP_NODELAY enabled`() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
         try {
             val client = engine.connect(InetSocketAddress("127.0.0.1", port))
@@ -118,7 +118,7 @@ class NioSocketOptionsTest {
     @Test
     fun `connect with partial ConnectConfig skips null properties`() = runTest {
         val engine = NioEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
         try {
             val client = engine.connect(

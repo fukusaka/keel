@@ -62,7 +62,7 @@ class NioShutdownRaceTest {
             runBlocking {
                 withTimeout(testTimeout) {
                     val engine = NioEngine(IoEngineConfig())
-                    val server = engine.bind("127.0.0.1", 0)
+                    val server = engine.bind(LOOPBACK_HOST, 0)
                     val port = (server.localAddress as InetSocketAddress).port
                     // Dispatchers.Default is intentional: the original race
                     // surfaced as a CoroutinesInternalError on a

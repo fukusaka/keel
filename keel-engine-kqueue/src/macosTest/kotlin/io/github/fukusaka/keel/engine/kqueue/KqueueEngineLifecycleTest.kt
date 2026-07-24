@@ -78,7 +78,7 @@ class KqueueEngineLifecycleTest {
     fun bindReturnsActiveServerChannel() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             assertTrue(server.isActive)
             server.close()
             engine.close()
@@ -101,7 +101,7 @@ class KqueueEngineLifecycleTest {
     fun serverChannelCloseStopsListening() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             server.close()
             assertFalse(server.isActive)
             engine.close()
@@ -112,7 +112,7 @@ class KqueueEngineLifecycleTest {
     fun channelLifecycleAfterClose() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -136,7 +136,7 @@ class KqueueEngineLifecycleTest {
     fun readOnClosedChannelThrows() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -157,7 +157,7 @@ class KqueueEngineLifecycleTest {
     fun writeOnClosedChannelThrows() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -181,7 +181,7 @@ class KqueueEngineLifecycleTest {
             engine.close()
 
             assertFailsWith<IllegalStateException> {
-                engine.bind("0.0.0.0", 0)
+                engine.bind(LOOPBACK_HOST, 0)
             }
             Unit
         }
@@ -191,7 +191,7 @@ class KqueueEngineLifecycleTest {
     fun `double close is idempotent`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -210,7 +210,7 @@ class KqueueEngineLifecycleTest {
     fun `write zero bytes returns zero`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -238,7 +238,7 @@ class KqueueEngineLifecycleTest {
     @Test
     fun clientDisconnectDuringRead() = runBlocking {
         val engine = KqueueEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -270,7 +270,7 @@ class KqueueEngineLifecycleTest {
     @Test
     fun cancelReadCoroutine() = runBlocking {
         val engine = KqueueEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -356,7 +356,7 @@ class KqueueEngineLifecycleTest {
     fun `connect and echo round trip`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             // Non-blocking connect (EINPROGRESS on non-loopback, immediate on loopback)

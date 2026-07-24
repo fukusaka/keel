@@ -24,7 +24,7 @@ class EpollEngineConnectTest {
     fun connectToListeningServer() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val ch = engine.connect("127.0.0.1", port)
@@ -44,7 +44,7 @@ class EpollEngineConnectTest {
     fun connectRemoteAddress() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val ch = engine.connect("127.0.0.1", port)
@@ -64,7 +64,7 @@ class EpollEngineConnectTest {
     fun connectLocalAddress() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val ch = engine.connect("127.0.0.1", port)
@@ -84,7 +84,7 @@ class EpollEngineConnectTest {
     fun `connect and echo round trip`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             // Non-blocking connect (EINPROGRESS on non-loopback, immediate on loopback)

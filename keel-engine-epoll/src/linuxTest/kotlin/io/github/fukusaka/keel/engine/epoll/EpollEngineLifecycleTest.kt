@@ -65,7 +65,7 @@ class EpollEngineLifecycleTest {
     fun bindReturnsActiveServerChannel() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             assertTrue(server.isActive)
             server.close()
             engine.close()
@@ -88,7 +88,7 @@ class EpollEngineLifecycleTest {
     fun serverChannelCloseStopsListening() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             server.close()
             assertFalse(server.isActive)
             engine.close()
@@ -99,7 +99,7 @@ class EpollEngineLifecycleTest {
     fun channelLifecycleAfterClose() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -123,7 +123,7 @@ class EpollEngineLifecycleTest {
     fun readOnClosedChannelThrows() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -144,7 +144,7 @@ class EpollEngineLifecycleTest {
     fun writeOnClosedChannelThrows() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -168,7 +168,7 @@ class EpollEngineLifecycleTest {
             engine.close()
 
             assertFailsWith<IllegalStateException> {
-                engine.bind("0.0.0.0", 0)
+                engine.bind(LOOPBACK_HOST, 0)
             }
             Unit
         }
@@ -178,7 +178,7 @@ class EpollEngineLifecycleTest {
     fun `double close is idempotent`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -197,7 +197,7 @@ class EpollEngineLifecycleTest {
     fun `write zero bytes returns zero`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = EpollEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -223,7 +223,7 @@ class EpollEngineLifecycleTest {
     @Test
     fun clientDisconnectDuringRead() = runBlocking {
         val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)
@@ -254,7 +254,7 @@ class EpollEngineLifecycleTest {
     @Test
     fun cancelReadCoroutine() = runBlocking {
         val engine = EpollEngine()
-        val server = engine.bind("0.0.0.0", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientFd = connectRawClient(port)

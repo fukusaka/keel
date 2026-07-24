@@ -34,7 +34,7 @@ class NioListenerCloseReleaseTest {
     fun `closing a coroutine-mode listener releases its port promptly`() = runTest {
         val engine = NioEngine()
         try {
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
             server.close()
             assertPortReleased(port)

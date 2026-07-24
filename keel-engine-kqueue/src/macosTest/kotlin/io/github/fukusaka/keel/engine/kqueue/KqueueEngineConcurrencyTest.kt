@@ -26,7 +26,7 @@ class KqueueEngineConcurrencyTest {
     fun concurrentReadOnMultipleChannels() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
             val clientCount = 5
 
@@ -61,7 +61,7 @@ class KqueueEngineConcurrencyTest {
     @Test
     fun concurrentAcceptMultipleClients() = runBlocking {
         val engine = KqueueEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
         val clientCount = 10
 
@@ -87,7 +87,7 @@ class KqueueEngineConcurrencyTest {
     fun `channel ioDispatcher returns EventLoop`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -107,7 +107,7 @@ class KqueueEngineConcurrencyTest {
     fun `dispatch executes task on EventLoop thread`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -136,7 +136,7 @@ class KqueueEngineConcurrencyTest {
     fun `echo round trip on EventLoop dispatcher`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -167,7 +167,7 @@ class KqueueEngineConcurrencyTest {
     @Test
     fun `close StreamServer cancels pending accept`() = runBlocking {
         val engine = KqueueEngine()
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
 
         val acceptJob = launch {
             server.accept()
@@ -203,7 +203,7 @@ class KqueueEngineConcurrencyTest {
     fun `echo with multi-thread EventLoop`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 4))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             // Multiple clients to exercise round-robin distribution
@@ -242,7 +242,7 @@ class KqueueEngineConcurrencyTest {
     fun `channels are distributed across worker EventLoops`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 4))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             // Accept 4 channels — should be assigned to 4 different workers

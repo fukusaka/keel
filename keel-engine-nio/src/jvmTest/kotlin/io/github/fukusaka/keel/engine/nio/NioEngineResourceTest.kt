@@ -16,7 +16,7 @@ class NioEngineResourceTest {
     fun `echo with TrackingAllocator has no buffer leak`() = runTest {
         val tracker = TrackingAllocator()
         val engine = NioEngine(IoEngineConfig(allocator = tracker))
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = Socket(InetAddress.getLoopbackAddress(), port)
@@ -50,7 +50,7 @@ class NioEngineResourceTest {
     fun `large payload with TrackingAllocator has no buffer leak`() = runTest {
         val tracker = TrackingAllocator()
         val engine = NioEngine(IoEngineConfig(allocator = tracker))
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = Socket(InetAddress.getLoopbackAddress(), port)
@@ -88,7 +88,7 @@ class NioEngineResourceTest {
     fun `connect with TrackingAllocator has no buffer leak`() = runTest {
         val tracker = TrackingAllocator()
         val engine = NioEngine(IoEngineConfig(allocator = tracker))
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val clientCh = engine.connect("127.0.0.1", port)

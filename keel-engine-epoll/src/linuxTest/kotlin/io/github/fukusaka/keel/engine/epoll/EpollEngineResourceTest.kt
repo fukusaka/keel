@@ -51,7 +51,7 @@ class EpollEngineResourceTest {
         withTimeout(5.seconds) {
             val tracker = TrackingAllocator()
             val engine = EpollEngine(IoEngineConfig(allocator = tracker))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -84,7 +84,7 @@ class EpollEngineResourceTest {
         withTimeout(5.seconds) {
             val tracker = TrackingAllocator()
             val engine = EpollEngine(IoEngineConfig(allocator = tracker))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -123,7 +123,7 @@ class EpollEngineResourceTest {
         withTimeout(5.seconds) {
             val tracker = TrackingAllocator()
             val engine = EpollEngine(IoEngineConfig(allocator = tracker))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val client = engine.connect("127.0.0.1", port)
@@ -156,7 +156,7 @@ class EpollEngineResourceTest {
         withTimeout(5.seconds) {
             val tracker = TrackingAllocator()
             val engine = EpollEngine(IoEngineConfig(allocator = tracker))
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)

@@ -110,3 +110,18 @@ internal class RecordingLogger(private val captured: LogLevel) : Logger {
         }
     }
 }
+
+/**
+ * Bind address for tests whose client connects over loopback.
+ *
+ * Not `0.0.0.0`: `SO_REUSEADDR` lets another process bind `127.0.0.1` on the
+ * *same* port after this server is already listening on the wildcard, and a
+ * connect to `127.0.0.1` is then delivered to that later, more specific
+ * listener instead of to the test's server. Binding loopback here makes the
+ * second bind fail with `EADDRINUSE`, so the port cannot be taken over.
+ * (Measured both ways; the kernel does not hand an occupied port to a wildcard
+ * bind, so the exposure is the takeover, not the initial allocation. Observed:
+ * an SSE test read `503 Proxy key is incorrect` from an IDE's proxy that had
+ * taken the port out from under the test server.)
+ */
+internal const val LOOPBACK_HOST: String = "127.0.0.1"

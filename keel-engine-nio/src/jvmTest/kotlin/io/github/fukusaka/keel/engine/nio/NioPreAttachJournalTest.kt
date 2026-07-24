@@ -53,7 +53,7 @@ class NioPreAttachJournalTest {
         val engine = NioEngine(
             IoEngineConfig(idleReadPolicy = IdleReadPolicy.DETECT_PEER_CLOSE),
         )
-        val server = engine.bind("127.0.0.1", 0)
+        val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
 
         val client = engine.connect("127.0.0.1", port)

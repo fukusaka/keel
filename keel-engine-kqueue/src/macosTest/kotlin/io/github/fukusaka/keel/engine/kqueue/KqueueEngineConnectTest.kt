@@ -20,7 +20,7 @@ class KqueueEngineConnectTest {
     fun connectToListeningServer() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val ch = engine.connect("127.0.0.1", port)
@@ -41,7 +41,7 @@ class KqueueEngineConnectTest {
     fun connectRemoteAddress() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val ch = engine.connect("127.0.0.1", port)
@@ -61,7 +61,7 @@ class KqueueEngineConnectTest {
     fun connectLocalAddress() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val ch = engine.connect("127.0.0.1", port)
@@ -84,7 +84,7 @@ class KqueueEngineConnectTest {
             // 'localhost' comes from /etc/hosts, so getaddrinfo never leaves
             // the machine — this exercises the resolve + connect path without
             // depending on network DNS.
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val channel = engine.connect("localhost", port)

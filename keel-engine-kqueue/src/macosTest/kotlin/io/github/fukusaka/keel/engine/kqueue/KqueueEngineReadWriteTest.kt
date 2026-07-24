@@ -23,7 +23,7 @@ class KqueueEngineReadWriteTest {
     fun echoRoundTrip() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -64,7 +64,7 @@ class KqueueEngineReadWriteTest {
         // on loopback.
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -87,7 +87,7 @@ class KqueueEngineReadWriteTest {
     fun writeAndFlush() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -116,7 +116,7 @@ class KqueueEngineReadWriteTest {
     fun multipleWritesSingleFlush() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -148,7 +148,7 @@ class KqueueEngineReadWriteTest {
     fun readAdvancesIoBufWriterIndex() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -177,7 +177,7 @@ class KqueueEngineReadWriteTest {
             // (readerIndex, readableBytes) as a snapshot; it does not mutate the
             // live buffer indices. Matches Netty ChannelOutboundBuffer semantics.
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -206,7 +206,7 @@ class KqueueEngineReadWriteTest {
     fun `large payload flush writes all bytes`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -238,7 +238,7 @@ class KqueueEngineReadWriteTest {
     fun `multiple write then single flush`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -276,7 +276,7 @@ class KqueueEngineReadWriteTest {
     fun `sequential flush reuses channel correctly`() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("127.0.0.1", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -309,7 +309,7 @@ class KqueueEngineReadWriteTest {
     fun shutdownOutputSendsFin() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -331,7 +331,7 @@ class KqueueEngineReadWriteTest {
     fun readAfterShutdownOutputStillWorks() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -365,7 +365,7 @@ class KqueueEngineReadWriteTest {
         // that is already shut down (EPIPE, logged and dropped).
         withTimeout(IO_OP_TIMEOUT_MS) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -419,7 +419,7 @@ class KqueueEngineReadWriteTest {
         // the EOF and this server write threw IllegalStateException.
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -456,7 +456,7 @@ class KqueueEngineReadWriteTest {
     fun asSuspendSourceReadsData() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -482,7 +482,7 @@ class KqueueEngineReadWriteTest {
     fun asSuspendSinkWritesData() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -509,7 +509,7 @@ class KqueueEngineReadWriteTest {
     fun asSuspendSourceEofReturnsMinusOne() = runBlocking {
         withTimeout(5.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)
@@ -535,7 +535,7 @@ class KqueueEngineReadWriteTest {
         // performFlush() instead of scheduling a next-tick coalesce.
         withTimeout(5.seconds) {
             val engine = KqueueEngine(IoEngineConfig(flushCoalescing = false))
-            val server = engine.bind("0.0.0.0", 0)
+            val server = engine.bind(LOOPBACK_HOST, 0)
             val port = (server.localAddress as InetSocketAddress).port
 
             val clientFd = connectRawClient(port)

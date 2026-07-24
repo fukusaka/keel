@@ -302,7 +302,12 @@ class KeelWebSocketTest {
         module: suspend Application.() -> Unit,
         block: (port: Int) -> Unit,
     ) {
-        val server = embeddedServer(Keel, port = 0, module = module)
+        // Loopback, not the default wildcard: SO_REUSEADDR lets another process
+        // bind 127.0.0.1 on the same port after this server is already listening
+        // on the wildcard, and a connect to 127.0.0.1 then reaches that later,
+        // more specific listener instead of this server. Binding loopback makes
+        // the second bind fail with EADDRINUSE, so the port cannot be taken over.
+        val server = embeddedServer(Keel, host = "127.0.0.1", port = 0, module = module)
         val cfg = (server.engine as KeelApplicationEngine).configuration
         cfg.engine = NioEngine()
         cfg.keepAlive = true
