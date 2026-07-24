@@ -430,17 +430,33 @@ internal class NwIoTransport(
 
     // --- Lifecycle ---
 
-    private var outputShutdown = false
-
     /**
-     * Sends TCP FIN to the peer via NWConnection.
-     * Fire-and-forget: no blocking or suspend needed.
+     * Sends TCP FIN to the peer via NWConnection, on [connQueue] like [close]
+     * does.
+     *
+     * The half-close inspects [pendingWrites] and [writeInFlight] to decide
+     * whether the FIN has to wait for buffered output; both are
+     * connQueue-confined, as is the `outputShutdown` guard.
+     *
+     * Idempotent, and safe to call from any thread. The FIN is sent
+     * asynchronously, and after any buffered writes have been sent.
      */
     override fun shutdownOutput() {
-        if (!outputShutdown && opened) {
-            outputShutdown = true
-            keel_nw_shutdown_output(conn)
+        dispatch_async(connQueue) {
+            shutdownOutputOwned()
         }
+    }
+
+    /**
+     * [performFlush] moves the batch out of [pendingWrites] before handing it
+     * to `nw_connection_send`, so an empty queue with [writeInFlight] still
+     * set means the bytes are outstanding, not delivered.
+     */
+    override val outputDrained: Boolean
+        get() = pendingWrites.isEmpty() && !writeInFlight
+
+    override fun sendFin() {
+        keel_nw_shutdown_output(conn)
     }
 
     // --- Write path ---
@@ -599,7 +615,10 @@ internal class NwIoTransport(
      */
     private fun drainInFlightCompletion() {
         writeInFlight = false
-        if (pendingWrites.isEmpty()) return
+        if (pendingWrites.isEmpty()) {
+            sendFinIfDrained()
+            return
+        }
         val nextCompletion = CompletableDeferred<Unit>()
         pendingFlushCompletion = nextCompletion
         writeInFlight = true

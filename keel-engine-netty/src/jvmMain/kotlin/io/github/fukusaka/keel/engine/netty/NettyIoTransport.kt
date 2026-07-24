@@ -335,18 +335,41 @@ internal class NettyIoTransport(
 
     // --- Lifecycle ---
 
-    private var outputShutdown = false
-
     /**
-     * Sends TCP FIN to the peer via Netty's [DuplexChannel.shutdownOutput].
-     * Fire-and-forget: no blocking or suspend needed.
+     * Sends TCP FIN to the peer via Netty's [DuplexChannel.shutdownOutput],
+     * on the channel's EventLoop like [close] does.
+     *
+     * The half-close inspects `pendingWrites` and the in-flight flush future
+     * to decide whether the FIN has to wait for buffered output, and both are
+     * EventLoop-confined. Waiting matters more here than on the POSIX
+     * engines: Netty's own `shutdownOutput` fails everything still in its
+     * `ChannelOutboundBuffer` with `ChannelOutputShutdownException`, so a FIN
+     * that overtakes a flush discards those bytes rather than queueing them.
+     *
+     * Idempotent, and safe to call from any thread. The FIN is sent
+     * asynchronously when the caller is off-loop, and after any buffered
+     * writes have reached the OS send buffer.
      */
     override fun shutdownOutput() {
-        if (!outputShutdown && opened) {
-            outputShutdown = true
-            if (nettyChannel is DuplexChannel) {
-                nettyChannel.shutdownOutput()
-            }
+        val loop = nettyChannel.eventLoop()
+        if (loop.inEventLoop()) {
+            shutdownOutputOwned()
+        } else {
+            loop.execute { shutdownOutputOwned() }
+        }
+    }
+
+    /**
+     * [flush] hands its buffers to Netty and clears [pendingWrites] straight
+     * away, so the queue emptying says nothing about the bytes having left —
+     * [lastFlushFuture] is what completes when they reach the OS send buffer.
+     */
+    override val outputDrained: Boolean
+        get() = pendingWrites.isEmpty() && lastFlushFuture.let { it == null || it.isDone }
+
+    override fun sendFin() {
+        if (nettyChannel is DuplexChannel) {
+            nettyChannel.shutdownOutput()
         }
     }
 
@@ -419,6 +442,7 @@ internal class NettyIoTransport(
             val cb = callback
             callback = null
             cb?.invoke()
+            sendFinIfDrained()
         }
     }
 

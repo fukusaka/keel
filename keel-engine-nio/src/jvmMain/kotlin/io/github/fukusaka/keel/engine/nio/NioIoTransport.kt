@@ -239,13 +239,29 @@ internal class NioIoTransport(
 
     // --- Lifecycle ---
 
-    private var outputShutdown = false
-
+    /**
+     * Sends FIN on the EventLoop thread, like [close] does.
+     *
+     * The half-close reads `pendingWrites` to decide whether the FIN has to
+     * wait for buffered output, and both that queue and the `outputShutdown`
+     * guard are EventLoop-confined — so the decision belongs on the loop even
+     * though [java.nio.channels.SocketChannel.shutdownOutput] itself is
+     * thread-safe.
+     *
+     * Idempotent, and safe to call from any thread. The FIN is sent
+     * asynchronously when the caller is off-loop, and after any buffered
+     * writes have drained.
+     */
     override fun shutdownOutput() {
-        if (!outputShutdown && socketChannel.isOpen) {
-            outputShutdown = true
-            socketChannel.shutdownOutput()
+        if (eventLoop.inEventLoop()) {
+            shutdownOutputOwned()
+        } else {
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOwned() })
         }
+    }
+
+    override fun sendFin() {
+        if (socketChannel.isOpen) socketChannel.shutdownOutput()
     }
 
     // --- Write path ---
@@ -308,6 +324,7 @@ internal class NioIoTransport(
                         cont.resume(Unit)
                     }
                     transport.onFlushComplete?.invoke()
+                    transport.sendFinIfDrained()
                 }
             },
         )
@@ -484,6 +501,7 @@ internal class NioIoTransport(
                         cont.resume(Unit)
                     }
                     onFlushComplete?.invoke()
+                    sendFinIfDrained()
                 }
             },
         )
