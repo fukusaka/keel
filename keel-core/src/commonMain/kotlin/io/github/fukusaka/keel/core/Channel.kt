@@ -169,9 +169,11 @@ interface Channel : AutoCloseable {
      * returns.** Engines that own an EventLoop issue the syscall on that
      * thread, so an off-loop caller only queues the request.
      *
-     * Does **not** flush buffered writes first. Call [flush] and let it
-     * complete before half-closing if the peer must see everything written so
-     * far; data still queued when this is called may not reach it.
+     * Buffered writes are sent first: whatever [write] queued before this
+     * call reaches the peer ahead of the FIN, so an explicit [flush] is not
+     * required. Writes issued *after* it are discarded — the caller declared
+     * it had nothing more to send. Use [awaitFlushComplete] to observe the
+     * data leaving; the FIN follows it.
      */
     fun shutdownOutput()
 

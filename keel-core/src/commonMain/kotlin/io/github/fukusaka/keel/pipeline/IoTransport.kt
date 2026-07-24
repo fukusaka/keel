@@ -210,8 +210,9 @@ interface IoTransport {
      * thread, so an off-loop caller only queues the request. Observe the
      * effect through the peer, not through the call returning.
      *
-     * Does **not** wait for buffered writes. Data still queued when this is
-     * called may not reach the peer.
+     * Buffered writes are sent first: whatever [write] queued before this
+     * call reaches the peer ahead of the FIN. Writes issued *after* it are
+     * discarded — the caller declared it had nothing more to send.
      */
     fun shutdownOutput()
 
