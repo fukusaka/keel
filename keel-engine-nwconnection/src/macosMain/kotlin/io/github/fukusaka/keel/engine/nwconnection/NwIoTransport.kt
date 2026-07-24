@@ -451,6 +451,13 @@ internal class NwIoTransport(
      * [performFlush] moves the batch out of [pendingWrites] before handing it
      * to `nw_connection_send`, so an empty queue with [writeInFlight] still
      * set means the bytes are outstanding, not delivered.
+     *
+     * [writeInFlight] stays a flag rather than a count even though
+     * `flushCoalescing = false` lets two sends overlap: `keel_nw_shutdown_output`
+     * is itself an `nw_connection_send` with `NW_CONNECTION_FINAL_MESSAGE_CONTEXT`,
+     * and NWConnection orders sends on the connection — so a FIN issued while a
+     * second send is outstanding still lands behind it. The wait exists for
+     * keel's own queue, which the framework knows nothing about.
      */
     override val outputDrained: Boolean
         get() = pendingWrites.isEmpty() && !writeInFlight

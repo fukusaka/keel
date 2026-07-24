@@ -363,6 +363,12 @@ internal class NettyIoTransport(
      * [flush] hands its buffers to Netty and clears [pendingWrites] straight
      * away, so the queue emptying says nothing about the bytes having left —
      * [lastFlushFuture] is what completes when they reach the OS send buffer.
+     *
+     * Only the most recent future is tracked, which is sufficient because
+     * `ChannelOutboundBuffer` is a singly-linked FIFO whose `remove()`
+     * completes the head entry's promise: a later write's future cannot
+     * complete before an earlier one's. [awaitPendingFlush] already relies on
+     * the same ordering.
      */
     override val outputDrained: Boolean
         get() = pendingWrites.isEmpty() && lastFlushFuture.let { it == null || it.isDone }

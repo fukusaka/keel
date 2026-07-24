@@ -475,6 +475,7 @@ internal class KqueueIoTransport(
                             flushScheduled = false
                             val done = performFlush()
                             if (done && pendingWrites.isEmpty()) {
+                                sendFinIfDrained()
                                 cont.resume(Unit)
                                 return@Runnable
                             }
