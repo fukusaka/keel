@@ -614,19 +614,30 @@ internal class DefaultPipeline(
 
         // --- Outbound propagation ---
 
+        // The chain walk (findPrevOutbound) runs *inside* onOwningContext, not
+        // before it. prev/next are non-volatile and EventLoop-confined, so an
+        // off-loop emitter that resolved the previous context on its own thread
+        // could read a link the loop is concurrently mutating — and a context
+        // detached between the resolve and the dispatched run would surface a
+        // null prev whose write leaks. Resolving on the owning context closes
+        // both: a null prev there releases the message rather than dropping it.
+
         override fun propagateWrite(msg: Any) {
-            val prevCtx = findPrevOutbound() ?: return
-            if (!pipelineRef.onOwningContext { prevCtx.invokeOnWrite(msg) }) ReferenceCountUtil.safeRelease(msg)
+            if (!pipelineRef.onOwningContext {
+                    val prevCtx = findPrevOutbound()
+                    if (prevCtx != null) prevCtx.invokeOnWrite(msg) else ReferenceCountUtil.safeRelease(msg)
+                }
+            ) {
+                ReferenceCountUtil.safeRelease(msg)
+            }
         }
 
         override fun propagateFlush() {
-            val prevCtx = findPrevOutbound() ?: return
-            pipelineRef.onOwningContext { prevCtx.invokeOnFlush() }
+            pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnFlush() }
         }
 
         override fun propagateClose() {
-            val prevCtx = findPrevOutbound() ?: return
-            pipelineRef.onOwningContext { prevCtx.invokeOnClose() }
+            pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnClose() }
         }
 
         // --- Invoke with try-catch (leak prevention) ---

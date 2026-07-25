@@ -108,4 +108,31 @@ class PipelineOwningContextTest {
         transport.releaseWritten()
         assertEquals(0, tracker.outstandingCount)
     }
+
+    @Test
+    fun `propagateWrite releases when its previous context resolves to null`() {
+        // The chain walk runs inside the funnel, so a context that ends up with
+        // no previous outbound handler — a detached node, or the head with
+        // nothing before it — must release the message rather than drop it on
+        // the `?: return` the old code used.
+        val tracker = TrackingAllocator()
+        var ctx: PipelineHandlerContext? = null
+        channel.pipeline.addLast(
+            "emitter",
+            object : OutboundHandler {
+                override fun handlerAdded(c: PipelineHandlerContext) {
+                    ctx = c
+                }
+
+                override fun onWrite(ctx: PipelineHandlerContext, msg: Any) = Unit
+            },
+        )
+        val emitter = checkNotNull(ctx)
+        channel.pipeline.remove("emitter")
+
+        val buf = tracker.allocate(8).also { it.writerIndex = 4 }
+        emitter.propagateWrite(buf)
+
+        assertEquals(0, tracker.outstandingCount, "a null previous context must release, not drop")
+    }
 }

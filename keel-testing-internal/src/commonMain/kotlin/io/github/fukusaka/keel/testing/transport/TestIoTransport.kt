@@ -129,9 +129,10 @@ public open class TestIoTransport(
 
     /**
      * Reported by [inOwningContext]. Flip to `false` to make the pipeline take
-     * its off-context branch — the double's [ioDispatcher] is
-     * [Dispatchers.Unconfined], so the dispatched work still runs inline and
-     * the test observes the routing without needing a real EventLoop.
+     * its off-context branch. Set [dispatcher] to something that accepts
+     * `dispatch` first — the default [Dispatchers.Unconfined] rejects it, so a
+     * `false` [owningContext] on the default dispatcher throws from the
+     * pipeline's dispatch call.
      */
     public var owningContext: Boolean = true
 
