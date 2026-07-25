@@ -365,7 +365,7 @@ class EpollEventLoopSeamTest {
     // wait iteration — a busy loop that starves I/O processing under load.
 
     @Test
-    fun `WRITE callback that does not re-register causes epoll_ctl MOD to clear EPOLLOUT`() {
+    fun `WRITE callback that does not re-register gets its EPOLLOUT taken back`() {
         val fake = FakeEpollSyscallOps().apply {
             scriptEpollCreateFd(fd = 1000)
             scriptEventfdCreateFd(fd = 1001)
@@ -448,7 +448,7 @@ class EpollEventLoopSeamTest {
     // but before the event fires.
 
     @Test
-    fun `stale WRITE interest with no handler logs WARN and calls epoll_ctl MOD to clear EPOLLOUT`() {
+    fun `stale WRITE interest with no handler logs WARN and gets EPOLLOUT taken back`() {
         val warns = mutableListOf<String>()
         val fake = FakeEpollSyscallOps().apply {
             scriptEpollCreateFd(fd = 1000)

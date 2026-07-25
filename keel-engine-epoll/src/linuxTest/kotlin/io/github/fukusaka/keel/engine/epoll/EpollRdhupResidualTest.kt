@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
@@ -40,6 +42,46 @@ class EpollRdhupResidualTest {
         var readyCount = 0
         override fun onReady(interest: Interest) {
             readyCount++
+        }
+    }
+
+    @Test
+    fun `a failing disarm is logged and leaves the loop running`() {
+        val watched = 2000
+        val errors = mutableListOf<String>()
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptDelResult(EBADF)
+            scriptWaitOk(watched to EPOLLIN)
+            scriptWaitFailure(EBADF)
+        }
+        val loop = EpollEventLoop(recordingLogger(errors), syscallOps = fake)
+
+        DecliningListener.readyCount = 0
+        loop.registerCallback(watched, Interest.READ, DecliningListener)
+        loop.loop()
+
+        // A refused DEL is a bookkeeping problem, not a reason to stop: the fd
+        // stays in the kernel's interest list, and the next arm recovers it
+        // through addOrModifyEpoll's ADD -> EEXIST -> MOD fallback. The loop
+        // must reach its own exit rather than propagate the errno.
+        assertEquals(1, DecliningListener.readyCount, "the listener should still have been dispatched")
+        assertTrue(
+            fake.ctlCalls.any { it.fd == watched && it.op == FakeEpollSyscallOps.CtlOp.DEL },
+            "the disarm should have been attempted, got ${fake.ctlCalls.filter { it.fd == watched }}",
+        )
+        assertTrue(
+            errors.none { it.contains("epoll_ctl") },
+            "a refused disarm is debug-level, not an error: ${errors.firstOrNull()}",
+        )
+    }
+
+    /** Captures ERROR-level output so the test can assert the loop stayed quiet. */
+    private fun recordingLogger(sink: MutableList<String>): Logger = object : Logger {
+        override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.ERROR
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            if (level == LogLevel.ERROR) sink.add(message.toString())
         }
     }
 
