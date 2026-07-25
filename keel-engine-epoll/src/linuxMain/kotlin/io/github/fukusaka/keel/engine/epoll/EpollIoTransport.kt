@@ -7,6 +7,8 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.FdReadyListener
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
@@ -59,7 +61,7 @@ internal class EpollIoTransport(
      */
     private val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     idleTimeoutMillis: Long = 0,
-) : AbstractIoTransport(allocator), EpollEventLoop.FdReadyListener {
+) : AbstractIoTransport(allocator), FdReadyListener {
 
     /** Read-side idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
     override val idleTimeoutMillis: Long = idleTimeoutMillis
@@ -72,15 +74,15 @@ internal class EpollIoTransport(
     private var readPoolRegistered = false
 
     /**
-     * [EpollEventLoop.FdReadyListener] dispatch — passing `this` to
+     * [FdReadyListener] dispatch — passing `this` to
      * [EpollEventLoop.registerCallback] avoids per-call lambda allocation on
      * the read re-arm fast path. Branch on [interest] is a single enum
      * compare (negligible vs. surrounding syscall + buffer alloc).
      */
-    override fun onReady(interest: EpollEventLoop.Interest) {
+    override fun onReady(interest: Interest) {
         when (interest) {
-            EpollEventLoop.Interest.READ -> onReadable()
-            EpollEventLoop.Interest.WRITE -> onWritable()
+            Interest.READ -> onReadable()
+            Interest.WRITE -> onWritable()
         }
     }
 
@@ -96,8 +98,8 @@ internal class EpollIoTransport(
      * benign — the cancel guards in the connection handlers (PR #459 / #460)
      * are idempotent.
      */
-    override fun onPeerClosed(interest: EpollEventLoop.Interest) {
-        if (interest != EpollEventLoop.Interest.READ) return
+    override fun onPeerClosed(interest: Interest) {
+        if (interest != Interest.READ) return
         if (!opened) return
         onReadClosed?.invoke()
     }
@@ -140,12 +142,12 @@ internal class EpollIoTransport(
         // without-data via the readEnabled-false back-pressure handling in
         // onReadable, and EOF dispatch is via the separate onPeerClosed.
         @Suppress("LeakingThis")
-        eventLoop.registerCallback(fd, EpollEventLoop.Interest.READ, this)
+        eventLoop.registerCallback(fd, Interest.READ, this)
     }
 
     private fun armRead() {
         if (!opened) return
-        eventLoop.registerCallback(fd, EpollEventLoop.Interest.READ, this)
+        eventLoop.registerCallback(fd, Interest.READ, this)
     }
 
     private fun onReadable() {
@@ -428,10 +430,10 @@ internal class EpollIoTransport(
         // receive window — start the write-idle (slow-read) clock. Drain progress
         // refreshes it and a full drain cancels it, both via updatePendingBytes.
         armWriteIdleTimeout()
-        eventLoop.registerCallback(fd, EpollEventLoop.Interest.WRITE, this)
+        eventLoop.registerCallback(fd, Interest.WRITE, this)
     }
 
-    /** EPOLLOUT callback body — invoked via [onReady] when [EpollEventLoop.Interest.WRITE] fires. */
+    /** EPOLLOUT callback body — invoked via [onReady] when [Interest.WRITE] fires. */
     private fun onWritable() {
         // Retry drain immediately when fd becomes writable — do NOT go through
         // flush() which would re-defer to the next tick.

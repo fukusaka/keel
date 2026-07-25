@@ -5,6 +5,8 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.native.posix.AcceptResult
+import io.github.fukusaka.keel.native.posix.FdReadyListener
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
@@ -57,20 +59,20 @@ internal class KqueuePipelinedStreamServer(
     private var workerIndex = 0 // Single boss thread only — no atomicity needed.
 
     /**
-     * One persistent [KqueueEventLoop.FdReadyListener] per listener —
+     * One persistent [FdReadyListener] per listener —
      * passing the same object to every [KqueueEventLoop.registerCallback]
      * avoids per-call lambda allocation on the accept re-arm fast path
      * while carrying which listener became readable. Only `READ` is
      * registered; `WRITE` is never armed for a listening fd.
      */
-    private inner class AcceptArm(val listener: Listener) : KqueueEventLoop.FdReadyListener {
-        override fun onReady(interest: KqueueEventLoop.Interest) {
+    private inner class AcceptArm(val listener: Listener) : FdReadyListener {
+        override fun onReady(interest: Interest) {
             onAcceptable(this)
         }
 
         fun arm() {
             if (closed) return
-            bossLoop.registerCallback(listener.serverFd, KqueueEventLoop.Interest.READ, this)
+            bossLoop.registerCallback(listener.serverFd, Interest.READ, this)
         }
     }
 
@@ -161,7 +163,7 @@ internal class KqueuePipelinedStreamServer(
         bossLoop.runOnLoop(
             onLoop = {
                 for (listener in listeners) {
-                    bossLoop.unregisterCallback(listener.serverFd, KqueueEventLoop.Interest.READ)
+                    bossLoop.unregisterCallback(listener.serverFd, Interest.READ)
                     closeFdSafely(listener.serverFd, logger, "pipelined server close")
                 }
             },

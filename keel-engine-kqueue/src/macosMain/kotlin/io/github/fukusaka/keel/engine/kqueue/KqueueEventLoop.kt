@@ -8,6 +8,8 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.FdReadyListener
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.LoopHandoff
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -263,55 +265,6 @@ internal class KqueueEventLoop(
     ) {
         internal var next: Registration? = null
         internal var tail: Registration? = null
-    }
-
-    enum class Interest { READ, WRITE }
-
-    /**
-     * Listener for fd readiness events on the pipeline (non-suspend) path.
-     *
-     * Implemented by [io.github.fukusaka.keel.engine.kqueue.KqueueIoTransport]
-     * (and other consumers of [registerCallback]) so the receiver can pass
-     * `this` as the listener — eliminating the per-call lambda allocation
-     * on the read re-arm fast path. The `interest` parameter lets a single
-     * implementation dispatch read vs. write callbacks without separate
-     * sub-listener objects.
-     */
-    /**
-     * Listener for kqueue readiness events on a registered fd.
-     *
-     * Two callbacks separate the orthogonal concerns of normal readiness and
-     * peer-close detection. Listeners that only care about one side leave the
-     * other as the default no-op:
-     * - `KqueuePipelinedStreamServer` overrides only [onReady] — server fd
-     *   teardown is driven by `server.close()` rather than peer-FIN.
-     * - `KqueueIoTransport` overrides both — the peer-close path is what fires
-     *   `onReadClosed` to user code even when read interest was never armed
-     *   (`readEnabled = false` write-only push client).
-     *
-     * The dispatch contract is documented on [dispatchReady]: for combined
-     * data-and-EOF events the engine calls [onReady] first (so the listener
-     * can drain the final bytes) and then [onPeerClosed].
-     */
-    interface FdReadyListener {
-        /**
-         * Called when [interest] is ready: data available (READ), space available
-         * (WRITE), accept queue non-empty (server fd READ).
-         */
-        fun onReady(interest: Interest)
-
-        /**
-         * Called when kqueue delivered an `EV_EOF` flag for this fd, signalling
-         * peer-FIN / peer-RST. Default no-op — only listeners that need to surface
-         * the peer-close signal to higher layers override (e.g. transports must
-         * fire `onReadClosed` so the user's connection-close path runs).
-         *
-         * Always called *after* [onReady] for combined data-and-EOF events; for
-         * pure EOF (no pending data) only [onPeerClosed] is invoked. The engine
-         * unconditionally removes the kqueue filter after this returns, so the
-         * listener does not need to disarm explicitly.
-         */
-        fun onPeerClosed(interest: Interest) {}
     }
 
     init {

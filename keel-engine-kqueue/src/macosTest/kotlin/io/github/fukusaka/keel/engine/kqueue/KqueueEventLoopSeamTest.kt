@@ -3,6 +3,8 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.native.posix.FdReadyListener
+import io.github.fukusaka.keel.native.posix.Interest
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.runBlocking
@@ -213,8 +215,8 @@ class KqueueEventLoopSeamTest {
         }
         val el = KqueueEventLoop(logger, syscallOps = fake)
         // Callback does NOT re-register: simulates a flush that completed fully.
-        el.registerCallback(5000, KqueueEventLoop.Interest.WRITE, object : KqueueEventLoop.FdReadyListener {
-            override fun onReady(interest: KqueueEventLoop.Interest) { /* no-op */ }
+        el.registerCallback(5000, Interest.WRITE, object : FdReadyListener {
+            override fun onReady(interest: Interest) { /* no-op */ }
         })
         el.loop()
         assertEquals(1, fake.deleteFilterCalls.size, "deleteWriteFilter must be called when callback does not re-register")
@@ -232,10 +234,10 @@ class KqueueEventLoopSeamTest {
         }
         val el = KqueueEventLoop(logger, syscallOps = fake)
         // Callback re-registers: simulates a partial flush that needs another WRITE event.
-        el.registerCallback(5000, KqueueEventLoop.Interest.WRITE, object : KqueueEventLoop.FdReadyListener {
-            override fun onReady(interest: KqueueEventLoop.Interest) {
-                el.registerCallback(5000, interest, object : KqueueEventLoop.FdReadyListener {
-                    override fun onReady(interest: KqueueEventLoop.Interest) {
+        el.registerCallback(5000, Interest.WRITE, object : FdReadyListener {
+            override fun onReady(interest: Interest) {
+                el.registerCallback(5000, interest, object : FdReadyListener {
+                    override fun onReady(interest: Interest) {
                         /* second callback; never fires in this test */
                     }
                 })

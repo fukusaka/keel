@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.native.posix.AcceptResult
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
@@ -128,7 +129,7 @@ internal class KqueueStreamServer(
                         // own to order them.
                         val reg = bossLoop.registerIf(
                             serverFd,
-                            KqueueEventLoop.Interest.READ,
+                            Interest.READ,
                             cont,
                         ) { _active }
                         if (reg == null) {
@@ -180,7 +181,7 @@ internal class KqueueStreamServer(
             onLoop = {
                 bossLoop.cancelAll(
                     serverFd,
-                    KqueueEventLoop.Interest.READ,
+                    Interest.READ,
                     CancellationException("StreamServer closed"),
                 )
                 closeFdSafely(serverFd, logger, "server close")

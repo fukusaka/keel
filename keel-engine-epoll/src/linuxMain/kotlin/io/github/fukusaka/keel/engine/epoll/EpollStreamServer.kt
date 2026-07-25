@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.AcceptResult
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
@@ -113,7 +114,7 @@ internal class EpollStreamServer(
                         // needs no lock of its own to order them.
                         val reg = bossLoop.registerIf(
                             serverFd,
-                            EpollEventLoop.Interest.READ,
+                            Interest.READ,
                             cont,
                         ) { _active }
                         if (reg == null) {
@@ -171,7 +172,7 @@ internal class EpollStreamServer(
             onLoop = {
                 bossLoop.cancelAll(
                     serverFd,
-                    EpollEventLoop.Interest.READ,
+                    Interest.READ,
                     CancellationException("StreamServer closed"),
                 )
                 bossLoop.cleanupFd(serverFd)

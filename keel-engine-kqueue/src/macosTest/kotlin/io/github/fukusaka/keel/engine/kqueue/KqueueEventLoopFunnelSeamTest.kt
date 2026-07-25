@@ -2,6 +2,12 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.engine.kqueue.FakeKqueueSyscallOps.Companion.currentThreadId
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.native.posix.FdReadyListener
+import io.github.fukusaka.keel.native.posix.Interest
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.EmptyCoroutineContext
@@ -9,10 +15,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 /**
  * Seam-level test for the **I/O ownership invariant funnel**: every I/O
@@ -48,8 +50,8 @@ class KqueueEventLoopFunnelSeamTest {
 
     private val logger = NoopLoggerFactory.logger("KqueueEventLoopFunnelSeamTest")
 
-    private val noopListener = object : KqueueEventLoop.FdReadyListener {
-        override fun onReady(interest: KqueueEventLoop.Interest) { /* no-op */ }
+    private val noopListener = object : FdReadyListener {
+        override fun onReady(interest: Interest) { /* no-op */ }
     }
 
     /**
@@ -82,7 +84,7 @@ class KqueueEventLoopFunnelSeamTest {
                 // Registering before start(): the loop's thread handle is unset,
                 // which is exactly the window the escape hatch used to treat as
                 // "safe to run inline".
-                el.registerCallback(FD_UNDER_TEST, KqueueEventLoop.Interest.READ, noopListener)
+                el.registerCallback(FD_UNDER_TEST, Interest.READ, noopListener)
                 assertEquals(
                     beforeCalls,
                     fake.addFilterCalls.size,
@@ -123,7 +125,7 @@ class KqueueEventLoopFunnelSeamTest {
 
                 // Cross-thread: this runs on the test (caller) thread, NOT
                 // the EventLoop thread.
-                el.registerCallback(FD_UNDER_TEST, KqueueEventLoop.Interest.READ, noopListener)
+                el.registerCallback(FD_UNDER_TEST, Interest.READ, noopListener)
 
                 val execThreadId = awaitAddFilterThreadId(fake)
                 assertNotEquals(
@@ -156,7 +158,7 @@ class KqueueEventLoopFunnelSeamTest {
                 // Run registerCallback on the EventLoop thread itself.
                 el.dispatch(EmptyCoroutineContext) {
                     taskThreadId.store(currentThreadId())
-                    el.registerCallback(FD_UNDER_TEST, KqueueEventLoop.Interest.READ, noopListener)
+                    el.registerCallback(FD_UNDER_TEST, Interest.READ, noopListener)
                 }
 
                 val execThreadId = awaitAddFilterThreadId(fake)
