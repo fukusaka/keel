@@ -37,9 +37,14 @@ class EpollRdhupResidualTest {
 
     private val logger = NoopLoggerFactory.logger("EpollRdhupResidualTest")
 
+    /** What `registerCallback` arms for [Interest.READ]; the disarm must take all of it back. */
+    private val EPOLL_READ_ARMED = EPOLLIN or EPOLLRDHUP
+
     /** Declines to re-arm, exactly as the transport does with read disabled. */
-    private object DecliningListener : FdReadyListener {
+    private class DecliningListener : FdReadyListener {
         var readyCount = 0
+            private set
+
         override fun onReady(interest: Interest) {
             readyCount++
         }
@@ -58,15 +63,15 @@ class EpollRdhupResidualTest {
         }
         val loop = EpollEventLoop(recordingLogger(errors), syscallOps = fake)
 
-        DecliningListener.readyCount = 0
-        loop.registerCallback(watched, Interest.READ, DecliningListener)
+        val listener = DecliningListener()
+        loop.registerCallback(watched, Interest.READ, listener)
         loop.loop()
 
         // A refused DEL is a bookkeeping problem, not a reason to stop: the fd
         // stays in the kernel's interest list, and the next arm recovers it
         // through addOrModifyEpoll's ADD -> EEXIST -> MOD fallback. The loop
         // must reach its own exit rather than propagate the errno.
-        assertEquals(1, DecliningListener.readyCount, "the listener should still have been dispatched")
+        assertEquals(1, listener.readyCount, "the listener should still have been dispatched")
         assertTrue(
             fake.ctlCalls.any { it.fd == watched && it.op == FakeEpollSyscallOps.CtlOp.DEL },
             "the disarm should have been attempted, got ${fake.ctlCalls.filter { it.fd == watched }}",
@@ -98,15 +103,15 @@ class EpollRdhupResidualTest {
         }
         val loop = EpollEventLoop(logger, syscallOps = fake)
 
-        DecliningListener.readyCount = 0
+        val listener = DecliningListener()
         // Registering off the loop thread funnels the epoll_ctl onto the loop,
         // so nothing reaches the fake until loop() drains its task queue. One
         // loop() call therefore carries the whole sequence: arm, dispatch the
         // scripted event, then disarm because the listener did not re-arm.
-        loop.registerCallback(watched, Interest.READ, DecliningListener)
+        loop.registerCallback(watched, Interest.READ, listener)
         loop.loop()
 
-        assertEquals(1, DecliningListener.readyCount, "the listener should have been dispatched once")
+        assertEquals(1, listener.readyCount, "the listener should have been dispatched once")
 
         val forFd = fake.ctlCalls.filter { it.fd == watched }
         assertTrue(forFd.size >= 2, "expected an arm and a disarm for fd=$watched, got $forFd")
@@ -117,18 +122,21 @@ class EpollRdhupResidualTest {
             "precondition: READ should arm EPOLLIN|EPOLLRDHUP, got 0x${armed.toString(16)}",
         )
 
-        val remaining = forFd.last().events
-        assertEquals(
-            0,
-            remaining and EPOLLRDHUP,
-            "EPOLLRDHUP is still armed after the disarm (mask 0x${remaining.toString(16)}). " +
+        // Every call after the arm is a take-back, so none of them may still
+        // carry a READ bit. Asserted over all of them rather than over the last
+        // one: a DEL records events = 0 in the fake, so reading the mask off it
+        // would assert the fake's placeholder rather than anything the engine
+        // computed, and would go quiet the moment a DEL is issued for any other
+        // reason.
+        val afterArm = forFd.drop(1)
+        val stillArmed = afterArm.filter {
+            it.op != FakeEpollSyscallOps.CtlOp.DEL && (it.events and EPOLL_READ_ARMED) != 0
+        }
+        assertTrue(
+            stillArmed.isEmpty(),
+            "a take-back for fd=$watched still carries a READ bit: $stillArmed. " +
                 "loopBody cannot dispatch an EPOLLRDHUP-only event, so a level-triggered epoll " +
                 "returns this fd on every iteration once the peer closes, with no handler to run.",
-        )
-        assertEquals(
-            0,
-            remaining and EPOLLIN,
-            "EPOLLIN is still armed after the disarm (mask 0x${remaining.toString(16)}).",
         )
 
         // The last interest going away must take the fd out of the interest
