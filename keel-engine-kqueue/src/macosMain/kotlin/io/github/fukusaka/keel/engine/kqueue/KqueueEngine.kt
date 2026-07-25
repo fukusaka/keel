@@ -19,6 +19,7 @@ import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.native.posix.ConnectResult
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
@@ -102,12 +103,9 @@ class KqueueEngine(
     )
     private var closed = false
 
-    /**
-     * Live callback registrations on the worker loops. Tests use this to see a
-     * connection teardown actually withdraw its registration — the map is keyed
-     * by fd number, so a leftover is invisible from the outside otherwise.
-     */
-    internal fun workerRegistrationCount(): Int = workerGroup.callbackRegistrationCount
+    /** Whether a worker loop still holds a callback for [fd] + [interest]; see the group's property. */
+    internal fun hasWorkerRegistration(fd: Int, interest: Interest): Boolean =
+        workerGroup.hasCallbackRegistration(fd, interest)
 
     init {
         bossLoop.start()

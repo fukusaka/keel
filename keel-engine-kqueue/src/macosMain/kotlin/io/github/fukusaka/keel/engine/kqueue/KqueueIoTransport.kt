@@ -47,7 +47,12 @@ import kotlin.coroutines.resume
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueIoTransport(
-    private val fd: Int,
+    /**
+     * The connection's file descriptor. `internal` rather than `private` so a
+     * test can ask the loop whether this fd's registrations were withdrawn;
+     * nothing outside the module can see it.
+     */
+    internal val fd: Int,
     private val eventLoop: KqueueEventLoop,
     allocator: BufferAllocator,
     private val nativeSocket: NativeSocket = PosixNativeSocket,

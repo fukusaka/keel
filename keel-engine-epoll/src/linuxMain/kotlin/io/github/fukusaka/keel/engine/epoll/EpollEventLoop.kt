@@ -175,15 +175,13 @@ internal class EpollEventLoop(
     private val callbackRegistrations = LongObjectMap<FdReadyListener>()
 
     /**
-     * Number of live callback registrations, for tests that need to see a
-     * teardown actually withdraw one. The map is keyed by fd number, so a
-     * registration left behind is not visible from the outside in any other
-     * way: it is not a growing leak (the next connection on that fd number
-     * overwrites it) but it does keep the transport, its channel and the whole
-     * pipeline graph reachable until then.
+     * Whether [fd] still has a callback registered for [interest]. A total is
+     * not enough to tell a forgotten WRITE withdrawal from a READ one: both
+     * transports of a loopback pair tear down together, so the total returns to
+     * its baseline either way and the WRITE half can be deleted unnoticed.
      */
-    internal val callbackRegistrationCount: Int
-        get() = withRegLock { callbackRegistrations.size }
+    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
+        withRegLock { callbackRegistrations.containsKey(registrationKey(fd, interest)) }
 
     // Tracks the current epoll events per fd. epoll manages fds (not fd+interest
     // pairs), so ADD/MOD must specify all active interest bits at once.

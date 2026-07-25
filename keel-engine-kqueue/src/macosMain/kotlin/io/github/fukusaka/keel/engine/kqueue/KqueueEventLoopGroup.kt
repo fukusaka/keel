@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlin.concurrent.AtomicInt
 
@@ -52,6 +53,10 @@ internal class KqueueEventLoopGroup(
     val size: Int get() = loops.size
 
     /** Starts all EventLoop threads. */
+    /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
+    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
+        loops.any { it.hasCallbackRegistration(fd, interest) }
+
     fun start() {
         for (loop in loops) loop.start()
     }
@@ -63,9 +68,6 @@ internal class KqueueEventLoopGroup(
      * Uses atomic increment with overflow-safe masking (same as NIO).
      * Thread-safe: multiple accept threads can call this concurrently.
      */
-    /** Live callback registrations across every loop in this group; see the loop's own property. */
-    internal val callbackRegistrationCount: Int
-        get() = loops.sumOf { it.callbackRegistrationCount }
 
     fun next(): KqueueEventLoop {
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size

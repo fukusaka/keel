@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlin.concurrent.AtomicInt
 
@@ -49,6 +50,10 @@ internal class EpollEventLoopGroup(
     val size: Int get() = loops.size
 
     /** Starts all EventLoop threads. */
+    /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
+    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
+        loops.any { it.hasCallbackRegistration(fd, interest) }
+
     fun start() {
         for (loop in loops) loop.start()
     }
@@ -57,9 +62,6 @@ internal class EpollEventLoopGroup(
      * Returns the next [EpollEventLoop] in round-robin order. The
      * per-EventLoop allocator is exposed as [EpollEventLoop.allocator].
      */
-    /** Live callback registrations across every loop in this group; see the loop's own property. */
-    internal val callbackRegistrationCount: Int
-        get() = loops.sumOf { it.callbackRegistrationCount }
 
     fun next(): EpollEventLoop {
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
