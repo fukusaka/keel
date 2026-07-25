@@ -1065,16 +1065,24 @@ internal class EpollEventLoop(
     }
 
     /**
-     * Removes a specific interest (EPOLLIN or EPOLLOUT) from the epoll registration for [fd].
+     * Removes an interest from the epoll registration for [fd], clearing every
+     * bit that interest was armed with.
      *
      * Called from [dispatchReady] on both the pipeline path (when a WRITE callback
      * does not re-register, indicating flush success) and the suspend path (when the
      * registration chain empties). Prevents level-triggered busy-loops by removing
      * the interest until the caller arms again.
+     *
+     * READ clears `EPOLLRDHUP` along with `EPOLLIN` because [registerCallback] arms
+     * the pair together. Clearing only `EPOLLIN` used to leave `EPOLLRDHUP` armed
+     * with nothing able to dispatch it — `loopBody` derives read-readiness from
+     * `EPOLLIN|EPOLLERR|EPOLLHUP`, which does not include it — so once the peer sent
+     * FIN, level-triggered `epoll_wait` returned that fd on every iteration and the
+     * loop spun at 100% until the fd was closed.
      */
     private fun removeInterestFromEpoll(fd: Int, interest: Interest) {
         val removeBit = when (interest) {
-            Interest.READ -> EPOLLIN
+            Interest.READ -> EPOLLIN or EPOLLRDHUP
             Interest.WRITE -> EPOLLOUT
         }
         val remaining = withRegLock {

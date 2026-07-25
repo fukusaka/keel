@@ -160,10 +160,16 @@ internal class KqueueIoTransport(
         // not busy-loop. The kernel rcvbuf retains the data and applies
         // back-pressure to the peer (TCP window). The setter's armRead()
         // call re-registers the filter when readEnabled is flipped back to
-        // true. Peer-close detection on this idle path is handled by
-        // [onPeerClosed] — the engine calls it separately when EV_EOF is
-        // observed, so we do not need to detect EOF here when readEnabled
-        // is false.
+        // true.
+        //
+        // Returning here also gives up peer-close detection until read is
+        // re-enabled. The filter carries EOF, so deleting it deletes the
+        // only path a close could arrive on; the registration is one-shot,
+        // so nothing re-delivers it either. This used to claim the engine
+        // would still call onPeerClosed on this path — it cannot, because
+        // by then there is no registration left to call. A close that
+        // arrives while read is disabled is observed when armRead() runs
+        // again and the pending FIN makes the fd readable.
         if (!readEnabled) return
 
         if (!readPoolRegistered) {

@@ -155,14 +155,19 @@ internal class EpollIoTransport(
 
         // Back-pressure path: if data is ready but the user has disabled
         // read, do not consume the data and do not re-arm. dispatchReady's
-        // "no re-register" branch will MOD-out EPOLLIN so epoll does not
-        // busy-loop. The kernel rcvbuf retains the data and applies back-
-        // pressure to the peer (TCP window). The setter's armRead() call
-        // re-registers EPOLLIN when readEnabled is flipped back to true.
-        // Note: peer-close detection on this path is handled by [onPeerClosed]
-        // — the engine calls it separately when EPOLLHUP / EPOLLRDHUP /
-        // EPOLLERR is observed, so we do not need to detect EOF here when
-        // readEnabled is false.
+        // "no re-register" branch will MOD-out the READ interest so epoll
+        // does not busy-loop. The kernel rcvbuf retains the data and applies
+        // back-pressure to the peer (TCP window). The setter's armRead() call
+        // re-registers when readEnabled is flipped back to true.
+        //
+        // Returning here also gives up peer-close detection until read is
+        // re-enabled. EPOLLRDHUP is armed together with EPOLLIN and cleared
+        // together with it, and the registration is one-shot, so nothing
+        // re-delivers a close in between. This used to claim the engine
+        // would still call onPeerClosed on this path — it cannot, because by
+        // then there is no registration left to call. A close that arrives
+        // while read is disabled is observed when armRead() runs again and
+        // the pending FIN makes the fd readable.
         if (!readEnabled) return
 
         if (!readPoolRegistered) {

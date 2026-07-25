@@ -66,6 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll`: stop the event loop spinning at 100% after read interest is disarmed on a closed peer — the READ disarm cleared only `EPOLLIN`, leaving `EPOLLRDHUP` armed with nothing able to dispatch it (#1000)
 - `engine-*`, `core`: `shutdownOutput()` now sends buffered writes before the FIN instead of stranding them,
   and discards writes issued after it (#994)
 - `engine-kqueue`, `engine-epoll`: `StreamServer` no longer owns a mutex it destroys while a concurrent
