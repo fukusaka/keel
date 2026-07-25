@@ -134,14 +134,23 @@ internal class KqueueIoTransport(
 
     init {
         // Arm EVFILT_READ at construction so peer-FIN is surfaced via
-        // EV_EOF + [onPeerClosed] even when the user keeps readEnabled = false
-        // for the entire connection lifetime (e.g. write-only push client,
-        // one-direction logger, monitoring metrics sender). Without this,
-        // kqueue would deliver no event on graceful peer close until the
-        // next write attempt or the SO_KEEPALIVE timer (~2 hours by default)
-        // — a public API contract gap. The arm is cheap (one EV_ADD syscall);
-        // [onReadable] / [onPeerClosed] handle fire-without-data and
-        // peer-close cases respectively.
+        // EV_EOF + [onPeerClosed] without the user ever setting
+        // readEnabled = true (e.g. write-only push client, one-direction
+        // logger, monitoring metrics sender). Without this, kqueue would
+        // deliver no event on graceful peer close until the next write attempt
+        // or the SO_KEEPALIVE timer (~2 hours by default) — a public API
+        // contract gap. The arm is cheap (one EV_ADD syscall).
+        //
+        // The registration is one-shot, so this covers the connection only
+        // until something first fires on it. A peer that sends data before
+        // closing takes the back-pressure path in [onReadable], which declines
+        // to re-arm, and EV_DELETE drops the filter; readEnabled = true is the
+        // only thing that arms it again. A write-only client that receives
+        // nothing keeps the arm for its whole lifetime and is fully covered —
+        // one that receives anything at all is not, and a later close reaches
+        // it only once it reads. Closing that gap needs a close-only interest,
+        // which EVFILT_READ cannot express: it wakes on data too, so leaving it
+        // armed under back-pressure is a busy loop.
         @Suppress("LeakingThis")
         eventLoop.registerCallback(fd, Interest.READ, this)
     }

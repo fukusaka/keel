@@ -133,15 +133,22 @@ internal class EpollIoTransport(
 
     init {
         // Arm READ (EPOLLIN|EPOLLRDHUP) at construction so peer-FIN / peer-RST is
-        // surfaced via EPOLLHUP / EPOLLRDHUP / EPOLLERR even when the user keeps
-        // readEnabled = false for the entire connection lifetime (e.g. write-only
-        // push client, one-direction logger, monitoring metrics sender).
-        // Without this, epoll has no entry for the fd, no event of any kind is
-        // delivered, and the connection sits in CLOSE-WAIT until the next write
-        // attempt or the SO_KEEPALIVE timer (~2 hours by default). The arm is
-        // cheap (one EPOLL_CTL_ADD syscall); the dispatch path tolerates fire-
-        // without-data via the readEnabled-false back-pressure handling in
-        // onReadable, and EOF dispatch is via the separate onPeerClosed.
+        // surfaced via EPOLLHUP / EPOLLRDHUP / EPOLLERR without the user ever
+        // setting readEnabled = true (e.g. write-only push client, one-direction
+        // logger, monitoring metrics sender). Without this, epoll has no entry
+        // for the fd, no event of any kind is delivered, and the connection sits
+        // in CLOSE-WAIT until the next write attempt or the SO_KEEPALIVE timer
+        // (~2 hours by default). The arm is cheap (one EPOLL_CTL_ADD syscall).
+        //
+        // The registration is one-shot, so this covers the connection only until
+        // something first fires on it. A peer that sends data before closing takes
+        // the back-pressure path in onReadable, which declines to re-arm, and the
+        // interest is dropped; readEnabled = true is the only thing that arms it
+        // again. A write-only client that receives nothing keeps the arm for its
+        // whole lifetime and is fully covered — one that receives anything at all
+        // is not, and a later close reaches it only once it reads.
+        // Closing that gap needs a close-only interest the engine can keep armed
+        // without waking on data, which kqueue cannot express on EVFILT_READ.
         @Suppress("LeakingThis")
         eventLoop.registerCallback(fd, Interest.READ, this)
     }

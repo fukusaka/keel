@@ -12,16 +12,27 @@ import kotlin.test.assertFalse
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Re-enabling read delivers a FIN that arrived while read was disabled.
+ * Where the construction-time read arm stops covering a connection, and what
+ * brings it back.
  *
- * Declining to re-arm under back-pressure gives up peer-close detection: the
- * interest that carries EOF is taken back, and the registration is one-shot, so
- * nothing re-delivers a close in the meantime. This is the documented recovery
- * path out of that state, and the reason the give-up is acceptable — the close
- * is not lost, only deferred until the reader comes back.
+ * The transport arms read at construction so a peer close reaches a listener
+ * that never enables reading — a write-only push client. That arm is one-shot.
+ * A peer that sends data first wakes it, the back-pressure path declines to
+ * re-arm (it does not want the data), and the interest carrying EOF is dropped
+ * with it. From then on a close is not reported: the sibling peer-close test
+ * covers the connection that receives nothing and stays covered; this covers
+ * the one that receives something and does not.
  *
- * Ordering here is data-then-FIN, the case that leaves the interest disarmed at
- * the moment the peer closes.
+ * Asserted in both directions, because the negative half alone would pass for a
+ * connection that was simply never closed: first that the close is *not*
+ * reported while the interest is down, then that re-enabling read reports it.
+ * That recovery is the reason the give-up is acceptable — the close is deferred,
+ * not lost — and the only recovery there is, since `readEnabled = true` is what
+ * calls `armRead()`.
+ *
+ * A client that keeps read disabled after receiving data therefore never learns
+ * of the close. Fixing that needs a close-only interest the engine can hold
+ * without waking on data; the engines cannot express one symmetrically today.
  */
 class EpollReadResumeAfterFinTest {
 
