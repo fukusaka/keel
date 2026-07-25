@@ -9,7 +9,8 @@ Targets: **linuxX64**, **linuxArm64**, **macosArm64**, **macosX64**
 `keel-native-posix` provides the shared POSIX socket surface used by all Native engine
 modules: the `NativeSocket` / `NativeSocketOps` seams with their production
 implementations `PosixNativeSocket` / `PosixNativeSocketOps`, plus the helpers
-`errnoMessage`, `closeFdSafely`, and `applySocketOptions`.
+`errnoMessage`, `closeFdSafely`, and `applySocketOptions`, and the `LoopHandoff`
+the readiness engines share for handing work to their EventLoop thread.
 Engine modules (`keel-engine-epoll`, `keel-engine-kqueue`, `keel-engine-io-uring`) depend on this
 module to avoid duplicating socket lifecycle code.
 
@@ -65,6 +66,7 @@ fails on some Kotlin/Native versions. `getsockopt` and `setsockopt` calls use
 | `errnoMessage(errno)` | Thread-safe errno-to-string helper (`strerror_r`-based) |
 | `closeFdSafely(fd, logger, context)` | Cleanup-path `close(2)` that logs failures instead of dropping them silently |
 | `applySocketOptions(fd, options)` | Applies a `SocketOptions` set through `NativeSocketOps.setSocketOption` |
+| `LoopHandoff` | Off-loop to EventLoop hand-off for the readiness engines: runs work on the loop thread, or a fallback on the caller once the loop has stopped. Shared by `keel-engine-epoll` / `keel-engine-kqueue` so the shutdown-race handling has one implementation |
 
 Test doubles for these seams (`FakeNativeSocket`, `FakeNativeSocketOps`, and the
 blocking loopback client `PosixRawClient`) live in the `keel-testing-internal`
