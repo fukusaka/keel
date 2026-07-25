@@ -1,8 +1,14 @@
 package io.github.fukusaka.keel.native.posix
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlin.concurrent.AtomicInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Unit tests for [LoopHandoff] — the off-loop to EventLoop hand-off the POSIX
@@ -14,9 +20,10 @@ import kotlin.test.assertTrue
  * is complete. That is coverage the engines could only reach through a live
  * kqueue / epoll before this was extracted.
  *
- * No timeout wrapper: nothing here suspends or waits on I/O. The one blocking
- * path — the quiesce spin — is only entered after the fake loop has already
- * been marked quiescent, so it exits on its first read.
+ * Most of these never block: they either take the inline path or return at the
+ * `loopFinished` guard. The one that does enter the quiesce spin drives it from
+ * a second thread and carries a wall-clock bound, because a regression that
+ * never publishes quiescence would otherwise hang rather than fail.
  */
 class LoopHandoffTest {
 
@@ -90,24 +97,47 @@ class LoopHandoffTest {
     }
 
     @Test
-    fun `the queued task and the fallback cannot both run`() {
-        // Shutdown order as the loop publishes it: finished, drain, quiescent.
-        // A caller whose task is already queued and whose drain has run must
-        // not also get the fallback — the claim is what rules that out.
+    fun `a caller waits out the final drain before taking the fallback`() = runBlocking {
+        // The state the two flags exist to distinguish: the loop has stopped
+        // polling (finished) but has not finished draining (not yet quiescent).
+        // A caller must wait here — acting on `finished` alone would release an
+        // fd the loop can still arm from a queued registration.
+        //
+        // Collapsing the flags into one would let this caller run its fallback
+        // before the drain, which is what the assertions below rule out.
         val loop = FakeLoop()
         val handoff = loop.handoff()
-        var onLoop = 0
-        var ifStopped = 0
+        val drained = AtomicInt(0)
+        val ranBeforeDrain = AtomicInt(0)
 
-        // The loop stops polling, and its final drain runs the queued task.
         handoff.markFinished()
-        handoff.markQuiescent()
 
-        // This caller arrives during shutdown: it queues, then finds the loop
-        // finished and quiet, so it reaches the claim.
-        handoff.runOnLoop(onLoop = { onLoop++ }, ifStopped = { ifStopped++ })
-        loop.drain()
+        withTimeout(WAIT_BUDGET) {
+            val waiter = launch(Dispatchers.Default) {
+                handoff.runOnLoop(
+                    onLoop = {},
+                    ifStopped = { if (drained.value == 0) ranBeforeDrain.value = 1 },
+                )
+            }
+            // Let the waiter reach the spin, then complete the drain the way the
+            // loop does. Publishing quiescence is what releases it.
+            launch(Dispatchers.Default) {
+                while (loop.queue.isEmpty()) { /* wait for the offer */ }
+                drained.value = 1
+                handoff.markQuiescent()
+            }
+            waiter.join()
+        }
 
-        assertEquals(1, onLoop + ifStopped, "exactly one of the two blocks may run")
+        assertEquals(0, ranBeforeDrain.value, "the fallback must not run before the drain completes")
+    }
+
+    private companion object {
+        /**
+         * Wall-clock bound for the one test that blocks. The spin it waits on is
+         * released by another thread within microseconds; this only exists so a
+         * regression that never publishes quiescence fails instead of hanging.
+         */
+        val WAIT_BUDGET = 15.seconds
     }
 }
