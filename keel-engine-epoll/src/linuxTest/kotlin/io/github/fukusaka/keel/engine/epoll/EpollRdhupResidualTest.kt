@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
+import platform.linux.EPOLLERR
 import platform.linux.EPOLLIN
 import platform.linux.EPOLLRDHUP
 import platform.posix.EBADF
@@ -48,6 +49,43 @@ class EpollRdhupResidualTest {
         override fun onReady(interest: Interest) {
             readyCount++
         }
+    }
+
+    @Test
+    fun `an EOF dispatch keeps the interest of a listener that re-armed`() {
+        val watched = 2000
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            // EPOLLERR sets eofFlag, and it is reported for a listening socket
+            // whose accept failed — the case a server's AcceptArm re-arms from.
+            scriptWaitOk(watched to EPOLLERR)
+            scriptWaitFailure(EBADF)
+        }
+        val loop = EpollEventLoop(logger, syscallOps = fake)
+
+        // Re-registers from inside onReady, exactly as AcceptArm does on
+        // WouldBlock and on a failed accept.
+        val listener = object : FdReadyListener {
+            var readyCount = 0
+            override fun onReady(interest: Interest) {
+                readyCount++
+                loop.registerCallback(watched, interest, this)
+            }
+        }
+        loop.registerCallback(watched, Interest.READ, listener)
+        loop.loop()
+
+        assertEquals(1, listener.readyCount, "the listener should have been dispatched once")
+        // The re-arm issues no syscall — the mask is unchanged — so the only
+        // record of it is the registration itself. Disarming after it would
+        // discard a live listener, and dropping the fd from the interest list
+        // would take the always-reported EPOLLERR that revives it with them.
+        val forFd = fake.ctlCalls.filter { it.fd == watched }
+        assertTrue(
+            forFd.none { it.op == FakeEpollSyscallOps.CtlOp.DEL },
+            "the fd was dropped from the interest list although the listener re-armed: $forFd",
+        )
     }
 
     @Test

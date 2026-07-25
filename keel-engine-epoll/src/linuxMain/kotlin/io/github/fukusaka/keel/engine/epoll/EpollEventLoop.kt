@@ -973,9 +973,22 @@ internal class EpollEventLoop(
             cb.onReady(interest)
             if (eofFlag) {
                 cb.onPeerClosed(interest)
-                // EOF path always removes the filter; the listener cannot
-                // re-register meaningfully (the connection is ending).
-                removeInterestFromEpoll(fd, interest)
+                // Same re-registration check as the branch below. This used to
+                // disarm unconditionally, on the reasoning that a connection
+                // reporting EOF is ending and its listener cannot re-register
+                // meaningfully. That is not true of every listener that reaches
+                // here: EPOLLERR and EPOLLHUP set eofFlag too, and they are
+                // reported for a listening socket, whose AcceptArm re-arms on
+                // both WouldBlock and a failed accept. The re-arm issues no
+                // syscall when the mask is unchanged, so disarming after it
+                // discarded a live registration — and once the disarm drops the
+                // fd from the interest list entirely, the always-reported
+                // EPOLLERR that used to bring it back is not delivered either,
+                // leaving an accept loop that never runs again.
+                val reRegistered = withRegLock { callbackRegistrations[key] != null }
+                if (!reRegistered) {
+                    removeInterestFromEpoll(fd, interest)
+                }
             } else {
                 // Stale-filter cleanup path: if the callback did not
                 // re-register during onReady (e.g., a WRITE callback after
