@@ -37,6 +37,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `core`: the pipeline's non-suspend outbound entry points (`requestWrite` / `requestFlush` /
+  `requestClose` and the handler-side `propagate*`) now run on the transport's owning EventLoop —
+  inline when the caller is already there, dispatched onto it otherwise — instead of touching the
+  transport from the caller's thread. A handler emitting from off the loop no longer races the loop's
+  own writes. A write handed over after the transport closed is released rather than leaked (#996)
 - `engine-kqueue`, `engine-epoll`, `engine-io-uring`: `shutdownOutput()` now sends FIN from the EventLoop
   thread instead of the caller's, matching `close()`. On io_uring the direct-alloc path submitted through an
   EventLoop-only API that takes a non-atomic slot and an SQE from the shared ring; on all three the
