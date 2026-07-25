@@ -18,7 +18,13 @@ package io.github.fukusaka.keel.pipeline
  * have compatible types at construction time ([addLast], [replace], etc.). This catches
  * pipeline configuration errors before any message flows.
  *
- * All pipeline operations must be called on the EventLoop thread.
+ * **Threading**: handler callbacks run on the EventLoop thread, so a handler
+ * calling back into the pipeline is already there. The outbound entry points
+ * ([requestWrite], [requestFlush], [requestClose]) are also safe to call from
+ * another thread — they dispatch onto the EventLoop rather than touch the
+ * transport's state from the caller's thread — at the cost of the work
+ * happening after the call returns. Everything else, chain mutation included,
+ * must be called on the EventLoop thread.
  */
 interface Pipeline {
 

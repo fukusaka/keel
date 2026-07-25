@@ -14,7 +14,14 @@ import io.github.fukusaka.keel.buf.BufferAllocator
  * **Outbound propagation** (`propagateWrite`, `propagateFlush`, etc.) flows
  * from tail to head — each call invokes the next [OutboundHandler].
  *
- * All methods must be called on the EventLoop thread.
+ * **Threading**: handler callbacks run on the EventLoop thread, so a handler
+ * propagating from inside one is already there. The outbound propagations
+ * ([propagateWrite], [propagateFlush], [propagateClose]) are also safe from
+ * another thread — a handler that finished asynchronous work off the loop can
+ * emit from there, and the call dispatches onto the EventLoop rather than
+ * touching the transport's state from the caller's thread. The work then
+ * happens after the call returns. Inbound propagation must stay on the
+ * EventLoop thread.
  *
  * ### Ownership on throw ([propagateRead] / [propagateWrite])
  *

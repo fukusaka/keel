@@ -220,6 +220,27 @@ interface IoTransport {
      * is disabled by default. A [close] before the drain finishes supersedes
      * the half-close and discards what was still queued.
      */
+    /**
+     * True when the caller is already on the context this transport's
+     * non-suspend API must be used from — the EventLoop thread, or the serial
+     * dispatch queue that stands in for one.
+     *
+     * Defaults to `true` so a transport that cannot tell — a test double, an
+     * engine whose runtime is single-threaded — never trips a check built on
+     * it. Engines that own an EventLoop override it.
+     *
+     * Cheap enough for the write path: a thread identity compare on the
+     * thread-backed engines, a single queue-local lookup on the dispatch-queue
+     * ones.
+     *
+     * **A transport that can return `false` must have an [ioDispatcher] that
+     * accepts `dispatch`**, because that is where the pipeline routes outbound
+     * work it may not run on the caller's thread. `Dispatchers.Unconfined`
+     * does not qualify — it rejects `dispatch` outright — which is consistent
+     * with the transports that use it never leaving the default `true`.
+     */
+    val inOwningContext: Boolean get() = true
+
     fun shutdownOutput()
 
     /**

@@ -40,6 +40,8 @@ internal class DefaultPipeline(
     private val logger: Logger,
 ) : Pipeline {
 
+    private val transport: IoTransport = transport
+
     private val head: DefaultContext = DefaultContext(this, "HEAD", HeadHandler(transport))
     private val tail: DefaultContext = DefaultContext(this, "TAIL", TailHandler(logger))
 
@@ -50,6 +52,40 @@ internal class DefaultPipeline(
      * added — see the [PreAttachJournal] doc below for the rationale.
      */
     private val ioDispatcher: CoroutineDispatcher = transport.ioDispatcher
+
+    /**
+     * Runs [block] on the transport's owning context: inline when the caller
+     * is already there, dispatched otherwise.
+     *
+     * Outbound work touches state only the owning context may touch — the
+     * transport's `pendingWrites` deque above all — so an off-context caller
+     * cannot be allowed to walk the chain itself. Netty answers the same
+     * question the same way (`AbstractChannelHandlerContext.write` runs inline
+     * when `executor.inEventLoop()` and queues a task otherwise), and it is
+     * the shape keel already uses for `close` / `shutdownOutput` at the engine
+     * layer. Enforcing the old "caller must already be on the EventLoop"
+     * contract instead would have turned a silent corruption into a crash
+     * without making any caller correct.
+     *
+     * Returns `false` when the transport is already closed and [block] was
+     * abandoned, so a caller that transferred buffer ownership can release it
+     * rather than leak it. A boolean rather than a drop-handler lambda because
+     * the handler would be allocated on the fast path too; the dispatched
+     * closure is built only in the branch that uses it.
+     *
+     * The `false` return does not close the window entirely: a transport that
+     * closes *after* the dispatch still leaves the task queued, and the queue
+     * only drains while the loop lives.
+     */
+    private inline fun onOwningContext(crossinline block: () -> Unit): Boolean {
+        if (transport.inOwningContext) {
+            block()
+            return true
+        }
+        if (!transport.isOpen) return false
+        ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
+        return true
+    }
 
     /**
      * Tracks whether [notifyInactive] has been observed at the pipeline level.
@@ -370,17 +406,17 @@ internal class DefaultPipeline(
     // --- Outbound entry ---
 
     override fun requestWrite(msg: Any): Pipeline {
-        tail.invokeOnWrite(msg)
+        if (!onOwningContext { tail.invokeOnWrite(msg) }) ReferenceCountUtil.safeRelease(msg)
         return this
     }
 
     override fun requestFlush(): Pipeline {
-        tail.invokeOnFlush()
+        onOwningContext { tail.invokeOnFlush() }
         return this
     }
 
     override fun requestClose(): Pipeline {
-        tail.invokeOnClose()
+        onOwningContext { tail.invokeOnClose() }
         return this
     }
 
@@ -578,19 +614,30 @@ internal class DefaultPipeline(
 
         // --- Outbound propagation ---
 
+        // The chain walk (findPrevOutbound) runs *inside* onOwningContext, not
+        // before it. prev/next are non-volatile and EventLoop-confined, so an
+        // off-loop emitter that resolved the previous context on its own thread
+        // could read a link the loop is concurrently mutating — and a context
+        // detached between the resolve and the dispatched run would surface a
+        // null prev whose write leaks. Resolving on the owning context closes
+        // both: a null prev there releases the message rather than dropping it.
+
         override fun propagateWrite(msg: Any) {
-            val prevCtx = findPrevOutbound() ?: return
-            prevCtx.invokeOnWrite(msg)
+            if (!pipelineRef.onOwningContext {
+                    val prevCtx = findPrevOutbound()
+                    if (prevCtx != null) prevCtx.invokeOnWrite(msg) else ReferenceCountUtil.safeRelease(msg)
+                }
+            ) {
+                ReferenceCountUtil.safeRelease(msg)
+            }
         }
 
         override fun propagateFlush() {
-            val prevCtx = findPrevOutbound() ?: return
-            prevCtx.invokeOnFlush()
+            pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnFlush() }
         }
 
         override fun propagateClose() {
-            val prevCtx = findPrevOutbound() ?: return
-            prevCtx.invokeOnClose()
+            pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnClose() }
         }
 
         // --- Invoke with try-catch (leak prevention) ---
