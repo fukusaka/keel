@@ -386,13 +386,14 @@ class EpollEventLoopSeamTest {
         })
         el.loop()
         assertTrue(writeCalled, "WRITE callback must be invoked")
-        // After a no-re-arm WRITE callback, epoll_ctl(MOD) must be called to
-        // remove EPOLLOUT from the filter and prevent a busy loop.
-        val modCalls = fake.ctlCalls.filter { it.op == FakeEpollSyscallOps.CtlOp.MOD }
-        assertTrue(modCalls.isNotEmpty(), "epoll_ctl(MOD) must be called to clear stale EPOLLOUT")
+        // After a no-re-arm WRITE callback the fd must no longer be armed for
+        // EPOLLOUT, or it busy-loops. Asserted on the outcome rather than the
+        // opcode: with nothing else armed the engine drops the fd (DEL), and
+        // with another interest still live it narrows the mask (MOD).
+        val last = fake.ctlCalls.last { it.fd == 2000 }
         assertTrue(
-            (modCalls.last().events and EPOLLOUT) == 0,
-            "MOD must clear EPOLLOUT bit, got events=${modCalls.last().events}",
+            last.op == FakeEpollSyscallOps.CtlOp.DEL || (last.events and EPOLLOUT) == 0,
+            "stale EPOLLOUT must be taken back, got op=${last.op} events=${last.events}",
         )
     }
 
@@ -426,15 +427,16 @@ class EpollEventLoopSeamTest {
         el.registerCallback(fd = 2000, interest = Interest.WRITE, listener = listener)
         el.loop()
         assertEquals(2, callCount, "WRITE callback must be invoked exactly twice")
-        // On the first fire the callback re-registered, so no MOD should have been
-        // issued between the first and second wait (EPOLLOUT stays armed).
-        // On the second fire no re-registration → one MOD to clear EPOLLOUT.
-        val modCalls = fake.ctlCalls.filter { it.op == FakeEpollSyscallOps.CtlOp.MOD }
-        assertEquals(1, modCalls.size, "exactly one MOD (after second fire) expected")
-        assertTrue(
-            (modCalls[0].events and EPOLLOUT) == 0,
-            "MOD must clear EPOLLOUT bit, got events=${modCalls[0].events}",
-        )
+        // On the first fire the callback re-registered, so EPOLLOUT stays armed
+        // and nothing is taken back between the two waits. On the second fire it
+        // did not, so exactly one take-back follows. Asserted on the outcome
+        // rather than the opcode: nothing else is armed here, so the engine
+        // drops the fd (DEL) rather than narrowing its mask (MOD).
+        val takeBacks = fake.ctlCalls.filter {
+            it.fd == 2000 &&
+                (it.op == FakeEpollSyscallOps.CtlOp.DEL || (it.events and EPOLLOUT) == 0)
+        }
+        assertEquals(1, takeBacks.size, "exactly one take-back (after the second fire) expected")
     }
 
     // --- stale interest safety-net tests ---
@@ -465,11 +467,10 @@ class EpollEventLoopSeamTest {
         el.loop()
         assertEquals(1, warns.size, "stale event must produce exactly one WARN")
         assertTrue(warns.first().contains("2000"), "WARN must mention the fd")
-        val modCalls = fake.ctlCalls.filter { it.op == FakeEpollSyscallOps.CtlOp.MOD }
-        assertTrue(modCalls.isNotEmpty(), "MOD must be called to remove stale EPOLLOUT")
+        val last = fake.ctlCalls.last { it.fd == 2000 }
         assertTrue(
-            (modCalls.last().events and EPOLLOUT) == 0,
-            "MOD must clear EPOLLOUT bit, got events=${modCalls.last().events}",
+            last.op == FakeEpollSyscallOps.CtlOp.DEL || (last.events and EPOLLOUT) == 0,
+            "the stale EPOLLOUT must be taken back, got op=${last.op} events=${last.events}",
         )
     }
 
