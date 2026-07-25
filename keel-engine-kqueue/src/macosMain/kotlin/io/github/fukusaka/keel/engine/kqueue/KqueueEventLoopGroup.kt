@@ -63,6 +63,10 @@ internal class KqueueEventLoopGroup(
      * Uses atomic increment with overflow-safe masking (same as NIO).
      * Thread-safe: multiple accept threads can call this concurrently.
      */
+    /** Live callback registrations across every loop in this group; see the loop's own property. */
+    internal val callbackRegistrationCount: Int
+        get() = loops.sumOf { it.callbackRegistrationCount }
+
     fun next(): KqueueEventLoop {
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
         return loops[i]

@@ -101,6 +101,13 @@ class EpollEngine(
     )
     private var closed = false
 
+    /**
+     * Live callback registrations on the worker loops. Tests use this to see a
+     * connection teardown actually withdraw its registration — the map is keyed
+     * by fd number, so a leftover is invisible from the outside otherwise.
+     */
+    internal fun workerRegistrationCount(): Int = workerGroup.callbackRegistrationCount
+
     init {
         bossLoop.start()
         workerGroup.start()

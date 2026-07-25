@@ -66,6 +66,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll`, `engine-kqueue`: withdraw a connection's readiness callback when it closes —
+  a closed transport, its channel and the pipeline graph behind it stayed reachable until the fd
+  number was reused (#1001)
 - `engine-epoll`: stop the event loop spinning at 100% on a disarmed fd whose peer has gone away —
   the READ disarm left `EPOLLRDHUP` armed, and an emptied mask left the fd registered for the
   always-reported `EPOLLERR` / `EPOLLHUP` (#1000)

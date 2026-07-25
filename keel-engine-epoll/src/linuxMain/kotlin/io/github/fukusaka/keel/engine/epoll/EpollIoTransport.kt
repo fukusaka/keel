@@ -327,6 +327,13 @@ internal class EpollIoTransport(
             flushContinuation = null
             cont.cancel()
         }
+        // Withdraw the registrations before dropping the fd. The map is keyed by
+        // fd number, so one left behind keeps this transport — and the channel
+        // and pipeline graph it references — reachable until that number comes
+        // back. The server side has always done this on close; the transport
+        // did not.
+        eventLoop.unregisterCallback(fd, Interest.READ)
+        eventLoop.unregisterCallback(fd, Interest.WRITE)
         eventLoop.cleanupFd(fd)
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
         logTransportStatsOnClose(eventLoop.logger, "fd=$fd")

@@ -173,6 +173,17 @@ internal class KqueueEventLoop(
     // precedent from kotlinx.coroutines.
     private val callbackRegistrations = LongObjectMap<FdReadyListener>()
 
+    /**
+     * Number of live callback registrations, for tests that need to see a
+     * teardown actually withdraw one. The map is keyed by fd number, so a
+     * registration left behind is not visible from the outside in any other
+     * way: it is not a growing leak (the next connection on that fd number
+     * overwrites it) but it does keep the transport, its channel and the whole
+     * pipeline graph reachable until then.
+     */
+    internal val callbackRegistrationCount: Int
+        get() = withRegLock { callbackRegistrations.size }
+
     // Lock-free MPSC queue replaces pthread_mutex + MutableList for
     // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
     private val taskQueue = MpscQueue<Runnable>()

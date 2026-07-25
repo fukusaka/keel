@@ -57,6 +57,10 @@ internal class EpollEventLoopGroup(
      * Returns the next [EpollEventLoop] in round-robin order. The
      * per-EventLoop allocator is exposed as [EpollEventLoop.allocator].
      */
+    /** Live callback registrations across every loop in this group; see the loop's own property. */
+    internal val callbackRegistrationCount: Int
+        get() = loops.sumOf { it.callbackRegistrationCount }
+
     fun next(): EpollEventLoop {
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
         return loops[i]
