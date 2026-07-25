@@ -66,6 +66,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll`: stop the event loop spinning at 100% on a disarmed fd whose peer has gone away —
+  the READ disarm left `EPOLLRDHUP` armed, and an emptied mask left the fd registered for the
+  always-reported `EPOLLERR` / `EPOLLHUP` (#1000)
 - `engine-*`, `core`: `shutdownOutput()` now sends buffered writes before the FIN instead of stranding them,
   and discards writes issued after it (#994)
 - `engine-kqueue`, `engine-epoll`: `StreamServer` no longer owns a mutex it destroys while a concurrent

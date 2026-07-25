@@ -973,9 +973,22 @@ internal class EpollEventLoop(
             cb.onReady(interest)
             if (eofFlag) {
                 cb.onPeerClosed(interest)
-                // EOF path always removes the filter; the listener cannot
-                // re-register meaningfully (the connection is ending).
-                removeInterestFromEpoll(fd, interest)
+                // Same re-registration check as the branch below. This used to
+                // disarm unconditionally, on the reasoning that a connection
+                // reporting EOF is ending and its listener cannot re-register
+                // meaningfully. That is not true of every listener that reaches
+                // here: EPOLLERR and EPOLLHUP set eofFlag too, and they are
+                // reported for a listening socket, whose AcceptArm re-arms on
+                // both WouldBlock and a failed accept. The re-arm issues no
+                // syscall when the mask is unchanged, so disarming after it
+                // discarded a live registration — and once the disarm drops the
+                // fd from the interest list entirely, the always-reported
+                // EPOLLERR that used to bring it back is not delivered either,
+                // leaving an accept loop that never runs again.
+                val reRegistered = withRegLock { callbackRegistrations[key] != null }
+                if (!reRegistered) {
+                    removeInterestFromEpoll(fd, interest)
+                }
             } else {
                 // Stale-filter cleanup path: if the callback did not
                 // re-register during onReady (e.g., a WRITE callback after
@@ -1024,7 +1037,11 @@ internal class EpollEventLoop(
     }
 
     /**
-     * Adds [newEvents] (EPOLLIN or EPOLLOUT) to the epoll registration for [fd].
+     * Adds [newEvents] to the epoll registration for [fd].
+     *
+     * READ arrives here as `EPOLLIN or EPOLLRDHUP` from [registerCallback] and as
+     * `EPOLLIN` alone from the suspend path; WRITE as `EPOLLOUT`. Whatever is
+     * added has to be taken back by [removeInterestFromEpoll].
      *
      * Uses EPOLL_CTL_ADD for the first registration. If the fd is already
      * registered (EEXIST), falls back to EPOLL_CTL_MOD with the combined events.
@@ -1065,16 +1082,24 @@ internal class EpollEventLoop(
     }
 
     /**
-     * Removes a specific interest (EPOLLIN or EPOLLOUT) from the epoll registration for [fd].
+     * Removes an interest from the epoll registration for [fd], clearing every
+     * bit that interest was armed with.
      *
      * Called from [dispatchReady] on both the pipeline path (when a WRITE callback
      * does not re-register, indicating flush success) and the suspend path (when the
      * registration chain empties). Prevents level-triggered busy-loops by removing
      * the interest until the caller arms again.
+     *
+     * READ clears `EPOLLRDHUP` along with `EPOLLIN` because [registerCallback] arms
+     * the pair together. Clearing only `EPOLLIN` used to leave `EPOLLRDHUP` armed
+     * with nothing able to dispatch it — `loopBody` derives read-readiness from
+     * `EPOLLIN|EPOLLERR|EPOLLHUP`, which does not include it — so once the peer sent
+     * FIN, level-triggered `epoll_wait` returned that fd on every iteration and the
+     * loop spun at 100% until the fd was closed.
      */
     private fun removeInterestFromEpoll(fd: Int, interest: Interest) {
         val removeBit = when (interest) {
-            Interest.READ -> EPOLLIN
+            Interest.READ -> EPOLLIN or EPOLLRDHUP
             Interest.WRITE -> EPOLLOUT
         }
         val remaining = withRegLock {
@@ -1087,10 +1112,22 @@ internal class EpollEventLoop(
             }
             updated
         }
-        val err = syscallOps.epollMod(epFd, fd, remaining)
+        // An empty mask is not the same as being out of the interest list.
+        // EPOLLERR / EPOLLHUP are reported whether or not they were asked for,
+        // so an fd left registered with 0 events still comes back from every
+        // epoll_wait once the peer resets — with its one-shot callback already
+        // consumed and no suspend waiter left, that is the stale-interest WARN
+        // below firing in a loop. Drop the fd instead; the next arm re-adds it
+        // (addOrModifyEpoll starts with EPOLL_CTL_ADD).
+        val err = if (remaining == 0) {
+            syscallOps.epollDel(epFd, fd)
+        } else {
+            syscallOps.epollMod(epFd, fd, remaining)
+        }
         if (err != 0) {
+            val op = if (remaining == 0) "DEL" else "MOD"
             logger.debug {
-                "epoll_ctl(MOD, fd=$fd, remove ${interest.name}) failed: ${errnoMessage(err)}"
+                "epoll_ctl($op, fd=$fd, remove ${interest.name}) failed: ${errnoMessage(err)}"
             }
         }
     }

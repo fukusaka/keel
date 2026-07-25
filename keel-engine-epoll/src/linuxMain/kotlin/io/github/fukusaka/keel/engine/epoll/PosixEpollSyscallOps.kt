@@ -16,6 +16,7 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toLong
 import platform.linux.EPOLL_CLOEXEC
 import platform.linux.EPOLL_CTL_ADD
+import platform.linux.EPOLL_CTL_DEL
 import platform.linux.EPOLL_CTL_MOD
 import platform.linux.epoll_create1
 import platform.linux.epoll_ctl
@@ -58,6 +59,9 @@ internal object PosixEpollSyscallOps : EpollSyscallOps {
 
     override fun epollMod(epFd: Int, fd: Int, events: Int): Int =
         ctl(epFd, EPOLL_CTL_MOD, fd, events)
+
+    override fun epollDel(epFd: Int, fd: Int): Int =
+        ctl(epFd, EPOLL_CTL_DEL, fd, 0)
 
     override fun waitEvents(epFd: Int, eventsOut: Array<EpEvent>, timeoutMs: Int): Int {
         memScoped {

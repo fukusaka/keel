@@ -850,9 +850,19 @@ internal class KqueueEventLoop(
             cb.onReady(interest)
             if (eofFlag) {
                 cb.onPeerClosed(interest)
-                // EOF path always removes the filter; the listener cannot
-                // re-register meaningfully (the connection is ending).
-                removeInterestFromKqueue(fd, interest)
+                // Same re-registration check as the branch below. This used to
+                // disarm unconditionally, on the reasoning that a connection
+                // reporting EOF is ending and its listener cannot re-register
+                // meaningfully. That is not true of every listener that reaches
+                // here: a server's AcceptArm re-arms on both WouldBlock and a
+                // failed accept, and the re-arm issues no syscall when the
+                // filter is already present, so disarming after it discarded a
+                // live registration and left an accept loop that never runs
+                // again.
+                val reRegistered = withRegLock { callbackRegistrations[key] != null }
+                if (!reRegistered) {
+                    removeInterestFromKqueue(fd, interest)
+                }
             } else {
                 // Existing stale-filter cleanup path (PR #449): if the callback
                 // did not re-register during onReady (e.g., a WRITE callback

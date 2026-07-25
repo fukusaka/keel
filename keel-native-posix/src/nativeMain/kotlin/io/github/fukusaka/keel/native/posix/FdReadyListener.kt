@@ -34,9 +34,16 @@ interface FdReadyListener {
      *
      * Always called *after* [onReady], so the listener can drain whatever data
      * arrived alongside the close first. It exists for the case a `read()`
-     * cannot cover: read interest was never armed (a write-only push client
-     * with `readEnabled = false`), which leaves this as the only way the
-     * peer-close reaches user code.
+     * cannot cover: a listener that never reads, for which this is the only way
+     * a peer close reaches user code.
+     *
+     * **It only reaches a listener that is still registered.** Registrations are
+     * one-shot: a listener that declines to re-arm — the back-pressure case,
+     * where it does not want the data that woke it — gives up peer-close
+     * detection along with it, because the interest carrying the close is the
+     * one being dropped. A listener that is never woken at all keeps its
+     * registration and is covered for the connection's lifetime; one that is
+     * woken once and declines is not, until it arms again.
      *
      * The engine unconditionally disarms the fd's interest afterwards, so the
      * listener does not need to disarm explicitly.

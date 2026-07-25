@@ -24,7 +24,7 @@ import platform.posix.usleep
  *   instead of returning `0` immediately, so the spawned EventLoop thread
  *   polls (drains dispatched tasks each iteration) without pegging a CPU.
  * - [lastAddInterestThread] captures the pthread on which the most recent
- *   `epollAdd` / `epollMod` for [watchedFd] ran, so the test can assert
+ *   `epollAdd` / `epollMod` / `epollDel` for [watchedFd] ran, so the test can assert
  *   the syscall ran on the EventLoop thread (cross-thread funnel) or the
  *   caller thread (inline fast path), via `pthread_equal`. It is
  *   `@Volatile` because it is written on the EventLoop thread and read on
@@ -47,7 +47,7 @@ internal class FakeEpollSyscallOps(
     var liveMode: Boolean = false
 
     /**
-     * Only `epollAdd` / `epollMod` calls for this fd update
+     * Only `epollAdd` / `epollMod` / `epollDel` calls for this fd update
      * [lastAddInterestThread]. Default `-1` captures nothing. The funnel
      * test sets it to the fd under test so the construction-time
      * wakeup-eventfd `EPOLL_CTL_ADD` (which runs on the constructing
@@ -57,7 +57,7 @@ internal class FakeEpollSyscallOps(
     var watchedFd: Int = -1
 
     /**
-     * The pthread on which the most recent `epollAdd` / `epollMod` for
+     * The pthread on which the most recent `epollAdd` / `epollMod` / `epollDel` for
      * [watchedFd] ran, or `null` if none yet. `@Volatile` for cross-thread
      * read by the funnel test (written on the EventLoop thread). Compare
      * with `pthread_self()` via `pthread_equal` to verify funnel routing —
@@ -110,12 +110,13 @@ internal class FakeEpollSyscallOps(
 
     // --- epollAdd / epollMod ---
 
-    enum class CtlOp { ADD, MOD }
+    enum class CtlOp { ADD, MOD, DEL }
     data class CtlCall(val op: CtlOp, val epFd: Int, val fd: Int, val events: Int)
 
     val ctlCalls: MutableList<CtlCall> = mutableListOf()
     private val addResults = ArrayDeque<Int>()
     private val modResults = ArrayDeque<Int>()
+    private val delResults = ArrayDeque<Int>()
 
     fun scriptAddResult(errno: Int) {
         require(errno >= 0)
@@ -125,6 +126,12 @@ internal class FakeEpollSyscallOps(
     fun scriptModResult(errno: Int) {
         require(errno >= 0)
         modResults.addLast(errno)
+    }
+
+    /** Scripts the next `epollDel` call to return [errno] (0 = success). */
+    fun scriptDelResult(errno: Int) {
+        require(errno >= 0)
+        delResults.addLast(errno)
     }
 
     override fun epollAdd(epFd: Int, fd: Int, events: Int): Int {
@@ -137,6 +144,15 @@ internal class FakeEpollSyscallOps(
             lastAddInterestThread = pthread_self()
         }
         return if (addResults.isEmpty()) 0 else addResults.removeFirst()
+    }
+
+    override fun epollDel(epFd: Int, fd: Int): Int {
+        ctlCalls.add(CtlCall(CtlOp.DEL, epFd, fd, 0))
+        if (fd == watchedFd) {
+            ctlCallCount = ctlCalls.size
+            lastAddInterestThread = pthread_self()
+        }
+        return if (delResults.isEmpty()) 0 else delResults.removeFirst()
     }
 
     override fun epollMod(epFd: Int, fd: Int, events: Int): Int {
