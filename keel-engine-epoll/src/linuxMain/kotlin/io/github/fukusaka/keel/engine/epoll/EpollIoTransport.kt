@@ -34,7 +34,8 @@ import kotlin.coroutines.resume
 /**
  * epoll [IoTransport] implementation for Linux.
  *
- * **Read path**: registers EPOLLIN via [EpollEventLoop.registerCallback].
+ * **Read path**: registers EPOLLIN together with EPOLLRDHUP via
+ * [EpollEventLoop.registerCallback].
  * On data arrival, allocates a buffer, calls POSIX `read()`, and delivers
  * via [onRead]. EAGAIN triggers automatic re-arm.
  *
@@ -131,7 +132,7 @@ internal class EpollIoTransport(
         }
 
     init {
-        // Arm EPOLLIN at construction so peer-FIN / peer-RST is
+        // Arm READ (EPOLLIN|EPOLLRDHUP) at construction so peer-FIN / peer-RST is
         // surfaced via EPOLLHUP / EPOLLRDHUP / EPOLLERR even when the user keeps
         // readEnabled = false for the entire connection lifetime (e.g. write-only
         // push client, one-direction logger, monitoring metrics sender).

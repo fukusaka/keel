@@ -1024,7 +1024,11 @@ internal class EpollEventLoop(
     }
 
     /**
-     * Adds [newEvents] (EPOLLIN or EPOLLOUT) to the epoll registration for [fd].
+     * Adds [newEvents] to the epoll registration for [fd].
+     *
+     * READ arrives here as `EPOLLIN or EPOLLRDHUP` from [registerCallback] and as
+     * `EPOLLIN` alone from the suspend path; WRITE as `EPOLLOUT`. Whatever is
+     * added has to be taken back by [removeInterestFromEpoll].
      *
      * Uses EPOLL_CTL_ADD for the first registration. If the fd is already
      * registered (EEXIST), falls back to EPOLL_CTL_MOD with the combined events.
@@ -1095,10 +1099,22 @@ internal class EpollEventLoop(
             }
             updated
         }
-        val err = syscallOps.epollMod(epFd, fd, remaining)
+        // An empty mask is not the same as being out of the interest list.
+        // EPOLLERR / EPOLLHUP are reported whether or not they were asked for,
+        // so an fd left registered with 0 events still comes back from every
+        // epoll_wait once the peer resets — with its one-shot callback already
+        // consumed and no suspend waiter left, that is the stale-interest WARN
+        // below firing in a loop. Drop the fd instead; the next arm re-adds it
+        // (addOrModifyEpoll starts with EPOLL_CTL_ADD).
+        val err = if (remaining == 0) {
+            syscallOps.epollDel(epFd, fd)
+        } else {
+            syscallOps.epollMod(epFd, fd, remaining)
+        }
         if (err != 0) {
+            val op = if (remaining == 0) "DEL" else "MOD"
             logger.debug {
-                "epoll_ctl(MOD, fd=$fd, remove ${interest.name}) failed: ${errnoMessage(err)}"
+                "epoll_ctl($op, fd=$fd, remove ${interest.name}) failed: ${errnoMessage(err)}"
             }
         }
     }

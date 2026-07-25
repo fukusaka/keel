@@ -88,5 +88,17 @@ class EpollRdhupResidualTest {
             remaining and EPOLLIN,
             "EPOLLIN is still armed after the disarm (mask 0x${remaining.toString(16)}).",
         )
+
+        // The last interest going away must take the fd out of the interest
+        // list, not just empty its mask: EPOLLERR / EPOLLHUP are reported
+        // whether or not they were asked for, so a registered fd with 0 events
+        // still returns from every epoll_wait once the peer resets.
+        assertEquals(
+            FakeEpollSyscallOps.CtlOp.DEL,
+            forFd.last().op,
+            "the disarm left fd=$watched registered (op=${forFd.last().op}); an empty mask does not " +
+                "stop EPOLLERR / EPOLLHUP being reported, so a peer reset spins the loop on a fd " +
+                "whose one-shot callback is already consumed.",
+        )
     }
 }

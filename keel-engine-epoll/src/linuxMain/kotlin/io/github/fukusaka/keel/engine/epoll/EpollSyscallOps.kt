@@ -65,6 +65,19 @@ internal interface EpollSyscallOps {
     fun epollMod(epFd: Int, fd: Int, events: Int): Int
 
     /**
+     * Removes [fd] from [epFd] entirely via `epoll_ctl(EPOLL_CTL_DEL)`.
+     *
+     * Needed because an fd registered with an empty mask is still in the
+     * interest list, and `EPOLLERR` / `EPOLLHUP` are reported whether or not
+     * the caller asked for them. Leaving a fully disarmed fd registered
+     * therefore lets a peer reset return it from every `epoll_wait` with no
+     * handler left to run.
+     *
+     * @return `0` on success; positive errno on failure.
+     */
+    fun epollDel(epFd: Int, fd: Int): Int
+
+    /**
      * Waits for events on [epFd] and fills [eventsOut] in place with
      * the fired events. The caller must pre-allocate [eventsOut] once
      * and reuse it across iterations so the hot path allocates nothing.

@@ -110,12 +110,13 @@ internal class FakeEpollSyscallOps(
 
     // --- epollAdd / epollMod ---
 
-    enum class CtlOp { ADD, MOD }
+    enum class CtlOp { ADD, MOD, DEL }
     data class CtlCall(val op: CtlOp, val epFd: Int, val fd: Int, val events: Int)
 
     val ctlCalls: MutableList<CtlCall> = mutableListOf()
     private val addResults = ArrayDeque<Int>()
     private val modResults = ArrayDeque<Int>()
+    private val delResults = ArrayDeque<Int>()
 
     fun scriptAddResult(errno: Int) {
         require(errno >= 0)
@@ -137,6 +138,15 @@ internal class FakeEpollSyscallOps(
             lastAddInterestThread = pthread_self()
         }
         return if (addResults.isEmpty()) 0 else addResults.removeFirst()
+    }
+
+    override fun epollDel(epFd: Int, fd: Int): Int {
+        ctlCalls.add(CtlCall(CtlOp.DEL, epFd, fd, 0))
+        if (fd == watchedFd) {
+            ctlCallCount = ctlCalls.size
+            lastAddInterestThread = pthread_self()
+        }
+        return if (delResults.isEmpty()) 0 else delResults.removeFirst()
     }
 
     override fun epollMod(epFd: Int, fd: Int, events: Int): Int {

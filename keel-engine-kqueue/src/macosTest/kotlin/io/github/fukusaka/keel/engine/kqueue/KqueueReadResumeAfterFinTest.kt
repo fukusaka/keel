@@ -8,6 +8,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -26,6 +27,7 @@ class KqueueReadResumeAfterFinTest {
 
     @Test
     fun `re-enabling read reports a FIN that arrived while read was disabled`() = runBlocking {
+        withTimeout(TEST_BUDGET_S.seconds) {
         val engine = KqueueEngine()
         val server = engine.bind(LOOPBACK_HOST, 0)
         val port = (server.localAddress as InetSocketAddress).port
@@ -51,18 +53,29 @@ class KqueueReadResumeAfterFinTest {
             serverCh.close()
             delay(SETTLE_MS)
 
+            // The state under test. Without this the test would also pass if
+            // the FIN were delivered while READ was still armed, which is the
+            // ordinary path and not what this is pinning.
+            assertFalse(
+                closed.isCompleted,
+                "peer close was reported while read was disarmed; this test is meant to cover the " +
+                    "state where it is not, so the recovery below is what actually delivers it.",
+            )
+
             transport.readEnabled = true
-            withTimeout(EOF_DETECT_TIMEOUT_S.seconds) { closed.await() }
+            closed.await()
         } finally {
             client.close()
             server.close()
             engine.close()
         }
+        }
     }
 
     private companion object {
         private const val SETTLE_MS = 100L
-        private const val EOF_DETECT_TIMEOUT_S = 5
+        /** Wall-clock bound for the whole body, not just the await. */
+        private const val TEST_BUDGET_S = 15
         private const val PAYLOAD_BYTES = 1024
     }
 }
