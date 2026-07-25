@@ -20,6 +20,11 @@ interface FdReadyListener {
     /**
      * Ready for [interest]: data available (READ), space available (WRITE),
      * accept queue non-empty (server fd READ).
+     *
+     * Called on **every** dispatch for this fd, including one carrying only a
+     * peer-close signal with no data behind it. A listener therefore sees the
+     * end of the stream the ordinary way — its `read()` returns 0 — and does
+     * not need to distinguish that case from a normal wakeup.
      */
     fun onReady(interest: Interest)
 
@@ -27,10 +32,14 @@ interface FdReadyListener {
      * Peer FIN or RST was observed for this fd. Default no-op — only listeners
      * that surface peer-close to higher layers override it.
      *
-     * For a combined data-and-EOF event this is called *after* [onReady], so
-     * the listener can drain the final bytes first; for a pure EOF only this is
-     * called. The engine unconditionally disarms the fd's interest afterwards,
-     * so the listener does not need to disarm explicitly.
+     * Always called *after* [onReady], so the listener can drain whatever data
+     * arrived alongside the close first. It exists for the case a `read()`
+     * cannot cover: read interest was never armed (a write-only push client
+     * with `readEnabled = false`), which leaves this as the only way the
+     * peer-close reaches user code.
+     *
+     * The engine unconditionally disarms the fd's interest afterwards, so the
+     * listener does not need to disarm explicitly.
      */
     fun onPeerClosed(interest: Interest) {}
 }
