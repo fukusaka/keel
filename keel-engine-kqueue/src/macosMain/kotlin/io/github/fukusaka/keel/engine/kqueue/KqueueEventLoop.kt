@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.LoopHandoff
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
@@ -47,7 +48,6 @@ import platform.posix.pthread_mutex_unlock
 import platform.posix.pthread_self
 import platform.posix.pthread_t
 import platform.posix.pthread_tVar
-import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
@@ -227,20 +227,14 @@ internal class KqueueEventLoop(
     private val wakeupReadBuf = ByteArray(WAKEUP_DRAIN_SIZE)
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
 
-    // Set once [loop] has drained for the last time. `running` cannot answer
-    // "will anything still run my task": it is 0 from the moment close() asks
-    // the loop to stop, well before the thread is joined, and it stays 1 when
-    // the loop breaks out on a fatal kevent() error. Only this flag means
-    // the queue is dead for good.
-    private val loopFinished = AtomicInt(0)
-
-    // Set after the final drain, when the loop is guaranteed to run nothing
-    // more. [loopFinished] cannot answer this: it is published *before* that
-    // drain so a caller can tell its own task will still be picked up, which
-    // means the loop may well be mid-task when it reads 1. Anything that has to
-    // know the loop is quiet — closing an fd the loop could still arm — must
-    // gate on this instead.
-    private val loopQuiescent = AtomicInt(0)
+    // Off-loop -> loop hand-off, plus the two shutdown-progress flags it
+    // gates on. Shared with the sibling POSIX readiness engine: the window it
+    // closes is narrow enough that a fix applied to one copy and not the other
+    // would leave that one wedging or spinning.
+    private val handoff = LoopHandoff(
+        inEventLoop = ::inEventLoop,
+        dispatchToLoop = { task -> dispatch(EmptyCoroutineContext, Runnable { task() }) },
+    )
     private val threadPtr = arena.alloc<pthread_tVar>()
 
     @kotlin.concurrent.Volatile
@@ -364,63 +358,13 @@ internal class KqueueEventLoop(
 
     /**
      * Hands [onLoop] to this EventLoop's thread; runs [ifStopped] on the caller
-     * if the loop is already gone. Does not wait for either to finish.
-     *
-     * Listener teardown uses this so the `close(2)` for a watched fd is issued
-     * by the thread that owns the kqueue, never by a caller racing that
-     * thread's `kevent()` park — the shape Netty gets by executing every channel
-     * close on its EventLoop. Running the close there also orders it after any
-     * registration already queued for the same fd, so a dispatched arm cannot
-     * land on a descriptor number the kernel has since handed to someone else.
-     *
-     * **This returns before the work runs.** `close()` is asynchronous by
-     * contract for exactly this reason: waiting here would block the caller on
-     * a loop that may be mid-syscall, and the engines backed by io_uring or a
-     * `Selector` cannot offer a synchronous release either.
-     *
-     * The two blocks exist because the fallback runs off the loop. [onLoop] may
-     * touch loop-owned state ([regMutex]-guarded registries), because it only
-     * ever runs on the loop thread. [ifStopped] runs on the caller once the
-     * loop has stopped, where those registries are moot and their mutex may
-     * already be destroyed by [close], so it must be self-contained — releasing
-     * the fd is the one thing still required, and that is thread-safe anywhere.
-     *
-     * Exactly one of the two runs, enforced by a shared CAS, and neither can be
-     * missed: [loop] publishes [loopFinished] before its final drain, so a
-     * caller that reads 0 has already been queued for that drain, and one that
-     * reads 1 claims the work here.
+     * if the loop is already gone. Does not wait for either to finish — see
+     * [LoopHandoff.runOnLoop] for why, and for what each block may touch.
      *
      * **Thread safety**: safe from any thread.
      */
     internal fun runOnLoop(onLoop: () -> Unit, ifStopped: () -> Unit = onLoop) {
-        if (inEventLoop()) {
-            onLoop()
-            return
-        }
-        val claimed = AtomicInt(0)
-        dispatch(
-            EmptyCoroutineContext,
-            Runnable {
-                if (claimed.compareAndSet(0, 1)) onLoop()
-            },
-        )
-        // Reading 0 here means this offer preceded the write, so the final
-        // drain is guaranteed to pick it up — nothing more to do, and the
-        // common path (a live loop) never waits.
-        if (loopFinished.value == 0) return
-
-        // The loop is shutting down. Wait out its final drain before deciding:
-        // [loopFinished] is published *before* that drain, so acting on it
-        // alone could close this fd while the loop is still arming it from a
-        // queued registration — the recycled-fd hazard this function exists to
-        // avoid. The wait is bounded by the drain, which only runs already
-        // queued work.
-        while (loopQuiescent.value == 0) {
-            usleep(LOOP_QUIESCE_POLL_MICROS)
-        }
-        if (claimed.compareAndSet(0, 1)) {
-            ifStopped()
-        }
+        handoff.runOnLoop(onLoop, ifStopped)
     }
 
     /**
@@ -848,9 +792,9 @@ internal class KqueueEventLoop(
             // itself. Draining first and publishing after would leave a gap
             // where an offer lands after the drain but before the flag, and
             // nobody runs it.
-            loopFinished.value = 1
+            handoff.markFinished()
             drainTasks()
-            loopQuiescent.value = 1
+            handoff.markQuiescent()
         }
     }
 
@@ -1135,8 +1079,6 @@ internal class KqueueEventLoop(
     }
 
     companion object {
-        /** Poll step while waiting out a stopping loop's final drain (shutdown only). */
-        private const val LOOP_QUIESCE_POLL_MICROS: UInt = 50u
 
         /** Initial capacity of the shared writev scratch arrays (grows 1.5x). */
         const val INITIAL_WRITEV_CAPACITY = 8
