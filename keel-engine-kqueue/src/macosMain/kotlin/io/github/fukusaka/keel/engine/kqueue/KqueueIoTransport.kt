@@ -47,7 +47,12 @@ import kotlin.coroutines.resume
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class KqueueIoTransport(
-    private val fd: Int,
+    /**
+     * The connection's file descriptor. `internal` rather than `private` so a
+     * test can ask the loop whether this fd's registrations were withdrawn;
+     * nothing outside the module can see it.
+     */
+    internal val fd: Int,
     private val eventLoop: KqueueEventLoop,
     allocator: BufferAllocator,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
@@ -301,9 +306,11 @@ internal class KqueueIoTransport(
     /**
      * Releases all pending write buffers and closes the socket fd.
      *
-     * Unsent data is discarded — no flush is attempted. Does NOT unregister
-     * any pending EVFILT_READ/WRITE callbacks from the EventLoop (the
-     * callbacks check [isOpen] and become no-ops). Idempotent and
+     * Unsent data is discarded — no flush is attempted. The teardown withdraws
+     * this fd's EVFILT_READ / EVFILT_WRITE callback registrations before
+     * closing, so the loop stops referencing this transport once the connection
+     * is gone; a callback that fires in between is harmless anyway, since they
+     * all check [isOpen]. Idempotent and
      * thread-safe: a non-EventLoop caller dispatches the teardown onto
      * the owning [eventLoop] so the `pendingWrites` / `pendingBytes`
      * mutations stay serialised with the read / write / flush paths.
@@ -334,6 +341,13 @@ internal class KqueueIoTransport(
             flushContinuation = null
             cont.cancel()
         }
+        // Withdraw the registrations before dropping the fd. The map is keyed by
+        // fd number, so one left behind keeps this transport — and the channel
+        // and pipeline graph it references — reachable until that number comes
+        // back. The server side has always done this on close; the transport
+        // did not.
+        eventLoop.unregisterCallback(fd, Interest.READ)
+        eventLoop.unregisterCallback(fd, Interest.WRITE)
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
         logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
     }

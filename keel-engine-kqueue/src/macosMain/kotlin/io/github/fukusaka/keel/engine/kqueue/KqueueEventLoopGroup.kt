@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlin.concurrent.AtomicInt
 
@@ -75,4 +76,8 @@ internal class KqueueEventLoopGroup(
     fun close() {
         for (loop in loops) loop.close()
     }
+
+    /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
+    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
+        loops.any { it.hasCallbackRegistration(fd, interest) }
 }

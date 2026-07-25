@@ -48,7 +48,12 @@ import kotlin.coroutines.resume
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class EpollIoTransport(
-    private val fd: Int,
+    /**
+     * The connection's file descriptor. `internal` rather than `private` so a
+     * test can ask the loop whether this fd's registrations were withdrawn;
+     * nothing outside the module can see it.
+     */
+    internal val fd: Int,
     private val eventLoop: EpollEventLoop,
     allocator: BufferAllocator,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
@@ -327,6 +332,13 @@ internal class EpollIoTransport(
             flushContinuation = null
             cont.cancel()
         }
+        // Withdraw the registrations before dropping the fd. The map is keyed by
+        // fd number, so one left behind keeps this transport — and the channel
+        // and pipeline graph it references — reachable until that number comes
+        // back. The server side has always done this on close; the transport
+        // did not.
+        eventLoop.unregisterCallback(fd, Interest.READ)
+        eventLoop.unregisterCallback(fd, Interest.WRITE)
         eventLoop.cleanupFd(fd)
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
         logTransportStatsOnClose(eventLoop.logger, "fd=$fd")

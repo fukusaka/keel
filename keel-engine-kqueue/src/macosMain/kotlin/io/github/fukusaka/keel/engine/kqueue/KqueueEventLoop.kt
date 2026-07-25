@@ -173,6 +173,15 @@ internal class KqueueEventLoop(
     // precedent from kotlinx.coroutines.
     private val callbackRegistrations = LongObjectMap<FdReadyListener>()
 
+    /**
+     * Whether [fd] still has a callback registered for [interest]. A total is
+     * not enough to tell a forgotten WRITE withdrawal from a READ one: both
+     * transports of a loopback pair tear down together, so the total returns to
+     * its baseline either way and the WRITE half can be deleted unnoticed.
+     */
+    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
+        withRegLock { callbackRegistrations.containsKey(registrationKey(fd, interest)) }
+
     // Lock-free MPSC queue replaces pthread_mutex + MutableList for
     // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
     private val taskQueue = MpscQueue<Runnable>()
