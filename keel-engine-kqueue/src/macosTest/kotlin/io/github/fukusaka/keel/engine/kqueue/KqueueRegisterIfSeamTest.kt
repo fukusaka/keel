@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
@@ -66,11 +67,11 @@ class KqueueRegisterIfSeamTest {
             // waiter is resumed with the cancellation rather than stranded.
             val outcome = runCatching {
                 suspendCancellableCoroutine<Unit> { cont ->
-                    val reg = eventLoop.registerIf(fd, KqueueEventLoop.Interest.READ, cont) { true }
+                    val reg = eventLoop.registerIf(fd, Interest.READ, cont) { true }
                     assertNotNull(reg, "a wanted registration must be appended")
                     eventLoop.cancelAll(
                         fd,
-                        KqueueEventLoop.Interest.READ,
+                        Interest.READ,
                         CancellationException(CANCEL_REASON),
                     )
                 }
@@ -94,14 +95,14 @@ class KqueueRegisterIfSeamTest {
             // false, the waiter must not be appended, because cancelAll has
             // already passed and would not see it.
             suspendCancellableCoroutine<Unit> { cont ->
-                val reg = eventLoop.registerIf(fd, KqueueEventLoop.Interest.READ, cont) { false }
+                val reg = eventLoop.registerIf(fd, Interest.READ, cont) { false }
                 assertNull(reg, "a registration refused by the predicate must not be appended")
                 cont.resume(Unit) { _, _, _ -> }
             }
 
             // And nothing was left in the chain to resume: a stale entry would
             // be handed a second resumption here and blow up the continuation.
-            eventLoop.cancelAll(fd, KqueueEventLoop.Interest.READ, CancellationException("nothing to cancel"))
+            eventLoop.cancelAll(fd, Interest.READ, CancellationException("nothing to cancel"))
         }
     }
 

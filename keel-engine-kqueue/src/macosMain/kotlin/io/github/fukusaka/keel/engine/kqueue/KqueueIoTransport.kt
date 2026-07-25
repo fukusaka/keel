@@ -7,6 +7,8 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.FdReadyListener
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
@@ -59,7 +61,7 @@ internal class KqueueIoTransport(
      */
     private val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     idleTimeoutMillis: Long = 0,
-) : AbstractIoTransport(allocator), KqueueEventLoop.FdReadyListener {
+) : AbstractIoTransport(allocator), FdReadyListener {
 
     /** Read-side idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
     override val idleTimeoutMillis: Long = idleTimeoutMillis
@@ -72,15 +74,15 @@ internal class KqueueIoTransport(
     private var readPoolRegistered = false
 
     /**
-     * [KqueueEventLoop.FdReadyListener] dispatch — passing `this` to
+     * [FdReadyListener] dispatch — passing `this` to
      * [KqueueEventLoop.registerCallback] avoids per-call lambda allocation
      * on the read re-arm fast path. Branch on [interest] is a single enum
      * compare (negligible vs. surrounding syscall + buffer alloc).
      */
-    override fun onReady(interest: KqueueEventLoop.Interest) {
+    override fun onReady(interest: Interest) {
         when (interest) {
-            KqueueEventLoop.Interest.READ -> onReadable()
-            KqueueEventLoop.Interest.WRITE -> onWritable()
+            Interest.READ -> onReadable()
+            Interest.WRITE -> onWritable()
         }
     }
 
@@ -98,8 +100,8 @@ internal class KqueueIoTransport(
      * Calling `onReadClosed` twice is benign — the cancel guards in the
      * connection handlers (PR #459 / #460) are idempotent.
      */
-    override fun onPeerClosed(interest: KqueueEventLoop.Interest) {
-        if (interest != KqueueEventLoop.Interest.READ) return
+    override fun onPeerClosed(interest: Interest) {
+        if (interest != Interest.READ) return
         if (!opened) return
         onReadClosed?.invoke()
     }
@@ -141,12 +143,12 @@ internal class KqueueIoTransport(
         // [onReadable] / [onPeerClosed] handle fire-without-data and
         // peer-close cases respectively.
         @Suppress("LeakingThis")
-        eventLoop.registerCallback(fd, KqueueEventLoop.Interest.READ, this)
+        eventLoop.registerCallback(fd, Interest.READ, this)
     }
 
     private fun armRead() {
         if (!opened) return
-        eventLoop.registerCallback(fd, KqueueEventLoop.Interest.READ, this)
+        eventLoop.registerCallback(fd, Interest.READ, this)
     }
 
     private fun onReadable() {
@@ -433,10 +435,10 @@ internal class KqueueIoTransport(
         // receive window — start the write-idle (slow-read) clock. Drain progress
         // refreshes it and a full drain cancels it, both via updatePendingBytes.
         armWriteIdleTimeout()
-        eventLoop.registerCallback(fd, KqueueEventLoop.Interest.WRITE, this)
+        eventLoop.registerCallback(fd, Interest.WRITE, this)
     }
 
-    /** EVFILT_WRITE callback body — invoked via [onReady] when [KqueueEventLoop.Interest.WRITE] fires. */
+    /** EVFILT_WRITE callback body — invoked via [onReady] when [Interest.WRITE] fires. */
     private fun onWritable() {
         // Retry drain immediately when fd becomes writable — do NOT go through
         // flush() which would re-defer to the next tick.

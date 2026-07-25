@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -199,7 +200,7 @@ class EpollTransportSeamTest {
         // Socket becomes writable — the retry drains the queue and releases the FIN.
         // Harmless if the loop already delivered write readiness on its own: the
         // second pass finds the queue empty and the FIN already sent.
-        eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.onReady(EpollEventLoop.Interest.WRITE) })
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.onReady(Interest.WRITE) })
         awaitLoopDrained()
         assertEquals(1, fake.shutdownCalls, "FIN must follow the completed write")
         fake.assertAllConsumed()
@@ -564,7 +565,7 @@ class EpollTransportSeamTest {
         // first (drains queue), then Task_B sees empty → cont.resume(Unit). ✓
         // Pre-fix: check+store off-EL; Task_A fires between them → deadlock (race).
         eventLoop.dispatch(EmptyCoroutineContext, Runnable {
-            transport.onReady(EpollEventLoop.Interest.WRITE)
+            transport.onReady(Interest.WRITE)
         })
 
         withTimeout(2000) {

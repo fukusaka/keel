@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -15,13 +16,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import kotlin.coroutines.EmptyCoroutineContext
 import platform.posix.AF_INET
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
 import platform.posix.SOCK_STREAM
 import platform.posix.close
 import platform.posix.socket
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -199,7 +200,7 @@ class KqueueTransportSeamTest {
         // Socket becomes writable — the retry drains the queue and releases the FIN.
         // Harmless if the loop already delivered write readiness on its own: the
         // second pass finds the queue empty and the FIN already sent.
-        eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.onReady(KqueueEventLoop.Interest.WRITE) })
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.onReady(Interest.WRITE) })
         awaitLoopDrained()
         assertEquals(1, fake.shutdownCalls, "FIN must follow the completed write")
         fake.assertAllConsumed()
@@ -484,7 +485,7 @@ class KqueueTransportSeamTest {
         // sees isEmpty=true → cont.resume(Unit). Pre-fix: race between off-EL check
         // and EL Task_A completing flush → potential deadlock.
         eventLoop.dispatch(EmptyCoroutineContext, Runnable {
-            transport.onReady(KqueueEventLoop.Interest.WRITE)
+            transport.onReady(Interest.WRITE)
         })
 
         withTimeout(2000) {

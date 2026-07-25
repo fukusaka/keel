@@ -1,6 +1,14 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.native.posix.FdReadyListener
+import io.github.fukusaka.keel.native.posix.Interest
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import platform.posix.pthread_equal
+import platform.posix.pthread_self
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.AtomicLong
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -11,12 +19,6 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
-import platform.posix.pthread_equal
-import platform.posix.pthread_self
 
 /**
  * Seam-level test for the **I/O ownership invariant funnel**: every I/O
@@ -54,8 +56,8 @@ class EpollEventLoopFunnelSeamTest {
 
     private val logger = NoopLoggerFactory.logger("EpollEventLoopFunnelSeamTest")
 
-    private val noopListener = object : EpollEventLoop.FdReadyListener {
-        override fun onReady(interest: EpollEventLoop.Interest) { /* no-op */ }
+    private val noopListener = object : FdReadyListener {
+        override fun onReady(interest: Interest) { /* no-op */ }
     }
 
     /**
@@ -87,7 +89,7 @@ class EpollEventLoopFunnelSeamTest {
                 // Registering before start(): the loop's thread handle is unset,
                 // which is exactly the window the escape hatch used to treat as
                 // "safe to run inline".
-                el.registerCallback(FD_UNDER_TEST, EpollEventLoop.Interest.READ, noopListener)
+                el.registerCallback(FD_UNDER_TEST, Interest.READ, noopListener)
                 assertNull(
                     fake.lastAddInterestThread,
                     "pre-start registration must not reach epoll_ctl on the caller thread — it belongs on the loop",
@@ -125,7 +127,7 @@ class EpollEventLoopFunnelSeamTest {
 
                 // Cross-thread: this runs on the test (caller) thread, NOT
                 // the EventLoop thread.
-                el.registerCallback(FD_UNDER_TEST, EpollEventLoop.Interest.READ, noopListener)
+                el.registerCallback(FD_UNDER_TEST, Interest.READ, noopListener)
 
                 // The captured pthread is written on the EventLoop thread
                 // and read here (test thread) — the same cross-thread
@@ -161,7 +163,7 @@ class EpollEventLoopFunnelSeamTest {
                 awaitEventLoopUp(el)
 
                 el.dispatch(EmptyCoroutineContext) {
-                    el.registerCallback(FD_UNDER_TEST, EpollEventLoop.Interest.READ, noopListener)
+                    el.registerCallback(FD_UNDER_TEST, Interest.READ, noopListener)
                     val captured = fake.lastAddInterestThread
                     val match = captured != null && pthread_equal(pthread_self(), captured) != 0
                     inlineMatch.store(if (match) 1 else 0)
