@@ -50,10 +50,6 @@ internal class EpollEventLoopGroup(
     val size: Int get() = loops.size
 
     /** Starts all EventLoop threads. */
-    /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
-    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
-        loops.any { it.hasCallbackRegistration(fd, interest) }
-
     fun start() {
         for (loop in loops) loop.start()
     }
@@ -62,7 +58,6 @@ internal class EpollEventLoopGroup(
      * Returns the next [EpollEventLoop] in round-robin order. The
      * per-EventLoop allocator is exposed as [EpollEventLoop.allocator].
      */
-
     fun next(): EpollEventLoop {
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
         return loops[i]
@@ -75,4 +70,8 @@ internal class EpollEventLoopGroup(
     fun close() {
         for (loop in loops) loop.close()
     }
+
+    /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
+    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
+        loops.any { it.hasCallbackRegistration(fd, interest) }
 }

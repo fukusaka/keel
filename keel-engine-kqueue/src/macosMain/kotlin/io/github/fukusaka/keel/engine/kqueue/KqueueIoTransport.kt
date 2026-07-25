@@ -306,9 +306,11 @@ internal class KqueueIoTransport(
     /**
      * Releases all pending write buffers and closes the socket fd.
      *
-     * Unsent data is discarded — no flush is attempted. Does NOT unregister
-     * any pending EVFILT_READ/WRITE callbacks from the EventLoop (the
-     * callbacks check [isOpen] and become no-ops). Idempotent and
+     * Unsent data is discarded — no flush is attempted. The teardown withdraws
+     * this fd's EVFILT_READ / EVFILT_WRITE callback registrations before
+     * closing, so the loop stops referencing this transport once the connection
+     * is gone; a callback that fires in between is harmless anyway, since they
+     * all check [isOpen]. Idempotent and
      * thread-safe: a non-EventLoop caller dispatches the teardown onto
      * the owning [eventLoop] so the `pendingWrites` / `pendingBytes`
      * mutations stay serialised with the read / write / flush paths.

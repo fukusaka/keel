@@ -53,10 +53,6 @@ internal class KqueueEventLoopGroup(
     val size: Int get() = loops.size
 
     /** Starts all EventLoop threads. */
-    /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
-    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
-        loops.any { it.hasCallbackRegistration(fd, interest) }
-
     fun start() {
         for (loop in loops) loop.start()
     }
@@ -68,7 +64,6 @@ internal class KqueueEventLoopGroup(
      * Uses atomic increment with overflow-safe masking (same as NIO).
      * Thread-safe: multiple accept threads can call this concurrently.
      */
-
     fun next(): KqueueEventLoop {
         val i = (index.getAndIncrement() and Int.MAX_VALUE) % loops.size
         return loops[i]
@@ -81,4 +76,8 @@ internal class KqueueEventLoopGroup(
     fun close() {
         for (loop in loops) loop.close()
     }
+
+    /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
+    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
+        loops.any { it.hasCallbackRegistration(fd, interest) }
 }

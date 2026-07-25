@@ -5,12 +5,12 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -72,7 +72,11 @@ class EpollTransportUnregisterTest {
             // data is drained, which by construction never happens here, so
             // driving it inline would hang instead of stalling.
             val writer = launch {
-                repeat(STALL_ATTEMPTS) {
+                // Unbounded on purpose: how much a host absorbs before a write
+                // stalls depends on its socket buffer limits, so a fixed budget
+                // would leave this test passing or failing by tcp_wmem. The
+                // close below cancels it.
+                while (isActive) {
                     val buf = DefaultAllocator.allocate(CHUNK_BYTES)
                     repeat(CHUNK_BYTES) { i -> buf.writeByte((i and 0xFF).toByte()) }
                     client.write(buf)
@@ -126,7 +130,6 @@ class EpollTransportUnregisterTest {
         private const val SETTLE_BUDGET_S = 5
         private const val POLL_MS = 10L
         private const val MILLIS_PER_SECOND = 1000L
-        private const val STALL_ATTEMPTS = 64
         private const val STALL_BUDGET_S = 10
         private const val CHUNK_BYTES = 64 * 1024
     }
