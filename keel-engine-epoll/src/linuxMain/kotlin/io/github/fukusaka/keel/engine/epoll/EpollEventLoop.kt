@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.MpscQueue
-import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
@@ -152,22 +151,6 @@ internal class EpollEventLoop(
      * via `epoll_ctl(epFd, ...)`. Channel fds are registered via [register].
      */
     val epFd: Int
-
-    // Callback registrations for pipeline (non-suspend) I/O.
-    // Listener interface (instead of `() -> Unit`) lets each `IoTransport`
-    // pass `this` to [registerCallback], avoiding per-call lambda allocation
-    // on the read re-arm fast path. Mirrors the `Job : DisposableHandle`
-    // precedent from kotlinx.coroutines.
-    private val callbackRegistrations = LongObjectMap<FdReadyListener>()
-
-    /**
-     * Whether [fd] still has a callback registered for [interest]. A total is
-     * not enough to tell a forgotten WRITE withdrawal from a READ one: both
-     * transports of a loopback pair tear down together, so the total returns to
-     * its baseline either way and the WRITE half can be deleted unnoticed.
-     */
-    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
-        withRegLock { callbackRegistrations.containsKey(registrationKey(fd, interest)) }
 
     // Tracks the current epoll events per fd. epoll manages fds (not fd+interest
     // pairs), so ADD/MOD must specify all active interest bits at once.
@@ -432,19 +415,33 @@ internal class EpollEventLoop(
         val key = registrationKey(fd, interest)
 
         withRegLock {
-            callbackRegistrations[key] = listener
+            putCallback(key, listener)
         }
 
         // Same loop-thread funnel the suspend path uses; see [submitOnLoop].
         submitOnLoop { submitAddOrModifyEpoll(fd, events) }
     }
 
-    /** Removes a pending callback registration. */
+    /**
+     * Whether [fd] still has a callback registered for [interest].
+     *
+     * Stays here rather than on the base: its only callers are this module's
+     * `EventLoopGroup` and, through it, the transport-withdrawal tests, and
+     * `internal` is what keeps a test probe from becoming published API. The
+     * base carries the ledger and the reason the query is per-`(fd, interest)`;
+     * this is the two lines that take the lock.
+     */
+    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
+        withRegLock { hasCallbackListener(registrationKey(fd, interest)) }
+
+    /**
+     * Removes a pending callback registration for the given fd and interest.
+     *
+     * The kernel interest is left armed — see [popCallback] for what that costs
+     * and who is expected to disarm it.
+     */
     fun unregisterCallback(fd: Int, interest: Interest) {
-        val key = registrationKey(fd, interest)
-        withRegLock {
-            callbackRegistrations.remove(key)
-        }
+        withRegLock { popCallback(registrationKey(fd, interest)) }
     }
 
     /**
@@ -781,7 +778,7 @@ internal class EpollEventLoop(
     private fun dispatchReady(fd: Int, interest: Interest, eofFlag: Boolean) {
         assertInEventLoop("EpollEventLoop.dispatchReady")
         val key = registrationKey(fd, interest)
-        val cb = withRegLock { callbackRegistrations.remove(key) }
+        val cb = withRegLock { popCallback(key) }
         if (cb != null) {
             // Order: drain (onReady) before close (onPeerClosed) for combined
             // data-and-EOF events. For pure EOF the listener detects it via
@@ -804,7 +801,7 @@ internal class EpollEventLoop(
                 // fd from the interest list entirely, the always-reported
                 // EPOLLERR that used to bring it back is not delivered either,
                 // leaving an accept loop that never runs again.
-                val reRegistered = withRegLock { callbackRegistrations[key] != null }
+                val reRegistered = withRegLock { hasCallbackListener(key) }
                 if (!reRegistered) {
                     removeInterestFromEpoll(fd, interest)
                 }
@@ -815,7 +812,7 @@ internal class EpollEventLoop(
                 // interest from epoll to prevent a stale level-triggered
                 // busy loop. READ callbacks always re-arm via armRead() in
                 // the normal flow.
-                val reRegistered = withRegLock { callbackRegistrations[key] != null }
+                val reRegistered = withRegLock { hasCallbackListener(key) }
                 if (!reRegistered) {
                     removeInterestFromEpoll(fd, interest)
                 }

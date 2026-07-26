@@ -3,7 +3,6 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.MpscQueue
-import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
@@ -150,23 +149,6 @@ internal class KqueueEventLoop(
      * via `kevent(kqFd, ...)`. Channel fds are registered via [register].
      */
     val kqFd: Int
-
-    // Callback registrations for pipeline (non-suspend) I/O.
-    // Separated from coroutine registrations to avoid sealed-class overhead.
-    // Listener interface (instead of `() -> Unit`) lets each `IoTransport`
-    // pass `this` to [registerCallback], avoiding per-call lambda allocation
-    // on the read re-arm fast path. Mirrors the `Job : DisposableHandle`
-    // precedent from kotlinx.coroutines.
-    private val callbackRegistrations = LongObjectMap<FdReadyListener>()
-
-    /**
-     * Whether [fd] still has a callback registered for [interest]. A total is
-     * not enough to tell a forgotten WRITE withdrawal from a READ one: both
-     * transports of a loopback pair tear down together, so the total returns to
-     * its baseline either way and the WRITE half can be deleted unnoticed.
-     */
-    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
-        withRegLock { callbackRegistrations.containsKey(registrationKey(fd, interest)) }
 
     // Lock-free MPSC queue replaces pthread_mutex + MutableList for
     // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
@@ -408,11 +390,33 @@ internal class KqueueEventLoop(
 
         // Register callback BEFORE adding to kqueue (same rationale as register()).
         withRegLock {
-            callbackRegistrations[key] = listener
+            putCallback(key, listener)
         }
 
         // Same loop-thread funnel the suspend path uses; see [submitOnLoop].
         submitOnLoop { submitAddCallbackFilter(fd, interest, key) }
+    }
+
+    /**
+     * Whether [fd] still has a callback registered for [interest].
+     *
+     * Stays here rather than on the base: its only callers are this module's
+     * `EventLoopGroup` and, through it, the transport-withdrawal tests, and
+     * `internal` is what keeps a test probe from becoming published API. The
+     * base carries the ledger and the reason the query is per-`(fd, interest)`;
+     * this is the two lines that take the lock.
+     */
+    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
+        withRegLock { hasCallbackListener(registrationKey(fd, interest)) }
+
+    /**
+     * Removes a pending callback registration for the given fd and interest.
+     *
+     * The kernel interest is left armed — see [popCallback] for what that costs
+     * and who is expected to disarm it.
+     */
+    fun unregisterCallback(fd: Int, interest: Interest) {
+        withRegLock { popCallback(registrationKey(fd, interest)) }
     }
 
     /**
@@ -428,21 +432,11 @@ internal class KqueueEventLoop(
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
-            withRegLock { callbackRegistrations.remove(key) }
+            withRegLock { popCallback(key) }
             logger.error {
                 "kevent(EV_ADD, fd=$fd, ${interest.name}) for callback failed: " +
                     "${errnoMessage(kevErr)} — readiness callback will not fire"
             }
-        }
-    }
-
-    /**
-     * Removes a pending callback registration for the given fd and interest.
-     */
-    fun unregisterCallback(fd: Int, interest: Interest) {
-        val key = registrationKey(fd, interest)
-        withRegLock {
-            callbackRegistrations.remove(key)
         }
     }
 
@@ -625,7 +619,7 @@ internal class KqueueEventLoop(
     private fun dispatchReady(fd: Int, interest: Interest, eofFlag: Boolean) {
         assertInEventLoop("KqueueEventLoop.dispatchReady")
         val key = registrationKey(fd, interest)
-        val cb = withRegLock { callbackRegistrations.remove(key) }
+        val cb = withRegLock { popCallback(key) }
         if (cb != null) {
             // Order: drain (onReady) before close (onPeerClosed) for combined
             // data-and-EOF events. For pure EOF (no pending data) the listener
@@ -647,7 +641,7 @@ internal class KqueueEventLoop(
                 // filter is already present, so disarming after it discarded a
                 // live registration and left an accept loop that never runs
                 // again.
-                val reRegistered = withRegLock { callbackRegistrations[key] != null }
+                val reRegistered = withRegLock { hasCallbackListener(key) }
                 if (!reRegistered) {
                     removeInterestFromKqueue(fd, interest)
                 }
@@ -657,7 +651,7 @@ internal class KqueueEventLoop(
                 // after a successful flush that does not re-arm), remove the
                 // kqueue filter to prevent a stale level-triggered busy loop.
                 // READ callbacks always re-arm via armRead() in the normal flow.
-                val reRegistered = withRegLock { callbackRegistrations[key] != null }
+                val reRegistered = withRegLock { hasCallbackListener(key) }
                 if (!reRegistered) {
                     removeInterestFromKqueue(fd, interest)
                 }
