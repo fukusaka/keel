@@ -194,6 +194,44 @@ public class LongObjectMap<V : Any>(initialCapacity: Int = DEFAULT_CAPACITY) {
         }
     }
 
+    /**
+     * Applies [block] to every value, in no defined order.
+     *
+     * `inline` so a caller on a hot path pays no lambda: the loops that own a
+     * registration ledger walk it while tearing down, where an allocation per
+     * entry would land on the thread that is trying to finish.
+     *
+     * Stops once [size] values have been handed out rather than reading to the
+     * end of the array. Backing storage never shrinks — not even on [clear] —
+     * so a map that once held thousands and now holds none would otherwise cost
+     * its peak capacity on the very thread the caller is trying to finish on.
+     *
+     * The map must not be modified from inside [block] — the walk reads the
+     * backing array directly, and a `put` that resizes or a `remove` that
+     * back-shifts moves entries out from under it. Collect first, then modify.
+     */
+    public inline fun forEachValue(block: (V) -> Unit) {
+        val arr = valuesForIteration
+        var seen = 0
+        val live = size
+        for (i in arr.indices) {
+            if (seen == live) return
+            @Suppress("UNCHECKED_CAST")
+            val v = arr[i] as V? ?: continue
+            seen++
+            block(v)
+        }
+    }
+
+    /**
+     * Backing store for [forEachValue].
+     *
+     * `@PublishedApi internal` because that function is `inline` and reaches it;
+     * nothing outside this class should touch the array.
+     */
+    @PublishedApi
+    internal val valuesForIteration: Array<Any?> get() = values
+
     /** Removes all entries and releases references without shrinking backing storage. */
     public fun clear() {
         values.fill(null)

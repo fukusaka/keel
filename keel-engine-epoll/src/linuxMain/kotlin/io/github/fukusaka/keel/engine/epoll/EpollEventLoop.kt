@@ -42,6 +42,7 @@ import platform.linux.EPOLLIN
 import platform.linux.EPOLLOUT
 import platform.linux.EPOLLRDHUP
 import platform.posix.EAGAIN
+import platform.posix.EDEADLK
 import platform.posix.EEXIST
 import platform.posix.EINTR
 import platform.posix.pthread_create
@@ -526,8 +527,30 @@ internal class EpollEventLoop(
             // where an offer lands after the drain but before the flag, and
             // nobody runs it.
             handoff.markFinished()
-            drainTasks()
-            handoff.markQuiescent()
+            // markQuiescent() in its own finally: it is the only thing that
+            // releases a runOnLoop caller from an unbounded spin, so a throw
+            // anywhere below would live-lock whatever thread is closing a
+            // server on this loop.
+            try {
+                // Nested so a throw from the drain cannot skip the sweep while
+                // still publishing quiescence: that combination would strand
+                // every waiter *and* free the lock their cancellation handlers
+                // are about to take.
+                try {
+                    drainTasks()
+                } finally {
+                    // After the last drain, before quiescence is published:
+                    // anything still in the ledger is waiting for an arm that
+                    // can no longer issue. Ended here because this thread may
+                    // take the lock and the lock still exists -- only close()
+                    // frees it, and only after a join this thread has not let
+                    // return. It drains again itself: cancelling a waiter
+                    // queues its resume back onto taskQueue.
+                    failWaitersOnStoppedLoop()
+                }
+            } finally {
+                handoff.markQuiescent()
+            }
         }
     }
 
@@ -624,7 +647,7 @@ internal class EpollEventLoop(
      * Draining in the same iteration prevents starvation where tasks
      * accumulate faster than epoll_wait() cycles can process them.
      */
-    private fun drainTasks() {
+    override fun drainTasks() {
         assertInEventLoop("EpollEventLoop.drainTasks")
         while (true) {
             drainBatch.clear()
@@ -665,9 +688,28 @@ internal class EpollEventLoop(
      * Stops the EventLoop and releases all resources.
      *
      * Signals the EventLoop thread to stop, joins it, then closes the
-     * epoll fd and eventfd. Any pending registrations have their
-     * continuations left uncompleted (the caller's coroutine will be
-     * garbage collected).
+     * epoll fd and eventfd. Waiters still parked at that point are ended by
+     * the loop itself, on its way out.
+     *
+     * **Must not be called from the EventLoop thread.** `pthread_join` returns
+     * `EDEADLK` at once when asked to join the caller, so everything below
+     * would run while the loop is still inside its own body — freeing the
+     * registration lock it is about to take, and the fds it is about to use.
+     * That one errno is treated as fatal misuse: it is logged and nothing is
+     * released, because releasing is what would corrupt. Every other join
+     * failure falls through and releases anyway, since the `running` CAS above
+     * has already fired and no later `close()` can pick it up.
+     *
+     * **What this does not cover**: a loop that was constructed and never
+     * started. `threadPtr` comes from an `Arena`, which does not zero, and
+     * `pthread_t` is only a pointer on some targets. On macOS it is one and the
+     * slot measures as null, so `t != null` skips the join. On linuxX64 it is a
+     * `ULong` — the compiler reports that same check as always true — and the
+     * join is handed an uninitialised value whose return is undefined, so
+     * neither branch below is reasoning from anything. Production does not
+     * reach it (a failed `start()` throws out of the constructor) and the tests
+     * that do pass on fresh `malloc` memory reading as zero. Covering it needs
+     * an explicit started flag rather than this guard.
      */
     fun close() {
         if (running.compareAndSet(1, 0)) {
@@ -675,7 +717,17 @@ internal class EpollEventLoop(
             // Join the EventLoop thread. threadPtr was written by pthread_create.
             val t = threadPtr.ptr[0]
             if (t != null) {
-                pthread_join(t, null)
+                val joinRet = pthread_join(t, null)
+                if (joinRet == EDEADLK) {
+                    logger.error {
+                        "close() was called from this EventLoop's own thread — releasing nothing, " +
+                            "because the loop is still running and would lose its lock and fds"
+                    }
+                    return
+                }
+                if (joinRet != 0) {
+                    logger.warn { "pthread_join() failed: ${errnoMessage(joinRet)}" }
+                }
             }
             closeFdSafely(wakeupFd, logger, "event loop teardown (wakeupFd)")
             closeFdSafely(epFd, logger, "event loop teardown (epFd)")

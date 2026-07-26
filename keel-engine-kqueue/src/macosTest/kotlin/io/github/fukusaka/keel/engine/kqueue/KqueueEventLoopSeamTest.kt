@@ -6,15 +6,24 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import platform.darwin.EVFILT_WRITE
+import platform.posix.AF_INET
 import platform.posix.EAGAIN
 import platform.posix.EBADF
 import platform.posix.EINTR
 import platform.posix.EMFILE
 import platform.posix.ENFILE
+import platform.posix.F_GETFD
+import platform.posix.SOCK_STREAM
+import platform.posix.fcntl
+import platform.posix.socket
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -285,6 +294,53 @@ class KqueueEventLoopSeamTest {
         assertTrue(laterTaskRan, "the task queued after the throwing one must still run")
         assertEquals(1, warns.size, "the throwing task should produce exactly one warn log")
         assertTrue(warns.first().contains("task"), "warn should mention the failing task, got: ${warns.first()}")
+    }
+
+    // --- loop teardown sweeps the suspend ledger ---
+
+    @Test
+    fun `loop ends a waiter it will never arm and its handler releases the socket`() {
+        // The wiring, not the base class: this drives the real loop() to its
+        // fatal-errno exit and asserts the waiter it left behind was ended.
+        // That exit is also the case with no close() in flight, so the sweep
+        // is the only thing that can end it.
+        val fake = FakeKqueueSyscallOps().apply { scriptWaitFailure(EBADF) }
+        val el = KqueueEventLoop(logger, syscallOps = fake)
+        // A real descriptor, because the cancellation handler closes it and
+        // whether it did is the second half of what this asserts.
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        assertTrue(fd >= 0, "could not open a socket to wait on")
+
+        val failure = CompletableDeferred<Throwable>()
+        runBlocking {
+            withTimeout(15.seconds) {
+                launch {
+                    try {
+                        el.awaitWriteReady(fd, logger)
+                    } catch (t: Throwable) {
+                        failure.complete(t)
+                    }
+                }
+                yield() // let it register and park before the loop runs
+
+                el.loop()
+
+                val ended = failure.await()
+                assertTrue(
+                    ended is CancellationException,
+                    "the waiter must end as a cancellation, not a failure that cancels its parent: $ended",
+                )
+                assertTrue(
+                    ended.message?.contains("EventLoop stopped before arming") == true,
+                    "expected the sweep's cancellation, got: $ended",
+                )
+                assertEquals(
+                    -1,
+                    fcntl(fd, F_GETFD),
+                    "the cancellation handler must have closed the connect socket",
+                )
+            }
+        }
     }
 
     private fun levelRecordingLogger(captured: LogLevel, sink: MutableList<String>): Logger = object : Logger {
