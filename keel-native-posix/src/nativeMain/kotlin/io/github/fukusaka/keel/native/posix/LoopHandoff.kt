@@ -114,8 +114,15 @@ class LoopHandoff(
         // [loopFinished] is published *before* that drain, so acting on it
         // alone could close this fd while the loop is still arming it from a
         // queued registration — the recycled-fd hazard this function exists to
-        // avoid. The wait is bounded by the drain, which only runs already
-        // queued work.
+        // avoid.
+        //
+        // What is waited on is no longer only already-queued work: the loop
+        // also ends its stranded waiters on the way out, which runs their
+        // cancellation handlers and then the coroutines those resume. So this
+        // waits on application code, bounded by that code terminating rather
+        // than by a queue length. It stays a spin rather than a timeout because
+        // giving up early is the recycled-fd hazard itself; if that trade needs
+        // revisiting, it is the loop's teardown that has to become bounded.
         while (loopQuiescent.value == 0) {
             usleep(LOOP_QUIESCE_POLL_MICROS)
         }
@@ -126,8 +133,8 @@ class LoopHandoff(
 
     private companion object {
         // Poll interval while waiting out the loop's final drain. The wait is
-        // rare (only a close racing shutdown) and bounded by already-queued
-        // work, so a short sleep keeps it responsive without busy-spinning.
+        // rare (only a close racing shutdown) and ends when that teardown does,
+        // so a short sleep keeps it responsive without busy-spinning.
         private const val LOOP_QUIESCE_POLL_MICROS: UInt = 50u
     }
 }

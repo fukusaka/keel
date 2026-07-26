@@ -7,6 +7,7 @@ import kotlinx.cinterop.free
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import platform.posix.pthread_mutex_destroy
@@ -38,8 +39,10 @@ import kotlin.coroutines.resumeWithException
  * `PosixReadiness` is in the name so it is not mistaken for a base every engine
  * extends — it still ends in `EventLoop`, because that is what it is part of.
  *
- * **What a subclass supplies**: [inEventLoop], and [submitArm] to issue whatever
- * the kernel interface wants (`EV_ADD`, `EPOLL_CTL_ADD` / `MOD`). Taking an
+ * **What a subclass supplies**: [inEventLoop]; [submitArm] to issue whatever the
+ * kernel interface wants (`EV_ADD`, `EPOLL_CTL_ADD` / `MOD`); and [drainTasks],
+ * which [failWaitersOnStoppedLoop] needs because cancelling a waiter dispatches
+ * its resume back onto the loop's own queue rather than running it. Taking an
  * interest back stays with each engine, because the decision to do so is made in
  * its own dispatch path, which is not here. Everything about *when* to arm, the
  * FIFO chain of waiters per `(fd, interest)`, and the locking around it lives
@@ -313,17 +316,27 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     fun cancelAll(fd: Int, interest: Interest, cause: Throwable) {
         val key = registrationKey(fd, interest)
         val toResume = mutableListOf<Registration>()
-        withRegLock {
-            var curr = registrations.remove(key)
-            while (curr != null) {
-                val next = curr.next
-                curr.next = null
-                curr.tail = null
-                toResume.add(curr)
-                curr = next
-            }
-        }
+        withRegLock { drainChainInto(registrations.remove(key), toResume) }
         for (reg in toResume) reg.continuation.resumeWithException(cause)
+    }
+
+    /**
+     * Moves the chain starting at [head] into [into], detaching each node.
+     *
+     * One copy because both teardown paths need it and the detach ordering has
+     * a silent failure mode: a node that keeps a stale [Registration.tail] makes
+     * later appends land where nothing will pop them, and the waiter hangs
+     * instead of failing. Caller holds the lock.
+     */
+    private fun drainChainInto(head: Registration?, into: MutableList<Registration>) {
+        var curr = head
+        while (curr != null) {
+            val next = curr.next
+            curr.next = null
+            curr.tail = null
+            into.add(curr)
+            curr = next
+        }
     }
 
     /** Whether [reg] is still in the chain at [key]. Caller holds the lock. */
@@ -466,6 +479,12 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * what closes the socket, so resuming here would end the wait and leak the
      * descriptor. Measured on this target rather than assumed.
      *
+     * **And cancels with a `CancellationException`,** the same shape [cancelAll]
+     * hands a waiter when its server closes. Any other cause completes the
+     * waiter's coroutine *exceptionally*, which cancels its parent: an accept
+     * loop that ends quietly when its server closes would instead take down the
+     * scope around it, for no reason other than which side stopped first.
+     *
      * **Drains afterwards, and that is not optional.** Cancelling runs the
      * handler synchronously but not the coroutine: the resume goes back through
      * [dispatch], and neither loop overrides `isDispatchNeeded`, so it lands on
@@ -483,22 +502,13 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     protected fun failWaitersOnStoppedLoop() {
         val stranded = mutableListOf<Registration>()
         withRegLock {
-            registrations.forEachValue { head ->
-                var curr: Registration? = head
-                while (curr != null) {
-                    val next = curr.next
-                    curr.next = null
-                    curr.tail = null
-                    stranded.add(curr)
-                    curr = next
-                }
-            }
+            registrations.forEachValue { head -> drainChainInto(head, stranded) }
             registrations.clear()
         }
         // Outside the lock, as in cancelAll: a handler may re-enter this class.
         for (reg in stranded) {
             reg.continuation.cancel(
-                IllegalStateException("EventLoop stopped before arming fd=${reg.fd} for ${reg.interest}"),
+                CancellationException("EventLoop stopped before arming fd=${reg.fd} for ${reg.interest}"),
             )
         }
         // Deliver what those cancellations queued. See the KDoc: without this

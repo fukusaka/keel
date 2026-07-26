@@ -74,8 +74,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `native-posix`, `engine-epoll`, `engine-kqueue`: end waiters a stopping loop can no longer
   arm, rather than leaving them parked (#1004)
-- `engine-epoll`, `engine-kqueue`: check `pthread_join` on `close()` and release nothing when
-  it fails (#1004)
+- `engine-epoll`, `engine-kqueue`: refuse to release a loop's resources when `close()` is
+  called from that loop's own thread (#1004)
 - `engine-epoll`, `engine-kqueue`: withdraw a connection's readiness callback when it closes —
   a closed transport, its channel and the pipeline graph behind it stayed reachable until the fd
   number was reused (#1001)

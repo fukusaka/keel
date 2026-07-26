@@ -40,6 +40,7 @@ import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
 import platform.darwin.EV_EOF
 import platform.posix.EAGAIN
+import platform.posix.EDEADLK
 import platform.posix.EINTR
 import platform.posix.pthread_create
 import platform.posix.pthread_equal
@@ -511,15 +512,23 @@ internal class KqueueEventLoop(
             // where an offer lands after the drain but before the flag, and
             // nobody runs it.
             handoff.markFinished()
-            drainTasks()
-            // After the last drain, before quiescence is published: anything
-            // still in the ledger is waiting for an arm that can no longer
-            // issue. Ended here because this thread may take the lock and the
-            // lock still exists -- only close() frees it, and only after a
-            // join this thread has not let return. It drains again itself:
-            // cancelling a waiter queues its resume back onto taskQueue.
-            failWaitersOnStoppedLoop()
-            handoff.markQuiescent()
+            // markQuiescent() in its own finally: it is the only thing that
+            // releases a runOnLoop caller from an unbounded spin, so a throw
+            // anywhere below would live-lock whatever thread is closing a
+            // server on this loop.
+            try {
+                drainTasks()
+                // After the last drain, before quiescence is published:
+                // anything still in the ledger is waiting for an arm that can
+                // no longer issue. Ended here because this thread may take the
+                // lock and the lock still exists -- only close() frees it, and
+                // only after a join this thread has not let return. It drains
+                // again itself: cancelling a waiter queues its resume back
+                // onto taskQueue.
+                failWaitersOnStoppedLoop()
+            } finally {
+                handoff.markQuiescent()
+            }
         }
     }
 
@@ -751,8 +760,12 @@ internal class KqueueEventLoop(
      * `EDEADLK` at once when asked to join the caller, so everything below
      * would run while the loop is still inside its own body — freeing the
      * registration lock it is about to take, and the fds it is about to use.
-     * A non-zero join is therefore treated as fatal misuse: it is logged and
-     * nothing is released, because releasing is what would corrupt.
+     * That one errno is treated as fatal misuse: it is logged and nothing is
+     * released, because releasing is what would corrupt. Every other join
+     * failure means the opposite — `ESRCH` for a loop that was built but never
+     * started, `EINVAL` for a handle that is not joinable — and there the
+     * release must still happen, since the `running` CAS above has already
+     * fired and no later `close()` can pick it up.
      */
     fun close() {
         if (running.compareAndSet(1, 0)) {
@@ -761,13 +774,15 @@ internal class KqueueEventLoop(
             val t = threadPtr.ptr[0]
             if (t != null) {
                 val joinRet = pthread_join(t, null)
-                if (joinRet != 0) {
+                if (joinRet == EDEADLK) {
                     logger.error {
-                        "pthread_join() failed: ${errnoMessage(joinRet)} — " +
-                            "leaving this EventLoop's resources in place rather than freeing them " +
-                            "out from under a thread that is still running"
+                        "close() was called from this EventLoop's own thread — releasing nothing, " +
+                            "because the loop is still running and would lose its lock and fds"
                     }
                     return
+                }
+                if (joinRet != 0) {
+                    logger.warn { "pthread_join() failed: ${errnoMessage(joinRet)}" }
                 }
             }
             closeFdSafely(wakeupFds[0], logger, "event loop teardown (wakeupFds[0])")

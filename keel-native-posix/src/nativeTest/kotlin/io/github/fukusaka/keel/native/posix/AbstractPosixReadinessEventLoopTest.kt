@@ -64,10 +64,18 @@ class AbstractPosixReadinessEventLoopTest {
     ) : AbstractPosixReadinessEventLoop() {
         val armed = mutableListOf<Pair<Int, Interest>>()
 
-        /** Every dispatch, run or not — what the routing tests assert on. */
-        val dispatched = mutableListOf<Runnable>()
+        /**
+         * How many times [dispatch] was called, run or not.
+         *
+         * A counter rather than the list it replaced: the list doubled as the
+         * pending queue, so draining cleared it, and the routing assertions
+         * were reading whatever had not been drained yet. Counting and queueing
+         * are now separate, and this one only ever grows.
+         */
+        var dispatchCount: Int = 0
+            private set
 
-        /** Only what has not run yet; empty when [runDispatchedInline]. */
+        /** Not yet run. Emptied as it fills when [runDispatchedInline]. */
         private val pending = mutableListOf<Runnable>()
 
         /** Non-zero makes [submitArm] fail with this errno instead of arming. */
@@ -76,8 +84,9 @@ class AbstractPosixReadinessEventLoopTest {
         override fun inEventLoop(): Boolean = onLoopThread
 
         override fun dispatch(context: CoroutineContext, block: Runnable) {
-            dispatched.add(block)
-            if (runDispatchedInline) block.run() else pending.add(block)
+            dispatchCount++
+            pending.add(block)
+            if (runDispatchedInline) drainDispatched()
         }
 
         /**
@@ -220,21 +229,23 @@ class AbstractPosixReadinessEventLoopTest {
     }
 
     /**
-     * Asserts [handle] carries the failure the sweep hands out.
+     * Asserts [handle] carries the cancellation the sweep hands out.
      *
-     * Not `assertFailsWith<IllegalStateException>` on its own: on this target
-     * `CancellationException` **is** an `IllegalStateException`, so that
-     * predicate is satisfied by anything that cancels the waiter — including
-     * this suite's own `withTimeout`. Measured: with the sweep body emptied,
-     * two of these tests still passed that assertion and failed only on their
-     * other checks, 15 s later. The message is what tells the two apart.
+     * The type alone proves nothing here, twice over. On this target
+     * `CancellationException` **is** an `IllegalStateException`, so
+     * `assertFailsWith<IllegalStateException>` is satisfied by anything that
+     * cancels the waiter — including this suite's own `withTimeout`; measured,
+     * with the sweep body emptied two of these tests passed that assertion and
+     * failed only on their other checks, 15 s later. And the sweep now cancels
+     * with a `CancellationException` on purpose, so that is not distinguishing
+     * either. The message is what tells the sweep apart from every other way a
+     * waiter can end.
      */
     private suspend fun assertSweptFailure(handle: CompletableDeferred<Unit>) {
-        val failure = assertFailsWith<IllegalStateException> { handle.await() }
-        assertFalse(failure is CancellationException, "a cancellation, not the sweep's own failure: $failure")
+        val failure = assertFailsWith<CancellationException> { handle.await() }
         assertTrue(
             failure.message?.contains(SWEEP_FAILURE) == true,
-            "expected the sweep's failure, got: $failure",
+            "expected the sweep's cancellation, got: $failure",
         )
     }
 
@@ -412,12 +423,12 @@ class AbstractPosixReadinessEventLoopTest {
         loop.onLoopThread = false
         suspendOn(loop, FD, Interest.READ).await()
 
-        assertEquals(1, loop.dispatched.size, "an off-loop registration goes through dispatch")
+        assertEquals(1, loop.dispatchCount, "an off-loop registration goes through dispatch")
         assertEquals(listOf(FD to Interest.READ), loop.armed)
 
         loop.onLoopThread = true
         suspendOn(loop, FD, Interest.WRITE).await()
-        assertEquals(1, loop.dispatched.size, "an on-loop caller arms inline")
+        assertEquals(1, loop.dispatchCount, "an on-loop caller arms inline")
     }
 
     @Test
@@ -427,7 +438,7 @@ class AbstractPosixReadinessEventLoopTest {
         // The queuing the branch above only implies: nothing is armed while the
         // task sits in the queue, and the arm happens when the loop drains it.
         val w = suspendOn(loop, FD, Interest.READ).await()
-        assertEquals(1, loop.dispatched.size)
+        assertEquals(1, loop.dispatchCount)
         assertTrue(loop.armed.isEmpty(), "the arm waits for the loop")
 
         loop.drainDispatched()
@@ -489,7 +500,7 @@ class AbstractPosixReadinessEventLoopTest {
         }
         val reg = accepted.await()
 
-        assertEquals(1, loop.dispatched.size, "an off-loop registerIf goes through dispatch")
+        assertEquals(1, loop.dispatchCount, "an off-loop registerIf goes through dispatch")
         assertEquals(listOf(FD to Interest.READ), loop.armed)
         assertSame(reg, loop.popOne(FD, Interest.READ).first)
     }
