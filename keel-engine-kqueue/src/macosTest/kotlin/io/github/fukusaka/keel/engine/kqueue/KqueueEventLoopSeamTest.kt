@@ -14,10 +14,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import platform.darwin.EVFILT_WRITE
+import platform.posix.AF_INET
 import platform.posix.EAGAIN
 import platform.posix.EBADF
 import platform.posix.EINTR
-import platform.posix.AF_INET
 import platform.posix.EMFILE
 import platform.posix.ENFILE
 import platform.posix.F_GETFD

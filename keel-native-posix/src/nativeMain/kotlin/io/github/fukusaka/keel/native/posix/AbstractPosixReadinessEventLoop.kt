@@ -462,8 +462,8 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * taking the lock is legal, and the lock still exists: the only thing that
      * frees it is [destroyRegistrationLock], reachable only from a `close()`
      * that has completed its `pthread_join` — which cannot happen while this
-     * thread is still here. (Both loops reject a `close()` whose join fails,
-     * which is what a `close()` on this very thread would produce.)
+     * thread is still here. (Both loops refuse that teardown when the join
+     * reports `EDEADLK`, which is what a `close()` on this very thread produces.)
      *
      * **What it closes is one window, not the general case.** A registration
      * that arrives between the final drain and this call is ended here. One
@@ -480,10 +480,24 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * descriptor. Measured on this target rather than assumed.
      *
      * **And cancels with a `CancellationException`,** the same shape [cancelAll]
-     * hands a waiter when its server closes. Any other cause completes the
-     * waiter's coroutine *exceptionally*, which cancels its parent: an accept
-     * loop that ends quietly when its server closes would instead take down the
-     * scope around it, for no reason other than which side stopped first.
+     * hands a waiter when its server closes. A cause that is *not* one completes
+     * the waiter's coroutine exceptionally and so cancels its parent, which an
+     * accept loop that ends quietly on server close should not suffer merely
+     * because the loop stopped first.
+     *
+     * What that costs, deliberately: keel's own callers cannot tell this from
+     * the caller's own cancel. `connectWithFallback` therefore stops trying
+     * candidates, and a server's accept loop exits without logging.
+     *
+     * A distinct type on its own would change neither — both call sites match on
+     * `CancellationException`, which any subclass satisfies. Making them act on
+     * it means editing those call sites, and *that* is the part that must not
+     * come back: with the fallback advancing past a stopped loop, the next
+     * candidate registers on a loop `engine.close()` stopped as well, parks
+     * forever, and can take the registration lock after `close()` freed it. It
+     * was implemented, measured and withdrawn. Telling the two apart is only
+     * safe once a stopped loop refuses registrations outright, which needs its
+     * own change.
      *
      * **Drains afterwards, and that is not optional.** Cancelling runs the
      * handler synchronously but not the coroutine: the resume goes back through

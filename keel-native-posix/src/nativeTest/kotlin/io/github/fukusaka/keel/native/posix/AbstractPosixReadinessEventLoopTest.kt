@@ -3,11 +3,13 @@ package io.github.fukusaka.keel.native.posix
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -67,10 +69,11 @@ class AbstractPosixReadinessEventLoopTest {
         /**
          * How many times [dispatch] was called, run or not.
          *
-         * A counter rather than the list it replaced: the list doubled as the
-         * pending queue, so draining cleared it, and the routing assertions
-         * were reading whatever had not been drained yet. Counting and queueing
-         * are now separate, and this one only ever grows.
+         * A counter, not a list. The list it replaces was already cumulative
+         * — the queue was separate — so this changes no assertion; measured,
+         * by restoring the list and re-running. It is here because a list
+         * whose name says "dispatched" invites a future test to drain it,
+         * which is what the revision before that actually did.
          */
         var dispatchCount: Int = 0
             private set
@@ -231,15 +234,14 @@ class AbstractPosixReadinessEventLoopTest {
     /**
      * Asserts [handle] carries the cancellation the sweep hands out.
      *
-     * The type alone proves nothing here, twice over. On this target
-     * `CancellationException` **is** an `IllegalStateException`, so
-     * `assertFailsWith<IllegalStateException>` is satisfied by anything that
-     * cancels the waiter — including this suite's own `withTimeout`; measured,
-     * with the sweep body emptied two of these tests passed that assertion and
-     * failed only on their other checks, 15 s later. And the sweep now cancels
-     * with a `CancellationException` on purpose, so that is not distinguishing
-     * either. The message is what tells the sweep apart from every other way a
-     * waiter can end.
+     * The type alone proves nothing, twice over. `IllegalStateException` — the
+     * first shape this had — is satisfied by anything that cancels the waiter,
+     * because on this target `CancellationException` **is** an
+     * `IllegalStateException`: measured, with the sweep body emptied two of
+     * these tests passed that assertion and failed only on their other checks,
+     * 15 s later. And the sweep cancels with a `CancellationException` on
+     * purpose, so that is not distinguishing either. The message is what tells
+     * this sweep apart from every other way a waiter can end.
      */
     private suspend fun assertSweptFailure(handle: CompletableDeferred<Unit>) {
         val failure = assertFailsWith<CancellationException> { handle.await() }
@@ -550,6 +552,62 @@ class AbstractPosixReadinessEventLoopTest {
 
         assertSweptFailure(done)
         assertTrue(handlerRan, "the handler that releases the fd must run")
+    }
+
+    @Test
+    fun `the sweep does not cancel the waiter's parent`() = runBlocking {
+        withTimeout(TEST_BUDGET) {
+            // The reason the cause is a CancellationException at all: any other
+            // cause completes the waiter's coroutine exceptionally and cancels
+            // its parent. The other sweep tests catch the throwable inside the
+            // waiter, so their launch completes normally and none of them can
+            // see this -- here it escapes, and what is asserted is that the
+            // scope around it survives.
+            //
+            // The handler is what makes this test able to fail *readably*.
+            // Measured: with the cause mutated to a plain IllegalStateException
+            // and no handler installed, the waiter's failure reaches Kotlin's
+            // uncaught-exception path and takes the test process down before any
+            // assertion runs — reported only as "Unknown". Nor does
+            // `waiter.isCancelled` discriminate: a Job that completed
+            // exceptionally reports that too. What separates the two cases is
+            // whether anything reached this handler, and whether the scope lived.
+            val loop = FakeLoop()
+            val reported = mutableListOf<Throwable>()
+            val parent = CoroutineScope(
+                coroutineContext + Job() + CoroutineExceptionHandler { _, t -> reported.add(t) },
+            )
+            try {
+                // Written out rather than via suspendOn, which launches its own
+                // coroutine and catches the throwable — that is exactly what
+                // hides the property under test.
+                val waiter = parent.launch {
+                    suspendCancellableCoroutine { cont ->
+                        val reg = loop.registerWaiter(FD, Interest.READ, cont)
+                        cont.invokeOnCancellation { loop.unregister(reg) }
+                    }
+                }
+                while (!loop.waiters(FD, Interest.READ)) yield()
+
+                loop.failRemainingWaiters()
+                waiter.join()
+
+                assertTrue(waiter.isCancelled, "the waiter itself ends as cancelled")
+                assertTrue(reported.isEmpty(), "the loop stopping is not a failure to report: $reported")
+                assertTrue(parent.isActive, "its parent must survive the loop stopping under it")
+            } finally {
+                parent.cancel()
+                withContext(NonCancellable) { parent.coroutineContext.job.join() }
+                loop.destroy()
+            }
+            // Reported after the block for the same reason loopTest does it:
+            // a teardown failure must not replace the assertion that failed.
+            // This test hand-rolls its scope, and is the only sweep test whose
+            // waiter is not wrapped in a catch -- the shape most likely to
+            // leave a cancellation handler mid-flight when the mutex is freed.
+            val destroyErrno = loop.destroyErrno
+            if (destroyErrno != null) fail("pthread_mutex_destroy() failed: errno=$destroyErrno")
+        }
     }
 
     @Test

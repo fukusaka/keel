@@ -517,15 +517,22 @@ internal class KqueueEventLoop(
             // anywhere below would live-lock whatever thread is closing a
             // server on this loop.
             try {
-                drainTasks()
-                // After the last drain, before quiescence is published:
-                // anything still in the ledger is waiting for an arm that can
-                // no longer issue. Ended here because this thread may take the
-                // lock and the lock still exists -- only close() frees it, and
-                // only after a join this thread has not let return. It drains
-                // again itself: cancelling a waiter queues its resume back
-                // onto taskQueue.
-                failWaitersOnStoppedLoop()
+                // Nested so a throw from the drain cannot skip the sweep while
+                // still publishing quiescence: that combination would strand
+                // every waiter *and* free the lock their cancellation handlers
+                // are about to take.
+                try {
+                    drainTasks()
+                } finally {
+                    // After the last drain, before quiescence is published:
+                    // anything still in the ledger is waiting for an arm that
+                    // can no longer issue. Ended here because this thread may
+                    // take the lock and the lock still exists -- only close()
+                    // frees it, and only after a join this thread has not let
+                    // return. It drains again itself: cancelling a waiter
+                    // queues its resume back onto taskQueue.
+                    failWaitersOnStoppedLoop()
+                }
             } finally {
                 handoff.markQuiescent()
             }
@@ -762,10 +769,19 @@ internal class KqueueEventLoop(
      * registration lock it is about to take, and the fds it is about to use.
      * That one errno is treated as fatal misuse: it is logged and nothing is
      * released, because releasing is what would corrupt. Every other join
-     * failure means the opposite — `ESRCH` for a loop that was built but never
-     * started, `EINVAL` for a handle that is not joinable — and there the
-     * release must still happen, since the `running` CAS above has already
-     * fired and no later `close()` can pick it up.
+     * failure falls through and releases anyway, since the `running` CAS above
+     * has already fired and no later `close()` can pick it up.
+     *
+     * **What this does not cover**: a loop that was constructed and never
+     * started. `threadPtr` comes from an `Arena`, which does not zero, and
+     * `pthread_t` is only a pointer on some targets. On macOS it is one and the
+     * slot measures as null, so `t != null` skips the join. On linuxX64 it is a
+     * `ULong` — the compiler reports that same check as always true — and the
+     * join is handed an uninitialised value whose return is undefined, so
+     * neither branch below is reasoning from anything. Production does not
+     * reach it (a failed `start()` throws out of the constructor) and the tests
+     * that do pass on fresh `malloc` memory reading as zero. Covering it needs
+     * an explicit started flag rather than this guard.
      */
     fun close() {
         if (running.compareAndSet(1, 0)) {
