@@ -25,6 +25,7 @@ import kotlin.time.Duration.Companion.seconds
  * a second thread and carries a wall-clock bound, because a regression that
  * never publishes quiescence would otherwise hang rather than fail.
  */
+@OptIn(InternalPosixEventLoopApi::class)
 class LoopHandoffTest {
 
     /** Records dispatched tasks so a test can run them when it chooses. */

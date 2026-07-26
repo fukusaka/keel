@@ -28,6 +28,7 @@ import kotlin.concurrent.AtomicInt
  * @param dispatchToLoop queues a task to run on the loop thread.
  */
 @OptIn(ExperimentalForeignApi::class)
+@InternalPosixEventLoopApi
 class LoopHandoff(
     private val inEventLoop: () -> Boolean,
     private val dispatchToLoop: (task: () -> Unit) -> Unit,

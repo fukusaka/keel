@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `native-posix`: `AbstractPosixReadinessEventLoop` — the suspend-waiter ledger the epoll
+  and kqueue loops duplicated, gated by `@InternalPosixEventLoopApi` (#1002)
 - `client-http`: follow `301` / `302` / `303` / `307` / `308` redirects (RFC 9110 §15.4) — `303` and a
   redirected POST become GET, `307` / `308` preserve method and body, a relative `Location` is resolved,
   and `Authorization` is dropped on a cross-origin hop. Configurable via `followRedirects` /
@@ -37,6 +39,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`native-posix`): `LoopHandoff` now requires opting in to
+  `@InternalPosixEventLoopApi` (#1002)
 - `core`: the pipeline's non-suspend outbound entry points (`requestWrite` / `requestFlush` /
   `requestClose` and the handler-side `propagate*`) now run on the transport's owning EventLoop —
   inline when the caller is already there, dispatched onto it otherwise — instead of touching the
