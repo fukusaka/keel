@@ -11,8 +11,9 @@ modules: the `NativeSocket` / `NativeSocketOps` seams with their production
 implementations `PosixNativeSocket` / `PosixNativeSocketOps`, plus the helpers
 `errnoMessage`, `closeFdSafely`, and `applySocketOptions`, and the vocabulary the
 readiness engines share: `Interest` / `FdReadyListener` for describing and
-delivering fd readiness, and the `LoopHandoff` for handing work to their
-EventLoop thread.
+delivering fd readiness, the `LoopHandoff` for handing work to their
+EventLoop thread, and `AbstractPosixReadinessEventLoop`, which the epoll and
+kqueue loops extend for their shared registration ledger.
 Engine modules (`keel-engine-epoll`, `keel-engine-kqueue`, `keel-engine-io-uring`) depend on this
 module to avoid duplicating socket lifecycle code.
 
@@ -70,7 +71,9 @@ fails on some Kotlin/Native versions. `getsockopt` and `setsockopt` calls use
 | `applySocketOptions(fd, options)` | Applies a `SocketOptions` set through `NativeSocketOps.setSocketOption` |
 | `Interest` | Enum. The readiness a registration waits for (`READ` / `WRITE`). Callers above the engine describe what they wait for in these terms; the mapping onto kqueue filters or an epoll event mask is the engine's business |
 | `FdReadyListener` | Interface. Readiness callbacks on the pipeline (non-suspend) path: `onReady` plus a defaulted `onPeerClosed` for peer FIN / RST. Implemented by transports and servers so the receiver passes `this` — no per-call lambda on the read re-arm fast path |
-| `LoopHandoff` | Off-loop to EventLoop hand-off for the readiness engines: runs work on the loop thread, or a fallback on the caller once the loop has stopped. Shared by `keel-engine-epoll` / `keel-engine-kqueue` so the shutdown-race handling has one implementation |
+| `AbstractPosixReadinessEventLoop` | Base class for the epoll and kqueue loops. Requires `@InternalPosixEventLoopApi`. Owns the suspend-waiter ledger — the FIFO chain of waiters per `(fd, interest)`, its mutex, and the rule that arming syscalls run on the loop thread. A subclass supplies `inEventLoop()` and `submitArm` |
+| `LoopHandoff` | Off-loop to EventLoop hand-off for the readiness engines: runs work on the loop thread, or a fallback on the caller once the loop has stopped. Shared by `keel-engine-epoll` / `keel-engine-kqueue` so the shutdown-race handling has one implementation. Requires `@InternalPosixEventLoopApi` |
+| `InternalPosixEventLoopApi` | Opt-in marker at `ERROR` level on `AbstractPosixReadinessEventLoop` and `LoopHandoff`. Both are `public` only because the loops that use them are in other modules; the marker is what keeps that from reading as a supported API |
 
 Test doubles for these seams (`FakeNativeSocket`, `FakeNativeSocketOps`, and the
 blocking loopback client `PosixRawClient`) live in the `keel-testing-internal`

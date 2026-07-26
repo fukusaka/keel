@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
@@ -41,7 +42,7 @@ import kotlin.coroutines.resumeWithException
  * @param workerGroup Worker EventLoopGroup for accepted channels.
  * @param localAddress Bind address of this server channel.
  */
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
 internal class EpollStreamServer(
     private val serverFd: Int,
     private val bossLoop: EpollEventLoop,
