@@ -527,6 +527,13 @@ internal class EpollEventLoop(
             // nobody runs it.
             handoff.markFinished()
             drainTasks()
+            // After the last drain, before quiescence is published: anything
+            // still in the ledger is waiting for an arm that can no longer
+            // issue. Ended here because this thread may take the lock and the
+            // lock still exists -- only close() frees it, and only after a
+            // join this thread has not let return. It drains again itself:
+            // cancelling a waiter queues its resume back onto taskQueue.
+            failWaitersOnStoppedLoop()
             handoff.markQuiescent()
         }
     }
@@ -624,7 +631,7 @@ internal class EpollEventLoop(
      * Draining in the same iteration prevents starvation where tasks
      * accumulate faster than epoll_wait() cycles can process them.
      */
-    private fun drainTasks() {
+    override fun drainTasks() {
         assertInEventLoop("EpollEventLoop.drainTasks")
         while (true) {
             drainBatch.clear()
@@ -665,9 +672,15 @@ internal class EpollEventLoop(
      * Stops the EventLoop and releases all resources.
      *
      * Signals the EventLoop thread to stop, joins it, then closes the
-     * epoll fd and eventfd. Any pending registrations have their
-     * continuations left uncompleted (the caller's coroutine will be
-     * garbage collected).
+     * epoll fd and eventfd. Waiters still parked at that point are ended by
+     * the loop itself, on its way out.
+     *
+     * **Must not be called from the EventLoop thread.** `pthread_join` returns
+     * `EDEADLK` at once when asked to join the caller, so everything below
+     * would run while the loop is still inside its own body — freeing the
+     * registration lock it is about to take, and the fds it is about to use.
+     * A non-zero join is therefore treated as fatal misuse: it is logged and
+     * nothing is released, because releasing is what would corrupt.
      */
     fun close() {
         if (running.compareAndSet(1, 0)) {
@@ -675,7 +688,15 @@ internal class EpollEventLoop(
             // Join the EventLoop thread. threadPtr was written by pthread_create.
             val t = threadPtr.ptr[0]
             if (t != null) {
-                pthread_join(t, null)
+                val joinRet = pthread_join(t, null)
+                if (joinRet != 0) {
+                    logger.error {
+                        "pthread_join() failed: ${errnoMessage(joinRet)} — " +
+                            "leaving this EventLoop's resources in place rather than freeing them " +
+                            "out from under a thread that is still running"
+                    }
+                    return
+                }
             }
             closeFdSafely(wakeupFd, logger, "event loop teardown (wakeupFd)")
             closeFdSafely(epFd, logger, "event loop teardown (epFd)")

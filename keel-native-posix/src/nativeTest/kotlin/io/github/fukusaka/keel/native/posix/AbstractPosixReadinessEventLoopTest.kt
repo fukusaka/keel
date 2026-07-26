@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.native.posix
 
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -13,6 +14,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -27,7 +29,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Chain bookkeeping of [AbstractPosixReadinessEventLoop], driven directly.
  *
- * The class has two abstract members, so a subclass can exercise every
+ * The class has three abstract members, so a subclass can exercise every
  * transition of the FIFO chain with no fd, no kernel and no loop thread. That
  * matters because the transitions carry a head-and-tail transfer whose failure
  * mode is silent: a detached tail makes later appends land where nothing will
@@ -61,7 +63,12 @@ class AbstractPosixReadinessEventLoopTest {
         val runDispatchedInline: Boolean = true,
     ) : AbstractPosixReadinessEventLoop() {
         val armed = mutableListOf<Pair<Int, Interest>>()
+
+        /** Every dispatch, run or not — what the routing tests assert on. */
         val dispatched = mutableListOf<Runnable>()
+
+        /** Only what has not run yet; empty when [runDispatchedInline]. */
+        private val pending = mutableListOf<Runnable>()
 
         /** Non-zero makes [submitArm] fail with this errno instead of arming. */
         var failArm: Int = 0
@@ -70,13 +77,22 @@ class AbstractPosixReadinessEventLoopTest {
 
         override fun dispatch(context: CoroutineContext, block: Runnable) {
             dispatched.add(block)
-            if (runDispatchedInline) block.run()
+            if (runDispatchedInline) block.run() else pending.add(block)
         }
 
+        /**
+         * Stands in for the engines' `drainTasks`, including its shape: it
+         * loops until the queue is empty, because a task that runs here can
+         * dispatch another one.
+         */
+        override fun drainTasks() = drainDispatched()
+
         fun drainDispatched() {
-            val pending = dispatched.toList()
-            dispatched.clear()
-            for (block in pending) block.run()
+            while (pending.isNotEmpty()) {
+                val batch = pending.toList()
+                pending.clear()
+                for (block in batch) block.run()
+            }
         }
 
         override fun submitArm(
@@ -96,6 +112,9 @@ class AbstractPosixReadinessEventLoopTest {
             }
             armed.add(fd to interest)
         }
+
+        /** The sweep is protected on the base; this is the subclass reaching it. */
+        fun failRemainingWaiters() = failWaitersOnStoppedLoop()
 
         /** [register] is protected on the base; this is the subclass reaching it. */
         fun registerWaiter(fd: Int, interest: Interest, cont: CancellableContinuation<Unit>) =
@@ -198,6 +217,25 @@ class AbstractPosixReadinessEventLoopTest {
             }
         }
         return handle
+    }
+
+    /**
+     * Asserts [handle] carries the failure the sweep hands out.
+     *
+     * Not `assertFailsWith<IllegalStateException>` on its own: on this target
+     * `CancellationException` **is** an `IllegalStateException`, so that
+     * predicate is satisfied by anything that cancels the waiter — including
+     * this suite's own `withTimeout`. Measured: with the sweep body emptied,
+     * two of these tests still passed that assertion and failed only on their
+     * other checks, 15 s later. The message is what tells the two apart.
+     */
+    private suspend fun assertSweptFailure(handle: CompletableDeferred<Unit>) {
+        val failure = assertFailsWith<IllegalStateException> { handle.await() }
+        assertFalse(failure is CancellationException, "a cancellation, not the sweep's own failure: $failure")
+        assertTrue(
+            failure.message?.contains(SWEEP_FAILURE) == true,
+            "expected the sweep's failure, got: $failure",
+        )
     }
 
     private suspend fun CoroutineScope.chainOf(loop: FakeLoop, size: Int, interest: Interest = Interest.READ) =
@@ -456,6 +494,105 @@ class AbstractPosixReadinessEventLoopTest {
         assertSame(reg, loop.popOne(FD, Interest.READ).first)
     }
 
+    @Test
+    fun `the sweep fails every waiter the loop will never arm`() = loopTest { loop ->
+        // What the loop runs after its final drain. Anything still in the ledger
+        // is waiting on an arm that can no longer issue, so it has to end here --
+        // on the loop thread, where the lock is still valid, because close() has
+        // not yet joined and destroyed it.
+        val readers = (0..1).map { suspendOn(loop, FD, Interest.READ).await() }
+        val writer = suspendOn(loop, FD, Interest.WRITE).await()
+
+        loop.failRemainingWaiters()
+
+        for (w in readers + writer) {
+            assertSweptFailure(w.resumed)
+        }
+        assertFalse(loop.waiters(FD, Interest.READ), "the ledger is emptied")
+        assertFalse(loop.waiters(FD, Interest.WRITE))
+    }
+
+    @Test
+    fun `the sweep runs each waiter's cancellation handler`() = loopTest { loop ->
+        // The reason it cancels rather than resuming with the failure: only a
+        // cancelled continuation runs invokeOnCancellation, and that handler is
+        // what closes the socket on the connect path. Measured, not assumed.
+        var handlerRan = false
+        val done = CompletableDeferred<Unit>()
+        launch {
+            try {
+                suspendCancellableCoroutine { cont ->
+                    val reg = loop.registerWaiter(FD, Interest.WRITE, cont)
+                    cont.invokeOnCancellation {
+                        handlerRan = true
+                        loop.unregister(reg)
+                    }
+                }
+                done.complete(Unit)
+            } catch (t: Throwable) {
+                done.completeExceptionally(t)
+            }
+        }
+        while (!loop.waiters(FD, Interest.WRITE)) yield()
+
+        loop.failRemainingWaiters()
+
+        assertSweptFailure(done)
+        assertTrue(handlerRan, "the handler that releases the fd must run")
+    }
+
+    @Test
+    fun `the sweep is a no-op when nothing is waiting`() = loopTest { loop ->
+        loop.failRemainingWaiters()
+        assertFalse(loop.waiters(FD, Interest.READ))
+    }
+
+    @Test
+    fun `the sweep delivers the resume of a waiter dispatched on this loop`() = runBlocking {
+        withTimeout(TEST_BUDGET) {
+            // The case the sweep exists for, wired the way production wires it:
+            // keel launches every connection handler on `channel.ioDispatcher`,
+            // which is the EventLoop, so a connect() from there parks a
+            // continuation whose resume comes back through this dispatch().
+            // Cancelling only queues that resume -- if the loop stops without
+            // draining again, the caller is cancelled and still parked.
+            val loop = FakeLoop(runDispatchedInline = false)
+            val waiters = CoroutineScope(coroutineContext + Job())
+            try {
+                val resumed = CompletableDeferred<Unit>()
+                waiters.launch(loop) {
+                    try {
+                        suspendCancellableCoroutine { cont ->
+                            val reg = loop.registerWaiter(FD, Interest.WRITE, cont)
+                            cont.invokeOnCancellation { loop.unregister(reg) }
+                        }
+                        resumed.complete(Unit)
+                    } catch (t: Throwable) {
+                        resumed.completeExceptionally(t)
+                    }
+                }
+                loop.drainDispatched() // start it; it registers and parks
+                assertTrue(loop.waiters(FD, Interest.WRITE), "the waiter is in the ledger")
+
+                loop.failRemainingWaiters()
+
+                assertTrue(resumed.isCompleted, "the sweep must deliver the resume, not just queue it")
+                assertSweptFailure(resumed)
+                assertFalse(loop.waiters(FD, Interest.WRITE), "the ledger is emptied")
+            } finally {
+                waiters.cancel()
+                // Before the join, and the reason this teardown differs from
+                // loopTest's: nothing here runs dispatched work on its own, so
+                // a waiter whose resume is still queued never completes, and a
+                // NonCancellable join on it hangs instead of letting the failed
+                // assertion be reported.
+                loop.drainDispatched()
+                withContext(NonCancellable) { waiters.coroutineContext.job.join() }
+                loop.destroy()
+            }
+        }
+    }
+
     private companion object {
         /**
          * Everything here completes on the calling thread — no fd, no kernel, no
@@ -467,5 +604,8 @@ class AbstractPosixReadinessEventLoopTest {
 
         /** Any non-zero errno; the value only has to reach the waiter's message. */
         const val ENOMEM = 12
+
+        /** The stable prefix of the failure the sweep hands its waiters. */
+        const val SWEEP_FAILURE = "EventLoop stopped before arming"
     }
 }

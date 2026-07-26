@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io`: `LongObjectMap.forEachValue` — inline walk over the values, for callers that have to
+  drain a map without allocating per entry (#1004)
 - `native-posix`: `AbstractPosixReadinessEventLoop` — the suspend-waiter ledger the epoll
   and kqueue loops duplicated, gated by `@InternalPosixEventLoopApi` (#1002)
 - `client-http`: follow `301` / `302` / `303` / `307` / `308` redirects (RFC 9110 §15.4) — `303` and a
@@ -70,6 +72,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`, `engine-epoll`, `engine-kqueue`: end waiters a stopping loop can no longer
+  arm, rather than leaving them parked (#1004)
+- `engine-epoll`, `engine-kqueue`: check `pthread_join` on `close()` and release nothing when
+  it fails (#1004)
 - `engine-epoll`, `engine-kqueue`: withdraw a connection's readiness callback when it closes —
   a closed transport, its channel and the pipeline graph behind it stayed reachable until the fd
   number was reused (#1001)

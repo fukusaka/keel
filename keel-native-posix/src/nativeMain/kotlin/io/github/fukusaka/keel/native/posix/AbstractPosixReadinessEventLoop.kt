@@ -119,6 +119,17 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     )
 
     /**
+     * Runs everything queued on this loop's task queue, until it is empty.
+     *
+     * The loops already have this; the base names it because
+     * [failWaitersOnStoppedLoop] needs it. Cancelling a continuation does not
+     * run it — the resume goes back through [dispatch] onto this queue — so a
+     * sweep that did not drain afterwards would leave the waiter cancelled and
+     * still parked. Called only from the loop thread.
+     */
+    protected abstract fun drainTasks()
+
+    /**
      * A pending I/O interest for a file descriptor.
      *
      * Multiple [Registration]s with the same `(fd, interest)` key form a
@@ -427,6 +438,72 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         val destroyRet = pthread_mutex_destroy(regMutex.ptr)
         nativeHeap.free(regMutex)
         if (destroyRet != 0) onDestroyFailure(destroyRet)
+    }
+
+    /**
+     * Ends every waiter still in the ledger, because the loop is about to stop
+     * reading it.
+     *
+     * The subclass calls this from its loop body's `finally`, after the final
+     * drain and before it publishes quiescence. It runs on the loop thread, so
+     * taking the lock is legal, and the lock still exists: the only thing that
+     * frees it is [destroyRegistrationLock], reachable only from a `close()`
+     * that has completed its `pthread_join` — which cannot happen while this
+     * thread is still here. (Both loops reject a `close()` whose join fails,
+     * which is what a `close()` on this very thread would produce.)
+     *
+     * **What it closes is one window, not the general case.** A registration
+     * that arrives between the final drain and this call is ended here. One
+     * that arrives *after* it still appends to the ledger and dispatches an arm
+     * into a queue nobody drains, and stays parked — measured, not assumed.
+     * Ending those means refusing the registration at its source, which is a
+     * cost on the hot path and a separate decision; the attempt that took it is
+     * recorded with what it cost.
+     *
+     * **Cancels rather than resuming with the failure.** Only a cancelled
+     * continuation runs its `invokeOnCancellation` handler; a continuation
+     * resumed with an exception does not. On the connect path that handler is
+     * what closes the socket, so resuming here would end the wait and leak the
+     * descriptor. Measured on this target rather than assumed.
+     *
+     * **Drains afterwards, and that is not optional.** Cancelling runs the
+     * handler synchronously but not the coroutine: the resume goes back through
+     * [dispatch], and neither loop overrides `isDispatchNeeded`, so it lands on
+     * this loop's own task queue even though the sweep is already on the loop
+     * thread. Without the drain a waiter dispatched on the loop it was waiting
+     * on stays parked — which is the hang this exists to end, and is what
+     * `channel.ioDispatcher` gives every connection handler.
+     *
+     * What remains after this returns: a waiter registered by one of the
+     * coroutines the drain resumed. That is a strictly narrower window than the
+     * one being closed, and it needs a decision about how long a stopping loop
+     * should keep serving new registrations, so it is tracked rather than
+     * papered over with an unbounded sweep/drain alternation here.
+     */
+    protected fun failWaitersOnStoppedLoop() {
+        val stranded = mutableListOf<Registration>()
+        withRegLock {
+            registrations.forEachValue { head ->
+                var curr: Registration? = head
+                while (curr != null) {
+                    val next = curr.next
+                    curr.next = null
+                    curr.tail = null
+                    stranded.add(curr)
+                    curr = next
+                }
+            }
+            registrations.clear()
+        }
+        // Outside the lock, as in cancelAll: a handler may re-enter this class.
+        for (reg in stranded) {
+            reg.continuation.cancel(
+                IllegalStateException("EventLoop stopped before arming fd=${reg.fd} for ${reg.interest}"),
+            )
+        }
+        // Deliver what those cancellations queued. See the KDoc: without this
+        // the waiter is cancelled and still parked.
+        if (stranded.isNotEmpty()) drainTasks()
     }
 
     /** Whether any waiter remains on `(fd, interest)`. Caller holds the lock. */
