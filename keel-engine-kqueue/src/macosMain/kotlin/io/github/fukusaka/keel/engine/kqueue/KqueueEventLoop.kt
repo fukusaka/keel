@@ -8,8 +8,10 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.LoopHandoff
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -42,11 +44,6 @@ import platform.posix.EINTR
 import platform.posix.pthread_create
 import platform.posix.pthread_equal
 import platform.posix.pthread_join
-import platform.posix.pthread_mutex_destroy
-import platform.posix.pthread_mutex_init
-import platform.posix.pthread_mutex_lock
-import platform.posix.pthread_mutex_t
-import platform.posix.pthread_mutex_unlock
 import platform.posix.pthread_self
 import platform.posix.pthread_t
 import platform.posix.pthread_tVar
@@ -86,7 +83,8 @@ import kotlin.time.TimeSource
  * [KqueueEventLoopGroup] creates multiple instances and distributes
  * channels in round-robin for multi-threaded I/O.
  *
- * **Thread safety**: [registrations] is protected by `pthread_mutex_t`.
+ * **Thread safety**: the registration ledger in the base class is
+ * protected by a POSIX mutex.
  * [taskQueue] uses a lock-free MPSC queue ([MpscQueue]) — CAS-based
  * enqueue (~5-10ns) replaces mutex lock/unlock (~50-100ns) on the
  * dispatch hot path.
@@ -104,7 +102,7 @@ import kotlin.time.TimeSource
  *                         if no handler at all → WARN + EV_DELETE
  * ```
  */
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
 internal class KqueueEventLoop(
     internal val logger: Logger,
     /**
@@ -143,7 +141,7 @@ internal class KqueueEventLoop(
      */
     val flushCoalescing: Boolean = true,
     private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps,
-) : CoroutineDispatcher(), KqueueSuspendRegister {
+) : AbstractPosixReadinessEventLoop(), KqueueSuspendRegister {
 
     /**
      * The kqueue file descriptor, created at construction.
@@ -151,19 +149,6 @@ internal class KqueueEventLoop(
      * via `kevent(kqFd, ...)`. Channel fds are registered via [register].
      */
     val kqFd: Int
-
-    // Arena for long-lived native allocations (mutexes).
-    // Freed in close().
-    private val arena = Arena()
-
-    // Separate mutexes for registrations and taskQueue to minimize lock
-    // contention: dispatch() (any thread) and register() (coroutine thread)
-    // are independent hot paths that should not block each other.
-    private val regMutex = arena.alloc<pthread_mutex_t>().apply {
-        val initRet = pthread_mutex_init(ptr, null)
-        check(initRet == 0) { "pthread_mutex_init() failed: ${errnoMessage(initRet)}" }
-    }
-    private val registrations = LongObjectMap<Registration>()
 
     // Callback registrations for pipeline (non-suspend) I/O.
     // Separated from coroutine registrations to avoid sealed-class overhead.
@@ -246,35 +231,14 @@ internal class KqueueEventLoop(
         inEventLoop = ::inEventLoop,
         dispatchToLoop = { task -> dispatch(EmptyCoroutineContext, Runnable { task() }) },
     )
+
+    /** Backs [threadPtr]. Cleared in [close] once the loop thread is joined. */
+    private val arena = Arena()
+
     private val threadPtr = arena.alloc<pthread_tVar>()
 
     @kotlin.concurrent.Volatile
     private var eventLoopThread: pthread_t? = null
-
-    /**
-     * A pending I/O interest for a file descriptor.
-     *
-     * Multiple [Registration]s with the same `(fd, interest)` key form a
-     * singly-linked FIFO chain via [next]. The chain head doubles as the
-     * map entry; the head's [tail] field tracks the chain tail so append
-     * is O(1) without per-key allocation. Non-head nodes ignore [tail].
-     *
-     * **Mutability**: [next] / [tail] are mutated only under the
-     * EventLoop's `regMutex`. No `@Volatile` because all access is lock-
-     * guarded.
-     *
-     * @param fd The file descriptor to watch.
-     * @param interest Read or write readiness.
-     * @param continuation The coroutine to resume when the fd is ready.
-     */
-    class Registration(
-        val fd: Int,
-        val interest: Interest,
-        val continuation: CancellableContinuation<Unit>,
-    ) {
-        internal var next: Registration? = null
-        internal var tail: Registration? = null
-    }
 
     init {
         val fd = syscallOps.kqueueCreate()
@@ -334,7 +298,7 @@ internal class KqueueEventLoop(
      * Returns `false` before [loop] has started (engine init phase) or
      * from any other thread.
      */
-    internal fun inEventLoop(): Boolean {
+    override fun inEventLoop(): Boolean {
         val t = eventLoopThread ?: return false
         return pthread_equal(pthread_self(), t) != 0
     }
@@ -342,7 +306,7 @@ internal class KqueueEventLoop(
     /**
      * Throws [IllegalStateException] if called from a thread other than
      * this EventLoop's pthread. Used to assert EL-thread affinity on
-     * internal state transitions that are not guarded by [regMutex]
+     * internal state transitions that are not guarded by the registration lock
      * (task queue drain, kevent event processing, etc).
      *
      * Holds unconditionally, including before [loop] runs. It used to return
@@ -394,100 +358,6 @@ internal class KqueueEventLoop(
     }
 
     /**
-     * [register]s only if [stillWanted] holds, evaluated under the same lock
-     * that [cancelAll] takes.
-     *
-     * `StreamServer.accept()` must decide "is my server still open?" and append
-     * its waiter as one step: `close()` runs [cancelAll], and a registration
-     * that lands after it is never resumed. Both sides already serialise on
-     * this loop's registration lock, so the check belongs here rather than
-     * behind a second mutex the server would have to own — and outlive.
-     *
-     * [stillWanted] runs **while this loop's registration lock is held**, so it
-     * must be a plain state read: taking another lock, or calling back into
-     * this loop, can deadlock. `StreamServer` passes a volatile flag read.
-     *
-     * @return the [Registration], or `null` if [stillWanted] returned false.
-     */
-    fun registerIf(
-        fd: Int,
-        interest: Interest,
-        cont: CancellableContinuation<Unit>,
-        stillWanted: () -> Boolean,
-    ): Registration? {
-        val key = registrationKey(fd, interest)
-        val newReg = Registration(fd, interest, cont)
-        val appended = withRegLock {
-            if (!stillWanted()) {
-                false
-            } else {
-                appendRegistration(key, newReg)
-                true
-            }
-        }
-        if (!appended) return null
-        if (inEventLoop()) {
-            submitAddFilter(fd, interest, key, newReg, cont)
-        } else {
-            dispatch(EmptyCoroutineContext, Runnable { submitAddFilter(fd, interest, key, newReg, cont) })
-        }
-        return newReg
-    }
-
-    /**
-     * Registers a file descriptor for read or write readiness notification.
-     *
-     * When `kevent()` reports the fd as ready, the head [Registration] of
-     * the `(fd, interest)` chain is popped and its continuation is resumed
-     * with [Unit]. The caller should retry the I/O operation after being
-     * resumed.
-     *
-     * Multiple coroutines may register on the same `(fd, interest)` key —
-     * they form a FIFO chain. Each kevent fire pops one waiter; kqueue's
-     * level-triggered persistent `EV_ADD` semantics naturally cascade-fire
-     * subsequent waiters while the fd remains readable. This handles the
-     * concurrent `accept()` pattern (multiple coroutines on a shared
-     * `serverFd`) without losing continuations.
-     *
-     * The fd is added to kqueue via `EV_ADD` (idempotent — adding to an
-     * already-armed filter just refreshes flags, does not duplicate).
-     * [wakeup] is called to interrupt `kevent()` if the EventLoop is
-     * blocked.
-     *
-     * @return The newly created [Registration] handle. Pass it to
-     *   [unregister] from `invokeOnCancellation` to remove only this
-     *   continuation from the chain.
-     */
-    fun register(fd: Int, interest: Interest, cont: CancellableContinuation<Unit>): Registration {
-        val key = registrationKey(fd, interest)
-        val newReg = Registration(fd, interest, cont)
-
-        // Append BEFORE arming the kqueue filter to close the race window
-        // where kevent fires before the map entry exists. The event loop
-        // checks the map under the same lock, so the head Registration is
-        // always found.
-        withRegLock { appendRegistration(key, newReg) }
-
-        // EventLoop-funneled submission fix (Option D): only the
-        // EventLoop thread issues kevent submissions, so a concurrent
-        // dispatchReady's stale-filter EV_DELETE cannot race against an
-        // EV_ADD from another thread. Matches Netty / libuv's "I/O ops on
-        // the I/O thread" model. When register() is called from the
-        // EventLoop thread itself (e.g., a chained suspend register from
-        // within onReady), submit inline to keep the fast path lock-free.
-        // Every other caller dispatches, including one that arrives before
-        // [start] — dispatch() queues and loop() drains on its first
-        // iteration, so a pre-start registration waits rather than running
-        // on whichever thread happened to call.
-        if (inEventLoop()) {
-            submitAddFilter(fd, interest, key, newReg, cont)
-        } else {
-            dispatch(EmptyCoroutineContext, Runnable { submitAddFilter(fd, interest, key, newReg, cont) })
-        }
-        return newReg
-    }
-
-    /**
      * EventLoop-thread submission of EV_ADD for [fd]. Resumes [cont] with
      * an exception on failure (after removing [reg] from the chain at [key]).
      *
@@ -496,14 +366,14 @@ internal class KqueueEventLoop(
      *
      * @param reg The Registration to remove on submit failure.
      */
-    private fun submitAddFilter(
+    override fun submitArm(
         fd: Int,
         interest: Interest,
         key: Long,
         reg: Registration,
         cont: CancellableContinuation<Unit>,
     ) {
-        assertInEventLoop("KqueueEventLoop.submitAddFilter")
+        assertInEventLoop("KqueueEventLoop.submitArm")
         // The arm is dispatched after the chain append releases the lock, so a
         // close() can queue its teardown in between: cancelAll then resumes
         // this waiter and the fd is closed before this runs. Arming here would
@@ -526,115 +396,6 @@ internal class KqueueEventLoop(
     }
 
     /**
-     * Removes a single [Registration] from its chain. Called from
-     * [invokeOnCancellation] when one specific waiter is cancelled.
-     * Other waiters on the same `(fd, interest)` key are unaffected.
-     */
-    fun unregister(reg: Registration) {
-        val key = registrationKey(reg.fd, reg.interest)
-        withRegLock { removeRegistration(key, reg) }
-    }
-
-    /**
-     * Cancels every pending [Registration] on the given `(fd, interest)`
-     * key, resuming each continuation with [cause]. Used by
-     * `StreamServer.close()` to terminate all suspended `accept()` calls
-     * in one shot. The kqueue filter is left untouched — callers that own
-     * the fd are responsible for `closeFdSafely(fd)` afterward.
-     */
-    fun cancelAll(fd: Int, interest: Interest, cause: Throwable) {
-        val key = registrationKey(fd, interest)
-        val toResume = mutableListOf<Registration>()
-        withRegLock {
-            var curr = registrations.remove(key)
-            while (curr != null) {
-                val next = curr.next
-                curr.next = null
-                curr.tail = null
-                toResume.add(curr)
-                curr = next
-            }
-        }
-        for (reg in toResume) reg.continuation.resumeWithException(cause)
-    }
-
-    /** True if [reg] is still in the chain for [key]. Caller MUST hold [regMutex]. */
-    private fun isRegistered(key: Long, reg: Registration): Boolean {
-        var curr = registrations[key]
-        while (curr != null) {
-            if (curr === reg) return true
-            curr = curr.next
-        }
-        return false
-    }
-
-    /** Appends [reg] to the FIFO chain for [key]. Caller MUST hold [regMutex]. */
-    private fun appendRegistration(key: Long, reg: Registration) {
-        val head = registrations[key]
-        if (head == null) {
-            registrations[key] = reg
-        } else {
-            val currentTail = head.tail ?: head
-            currentTail.next = reg
-            head.tail = reg
-        }
-    }
-
-    /**
-     * Pops and returns the FIFO head from the chain for [key], or null if
-     * the chain is empty. Caller MUST hold [regMutex].
-     */
-    private fun popHeadRegistration(key: Long): Registration? {
-        val head = registrations[key] ?: return null
-        val next = head.next
-        if (next == null) {
-            registrations.remove(key)
-        } else {
-            // New head inherits tail tracking: if old head pointed at `next`
-            // as the tail (chain length 2), the new head IS the tail (null);
-            // otherwise pass the existing tail pointer along.
-            next.tail = if (head.tail === next) null else head.tail
-            registrations[key] = next
-        }
-        head.next = null
-        head.tail = null
-        return head
-    }
-
-    /** Removes [reg] from the chain for [key] (search by identity). Caller MUST hold [regMutex]. */
-    private fun removeRegistration(key: Long, reg: Registration) {
-        val head = registrations[key] ?: return
-        if (head === reg) {
-            val next = head.next
-            if (next == null) {
-                registrations.remove(key)
-            } else {
-                // Transfer tail tracking to the new head: if the chain had
-                // exactly two nodes, the new head IS the tail (set null);
-                // otherwise the new head inherits the existing tail pointer.
-                next.tail = if (head.tail === next) null else head.tail
-                registrations[key] = next
-            }
-            head.next = null
-            head.tail = null
-            return
-        }
-        var prev = head
-        var curr = head.next
-        while (curr != null) {
-            if (curr === reg) {
-                prev.next = curr.next
-                // If we removed the tail, update head.tail to point at prev.
-                if (head.tail === curr) head.tail = if (prev === head) null else prev
-                curr.next = null
-                return
-            }
-            prev = curr
-            curr = curr.next
-        }
-    }
-
-    /**
      * Registers a callback for fd readiness notification (pipeline / non-suspend path).
      *
      * Unlike [register], this does not use coroutine continuations. When `kevent()`
@@ -649,13 +410,8 @@ internal class KqueueEventLoop(
             callbackRegistrations[key] = listener
         }
 
-        // EventLoop-funneled submission fix (Option D). See [register]
-        // for the rationale.
-        if (inEventLoop()) {
-            submitAddCallbackFilter(fd, interest, key)
-        } else {
-            dispatch(EmptyCoroutineContext, Runnable { submitAddCallbackFilter(fd, interest, key) })
-        }
+        // Same loop-thread funnel the suspend path uses; see [submitOnLoop].
+        submitOnLoop { submitAddCallbackFilter(fd, interest, key) }
     }
 
     /**
@@ -891,7 +647,7 @@ internal class KqueueEventLoop(
             // re-fire while the resumed continuation finishes its async I/O.
             val pair: Pair<Registration?, Boolean> = withRegLock {
                 val popped = popHeadRegistration(key)
-                popped to (registrations[key] != null)
+                popped to hasWaiters(key)
             }
             val popped = pair.first
             if (popped != null) {
@@ -996,9 +752,8 @@ internal class KqueueEventLoop(
             closeFdSafely(wakeupFds[0], logger, "event loop teardown (wakeupFds[0])")
             closeFdSafely(wakeupFds[1], logger, "event loop teardown (wakeupFds[1])")
             closeFdSafely(kqFd, logger, "event loop teardown (kqFd)")
-            val destroyRet = pthread_mutex_destroy(regMutex.ptr)
-            if (destroyRet != 0) {
-                logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(destroyRet)}" }
+            destroyRegistrationLock { errno ->
+                logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(errno)}" }
             }
             // taskQueue is MpscQueue (lock-free, no mutex to destroy)
             arena.clear()
@@ -1015,26 +770,6 @@ internal class KqueueEventLoop(
             nativeHeap.free(writevBases)
             nativeHeap.free(writevLens)
             allocator.close()
-        }
-    }
-
-    // --- Helpers ---
-
-    /**
-     * Encodes fd + interest into a single Long key.
-     * fd in lower 32 bits, interest ordinal in upper 32 bits.
-     */
-    private fun registrationKey(fd: Int, interest: Interest): Long {
-        return fd.toLong() or (interest.ordinal.toLong() shl 32)
-    }
-
-    /** Runs [block] under the registration mutex. */
-    private inline fun <T> withRegLock(block: () -> T): T {
-        pthread_mutex_lock(regMutex.ptr)
-        try {
-            return block()
-        } finally {
-            pthread_mutex_unlock(regMutex.ptr)
         }
     }
 
