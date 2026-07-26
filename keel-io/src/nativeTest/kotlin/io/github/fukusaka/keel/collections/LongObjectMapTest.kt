@@ -296,4 +296,49 @@ class LongObjectMapTest {
             else assertEquals(i, m[pageSize * i], "survivor ${pageSize * i} stranded after remove")
         }
     }
+
+    @Test
+    fun `forEachValue visits every value exactly once`() {
+        val map = LongObjectMap<String>()
+        val expected = (1L..50L).associateWith { "v$it" }
+        expected.forEach { (k, v) -> map[k] = v }
+
+        val seen = mutableListOf<String>()
+        map.forEachValue { seen.add(it) }
+
+        assertEquals(expected.size, seen.size, "one visit per entry")
+        assertEquals(expected.values.toSet(), seen.toSet())
+    }
+
+    @Test
+    fun `forEachValue skips removed slots`() {
+        // Removal back-shifts within the probe cluster, so a naive scan that
+        // trusted stale keys would hand back a value that is no longer there.
+        val map = LongObjectMap<String>()
+        (1L..20L).forEach { map[it] = "v$it" }
+        (1L..20L step 2).forEach { map.remove(it) }
+
+        val seen = mutableListOf<String>()
+        map.forEachValue { seen.add(it) }
+
+        assertEquals(10, seen.size)
+        assertEquals((2L..20L step 2).map { "v$it" }.toSet(), seen.toSet())
+    }
+
+    @Test
+    fun `forEachValue on an empty map does nothing`() {
+        var calls = 0
+        LongObjectMap<String>().forEachValue { calls++ }
+        assertEquals(0, calls)
+    }
+
+    @Test
+    fun `forEachValue visits entries that survived a resize`() {
+        val map = LongObjectMap<String>(initialCapacity = 4)
+        (1L..200L).forEach { map[it] = "v$it" }
+
+        var count = 0
+        map.forEachValue { count++ }
+        assertEquals(200, count)
+    }
 }
