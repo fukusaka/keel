@@ -7,6 +7,7 @@ import kotlinx.cinterop.free
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import platform.posix.pthread_mutex_destroy
@@ -46,7 +47,8 @@ import kotlin.coroutines.resumeWithException
  * here.
  *
  * **Thread safety**: the ledger is guarded by a `pthread_mutex_t`, and the
- * arming syscalls are funnelled to the loop thread by [submitOnLoop] here — a
+ * arming syscalls are funnelled to the loop thread here — by [handOff] for a
+ * registration whose caller is waiting, by [submitOnLoop] for a callback arm — a
  * subclass supplies [inEventLoop] and [CoroutineDispatcher.dispatch] for it to
  * use, and should not write that branch itself.
  *
@@ -101,6 +103,18 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * free the same slot twice.
      */
     private val lockDestroyed = AtomicInt(0)
+
+    /**
+     * Runs [onLoop] on the loop thread, or [ifStopped] on the caller when the
+     * loop has already run its final drain. Exactly one of the two runs.
+     *
+     * Separate from [submitOnLoop], which has no fallback: work queued to a
+     * stopped loop is never drained, so anything whose caller is waiting for it
+     * has to come through here. [ifStopped] runs off the loop, where this
+     * class's ledger is moot and its mutex may already be freed, so it must not
+     * touch either.
+     */
+    protected abstract fun handOff(onLoop: () -> Unit, ifStopped: () -> Unit)
 
     /** True when the caller already runs on this loop's thread. */
     abstract fun inEventLoop(): Boolean
@@ -202,7 +216,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             }
         }
         if (!appended) return null
-        submitOnLoop { submitArm(fd, interest, key, newReg, cont) }
+        handOff(
+            onLoop = { submitArm(fd, interest, key, newReg, cont) },
+            ifStopped = { cont.resumeWithException(loopClosed(fd, interest)) },
+        )
         return newReg
     }
 
@@ -233,7 +250,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         // under this same lock, so the head is always found.
         withRegLock { appendRegistration(key, newReg) }
 
-        submitOnLoop { submitArm(fd, interest, key, newReg, cont) }
+        handOff(
+            onLoop = { submitArm(fd, interest, key, newReg, cont) },
+            ifStopped = { cont.resumeWithException(loopClosed(fd, interest)) },
+        )
         return newReg
     }
 
@@ -261,14 +281,12 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * A caller arriving *before* the loop starts is fine: the task queues and
      * the loop drains it on its first iteration.
      *
-     * **Known hazard, not introduced here.** A caller arriving *after* the loop
-     * has run its final drain is not: [block] is queued to a queue nothing will
-     * drain again, so an arming syscall silently never happens and the waiting
-     * continuation is neither resumed nor failed. Both engines already hold a
-     * `LoopHandoff`, which exists for exactly this window and takes an
-     * `ifStopped` fallback, but the hand-off is per-engine state this class
-     * cannot reach. Wiring it in is separate work, tracked with the matching
-     * teardown hazard on [destroyRegistrationLock].
+     * **A caller arriving *after* the loop's final drain is not.** [block] is
+     * queued to a queue nothing will drain again, so the syscall never happens.
+     * That is survivable for a callback re-arm, where nothing is suspended
+     * waiting on it, but not for a registration whose caller is parked — those
+     * go through [handOff] instead, which has the fallback. A caller whose work
+     * must not be silently dropped belongs there, not here.
      */
     protected inline fun submitOnLoop(crossinline block: () -> Unit) {
         if (inEventLoop()) {
@@ -298,6 +316,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      *
      * The kernel interest is left alone. Whoever owns [fd] closes it afterwards,
      * which is what actually stops readiness from being reported.
+     *
+     * Waiters that are already completed are skipped: a registration made after
+     * the loop stopped was failed where it stood, because the fallback that
+     * failed it runs off the loop and may not touch this chain.
      */
     fun cancelAll(fd: Int, interest: Interest, cause: Throwable) {
         val key = registrationKey(fd, interest)
@@ -312,7 +334,13 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
                 curr = next
             }
         }
-        for (reg in toResume) reg.continuation.resumeWithException(cause)
+        // Skip waiters that are already done. A registration whose loop had
+        // stopped was failed by the hand-off's fallback, which cannot take this
+        // lock and so leaves the entry in the chain; resuming it again would
+        // throw out of the close() that called this.
+        for (reg in toResume) {
+            if (reg.continuation.isActive) reg.continuation.resumeWithException(cause)
+        }
     }
 
     /** Whether [reg] is still in the chain at [key]. Caller holds the lock. */
@@ -396,14 +424,18 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * loop* and stops the kernel reporting readiness — it does not end every use
      * of the lock.
      *
-     * **Known hazard, not introduced here.** [unregister] runs on whichever
-     * thread cancels, straight from an `invokeOnCancellation` handler, and takes
-     * this lock. A waiter whose coroutine is cancelled after this call locks
-     * freed memory. Nothing in the teardown sequence prevents it, because a
-     * cancellation handler is neither loop work nor kernel readiness. The
-     * sibling hand-off helper records the same thing from the other side: work
-     * that runs off the loop after it stops must not touch loop-owned state,
-     * "their lock may already be destroyed by close".
+     * **Known hazard, still open.** [unregister] runs on whichever thread
+     * cancels, straight from an `invokeOnCancellation` handler, and takes this
+     * lock. A waiter whose coroutine is cancelled after this call locks freed
+     * memory. Nothing in the teardown sequence prevents it, because a
+     * cancellation handler is neither loop work nor kernel readiness.
+     *
+     * Routing [unregister] through [handOff] does not fix it: the removal then
+     * queues *behind* the arm it is supposed to cancel, so [submitArm]'s
+     * "no longer in the chain" guard sees a stale chain and arms an fd the
+     * handler has already closed. Measured, not reasoned about. A fix has to
+     * keep the removal synchronous, which means keeping this mutex valid rather
+     * than freeing it here.
      *
      * Idempotent, like the `close()` of the mutex this follows: whoever wins
      * [lockDestroyed] does the teardown and everyone else returns, so a second
@@ -428,6 +460,17 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         nativeHeap.free(regMutex)
         if (destroyRet != 0) onDestroyFailure(destroyRet)
     }
+
+    /**
+     * The failure a waiter gets when its loop stopped before the arm reached it.
+     *
+     * `CancellationException` rather than a plain failure: `accept()` runs in a
+     * retry loop that rethrows cancellation and swallows everything else, so any
+     * other type turns a stopped loop into a spin that re-registers every pass.
+     * It also matches what `StreamServer.close()` already fails waiters with.
+     */
+    private fun loopClosed(fd: Int, interest: Interest) =
+        CancellationException("EventLoop stopped before arming fd=$fd for $interest")
 
     /** Whether any waiter remains on `(fd, interest)`. Caller holds the lock. */
     protected fun hasWaiters(key: Long): Boolean = registrations[key] != null

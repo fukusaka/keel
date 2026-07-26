@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.native.posix
 
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -14,6 +15,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -67,6 +69,24 @@ class AbstractPosixReadinessEventLoopTest {
         var failArm: Int = 0
 
         override fun inEventLoop(): Boolean = onLoopThread
+
+        /** When true, [handOff] takes the fallback: the loop has finished draining. */
+        var loopStopped = false
+
+        /**
+         * Mirrors `LoopHandoff.runOnLoop`: inline when the caller already owns
+         * the loop, queued otherwise, and the fallback once the loop is gone.
+         */
+        override fun handOff(onLoop: () -> Unit, ifStopped: () -> Unit) {
+            // Precedence matters and matches the real one: inEventLoop() is
+            // tested first, so a caller that already owns the loop runs inline
+            // whatever the shutdown flags say.
+            when {
+                onLoopThread -> onLoop()
+                loopStopped -> ifStopped()
+                else -> dispatch(EmptyCoroutineContext, Runnable { onLoop() })
+            }
+        }
 
         override fun dispatch(context: CoroutineContext, block: Runnable) {
             dispatched.add(block)
@@ -454,6 +474,69 @@ class AbstractPosixReadinessEventLoopTest {
         assertEquals(1, loop.dispatched.size, "an off-loop registerIf goes through dispatch")
         assertEquals(listOf(FD to Interest.READ), loop.armed)
         assertSame(reg, loop.popOne(FD, Interest.READ).first)
+    }
+
+    @Test
+    fun `registering after the loop stopped fails the waiter instead of parking it`() = loopTestWith(
+        FakeLoop(onLoopThread = false).apply { loopStopped = true },
+    ) { loop ->
+        // Off the loop by construction: a caller that already owns the loop runs
+        // inline whatever the shutdown flags say, so the window only exists for
+        // one arriving from elsewhere. Queued work reaches a stopped loop's task
+        // queue and is never drained, so a waiter that only got queued waits for
+        // an arm that never happens. accept() and connect() suspend through here.
+        val w = suspendOn(loop, FD, Interest.READ).await()
+
+        val failure = assertFailsWith<CancellationException> { w.resumed.await() }
+        assertTrue(
+            failure.message?.contains("stopped before arming") == true,
+            "the waiter is told why: ${failure.message}",
+        )
+        assertTrue(loop.armed.isEmpty(), "and nothing was armed")
+    }
+
+    @Test
+    fun `registerIf after the loop stopped fails the waiter too`() = loopTestWith(
+        FakeLoop(onLoopThread = false).apply { loopStopped = true },
+    ) { loop ->
+        val resumed = CompletableDeferred<Unit>()
+        launch {
+            try {
+                suspendCancellableCoroutine { cont -> loop.registerIf(FD, Interest.READ, cont) { true } }
+                resumed.complete(Unit)
+            } catch (t: Throwable) {
+                resumed.completeExceptionally(t)
+            }
+        }
+        assertFailsWith<CancellationException> { resumed.await() }
+    }
+
+    @Test
+    fun `a caller that already owns the loop arms even after the loop stopped`() = loopTest { loop ->
+        // The real hand-off tests inEventLoop() first and returns before it looks
+        // at any shutdown flag. A fake that checked stopped-ness first would let
+        // these tests assert a state the engines never produce.
+        loop.loopStopped = true
+        val w = suspendOn(loop, FD, Interest.READ).await()
+
+        assertEquals(listOf(FD to Interest.READ), loop.armed, "on-loop callers still arm")
+        assertSame(w.reg, loop.popOne(FD, Interest.READ).first)
+    }
+
+    @Test
+    fun `closing the server after a stopped-loop registration does not resume it twice`() = loopTestWith(
+        FakeLoop(onLoopThread = false).apply { loopStopped = true },
+    ) { loop ->
+        // The fallback fails the waiter where it stands and leaves the entry in
+        // the chain, because it runs off the loop and may not take the lock. A
+        // close() arriving afterwards must not resume that continuation again --
+        // which throws, out of close().
+        val stranded = suspendOn(loop, FD, Interest.READ).await()
+        assertFailsWith<CancellationException> { stranded.resumed.await() }
+
+        loop.cancelAll(FD, Interest.READ, IllegalStateException("server closed"))
+
+        assertNull(loop.popOne(FD, Interest.READ).first, "the chain is emptied either way")
     }
 
     private companion object {

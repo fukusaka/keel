@@ -294,6 +294,14 @@ internal class EpollEventLoop(
     }
 
     /**
+     * The base's hand-off seam, answered by the same [LoopHandoff] this class
+     * already uses for its own teardown races.
+     */
+    override fun handOff(onLoop: () -> Unit, ifStopped: () -> Unit) {
+        handoff.runOnLoop(onLoop, ifStopped)
+    }
+
+    /**
      * Returns `true` if the current pthread is this EventLoop's thread.
      * Returns `false` before [loop] has started (engine init phase) or
      * from any other thread.

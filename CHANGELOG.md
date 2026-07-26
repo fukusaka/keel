@@ -70,6 +70,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`: a suspend registration arriving after the EventLoop stopped now fails its
+  caller instead of parking forever (#1003)
 - `engine-epoll`, `engine-kqueue`: withdraw a connection's readiness callback when it closes —
   a closed transport, its channel and the pipeline graph behind it stayed reachable until the fd
   number was reused (#1001)
