@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.native.posix
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
-import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -20,6 +19,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
+import platform.posix.ENOMEM
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
@@ -35,7 +35,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Chain bookkeeping of [AbstractPosixReadinessEventLoop], driven directly.
  *
- * The class has three abstract members, so a subclass can exercise every
+ * The class has seven abstract members, so a subclass can exercise every
  * transition of the FIFO chain with no fd, no kernel and no loop thread. That
  * matters because the transitions carry a head-and-tail transfer whose failure
  * mode is silent: a detached tail makes later appends land where nothing will
@@ -68,7 +68,22 @@ class AbstractPosixReadinessEventLoopTest {
         var onLoopThread: Boolean = true,
         val runDispatchedInline: Boolean = true,
     ) : AbstractPosixReadinessEventLoop() {
+        /** What [submitArm] would have armed — the suspend path. */
         val armed = mutableListOf<Pair<Int, Interest>>()
+
+        /** What [submitArmCallback] would have armed — the pipeline path. */
+        val armedCallbacks = mutableListOf<Pair<Int, Interest>>()
+
+        /**
+         * The keys [submitArmCallback] was handed.
+         *
+         * Recorded because the real overrides are the parameter's only
+         * consumers — on arm failure each withdraws `popCallback(key)` — so a
+         * base that computed the key from the wrong interest would take the
+         * wrong listener out, and nothing that probes through [dispatchReady]
+         * (which derives its own key) could see it.
+         */
+        val armedCallbackKeys = mutableListOf<Long>()
 
         /**
          * How many times [dispatch] was called, run or not.
@@ -88,6 +103,27 @@ class AbstractPosixReadinessEventLoopTest {
         /** Non-zero makes [submitArm] fail with this errno instead of arming. */
         var failArm: Int = 0
 
+        /**
+         * Makes [submitArmCallback] fail, withdrawing through the key it was
+         * handed — the shape kqueue's real override uses.
+         *
+         * The suspend hook has had [failArm] since it was written; without the
+         * twin, the key the fake records is only ever proof that a `Long`
+         * arrived, never that withdrawing by it removes the right listener.
+         */
+        var failArmCallback: Boolean = false
+
+        /** What the engines would take back from the kernel, recorded instead. */
+        val disarmed = mutableListOf<Pair<Int, Interest>>()
+
+        /** Run inside [submitArmCallback], to observe the state the arm sees. */
+        var onArmCallback: (() -> Unit)? = null
+
+        override val logger = RecordingLogger()
+
+        /** The WARN half of what the base logged, which is what assertions want. */
+        val warnings: List<String> get() = logger.warnings
+
         override fun inEventLoop(): Boolean = onLoopThread
 
         /** No kernel to wait on: the loop body and its wakeup are inert here. */
@@ -95,7 +131,40 @@ class AbstractPosixReadinessEventLoopTest {
 
         override fun wakeup() = Unit
 
-        override val logger = NoopLoggerFactory.logger("FakeLoop")
+        override fun removeInterest(fd: Int, interest: Interest) {
+            disarmed.add(fd to interest)
+        }
+
+        /**
+         * The callback twin of [submitArm]; no syscall, and recorded separately.
+         *
+         * Separate because the two hooks are not interchangeable: epoll's overrides
+         * map READ onto different masks, so a test that only knows "something was
+         * armed" would pass on a registerCallback mis-wired to the suspend hook.
+         */
+        override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
+            // No guard of its own: refusing an arm for a withdrawn listener is
+            // the base's, in registerCallback, and a stub that re-implemented it
+            // would be what the tests asserted on instead.
+            armedCallbackKeys.add(key)
+            if (failArmCallback) {
+                withdrawFailedCallbackArm(fd, interest, key, listener, "fake-arm", ENOMEM)
+                return
+            }
+            armedCallbacks.add(fd to interest)
+            onArmCallback?.invoke()
+        }
+
+        /** [registrationKey] is protected on the base; this is the subclass reaching it. */
+        fun keyFor(fd: Int, interest: Interest): Long = registrationKey(fd, interest)
+
+        /** [popCallbackIfCurrent] is protected on the base; this is the subclass reaching it. */
+        fun popIfCurrent(key: Long, listener: FdReadyListener): Boolean =
+            withRegLock { popCallbackIfCurrent(key, listener) }
+
+        /** [dispatchReady] is protected on the base; this is the subclass reaching it. */
+        fun dispatchReadyFor(fd: Int, interest: Interest, eofFlag: Boolean) =
+            dispatchReady(fd, interest, eofFlag)
 
         override fun dispatch(context: CoroutineContext, block: Runnable) {
             dispatchCount++
@@ -152,6 +221,9 @@ class AbstractPosixReadinessEventLoopTest {
         fun waiters(fd: Int, interest: Interest): Boolean =
             withRegLock { hasWaiters(registrationKey(fd, interest)) }
 
+        /** The callback ledger's accessors are protected; this is the subclass reaching them. */
+        fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean = hasCallbackFor(fd, interest)
+
         fun contains(fd: Int, interest: Interest, reg: Registration): Boolean =
             withRegLock { isRegistered(registrationKey(fd, interest), reg) }
 
@@ -166,6 +238,66 @@ class AbstractPosixReadinessEventLoopTest {
     }
 
     /**
+     * Records every level, shared by both fakes.
+     *
+     * `isLoggable = true` matters: a fake that answers `false` short-circuits the
+     * inline logging extensions before `rawLog`, so anything the base logs at
+     * another level is invisible and an assertion on an empty list keeps passing
+     * when a line's severity changes.
+     */
+    private class RecordingLogger : Logger {
+        val logged = mutableListOf<Pair<LogLevel, String>>()
+
+        val warnings: List<String> get() = logged.filter { it.first == LogLevel.WARN }.map { it.second }
+
+        override fun isLoggable(level: LogLevel) = true
+
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            logged.add(level to message.toString())
+        }
+    }
+
+    /** Records what the base handed it, and optionally re-arms the way armRead does. */
+    private class RecordingListener(
+        private val reArmOn: FakeLoop? = null,
+        private val fd: Int = FD,
+    ) : FdReadyListener {
+        val ready = mutableListOf<Interest>()
+        val peerClosed = mutableListOf<Interest>()
+        val order = mutableListOf<String>()
+
+        override fun onReady(interest: Interest) {
+            ready.add(interest)
+            order.add("onReady")
+            reArmOn?.registerCallback(fd, interest, this)
+        }
+
+        override fun onPeerClosed(interest: Interest) {
+            peerClosed.add(interest)
+            order.add("onPeerClosed")
+        }
+    }
+
+    /**
+     * Re-arms from [onPeerClosed] rather than [onReady] — the later of the two
+     * points at which a listener can put itself back in the registry, and the
+     * one [RecordingListener] cannot reach.
+     */
+    private class ReArmOnPeerClosedListener(
+        private val loop: FakeLoop,
+        private val fd: Int = FD,
+    ) : FdReadyListener {
+        val peerClosed = mutableListOf<Interest>()
+
+        override fun onReady(interest: Interest) = Unit
+
+        override fun onPeerClosed(interest: Interest) {
+            peerClosed.add(interest)
+            loop.registerCallback(fd, interest, this)
+        }
+    }
+
+    /**
      * A subclass that leaves the base's own queue and drain in place.
      *
      * [FakeLoop] overrides both so a test can hold work between dispatch and
@@ -173,11 +305,14 @@ class AbstractPosixReadinessEventLoopTest {
      * per-task backstop -- never executes there. This one exists to reach them.
      */
     private class RealQueueLoop(var onLoopThread: Boolean = true) : AbstractPosixReadinessEventLoop() {
-        val logged = mutableListOf<Pair<LogLevel, String>>()
+        val logged: List<Pair<LogLevel, String>> get() = logger.logged
 
         /** How many times the base's own drain ran. Teardown must not repeat it. */
         var drainCalls: Int = 0
             private set
+
+        /** What [submitArmCallback] armed, so a test can see the real queue deliver it. */
+        val armedCallbacks = mutableListOf<Pair<Int, Interest>>()
 
         /** Counts the wakeups [dispatch] issues, which only an off-loop caller earns. */
         var wakeups: Int = 0
@@ -195,6 +330,12 @@ class AbstractPosixReadinessEventLoopTest {
             super.drainTasks()
         }
 
+        override fun removeInterest(fd: Int, interest: Interest) = Unit
+
+        override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
+            armedCallbacks.add(fd to interest)
+        }
+
         override fun submitArm(
             fd: Int,
             interest: Interest,
@@ -203,12 +344,7 @@ class AbstractPosixReadinessEventLoopTest {
             cont: CancellableContinuation<Unit>,
         ) = Unit
 
-        override val logger = object : Logger {
-            override fun isLoggable(level: LogLevel) = true
-            override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
-                logged.add(level to message.toString())
-            }
-        }
+        override val logger = RecordingLogger()
 
         /** [drainTasks] is protected on the base; this is the subclass reaching it. */
         fun drain() = drainTasks()
@@ -699,6 +835,30 @@ class AbstractPosixReadinessEventLoopTest {
     }
 
     @Test
+    fun `an off-loop registerCallback goes through the real queue and wakes the loop`() {
+        // [FakeLoop] answers every pipeline test, and it replaces both `dispatch`
+        // and `drainTasks` with a list -- so none of them reaches MpscQueue,
+        // drainQueue's batch loop, or the `if (!inEventLoop()) wakeup()` branch
+        // an off-loop registration actually takes. A regression that queued the
+        // arm and skipped the wakeup would leave the re-arm waiting for an
+        // unrelated event and pass every one of them.
+        val loop = RealQueueLoop(onLoopThread = false)
+        try {
+            loop.registerCallback(FD, Interest.READ, RecordingListener())
+
+            assertTrue(loop.armedCallbacks.isEmpty(), "the arm is queued, not run on the caller")
+            assertEquals(1, loop.wakeups, "and an off-loop caller wakes the loop")
+
+            loop.onLoopThread = true
+            loop.drain()
+
+            assertEquals(listOf(FD to Interest.READ), loop.armedCallbacks, "the real drain delivers it")
+        } finally {
+            loop.destroy()
+        }
+    }
+
+    @Test
     fun `a task that throws does not stop the rest of its batch`() {
         val loop = RealQueueLoop()
         try {
@@ -761,6 +921,368 @@ class AbstractPosixReadinessEventLoopTest {
         } finally {
             loop.destroy()
         }
+    }
+
+    // --- the pipeline path, which moved onto the base with this class ---
+
+    @Test
+    fun `a callback is registered before it is armed`() = loopTest { loop ->
+        // The order is the contract: the arm can report readiness the instant
+        // the kernel accepts it, so a listener that is not in the map yet would
+        // be a dropped event. The fake records the arm, so seeing the listener
+        // already present when it runs is what pins the order.
+        var registeredWhenArmed = false
+        loop.onArmCallback = { registeredWhenArmed = loop.hasCallbackRegistration(FD, Interest.READ) }
+
+        loop.registerCallback(FD, Interest.READ, RecordingListener())
+
+        assertTrue(registeredWhenArmed, "the listener must be in the map before the arm runs")
+        assertTrue(loop.hasCallbackRegistration(FD, Interest.READ))
+    }
+
+    @Test
+    fun `an off-loop registerCallback arms through the funnel`() = loopTestWith(
+        FakeLoop(onLoopThread = false),
+    ) { loop ->
+        // The pipeline twin of the suspend path's funnel test. registerCallback is
+        // the member that moved, and its only non-trivial behaviour is the fork in
+        // submitOnLoop -- every other test here runs on-loop, so the branch that
+        // captures fd/interest/key into a Runnable was never taken.
+        val listener = RecordingListener()
+
+        loop.registerCallback(FD, Interest.READ, listener)
+
+        assertEquals(1, loop.dispatchCount, "an off-loop registration goes through dispatch")
+        assertEquals(
+            listOf(FD to Interest.READ),
+            loop.armedCallbacks,
+            "through the callback hook, not the suspend one -- epoll maps READ differently on each",
+        )
+        assertTrue(loop.armed.isEmpty(), "the suspend hook is not the one that fires")
+        assertTrue(loop.hasCallbackRegistration(FD, Interest.READ))
+    }
+
+    @Test
+    fun `a second registration on one key replaces the first`() = loopTest { loop ->
+        // The contract registerCallback documents, and the one every re-arm
+        // depends on. The re-arm tests cannot see it: they re-register the same
+        // object, so "registered afterwards" holds whether the ledger replaced,
+        // kept or chained. Two distinct listeners is what separates those.
+        val replaced = RecordingListener()
+        val current = RecordingListener()
+        loop.registerCallback(FD, Interest.READ, replaced)
+        loop.registerCallback(FD, Interest.READ, current)
+
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = false)
+
+        assertEquals(listOf(Interest.READ), current.ready, "the later registration is the one that runs")
+        assertEquals(emptyList(), replaced.ready, "and the one it displaced is never called, nor told")
+    }
+
+    @Test
+    fun `the arm is handed the key of the interest it is arming`() = loopTest { loop ->
+        // Both real overrides withdraw `popCallback(key)` when the arm fails,
+        // so a key derived from the wrong interest takes the wrong listener out
+        // of the ledger. Nothing else here can see that: every
+        // other probe goes through dispatchReady, which computes its own key.
+        loop.registerCallback(FD, Interest.READ, RecordingListener())
+        loop.registerCallback(FD, Interest.WRITE, RecordingListener())
+
+        assertEquals(
+            listOf(loop.keyFor(FD, Interest.READ), loop.keyFor(FD, Interest.WRITE)),
+            loop.armedCallbackKeys,
+            "each arm gets the key for its own interest, in registration order",
+        )
+    }
+
+    @Test
+    fun `a failed arm withdraws the listener for that interest and no other`() = loopTest { loop ->
+        // What the recorded key is actually for. Both engines withdraw
+        // `popCallback(key)` when the arm fails, so a base handing over a key
+        // built from the wrong interest silently removes the wrong listener --
+        // and both would still look armed from dispatchReady, which derives its
+        // own key.
+        loop.registerCallback(FD, Interest.READ, RecordingListener())
+        loop.failArmCallback = true
+
+        loop.registerCallback(FD, Interest.WRITE, RecordingListener())
+
+        // Pins the interest the key encodes. Which listener a failed arm
+        // withdraws is pinned separately, by the identity test below.
+        assertFalse(loop.hasCallbackRegistration(FD, Interest.WRITE), "the failed arm takes its own listener out")
+        assertTrue(loop.hasCallbackRegistration(FD, Interest.READ), "and leaves the other interest alone")
+
+        // What the base then does with a readiness event for the withdrawn
+        // interest: nothing is registered, so it warns and takes the kernel
+        // interest back rather than re-firing forever.
+        loop.dispatchReadyFor(FD, Interest.WRITE, eofFlag = false)
+
+        assertEquals(listOf(FD to Interest.WRITE), loop.disarmed)
+        assertTrue(loop.warnings.any { it.contains("no handler") }, "the withdrawal must be visible: ${loop.warnings}")
+    }
+
+    @Test
+    fun `a queued arm does not fire for a listener that was replaced`() = loopTestWith(
+        FakeLoop(onLoopThread = false, runDispatchedInline = false),
+    ) { loop ->
+        // Why the guard is by identity and not by presence. The ledger holds one
+        // entry per key, so a replacement passes a presence test -- and then it
+        // is the entry an arm failure withdraws. Weakening the check to
+        // hasCallbackListener(key) leaves every other test in this file green.
+        val replaced = RecordingListener()
+        loop.registerCallback(FD, Interest.READ, replaced)
+        loop.unregisterCallback(FD, Interest.READ)
+        val current = RecordingListener()
+        loop.onLoopThread = true
+        loop.registerCallback(FD, Interest.READ, current)
+        loop.armedCallbacks.clear()
+        loop.onLoopThread = false
+
+        loop.drainDispatched()
+
+        assertTrue(
+            loop.armedCallbacks.isEmpty(),
+            "the queued arm belonged to a listener that is gone; it must not arm on the replacement's behalf",
+        )
+    }
+
+    @Test
+    fun `a failed arm withdraws its own listener and never a replacement`() = loopTest { loop ->
+        // The other half of the identity rule. The pre-arm check keeps a queued
+        // arm from firing for a listener that is gone; this keeps a *failing*
+        // arm from taking the entry that superseded it. Withdrawing by key alone
+        // passes both engines' seam tests -- there is one listener there -- and
+        // silently evicts a replacement whose own arm already succeeded, which
+        // no error names, because the error names the listener that failed.
+        val superseded = RecordingListener()
+        val replacement = RecordingListener()
+        loop.registerCallback(FD, Interest.READ, superseded)
+        loop.registerCallback(FD, Interest.READ, replacement)
+        val key = loop.keyFor(FD, Interest.READ)
+
+        assertFalse(
+            loop.popIfCurrent(key, superseded),
+            "the superseded listener is not on the key, so its failure withdraws nothing",
+        )
+        assertTrue(
+            loop.hasCallbackRegistration(FD, Interest.READ),
+            "and the replacement stays registered, armed, and reachable",
+        )
+
+        assertTrue(loop.popIfCurrent(key, replacement), "the entry that is there is withdrawable by its owner")
+        assertFalse(loop.hasCallbackRegistration(FD, Interest.READ))
+    }
+
+    @Test
+    fun `an off-loop registerCallback does not arm until the loop drains it`() = loopTestWith(
+        FakeLoop(onLoopThread = false, runDispatchedInline = false),
+    ) { loop ->
+        // The pipeline twin of the suspend path's deferred-arm test, and the
+        // window the callback path's missing stale-registration guard lives in:
+        // the listener is in the ledger and the kernel knows nothing yet, so a
+        // teardown landing here withdraws a listener whose arm still runs.
+        val listener = RecordingListener()
+
+        loop.registerCallback(FD, Interest.READ, listener)
+
+        assertEquals(1, loop.dispatchCount, "the arm is queued, not run")
+        assertTrue(loop.armedCallbacks.isEmpty(), "nothing reaches the kernel while it sits there")
+        assertTrue(loop.hasCallbackRegistration(FD, Interest.READ), "but the listener is already in the ledger")
+
+        loop.unregisterCallback(FD, Interest.READ)
+        loop.drainDispatched()
+
+        assertTrue(
+            loop.armedCallbacks.isEmpty(),
+            "a withdrawn listener's queued arm must not reach the kernel -- the fd may be closed by then",
+        )
+        assertFalse(loop.hasCallbackRegistration(FD, Interest.READ))
+    }
+
+    @Test
+    fun `unregisterCallback drops only the matching interest`() = loopTest { loop ->
+        loop.registerCallback(FD, Interest.READ, RecordingListener())
+        loop.registerCallback(FD, Interest.WRITE, RecordingListener())
+
+        loop.unregisterCallback(FD, Interest.READ)
+
+        assertFalse(loop.hasCallbackRegistration(FD, Interest.READ))
+        assertTrue(loop.hasCallbackRegistration(FD, Interest.WRITE), "the other half must survive")
+    }
+
+    @Test
+    fun `readiness reaches the listener and disarms when it does not re-arm`() = loopTest { loop ->
+        val listener = RecordingListener()
+        loop.registerCallback(FD, Interest.WRITE, listener)
+
+        loop.dispatchReadyFor(FD, Interest.WRITE, eofFlag = false)
+
+        assertEquals(listOf(Interest.WRITE), listener.ready)
+        assertEquals(emptyList(), listener.peerClosed)
+        assertEquals(listOf(FD to Interest.WRITE), loop.disarmed, "a callback that does not re-arm is taken back")
+    }
+
+    @Test
+    fun `a listener that re-arms during onReady keeps its interest`() = loopTest { loop ->
+        // What a READ callback does every time, via armRead. Disarming here
+        // would discard a live registration.
+        val listener = RecordingListener(reArmOn = loop)
+        loop.registerCallback(FD, Interest.READ, listener)
+
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = false)
+
+        assertEquals(emptyList(), loop.disarmed, "the re-armed interest must not be taken back")
+        assertTrue(loop.hasCallbackRegistration(FD, Interest.READ))
+    }
+
+    @Test
+    fun `eof reaches onPeerClosed after onReady`() = loopTest { loop ->
+        // Order matters for a combined data-and-EOF event: drain before close.
+        val listener = RecordingListener()
+        loop.registerCallback(FD, Interest.READ, listener)
+
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = true)
+
+        assertEquals(listOf(Interest.READ), listener.ready)
+        assertEquals(listOf(Interest.READ), listener.peerClosed)
+        assertEquals(listOf("onReady", "onPeerClosed"), listener.order)
+    }
+
+    @Test
+    fun `eof does not disarm a listener that re-armed`() = loopTest { loop ->
+        // The regression the comment on dispatchReady records: eof used to
+        // disarm unconditionally, on the reasoning that a connection reporting
+        // EOF is ending. A server's AcceptArm re-arms on both WouldBlock and a
+        // failed accept, putting itself straight back into the registry -- so
+        // disarming here discarded a live registration and left an accept loop
+        // that never ran again.
+        val listener = RecordingListener(reArmOn = loop)
+        loop.registerCallback(FD, Interest.READ, listener)
+
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = true)
+
+        assertEquals(listOf(Interest.READ), listener.peerClosed, "the close still reaches the listener")
+        assertEquals(emptyList(), loop.disarmed, "but a re-armed interest must survive it")
+        assertTrue(loop.hasCallbackRegistration(FD, Interest.READ))
+    }
+
+    @Test
+    fun `eof is delivered on the write interest too`() = loopTest { loop ->
+        // The base delivers eof on whichever interest the event arrived on, and
+        // both engines do pass the flag on their write filter, so this pins the
+        // dispatch contract rather than a transport outcome.
+        //
+        // No transport reacts to a WRITE eof today: both onPeerClosed overrides
+        // return early on anything but READ. What the test holds is that the
+        // base does not silently drop half the parameter's domain.
+        val listener = RecordingListener()
+        loop.registerCallback(FD, Interest.WRITE, listener)
+
+        loop.dispatchReadyFor(FD, Interest.WRITE, eofFlag = true)
+
+        assertEquals(listOf(Interest.WRITE), listener.peerClosed, "peer close must reach a write-only listener")
+        assertEquals(listOf("onReady", "onPeerClosed"), listener.order)
+        // The same assertion the non-eof sibling makes. Without it, skipping the
+        // disarm when eofFlag is set passes here -- which is the pre-#449 bug
+        // inverted, and this branch used to be written separately per engine.
+        assertEquals(listOf(FD to Interest.WRITE), loop.disarmed, "and the interest is still taken back")
+    }
+
+    @Test
+    fun `a listener that re-arms during onPeerClosed keeps its interest`() = loopTest { loop ->
+        // The later of the two re-arm points, and the one the sibling tests
+        // cannot see: their listener re-arms during onReady, so they hold the
+        // probe only against being moved before that. This one holds it against
+        // being moved between the two callbacks.
+        //
+        // No in-tree listener re-arms from onPeerClosed today -- SuspendBridgeHandler
+        // deliberately does not, and a test asserts that. So this pins the contract
+        // the interface states (a listener may re-arm from either callback) rather
+        // than a live path, and it is the contract that makes the probe's position
+        // load-bearing for anyone who writes such a listener.
+        val listener = ReArmOnPeerClosedListener(loop)
+        loop.registerCallback(FD, Interest.READ, listener)
+
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = true)
+
+        assertEquals(listOf(Interest.READ), listener.peerClosed)
+        assertEquals(emptyList(), loop.disarmed, "a re-arm from onPeerClosed must survive the probe")
+        assertTrue(loop.hasCallbackRegistration(FD, Interest.READ))
+    }
+
+    @Test
+    fun `readiness pops one suspend waiter and leaves the interest armed for its siblings`() =
+        loopTest { loop ->
+            // The suspend arm of dispatchReady, which the callback tests never
+            // reach. Two waiters on one key is the concurrent-accept() shape: the
+            // first is resumed, the interest stays armed so the next wait
+            // cascade-fires the second.
+            val first = suspendOn(loop, FD, Interest.READ).await()
+            val second = suspendOn(loop, FD, Interest.READ).await()
+
+            loop.dispatchReadyFor(FD, Interest.READ, eofFlag = false)
+
+            // await rather than isCompleted: the resume schedules the waiter's
+            // coroutine, which has to run before it completes its handle.
+            first.resumed.await()
+            yield()
+            assertFalse(second.resumed.isCompleted, "its sibling waits for the next event")
+            assertEquals(emptyList(), loop.disarmed, "and the interest stays armed while it does")
+        }
+
+    @Test
+    fun `readiness takes the interest back once the last suspend waiter is gone`() = loopTest { loop ->
+        // The other side of the same decision: with the chain empty there is
+        // nothing to cascade to, so leaving it armed is the level-triggered busy
+        // loop the KDoc describes.
+        val only = suspendOn(loop, FD, Interest.READ).await()
+
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = false)
+
+        only.resumed.await()
+        assertEquals(listOf(FD to Interest.READ), loop.disarmed, "the last waiter takes the interest with it")
+    }
+
+    @Test
+    fun `readiness with no handler at all disarms and warns`() = loopTest { loop ->
+        // The stale-interest safety net: nothing registered, so the kernel would
+        // keep re-firing until the fd closed.
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = false)
+
+        assertEquals(listOf(FD to Interest.READ), loop.disarmed)
+        assertTrue(loop.warnings.any { it.contains("no handler") }, "the broken invariant must be visible: ${loop.warnings}")
+    }
+
+    @Test
+    fun `readiness prefers the callback over a suspend waiter on the same key`() = loopTest { loop ->
+        // Precedence only: the callback wins the dispatch and the waiter stays
+        // queued. What happens to the interest when the callback declines to
+        // re-arm is the sibling test below.
+        val listener = RecordingListener(reArmOn = loop)
+        loop.registerCallback(FD, Interest.READ, listener)
+        val waiter = suspendOn(loop, FD, Interest.READ).await()
+
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = false)
+
+        assertEquals(listOf(Interest.READ), listener.ready)
+        assertTrue(loop.waiters(FD, Interest.READ), "the suspend waiter must still be queued")
+        assertFalse(waiter.resumed.isCompleted)
+    }
+
+    @Test
+    fun `a callback that does not re-arm leaves the interest for a waiting sibling`() = loopTest { loop ->
+        // The callback wins the dispatch and declines to re-arm, but a suspend
+        // waiter is queued on the same key. Taking the interest back here strands
+        // it: nothing re-arms, so its continuation is never resumed and never
+        // failed.
+        loop.registerCallback(FD, Interest.READ, RecordingListener())
+        val waiter = suspendOn(loop, FD, Interest.READ).await()
+
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = false)
+
+        assertEquals(emptyList(), loop.disarmed, "a queued waiter still needs the interest armed")
+        assertTrue(loop.waiters(FD, Interest.READ), "and it is still in the chain")
+        assertFalse(waiter.resumed.isCompleted)
     }
 
     @Test

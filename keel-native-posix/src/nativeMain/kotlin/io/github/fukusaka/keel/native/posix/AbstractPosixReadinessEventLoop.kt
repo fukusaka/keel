@@ -24,23 +24,31 @@ import platform.posix.pthread_t
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 // Kept out of the KDoc because Dokka publishes that, and this is a note to
-// whoever works on these two loops next: the bugs that made them expensive
-// landed in the callback registry and its dispatch path. The registry is here
-// now, reached through the keyed accessors below. The dispatch path that reads
-// it still exists twice. The measurements are in the pull request, where they
-// stay attached to the revision that took them.
+// whoever works on these two loops next: the callback registry and its dispatch
+// path are here now too, so a bug in either is fixed once. What is still written
+// twice is the lifecycle -- start, close, the arena and the writev scratch --
+// and the syscall wrappers each kernel interface needs. The measurements are in
+// the pull requests, where they stay attached to the revisions that took them.
 /**
- * The registration ledgers shared by the POSIX readiness engines — the epoll and
- * kqueue loops. Two of them: the FIFO chain of suspend waiters, and the
- * pipeline-path callback listeners.
+ * The loop the POSIX readiness engines — epoll and kqueue — run on, and what it
+ * reads: its task queue, both registration ledgers (the FIFO chain of suspend
+ * waiters and the pipeline-path callback listeners), and the readiness dispatch
+ * over them.
  *
  * The two engines kept near-identical copies of everything below. What differed
  * was the arming call, and the statement that prepared its arguments — kqueue
- * passed the [Interest] through, epoll first mapped it to an event mask. Both
- * collapse into [submitArm], whose epoll override does that mapping itself.
+ * passed the [Interest] through, epoll first mapped it to an event mask. Those
+ * collapse into two hooks, [submitArm] for the suspend path and
+ * [submitArmCallback] for the pipeline one, whose epoll overrides do the mapping
+ * themselves. They are two rather than one because the masks differ: READ is
+ * `EPOLLIN` for a suspend waiter and `EPOLLIN or EPOLLRDHUP` for a callback —
+ * the callback path is the one that has to hear a graceful FIN. Taking the
+ * interest back does *not* mirror the split: epoll's `removeInterest` clears
+ * both bits for READ whichever hook set them.
  *
  * **Only these two engines.** The other native loops are not close enough to
  * share it: io_uring keeps a registry too, but as a completion model its ledger
@@ -48,24 +56,31 @@ import kotlin.coroutines.resumeWithException
  * `PosixReadiness` is in the name so it is not mistaken for a base every engine
  * extends — it still ends in `EventLoop`, because that is what it is part of.
  *
- * **What a subclass supplies**: [logger]; [inEventLoop]; [loopBody] (which
+ * **What a subclass supplies** is the kernel interface — [loopBody] (which
  * syscall waits and which errno is retriable); [wakeup] (pipe write against
- * eventfd write); [submitArm] to issue whatever the kernel interface wants
- * (`EV_ADD`, `EPOLL_CTL_ADD` / `MOD`); and the arming and dispatch of the
- * callback path, which reads this class's ledger through [putCallback] /
- * [popCallback] / [hasCallbackListener]. Taking an interest back stays with each
- * engine too, because the decision to do so is made in that dispatch path.
+ * eventfd write); [submitArm] and [submitArmCallback] to issue an arm for the
+ * suspend and pipeline paths; and [removeInterest] to take one back — plus two
+ * that are not engine knowledge at all: [logger], which each engine already
+ * takes from its config, and [inEventLoop], whose few lines are identical in
+ * both and stay there for the reasons its own KDoc sets out — both routes were
+ * built and measured. The thread they compare against is published here, by
+ * [loop].
  *
- * [drainTasks] and [CoroutineDispatcher.dispatch] are *not* on that list any
- * more — both are concrete here, and overriding either would disable the drain's
- * re-entrancy guard or the queue itself. Everything about *when* to arm, the FIFO
- * chain of waiters per `(fd, interest)`, the task queue, the loop scaffolding and
- * the locking around all of it lives here.
+ * *When* to arm, when to take back, the FIFO chain of waiters per
+ * `(fd, interest)`, the callback registry, the task queue, the loop scaffolding
+ * and the locking around all of it live here.
  *
- * **Thread safety**: the ledger is guarded by a `pthread_mutex_t`, and the
- * arming syscalls are funnelled to the loop thread by [submitOnLoop] here — a
- * subclass supplies [inEventLoop] and [CoroutineDispatcher.dispatch] for it to
- * use, and should not write that branch itself.
+ * [drainTasks] and [CoroutineDispatcher.dispatch] are *not* on that list — both
+ * are concrete here, and a subclass that replaces them gives up the drain's
+ * re-entrancy guard or the queue itself. Neither engine does. [drainTasks] is
+ * nonetheless `open`, for the test fake that has to hold work between dispatch
+ * and run; the suite carries a second fake that leaves both in place so the
+ * real ones are covered.
+ *
+ * **Thread safety**: the ledger is guarded by a `pthread_mutex_t`, and both
+ * paths funnel their arming syscalls to the loop thread through [submitOnLoop],
+ * on top of [dispatch] and the task queue behind it. A subclass answers
+ * [inEventLoop] and should not write that branch itself.
  *
  * **Not an API**, and enforced as such: see [InternalPosixEventLoopApi]. This is
  * public only because the two loops that extend it live in other modules, where
@@ -120,11 +135,12 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * so that path allocates nothing at all — the same shape
      * kotlinx.coroutines uses for `Job : DisposableHandle`.
      *
-     * `private`, reached through [putCallback] / [popCallback] /
-     * [hasCallbackListener], exactly as [registrations] is reached through its
-     * own keyed accessors. A `protected` map would let any subclass mutate it
-     * off the lock, and a [LongObjectMap] mutated concurrently with the loop
-     * thread corrupts its open-addressing table.
+     * `private`, and so is every keyed accessor on it. A subclass reaches it
+     * only through [isCallbackRegistered] / [popCallbackIfCurrent], which its
+     * arm hook uses and which are scoped to one listener, and through
+     * [hasCallbackFor], which takes the lock itself. A `protected` map would let
+     * any subclass mutate it off the lock, and [LongObjectMap] states its own
+     * contract: not thread-safe, synchronise externally.
      */
     private val callbackRegistrations = LongObjectMap<FdReadyListener>()
 
@@ -145,10 +161,9 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * [loop] is reachable from outside the two engines — the opt-in marker
      * limits who, not how often — and publishing the thread identity is the
      * first thing it does after this claim, so a second entry would re-point it
-     * while the real loop thread still runs on the old one. [drainTasks] is separately re-entrant
-     * from a task it is running: the outer call drains until the queue is empty,
-     * so the inner one has nothing left to do and must not clear the shared
-     * batch under it.
+     * while the real loop thread still runs on the old one.
+     *
+     * Only that. The drain's own re-entrancy is [draining]'s, below.
      */
     private val loopEntered = AtomicInt(0)
 
@@ -267,6 +282,40 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     )
 
     /**
+     * Takes [fd]'s [interest] back from the kernel.
+     *
+     * The two engines spell this differently — `EV_DELETE` against
+     * `EPOLL_CTL_MOD` / `DEL` on a recomputed mask — and epoll additionally has
+     * to drop the fd entirely once nothing is left, so the decision stays with
+     * each of them. [dispatchReady] only decides *when*.
+     */
+    protected abstract fun removeInterest(fd: Int, interest: Interest)
+
+    /**
+     * Arms [fd] + [interest] for the pipeline path, on the loop thread.
+     *
+     * The callback counterpart of [submitArm]: same thread, same one differing
+     * expression. What an implementation owns is the arming syscall and nothing
+     * else — [key] and [listener] are carried so the failure path does not
+     * recompute or re-look-up either.
+     *
+     * **Refusing an arm whose listener is gone** is [registerCallback]'s, on the
+     * branch that needs it: only a *queued* arm can outlive a withdrawal, and
+     * only that branch pays for the check.
+     *
+     * **A failed arm** goes to [withdrawFailedCallbackArm], which is where the
+     * two copies of this drifted apart before — epoll discarded the errno while
+     * kqueue withdrew and logged. An implementation passes the errno and the name
+     * of the syscall that produced it.
+     */
+    protected abstract fun submitArmCallback(
+        fd: Int,
+        interest: Interest,
+        key: Long,
+        listener: FdReadyListener,
+    )
+
+    /**
      * Runs everything queued on this loop's task queue, until it is empty.
      *
      * Loops rather than draining once: a resumed coroutine can queue more work
@@ -333,7 +382,7 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * `accept()` builds a transport — and registers its fd — on whatever thread
      * the caller is on, so a registration could reach a submit path from off-loop
      * during the window between `pthread_create` returning and [loop] publishing
-     * the handle. Every submit path funnels through [submitOnLoop] now, so the
+     * the handle. Every submit path funnels to the loop thread now, so the
      * check can be absolute.
      *
      * That covers the submit paths, not every syscall an engine issues. Each
@@ -491,16 +540,26 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * A caller arriving *before* the loop starts is fine: the task queues and
      * the loop drains it on its first iteration.
      *
+     * **No `wakeup()` follows an arm, deliberately.** An off-loop caller's task
+     * goes through [dispatch], which does the wake itself; an on-loop caller is
+     * already inside the iteration that will drain it, and the engine-init path
+     * has no wait to interrupt. Adding one here would put a syscall on the
+     * per-readiness-event re-arm, which is why [registerCallback] spells the
+     * fork out rather than calling [submitOnLoop].
+     *
      * **Known hazard, not introduced here.** A caller arriving *after* the loop
      * has run its final drain is not: [block] is queued to a queue nothing will
      * drain again, so an arming syscall silently never happens and the waiting
-     * continuation is neither resumed nor failed. Both engines already hold a
-     * `LoopHandoff`, which exists for exactly this window and takes an
-     * `ifStopped` fallback, and since it moved here it is a field of this class
-     * — [handoff], one member call away. What blocks the fix is not reach but
-     * cost: this runs on the per-readiness-event path, and `runOnLoop` adds a
-     * `CAS` and a claim object to every arm. Tracked with the matching teardown
-     * hazard on [destroyRegistrationLock].
+     * continuation is neither resumed nor failed. [handoff] is right here and
+     * takes an `ifStopped` fallback for exactly this window, so reach is not what
+     * blocks the fix. Cost is: `runOnLoop` adds a `CAS` and a claim object to
+     * every submission — a figure taken from reading [LoopHandoff.runOnLoop],
+     * not from a benchmark. The callers left here are [register] and
+     * [registerIf], once per `accept()` / `connect()` / suspending read rather
+     * than per readiness event; [registerCallback] funnels itself.
+     * Closing it properly means refusing the registration at its source, which is
+     * its own change, tracked with the matching teardown hazard on
+     * [destroyRegistrationLock].
      */
     protected inline fun submitOnLoop(crossinline block: () -> Unit) {
         if (inEventLoop()) {
@@ -672,8 +731,15 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     }
 
     /**
-     * Ends every waiter still in the ledger, because the loop is about to stop
-     * reading it.
+     * Ends every waiter still in the **suspend** ledger, because the loop is
+     * about to stop reading it.
+     *
+     * The callback ledger beside it is not swept. Individual entries do come
+     * out — [unregisterCallback] on teardown, [dispatchReady] on every event —
+     * but nothing empties it in bulk when the loop stops, so a listener still
+     * registered at that moment is neither told nor removed. That predates this
+     * class owning both; it is named here because "the ledger" stopped being
+     * unambiguous the moment the second one moved in.
      *
      * [loop] calls this from its own `finally`, after the final drain and before
      * it publishes quiescence. Not the subclass: the ledger walked here is this
@@ -760,8 +826,9 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // nothing above it to catch, so throwing would end the process --
             // while the first, healthy loop is still serving every connection
             // on this engine. Returning skips the quiescence publish below, and
-            // that is right: the entry that did claim the loop publishes it.
-            // Same shape as destroyRegistrationLock's claim-once.
+            // that is right: the entry that did claim the loop publishes it, and
+            // a second one has no loop to make quiet. Same shape as
+            // destroyRegistrationLock's claim-once.
             logger.error { "${this::class.simpleName}.loop() entered twice; the second entry is ignored" }
             return
         }
@@ -804,6 +871,272 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         }
     }
 
+    /**
+     * Registers [listener] for [fd] + [interest] and arms it.
+     *
+     * **The registration is one-shot**: readiness dispatch removes it before
+     * invoking, so a listener that wants the next event has to register again —
+     * which is what a READ transport's `armRead()` does on every wake, and what
+     * declining to do gives up along with peer-close detection (see
+     * [FdReadyListener.onPeerClosed]).
+     *
+     * The entry goes in before the arming syscall, for the same reason
+     * [register] does it in that order: the loop can report readiness the
+     * instant the kernel accepts the registration, and a listener that is not
+     * in the map yet would be a dropped event.
+     *
+     * **Thread safety**: safe from any thread. Off the loop the arm is queued,
+     * and a caller arriving after the loop's final drain queues it to a queue
+     * nothing will drain — the window [submitOnLoop] documents from the suspend
+     * side.
+     *
+     * **A second registration on the same `(fd, interest)` replaces the first**,
+     * which is then never called and never told. That is what a re-arm is —
+     * `armRead()` registers again on every wake — so the ledger holds one
+     * listener per key by design, not one per registrant.
+     */
+    fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
+        val key = registrationKey(fd, interest)
+        withRegLock {
+            putCallback(key, listener)
+        }
+        // The funnel spelled out rather than [submitOnLoop], because the two
+        // branches genuinely need different things and this one is the
+        // per-readiness-event re-arm.
+        //
+        // Queued from off the loop, the arm outlives the call: a teardown can
+        // withdraw [listener] and close the fd before it runs, and by then the
+        // number may be somebody else's. The check is by identity, not presence
+        // -- the ledger holds one entry per key, so a replacement would pass a
+        // presence test and then be what an arm failure withdraws.
+        //
+        // On the loop thread there is nothing to check. Withdrawal is
+        // loop-confined -- both in-tree teardowns run on the loop, and that is
+        // what makes this path sound rather than the check, which does not close
+        // its own window either way -- so nothing can withdraw between the append
+        // above and the arm below. A check here would be a lock acquisition every
+        // connection pays on every wake to prove something already true.
+        if (inEventLoop()) {
+            submitArmCallback(fd, interest, key, listener)
+        } else {
+            val armIfStillRegistered = Runnable {
+                if (withRegLock { isCallbackRegistered(key, listener) }) {
+                    submitArmCallback(fd, interest, key, listener)
+                }
+            }
+            dispatch(EmptyCoroutineContext, armIfStillRegistered)
+        }
+    }
+
+    /**
+     * Withdraws the callback registered for [fd] + [interest], if any.
+     *
+     * Here rather than in each engine, for the reason its callers give: they are
+     * the same four classes that call [registerCallback] — each engine's
+     * `IoTransport` on teardown and its pipelined server when it stops accepting
+     * — and they live in the engine modules, so both members need to reach
+     * across a module boundary. Keeping this one engine-side while
+     * [registerCallback] is published here would not narrow anything: the entry
+     * point into the ledger is already open, and withdrawal is the safer half.
+     *
+     * `hasCallbackRegistration` is the member that does *not* follow, and the
+     * difference is its callers: each engine's `EventLoopGroup` and, through it,
+     * the transport-withdrawal tests. `internal` there is what keeps a test
+     * probe from becoming published API.
+     *
+     * **The kernel interest is left armed.** Whoever owns the fd disarms it, and
+     * until they do the registration keeps re-firing into readiness dispatch's
+     * no-handler branch — a WARN per wake on kqueue's persistent filter, and per
+     * wake on epoll because it is level-triggered. Spelled out here rather than
+     * deferred to the private member that does the removal, because this is the
+     * published half and a caller cannot follow the pointer.
+     *
+     * **Thread safety**: safe from any thread — it takes the lock and nothing
+     * else.
+     */
+    fun unregisterCallback(fd: Int, interest: Interest) {
+        withRegLock { popCallback(registrationKey(fd, interest)) }
+    }
+
+    /**
+     * Dispatches a ready event for [fd] + [interest] to the appropriate handler.
+     *
+     * Checks callback registrations first (pipeline path), then suspend
+     * registrations (Channel path).
+     *
+     * **Pipeline path**: [FdReadyListener.onReady] first, then
+     * [FdReadyListener.onPeerClosed] when [eofFlag] is set; only after both does
+     * it check whether the callback was re-registered, because either one may
+     * re-arm. A READ callback normally does, synchronously via `armRead()` — but
+     * not when the listener declines the data that woke it (`readEnabled = false`,
+     * the back-pressure case), which is a READ callback reaching the disarm arm of
+     * this check on purpose. WRITE callbacks that
+     * complete a successful flush do NOT re-arm; in that case
+     * [removeInterest] takes the write interest back. Without that, both engines
+     * keep reporting it on every wait — kqueue because `EV_ADD` is persistent,
+     * epoll because it is level-triggered — a busy loop that saturates the loop
+     * thread once many connections have completed their writes.
+     *
+     * **Suspend path**: after popping one waiter, the interest is taken back when
+     * the chain empties, because the resumed coroutine may not re-register
+     * immediately — unlike the pipeline path's synchronous `armRead` cycle.
+     *
+     * Either path takes the interest back only when *both* ledgers are empty for
+     * the key: a callback and a suspend waiter can sit on one `(fd, interest)`,
+     * and disarming for one strands the other.
+     *
+     * **Stale-interest safety net**: when neither a callback nor a suspend waiter
+     * is found, a WARN is logged and the interest is taken back. Without that, the
+     * registration re-fires until the fd is closed.
+     */
+    protected fun dispatchReady(fd: Int, interest: Interest, eofFlag: Boolean) {
+        assertInEventLoop("dispatchReady")
+        val key = registrationKey(fd, interest)
+        val cb = withRegLock { popCallback(key) }
+        if (cb != null) {
+            // Order: drain (onReady) before close (onPeerClosed) for combined
+            // data-and-EOF events. For pure EOF (no pending data) the listener
+            // can detect "no more data" via the read syscall in onReady — the
+            // standard `read()` returns 0 path — so unconditionally calling
+            // onReady first keeps the contract simple. When the listener
+            // declines the wake -- a transport with reads disabled returns
+            // from onReady without reading -- this call is the only one left
+            // that can surface the close. How far that covers a given
+            // connection is the transport's to state, and each one does, at
+            // the arm in its own `init`.
+            cb.onReady(interest)
+            if (eofFlag) cb.onPeerClosed(interest)
+            // The eof path used to disarm unconditionally, on the reasoning that
+            // a connection reporting EOF is ending. Not true of every listener
+            // that reaches here: a server's AcceptArm re-arms on both WouldBlock
+            // and a failed accept, so disarming discarded a live registration and
+            // left an accept loop that never ran again. On epoll it never came
+            // back -- the disarm drops the fd from the interest list once nothing
+            // is left, so even the always-reported EPOLLERR could not revive it.
+            //
+            // Both ledgers decide this, not just the callback one: a suspend
+            // waiter queued on the same key still needs the interest armed.
+            val keepInterest = withRegLock { hasCallbackListener(key) || hasWaiters(key) }
+            if (!keepInterest) {
+                removeInterest(fd, interest)
+            }
+        } else {
+            // Suspend path: pop one waiter from the FIFO chain. If siblings remain
+            // (concurrent `accept()` callers on the same serverFd), leave the
+            // interest armed so the next wait cascade-fires the next sibling; the
+            // chain drains across iterations while the ready condition holds. Only
+            // when it empties is the interest taken back, so the fd stops re-firing
+            // while the resumed continuation finishes its I/O elsewhere.
+            // One critical section, and no Pair to carry its two results out:
+            // this runs per readiness event, and both engines took the lock once
+            // here before the ledgers were shared.
+            var keepInterest = false
+            val popped = withRegLock {
+                val head = popHeadRegistration(key)
+                keepInterest = hasWaiters(key) || hasCallbackListener(key)
+                head
+            }
+            if (popped != null) {
+                if (!keepInterest) {
+                    removeInterest(fd, interest)
+                }
+                popped.continuation.resume(Unit)
+            } else {
+                // No handler at all: armed without one, or not taken back when the
+                // last handler deregistered. Either way the registration re-fires
+                // for as long as the fd is ready — a busy loop.
+                //
+                // The WARN and the disarm take different predicates, which is why
+                // they are not one `if`. The invariant "a registered interest has
+                // a handler behind it" was violated at the pop, whatever arrives
+                // afterwards, so the diagnostic is unconditional -- as it was
+                // before this class existed, and as the bind-registration tests
+                // read it. The disarm is not: `keepInterest` covers the benign
+                // case where a callback registered off the loop between the pop
+                // and the check wants the interest kept, its own arm queued
+                // behind us. Folding them together made an arrival silence the
+                // record of the violation.
+                logger.warn {
+                    "${this::class.simpleName}.dispatchReady: no handler for fd=$fd ${interest.name} — " +
+                        "removing its stale kernel registration"
+                }
+                if (!keepInterest) {
+                    removeInterest(fd, interest)
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether [listener] is still the entry on `key`. Caller holds the lock.
+     *
+     * The callback twin of [isRegistered], and asked at the same place: an arm
+     * asks it before issuing a syscall, so a listener withdrawn in the meantime
+     * is not armed and a replacement is not mistaken for it.
+     */
+    protected fun isCallbackRegistered(key: Long, listener: FdReadyListener): Boolean =
+        callbackRegistrations[key] === listener
+
+    /**
+     * Withdraws [listener] from `key` if it is still the entry there, and
+     * reports whether it was. Caller holds the lock.
+     *
+     * The callback twin of [removeRegistration], and the only withdrawal an arm
+     * failure may use. Withdrawing by key alone would evict whatever is on the
+     * key, which after a replacement is a listener whose own arm is still in
+     * flight: that arm then finds itself gone and returns, leaving a registrant
+     * with nothing armed and no error naming it. `false` therefore means the
+     * failure belongs to a listener already superseded — the replacement owns
+     * the key now, and reporting it would name the wrong one.
+     */
+    protected fun popCallbackIfCurrent(key: Long, listener: FdReadyListener): Boolean {
+        if (callbackRegistrations[key] !== listener) return false
+        callbackRegistrations.remove(key)
+        return true
+    }
+
+    /**
+     * Withdraws [listener] after its arm failed with [err], and says so at ERROR.
+     *
+     * Here rather than in each override because it is the half of
+     * [submitArmCallback] that does not differ, and the half that already
+     * drifted once: epoll's copy discarded the errno while kqueue's withdrew and
+     * logged. [syscall] is the one word that does differ, passed in so the
+     * message still names what failed.
+     *
+     * Silent when the withdrawal finds someone else on the key — see
+     * [popCallbackIfCurrent]. The listener that failed is already superseded, so
+     * there is nothing to withdraw and nothing true to say about the key.
+     */
+    protected fun withdrawFailedCallbackArm(
+        fd: Int,
+        interest: Interest,
+        key: Long,
+        listener: FdReadyListener,
+        syscall: String,
+        err: Int,
+    ) {
+        if (!withRegLock { popCallbackIfCurrent(key, listener) }) return
+        logger.error {
+            "$syscall(fd=$fd, ${interest.name}) for callback failed: " +
+                "${errnoMessage(err)} — readiness callback will not fire"
+        }
+    }
+
+    /**
+     * Whether `fd` still has a callback registered for [interest], taking the lock.
+     *
+     * The keyed pair the engines' `internal hasCallbackRegistration` wraps. It is
+     * `protected` and therefore unpublished, while the wrapper has to be
+     * `internal` in its own module: its callers — each engine's `EventLoopGroup`
+     * and `Engine`, and the transport-withdrawal tests through them — are not
+     * subclasses. A wrapper of the same name over this one would not compile
+     * (`hides member of supertype ... needs an 'override' modifier`), which is
+     * why the two names differ.
+     */
+    protected fun hasCallbackFor(fd: Int, interest: Interest): Boolean =
+        withRegLock { hasCallbackListener(registrationKey(fd, interest)) }
+
     /** Whether any waiter remains on `(fd, interest)`. Caller holds the lock. */
     protected fun hasWaiters(key: Long): Boolean = registrations[key] != null
 
@@ -815,10 +1148,17 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * transports of a loopback pair tear down together, so the total returns to
      * its baseline either way and the WRITE half can be deleted unnoticed.
      */
-    protected fun hasCallbackListener(key: Long): Boolean = callbackRegistrations[key] != null
+    private fun hasCallbackListener(key: Long): Boolean = callbackRegistrations[key] != null
 
-    /** Registers [listener] on `key`, replacing any predecessor. Caller holds the lock. */
-    protected fun putCallback(key: Long, listener: FdReadyListener) {
+    /**
+     * Registers [listener] on `key`, replacing any predecessor. Caller holds the lock.
+     *
+     * `private`, as is every other accessor on this map except
+     * [isCallbackRegistered] and [popCallbackIfCurrent] — the pair an engine's
+     * arm needs, both scoped to one listener. Nothing outside can name a key and
+     * mutate what is on it. The lock discipline is still what holds.
+     */
+    private fun putCallback(key: Long, listener: FdReadyListener) {
         callbackRegistrations[key] = listener
     }
 
@@ -832,5 +1172,5 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * branch — a WARN per wake on kqueue's persistent filter, and per wake on
      * epoll because it is level-triggered.
      */
-    protected fun popCallback(key: Long): FdReadyListener? = callbackRegistrations.remove(key)
+    private fun popCallback(key: Long): FdReadyListener? = callbackRegistrations.remove(key)
 }

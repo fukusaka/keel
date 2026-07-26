@@ -8,7 +8,7 @@ import io.github.fukusaka.keel.logging.Logger
  *
  * Abstracts only the `workerLoop.register(fd, WRITE, cont)` +
  * `suspendCancellableCoroutine` combo, not the full [EpollEventLoop]
- * API. Hot paths ([EpollEventLoop.registerCallback],
+ * API. Hot paths (`AbstractPosixReadinessEventLoop.registerCallback`,
  * [EpollEventLoop.dispatch]) remain direct — this seam only covers
  * the per-connection `connect()` suspend/resume, which runs at
  * most once per outbound connection.

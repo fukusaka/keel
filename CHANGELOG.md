@@ -10,8 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `io`: `LongObjectMap.forEachValue` — inline walk over the values, for callers that have to
   drain a map without allocating per entry (#1004)
-- `native-posix`: `AbstractPosixReadinessEventLoop` — the suspend-waiter ledger the epoll
-  and kqueue loops duplicated, gated by `@InternalPosixEventLoopApi` (#1002)
+- `native-posix`: `AbstractPosixReadinessEventLoop` — the loop, both ledgers and readiness
+  dispatch that epoll and kqueue each kept a copy of (#1002, #1005, #1006, #1007)
 - `client-http`: follow `301` / `302` / `303` / `307` / `308` redirects (RFC 9110 §15.4) — `303` and a
   redirected POST become GET, `307` / `308` preserve method and body, a relative `Location` is resolved,
   and `Authorization` is dropped on a cross-origin hop. Configurable via `followRedirects` /
@@ -41,9 +41,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **BREAKING** (`native-posix`): `AbstractPosixReadinessEventLoop` gains five abstract members and
-  takes over the loop, its task queue, both registration ledgers and readiness dispatch
-  (#1005, #1006, #1007)
 - **BREAKING** (`native-posix`): `LoopHandoff` now requires opting in to
   `@InternalPosixEventLoopApi` (#1002)
 - `core`: the pipeline's non-suspend outbound entry points (`requestWrite` / `requestFlush` /
@@ -75,6 +72,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`, `engine-epoll`, `engine-kqueue`: three readiness-dispatch defects, fixed at the
+  now-shared copy — a disarm racing a suspend waiter, a stale queued arm, and a swallowed arm
+  error (#1005)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: end waiters a stopping loop can no longer
   arm, rather than leaving them parked (#1004)
 - `engine-epoll`, `engine-kqueue`: refuse to release a loop's resources when `close()` is

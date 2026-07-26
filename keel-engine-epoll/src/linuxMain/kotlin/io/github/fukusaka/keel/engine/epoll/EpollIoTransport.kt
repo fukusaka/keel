@@ -35,7 +35,7 @@ import kotlin.coroutines.resume
  * epoll [IoTransport] implementation for Linux.
  *
  * **Read path**: registers EPOLLIN together with EPOLLRDHUP via
- * [EpollEventLoop.registerCallback].
+ * `AbstractPosixReadinessEventLoop.registerCallback`.
  * On data arrival, allocates a buffer, calls POSIX `read()`, and delivers
  * via [onRead]. EAGAIN triggers automatic re-arm.
  *
@@ -81,7 +81,7 @@ internal class EpollIoTransport(
 
     /**
      * [FdReadyListener] dispatch — passing `this` to
-     * [EpollEventLoop.registerCallback] avoids per-call lambda allocation on
+     * `AbstractPosixReadinessEventLoop.registerCallback` avoids per-call lambda allocation on
      * the read re-arm fast path. Branch on [interest] is a single enum
      * compare (negligible vs. surrounding syscall + buffer alloc).
      */
@@ -147,9 +147,9 @@ internal class EpollIoTransport(
         //
         // The registration is one-shot, so this covers the connection only until
         // something first fires on it. A peer that sends data before closing takes
-        // the back-pressure path in onReadable, which declines to re-arm, and the
-        // interest is dropped; readEnabled = true is the only thing that arms it
-        // again. A write-only client that receives nothing keeps the arm for its
+        // the back-pressure path in onReadable, which declines to re-arm; unless a
+        // suspend waiter is queued on the same key, the interest is then dropped
+        // and readEnabled = true is the only thing that arms it again. A write-only client that receives nothing keeps the arm for its
         // whole lifetime and is fully covered — one that receives anything at all
         // is not, and a later close reaches it only once it reads.
         // Closing that gap needs a close-only interest the engine can keep armed
@@ -168,19 +168,25 @@ internal class EpollIoTransport(
 
         // Back-pressure path: if data is ready but the user has disabled
         // read, do not consume the data and do not re-arm. dispatchReady's
-        // "no re-register" branch will MOD-out the READ interest so epoll
-        // does not busy-loop. The kernel rcvbuf retains the data and applies
+        // "no re-register" branch MODs the READ interest out so epoll does not
+        // busy-loop — unless a suspend waiter is queued on the same key, which
+        // still needs it armed. The kernel rcvbuf retains the data and applies
         // back-pressure to the peer (TCP window). The setter's armRead() call
         // re-registers when readEnabled is flipped back to true.
         //
         // Returning here also gives up peer-close detection until read is
         // re-enabled. EPOLLRDHUP is armed together with EPOLLIN and cleared
         // together with it, and the registration is one-shot, so nothing
-        // re-delivers a close in between. This used to claim the engine
-        // would still call onPeerClosed on this path — it cannot, because by
-        // then there is no registration left to call. A close that arrives
-        // while read is disabled is observed when armRead() runs again and
-        // the pending FIN makes the fd readable.
+        // re-delivers a close in between.
+        //
+        // A close arriving *with* this wake is a different matter.
+        // dispatchReady pops the listener into a local before it calls
+        // anything, so returning here does not stop the onPeerClosed that
+        // follows on the same event —
+        // it fires, and that is how a reads-disabled connection learns of a
+        // FIN that arrived behind the data. What is lost is a close arriving
+        // *later*: the interest is gone by then, and only armRead() brings it
+        // back, with the pending FIN making the fd readable.
         if (!readEnabled) return
 
         if (!readPoolRegistered) {

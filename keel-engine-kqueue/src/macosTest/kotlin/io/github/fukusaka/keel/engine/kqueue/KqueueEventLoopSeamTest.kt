@@ -20,6 +20,7 @@ import platform.posix.EBADF
 import platform.posix.EINTR
 import platform.posix.EMFILE
 import platform.posix.ENFILE
+import platform.posix.ENOMEM
 import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
 import platform.posix.fcntl
@@ -28,6 +29,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -201,6 +203,41 @@ class KqueueEventLoopSeamTest {
         assertEquals(1, fake.waitCalls, "fatal errno on first call should not retry")
         assertEquals(1, errors.size)
         assertTrue(errors.first().contains("kevent()"))
+    }
+
+    @Test
+    fun `a failed callback arm withdraws the listener`() {
+        // The hand-written half of the shared hook. epoll has the same test;
+        // this one is the copy epoll's fix was modelled on, and the base's
+        // FakeLoop cannot see either -- it stubs the hook with a list append.
+        val errors = mutableListOf<String>()
+        val fake = FakeKqueueSyscallOps().apply {
+            scriptKqueueCreateFd(fd = 1000)
+            scriptMakePipeFds(readFd = 1001, writeFd = 1002)
+            scriptAddFilterResult(0)      // loop init arms its own wakeup fd
+            scriptAddFilterResult(ENOMEM) // the arm for fd 5000 fails
+            scriptWaitFailure(EBADF)      // terminate loop()
+        }
+        val el = KqueueEventLoop(logger = levelRecordingLogger(LogLevel.ERROR, errors), syscallOps = fake)
+        try {
+            el.registerCallback(
+                5000,
+                Interest.READ,
+                object : FdReadyListener {
+                    override fun onReady(interest: Interest) = Unit
+                },
+            )
+
+            el.loop()
+
+            assertFalse(
+                el.hasCallbackRegistration(fd = 5000, interest = Interest.READ),
+                "a listener whose arm failed must not stay in the ledger unarmed",
+            )
+            assertTrue(errors.any { it.contains("readiness callback will not fire") }, "reported at ERROR: $errors")
+        } finally {
+            el.close()
+        }
     }
 
     // --- dispatchReady stale-filter removal tests (stale-event filter starvation) ---

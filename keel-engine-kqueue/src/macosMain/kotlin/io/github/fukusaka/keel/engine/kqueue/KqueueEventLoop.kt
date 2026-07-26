@@ -44,7 +44,6 @@ import platform.posix.pthread_join
 import platform.posix.pthread_self
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
-import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.TimeSource
 
@@ -91,9 +90,10 @@ import kotlin.time.TimeSource
  *   3. for each ready fd:
  *        if wakeup pipe: consume byte, continue
  *        dispatchReady(fd, interest):
- *          pipeline path: callback.onReady(); if not re-registered → EV_DELETE
- *          suspend path:  pop FIFO head; if chain empty → EV_DELETE;
- *                         if no handler at all → WARN + EV_DELETE
+ *          pipeline path: callback.onReady(), then onPeerClosed() on EV_EOF
+ *          suspend path:  pop FIFO head
+ *          either path:   EV_DELETE unless a callback *or* a waiter remains
+ *                         on the key; if neither was there → WARN + EV_DELETE
  * ```
  */
 @OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
@@ -290,65 +290,25 @@ internal class KqueueEventLoop(
         }
     }
 
-    /**
-     * Registers a callback for fd readiness notification (pipeline / non-suspend path).
-     *
-     * Unlike [register], this does not use coroutine continuations. When `kevent()`
-     * reports the fd as ready, [callback] is invoked directly on the EventLoop thread.
-     * The registration is one-shot: removed after the callback fires.
-     */
-    fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
-        val key = registrationKey(fd, interest)
-
-        // Register callback BEFORE adding to kqueue (same rationale as register()).
-        withRegLock {
-            putCallback(key, listener)
-        }
-
-        // Same loop-thread funnel the suspend path uses; see [submitOnLoop].
-        submitOnLoop { submitAddCallbackFilter(fd, interest, key) }
-    }
-
-    /**
-     * Whether [fd] still has a callback registered for [interest].
-     *
-     * Stays here rather than on the base: its only callers are this module's
-     * `EventLoopGroup` and, through it, the transport-withdrawal tests, and
-     * `internal` is what keeps a test probe from becoming published API. The
-     * base carries the ledger and the reason the query is per-`(fd, interest)`;
-     * this is the two lines that take the lock.
-     */
+    /** `internal` wrapper for this module's `EventLoopGroup`; see [hasCallbackFor]. */
     internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
-        withRegLock { hasCallbackListener(registrationKey(fd, interest)) }
+        hasCallbackFor(fd, interest)
 
     /**
-     * Removes a pending callback registration for the given fd and interest.
+     * Arms [fd] + [interest] for the pipeline path with a persistent `EV_ADD`.
      *
-     * The kernel interest is left armed — see [popCallback] for what that costs
-     * and who is expected to disarm it.
+     * A failed arm withdraws the listener through [key] and logs at ERROR: there
+     * is no continuation to fail, and a listener left in the ledger with nothing
+     * armed never fires again. epoll's override does the same.
      */
-    fun unregisterCallback(fd: Int, interest: Interest) {
-        withRegLock { popCallback(registrationKey(fd, interest)) }
-    }
-
-    /**
-     * EventLoop-thread submission of EV_ADD for a callback registration.
-     * Removes the callback entry on submit failure (no continuation to
-     * resume — the caller must observe the missing event via a higher-
-     * level timeout).
-     */
-    private fun submitAddCallbackFilter(fd: Int, interest: Interest, key: Long) {
-        assertInEventLoop("submitAddCallbackFilter")
+    override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
+        assertInEventLoop("submitArmCallback")
         val kevErr = when (interest) {
             Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
-            withRegLock { popCallback(key) }
-            logger.error {
-                "kevent(EV_ADD, fd=$fd, ${interest.name}) for callback failed: " +
-                    "${errnoMessage(kevErr)} — readiness callback will not fire"
-            }
+            withdrawFailedCallbackArm(fd, interest, key, listener, "kevent(EV_ADD)", kevErr)
         }
     }
 
@@ -466,97 +426,6 @@ internal class KqueueEventLoop(
     }
 
     /**
-     * Dispatches a ready event for [fd] + [interest] to the appropriate handler.
-     *
-     * Checks callback registrations first (pipeline path), then suspend
-     * registrations (Channel path).
-     *
-     * **Pipeline path**: after [FdReadyListener.onReady] returns, checks whether
-     * the callback was re-registered. READ callbacks always re-arm synchronously
-     * via `armRead()`, so this check is normally a no-op. WRITE callbacks that
-     * complete a successful flush do NOT re-arm; in that case
-     * [removeInterestFromKqueue] deletes the `EVFILT_WRITE` filter. Without this,
-     * kqueue's persistent `EV_ADD` keeps reporting EVFILT_WRITE on every
-     * `kevent()` call — a busy loop that saturates the EventLoop thread when many
-     * connections have completed writes.
-     *
-     * **Suspend path**: after popping one waiter, the filter is removed when the
-     * chain empties, because the resumed coroutine may not immediately re-register
-     * (unlike Pipeline's synchronous armRead cycle).
-     *
-     * **Stale-interest safety net**: when neither a callback nor a suspend waiter
-     * is found, a WARN is logged and the filter is removed. Without this, a stale
-     * filter causes a level-triggered busy loop until the fd is closed.
-     */
-    private fun dispatchReady(fd: Int, interest: Interest, eofFlag: Boolean) {
-        assertInEventLoop("dispatchReady")
-        val key = registrationKey(fd, interest)
-        val cb = withRegLock { popCallback(key) }
-        if (cb != null) {
-            // Order: drain (onReady) before close (onPeerClosed) for combined
-            // data-and-EOF events. For pure EOF (no pending data) the listener
-            // can detect "no more data" via the read syscall in onReady — the
-            // standard `read()` returns 0 path — so unconditionally calling
-            // onReady first keeps the contract simple. The eofFlag dispatch
-            // path is for the case where read interest was never armed
-            // (`readEnabled = false`) and the only way to surface peer-close
-            // is via this engine-side hook.
-            cb.onReady(interest)
-            if (eofFlag) {
-                cb.onPeerClosed(interest)
-                // Same re-registration check as the branch below. This used to
-                // disarm unconditionally, on the reasoning that a connection
-                // reporting EOF is ending and its listener cannot re-register
-                // meaningfully. That is not true of every listener that reaches
-                // here: a server's AcceptArm re-arms on both WouldBlock and a
-                // failed accept, and the re-arm issues no syscall when the
-                // filter is already present, so disarming after it discarded a
-                // live registration and left an accept loop that never runs
-                // again.
-                val reRegistered = withRegLock { hasCallbackListener(key) }
-                if (!reRegistered) {
-                    removeInterestFromKqueue(fd, interest)
-                }
-            } else {
-                // Existing stale-filter cleanup path (PR #449): if the callback
-                // did not re-register during onReady (e.g., a WRITE callback
-                // after a successful flush that does not re-arm), remove the
-                // kqueue filter to prevent a stale level-triggered busy loop.
-                // READ callbacks always re-arm via armRead() in the normal flow.
-                val reRegistered = withRegLock { hasCallbackListener(key) }
-                if (!reRegistered) {
-                    removeInterestFromKqueue(fd, interest)
-                }
-            }
-        } else {
-            // Suspend path: pop one waiter from the FIFO chain. If siblings remain
-            // (concurrent `accept()` callers waiting on the same serverFd), keep the
-            // filter armed so the next kevent() cycle cascade-fires the next sibling.
-            // Only when the chain becomes empty do we disarm to avoid busy-loop
-            // re-fire while the resumed continuation finishes its async I/O.
-            val pair: Pair<Registration?, Boolean> = withRegLock {
-                val popped = popHeadRegistration(key)
-                popped to hasWaiters(key)
-            }
-            val popped = pair.first
-            if (popped != null) {
-                if (!pair.second) {
-                    removeInterestFromKqueue(fd, interest)
-                }
-                popped.continuation.resume(Unit)
-            } else {
-                // No handler (no callback, no suspend waiter). The kqueue filter is
-                // stale: armed without a corresponding handler, or not removed when
-                // the last handler deregistered. The persistent EV_ADD filter re-fires
-                // every kevent() call for as long as the fd is ready — a busy loop.
-                // Remove it now and log a WARN so the invariant violation is visible.
-                logger.warn { "dispatchReady: no handler for fd=$fd ${interest.name} — removing stale kqueue filter" }
-                removeInterestFromKqueue(fd, interest)
-            }
-        }
-    }
-
-    /**
      * Removes [fd]'s kqueue filter for [interest] (`EV_DELETE`).
      *
      * Called from [dispatchReady] on both the pipeline path (when a WRITE callback
@@ -564,7 +433,7 @@ internal class KqueueEventLoop(
      * registration chain empties). Prevents level-triggered busy-loops by removing
      * the filter until the caller arms again.
      */
-    private fun removeInterestFromKqueue(fd: Int, interest: Interest) {
+    override fun removeInterest(fd: Int, interest: Interest) {
         val err = when (interest) {
             Interest.READ -> syscallOps.deleteReadFilter(kqFd, fd)
             Interest.WRITE -> syscallOps.deleteWriteFilter(kqFd, fd)

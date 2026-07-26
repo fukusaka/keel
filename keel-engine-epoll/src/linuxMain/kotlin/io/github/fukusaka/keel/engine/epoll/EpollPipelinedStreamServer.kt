@@ -60,7 +60,7 @@ internal class EpollPipelinedStreamServer(
 
     /**
      * One persistent [FdReadyListener] per listener —
-     * passing the same object to every [EpollEventLoop.registerCallback]
+     * passing the same object to every `AbstractPosixReadinessEventLoop.registerCallback`
      * avoids per-call lambda allocation on the accept re-arm fast path
      * while carrying which listener became readable. Only `READ` is
      * registered; `WRITE` is never armed for a listening fd.
