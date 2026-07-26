@@ -1,6 +1,10 @@
 package io.github.fukusaka.keel.native.posix
 
+import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.collections.LongObjectMap
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.logging.warn
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.free
@@ -15,7 +19,10 @@ import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
 import platform.posix.pthread_mutex_unlock
+import platform.posix.pthread_self
+import platform.posix.pthread_t
 import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resumeWithException
 
@@ -41,16 +48,19 @@ import kotlin.coroutines.resumeWithException
  * `PosixReadiness` is in the name so it is not mistaken for a base every engine
  * extends — it still ends in `EventLoop`, because that is what it is part of.
  *
- * **What a subclass supplies**: [inEventLoop]; [submitArm] to issue whatever the
- * kernel interface wants (`EV_ADD`, `EPOLL_CTL_ADD` / `MOD`); the arming and
- * dispatch of the callback path, which reads this class's ledger through
- * [putCallback] / [popCallback] / [hasCallbackListener]; and [drainTasks],
- * which [failWaitersOnStoppedLoop] needs because cancelling a waiter dispatches
- * its resume back onto the loop's own queue rather than running it. Taking an
- * interest back stays with each engine, because the decision to do so is made in
- * its own dispatch path, which is not here. Everything about *when* to arm, the
- * FIFO chain of waiters per `(fd, interest)`, and the locking around it lives
- * here.
+ * **What a subclass supplies**: [logger]; [inEventLoop]; [loopBody] (which
+ * syscall waits and which errno is retriable); [wakeup] (pipe write against
+ * eventfd write); [submitArm] to issue whatever the kernel interface wants
+ * (`EV_ADD`, `EPOLL_CTL_ADD` / `MOD`); and the arming and dispatch of the
+ * callback path, which reads this class's ledger through [putCallback] /
+ * [popCallback] / [hasCallbackListener]. Taking an interest back stays with each
+ * engine too, because the decision to do so is made in that dispatch path.
+ *
+ * [drainTasks] and [CoroutineDispatcher.dispatch] are *not* on that list any
+ * more — both are concrete here, and overriding either would disable the drain's
+ * re-entrancy guard or the queue itself. Everything about *when* to arm, the FIFO
+ * chain of waiters per `(fd, interest)`, the task queue, the loop scaffolding and
+ * the locking around all of it lives here.
  *
  * **Thread safety**: the ledger is guarded by a `pthread_mutex_t`, and the
  * arming syscalls are funnelled to the loop thread by [submitOnLoop] here — a
@@ -129,8 +139,119 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      */
     private val lockDestroyed = AtomicInt(0)
 
-    /** True when the caller already runs on this loop's thread. */
+    /**
+     * Claims the one entry into [loop], and the one drain in flight.
+     *
+     * [loop] is reachable from outside the two engines — the opt-in marker
+     * limits who, not how often — and publishing the thread identity is the
+     * first thing it does after this claim, so a second entry would re-point it
+     * while the real loop thread still runs on the old one. [drainTasks] is separately re-entrant
+     * from a task it is running: the outer call drains until the queue is empty,
+     * so the inner one has nothing left to do and must not clear the shared
+     * batch under it.
+     */
+    private val loopEntered = AtomicInt(0)
+
+    /**
+     * Claims the one drain in flight, so a task that re-enters [drainTasks] from
+     * inside the batch it is running does not clear that batch under the outer
+     * call. Set for the duration of the outer drain and cleared in its `finally`.
+     */
+    private val draining = AtomicInt(0)
+
+    // Lock-free MPSC queue replaces pthread_mutex + MutableList for
+    // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
+    private val taskQueue = MpscQueue<Runnable>()
+
+    // Reusable scratch buffer for [drainTasks]. Kept as a field so the
+    // EventLoop hot path does not allocate a new list each iteration.
+    // Only accessed from the EventLoop thread (via [drainTasks]).
+    private val drainBatch: MutableList<Runnable> = mutableListOf()
+
+    // Off-loop -> loop hand-off, plus the two shutdown-progress flags it
+    // gates on. Constructed here rather than by each engine: both wired it to
+    // the same two members, which are now on this class.
+    private val handoff = LoopHandoff(
+        inEventLoop = ::inEventLoop,
+        dispatchToLoop = { task -> dispatch(EmptyCoroutineContext, Runnable { task() }) },
+    )
+
+    /**
+     * Hands [onLoop] to this EventLoop's thread; runs [ifStopped] on the caller
+     * if the loop is already gone. Does not wait for either to finish — see
+     * [LoopHandoff.runOnLoop] for why, and for what each block may touch.
+     *
+     * **Thread safety**: safe from any thread.
+     */
+    fun runOnLoop(onLoop: () -> Unit, ifStopped: () -> Unit = onLoop) {
+        handoff.runOnLoop(onLoop, ifStopped)
+    }
+
+    /**
+     * The loop's own thread, published by [loop] as the first thing it does
+     * after claiming entry.
+     *
+     * `null` until then, which is what makes [inEventLoop] answer `false` for
+     * a loop that was constructed but never started.
+     *
+     * `@Volatile` because the loop thread writes it and every other thread
+     * reads it through [inEventLoop] to decide whether it may act directly or
+     * must dispatch — a stale `null` there sends loop-thread work through the
+     * queue, and a stale non-null sends off-loop work straight at state only
+     * the loop may touch.
+     */
+    @kotlin.concurrent.Volatile
+    protected var eventLoopThread: pthread_t? = null
+        private set
+
+    /**
+     * Where this loop reports what it could not raise to a caller.
+     *
+     * Abstract rather than constructed here: each engine already takes one from
+     * its config, and the transports on that engine read it through the loop.
+     */
+    abstract val logger: Logger
+
+    /**
+     * True when the caller already runs on this loop's thread.
+     *
+     * Left to each engine even though both write the same three lines:
+     * `pthread_equal` is a per-target declaration and does not resolve in the
+     * shared `nativeMain` metadata compilation. [eventLoopThread] is what they
+     * compare against.
+     *
+     * It *can* be hoisted, and both routes were built and measured rather than
+     * reasoned about. An `expect` here with an `actual` per platform source set
+     * works on both hosts. A cinterop `keel_*` wrapper does **not**, which is the
+     * less obvious half: `nativeMain` sees the *commonized* view of every native
+     * target's interop library, and a Linux host has the Apple cinterop tasks
+     * disabled outright, so a newly added wrapper is absent from that view there
+     * — the shared metadata compile passes on macOS and fails on Linux.
+     *
+     * It stays per-engine because hoisting it bought nothing measurable: ten
+     * interleaved runs per arm at saturation put the hoisted variant within noise
+     * of this one, so the duplication is the cheaper of the two costs.
+     */
     abstract fun inEventLoop(): Boolean
+
+    /**
+     * Runs one blocking wait on the kernel interface and dispatches what it
+     * reports, until the loop is asked to stop.
+     *
+     * This is the whole of what differs between the two engines here: which
+     * syscall waits, which errno values are retriable, and how a readiness
+     * event maps onto [dispatchReady]. Everything around it — publishing the
+     * thread, the final drain, the sweep, quiescence — is [loop].
+     */
+    protected abstract fun loopBody()
+
+    /**
+     * Nudges the kernel wait so [loopBody] returns promptly.
+     *
+     * Called only when work was queued from off the loop thread; a caller
+     * already on it will reach the next drain without help.
+     */
+    protected abstract fun wakeup()
 
     /**
      * Issues the arming syscall for [fd] + [interest] on the loop thread, and on
@@ -148,13 +269,84 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     /**
      * Runs everything queued on this loop's task queue, until it is empty.
      *
-     * The loops already have this; the base names it because
-     * [failWaitersOnStoppedLoop] needs it. Cancelling a continuation does not
-     * run it — the resume goes back through [dispatch] onto this queue — so a
-     * sweep that did not drain afterwards would leave the waiter cancelled and
-     * still parked. Called only from the loop thread.
+     * Loops rather than draining once: a resumed coroutine can queue more work
+     * before this returns (a `read()` that suspends and is immediately made
+     * ready again), and leaving that for the next kernel wait starves it.
+     *
+     * Each task is guarded on its own. A dispatched task that throws must not
+     * kill the loop thread — every channel on this loop dies with it — nor skip
+     * the rest of the batch. Coroutine tasks route their own body's exceptions
+     * to their `Job` before reaching here; this is the backstop for the rest.
      */
-    protected abstract fun drainTasks()
+    protected open fun drainTasks() {
+        assertInEventLoop("drainTasks")
+        if (!draining.compareAndSet(0, 1)) return
+        try {
+            drainQueue()
+        } finally {
+            draining.value = 0
+        }
+    }
+
+    private fun drainQueue() {
+        while (true) {
+            drainBatch.clear()
+            taskQueue.drain(drainBatch)
+            if (drainBatch.isEmpty()) return
+            // Index-based iteration avoids Iterator allocation on every drain cycle.
+            for (i in 0 until drainBatch.size) {
+                try {
+                    drainBatch[i].run()
+                } catch (t: Throwable) {
+                    logger.warn(t) { "dispatched task threw on the EventLoop" }
+                }
+            }
+        }
+    }
+
+    /** Whether anything is queued, without draining it. */
+    protected fun hasTasksPending(): Boolean = taskQueue.isNotEmpty()
+
+    /**
+     * Queues [block] for the loop thread and wakes the loop if the caller is not
+     * already on it.
+     *
+     * The contract a `launch(eventLoop) { }` caller reasons about: the block does
+     * not run here, it runs on the next [drainTasks], which happens before the
+     * kernel wait rather than after it.
+     */
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        taskQueue.offer(block)
+        // Skip the wakeup when already on the loop thread: the next drain
+        // happens before the kernel wait, and the wakeup is a syscall.
+        if (!inEventLoop()) {
+            wakeup()
+        }
+    }
+
+    /**
+     * Fails unless the caller is on the loop thread.
+     *
+     * Absolute rather than "null or matching". It used to return without
+     * checking while the handle was unset, on the reasoning that only
+     * single-threaded construction could get there. That reasoning was wrong:
+     * `accept()` builds a transport — and registers its fd — on whatever thread
+     * the caller is on, so a registration could reach a submit path from off-loop
+     * during the window between `pthread_create` returning and [loop] publishing
+     * the handle. Every submit path funnels through [submitOnLoop] now, so the
+     * check can be absolute.
+     *
+     * That covers the submit paths, not every syscall an engine issues. Each
+     * engine's constructor registers its own wakeup fd directly — before the
+     * thread this would check against exists — and never reaches here.
+     *
+     * The engine name is composed only when the check fails.
+     */
+    protected fun assertInEventLoop(operation: String) {
+        check(inEventLoop()) {
+            "${this::class.simpleName}.$operation must run on the EventLoop thread"
+        }
+    }
 
     /**
      * A pending I/O interest for a file descriptor.
@@ -304,9 +496,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * drain again, so an arming syscall silently never happens and the waiting
      * continuation is neither resumed nor failed. Both engines already hold a
      * `LoopHandoff`, which exists for exactly this window and takes an
-     * `ifStopped` fallback, but the hand-off is per-engine state this class
-     * cannot reach. Wiring it in is separate work, tracked with the matching
-     * teardown hazard on [destroyRegistrationLock].
+     * `ifStopped` fallback, and since it moved here it is a field of this class
+     * — [handoff], one member call away. What blocks the fix is not reach but
+     * cost: this runs on the per-readiness-event path, and `runOnLoop` adds a
+     * `CAS` and a claim object to every arm. Tracked with the matching teardown
+     * hazard on [destroyRegistrationLock].
      */
     protected inline fun submitOnLoop(crossinline block: () -> Unit) {
         if (inEventLoop()) {
@@ -481,8 +675,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * Ends every waiter still in the ledger, because the loop is about to stop
      * reading it.
      *
-     * The subclass calls this from its loop body's `finally`, after the final
-     * drain and before it publishes quiescence. It runs on the loop thread, so
+     * [loop] calls this from its own `finally`, after the final drain and before
+     * it publishes quiescence. Not the subclass: the ledger walked here is this
+     * class's, and so is the rule for when a waiter can no longer be
+     * served. It runs on the loop thread, so
      * taking the lock is legal, and the lock still exists: the only thing that
      * frees it is [destroyRegistrationLock], reachable only from a `close()`
      * that has completed its `pthread_join` — which cannot happen while this
@@ -552,6 +748,60 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         // Deliver what those cancellations queued. See the KDoc: without this
         // the waiter is cancelled and still parked.
         if (stranded.isNotEmpty()) drainTasks()
+    }
+
+    /**
+     * The loop thread's entry point: publish the thread, run [loopBody], and
+     * take the loop apart in an order the rest of the class depends on.
+     */
+    fun loop() {
+        if (!loopEntered.compareAndSet(0, 1)) {
+            // Reported, not thrown. This runs as a pthread entry point with
+            // nothing above it to catch, so throwing would end the process --
+            // while the first, healthy loop is still serving every connection
+            // on this engine. Returning skips the quiescence publish below, and
+            // that is right: the entry that did claim the loop publishes it.
+            // Same shape as destroyRegistrationLock's claim-once.
+            logger.error { "${this::class.simpleName}.loop() entered twice; the second entry is ignored" }
+            return
+        }
+        eventLoopThread = pthread_self()
+        try {
+            loopBody()
+        } finally {
+            // Order matters: publish "no longer draining" BEFORE the final
+            // drain. A caller that offers a teardown and then reads a 0 here
+            // knows its offer preceded this write, so the drain below is
+            // guaranteed to see it; one that reads 1 takes the work back
+            // itself. Draining first and publishing after would leave a gap
+            // where an offer lands after the drain but before the flag, and
+            // nobody runs it.
+            handoff.markFinished()
+            // markQuiescent() in its own finally: it is the only thing that
+            // releases a runOnLoop caller from an unbounded spin, so a throw
+            // anywhere below would live-lock whatever thread is closing a
+            // server on this loop.
+            try {
+                // Nested so a throw from the drain cannot skip the sweep while
+                // still publishing quiescence: that combination would strand
+                // every waiter *and* free the lock their cancellation handlers
+                // are about to take.
+                try {
+                    drainTasks()
+                } finally {
+                    // After the last drain, before quiescence is published:
+                    // anything still in the ledger is waiting for an arm that
+                    // can no longer issue. Ended here because this thread may
+                    // take the lock and the lock still exists -- only close()
+                    // frees it, and only after a join this thread has not let
+                    // return. It drains again itself: cancelling a waiter
+                    // queues its resume back onto taskQueue.
+                    failWaitersOnStoppedLoop()
+                }
+            } finally {
+                handoff.markQuiescent()
+            }
+        }
     }
 
     /** Whether any waiter remains on `(fd, interest)`. Caller holds the lock. */

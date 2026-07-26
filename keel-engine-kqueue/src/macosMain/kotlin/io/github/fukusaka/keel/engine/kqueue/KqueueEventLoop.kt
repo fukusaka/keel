@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
-import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
@@ -11,7 +10,6 @@ import io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
-import io.github.fukusaka.keel.native.posix.LoopHandoff
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
@@ -33,7 +31,6 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
@@ -45,11 +42,8 @@ import platform.posix.pthread_create
 import platform.posix.pthread_equal
 import platform.posix.pthread_join
 import platform.posix.pthread_self
-import platform.posix.pthread_t
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
-import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.TimeSource
@@ -59,7 +53,7 @@ import kotlin.time.TimeSource
  *
  * Drives all I/O for channels created by [KqueueEngine]. A dedicated
  * pthread runs [loop], interleaving three tasks:
- * 1. Execute queued coroutine continuations ([taskQueue])
+ * 1. Execute queued coroutine continuations (the base's task queue)
  * 2. Call `kevent()` to wait for fd readiness events
  * 3. Resume suspended coroutines when their fds become ready
  *
@@ -85,7 +79,7 @@ import kotlin.time.TimeSource
  *
  * **Thread safety**: the registration ledger in the base class is
  * protected by a POSIX mutex.
- * [taskQueue] uses a lock-free MPSC queue ([MpscQueue]) — CAS-based
+ * The base's task queue is a lock-free MPSC queue — CAS-based
  * enqueue (~5-10ns) replaces mutex lock/unlock (~50-100ns) on the
  * dispatch hot path.
  *
@@ -104,7 +98,7 @@ import kotlin.time.TimeSource
  */
 @OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
 internal class KqueueEventLoop(
-    internal val logger: Logger,
+    override val logger: Logger,
     /**
      * Per-EventLoop [BufferAllocator] instance. Co-located with the loop
      * (rather than tracked separately in [KqueueEventLoopGroup]) so callers
@@ -149,15 +143,6 @@ internal class KqueueEventLoop(
      * via `kevent(kqFd, ...)`. Channel fds are registered via [register].
      */
     val kqFd: Int
-
-    // Lock-free MPSC queue replaces pthread_mutex + MutableList for
-    // dispatch hot path. CAS (~5-10ns) vs mutex lock/unlock (~50-100ns).
-    private val taskQueue = MpscQueue<Runnable>()
-
-    // Reusable scratch buffer for [drainTasks]. Kept as a field so the
-    // EventLoop hot path does not allocate a new list each iteration.
-    // Only accessed from the EventLoop thread (via [drainTasks]).
-    private val drainBatch: MutableList<Runnable> = mutableListOf()
 
     // Pre-allocated event carrier array reused across every [loop]
     // iteration. Sized to [MAX_EVENTS]; each slot is a mutable [KqEvent]
@@ -206,22 +191,10 @@ internal class KqueueEventLoop(
     private val wakeupReadBuf = ByteArray(WAKEUP_DRAIN_SIZE)
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
 
-    // Off-loop -> loop hand-off, plus the two shutdown-progress flags it
-    // gates on. Shared with the sibling POSIX readiness engine: the window it
-    // closes is narrow enough that a fix applied to one copy and not the other
-    // would leave that one wedging or spinning.
-    private val handoff = LoopHandoff(
-        inEventLoop = ::inEventLoop,
-        dispatchToLoop = { task -> dispatch(EmptyCoroutineContext, Runnable { task() }) },
-    )
-
     /** Backs [threadPtr]. Cleared in [close] once the loop thread is joined. */
     private val arena = Arena()
 
     private val threadPtr = arena.alloc<pthread_tVar>()
-
-    @kotlin.concurrent.Volatile
-    private var eventLoopThread: pthread_t? = null
 
     init {
         val fd = syscallOps.kqueueCreate()
@@ -248,70 +221,9 @@ internal class KqueueEventLoop(
 
     // --- CoroutineDispatcher ---
 
-    /**
-     * Dispatches a coroutine block to run on this EventLoop thread.
-     *
-     * Called by the coroutine machinery when a continuation needs to resume.
-     * The block is queued and the EventLoop is woken up to process it
-     * in the next loop iteration via [drainTasks].
-     */
-    override fun dispatch(context: CoroutineContext, block: Runnable) {
-        taskQueue.offer(block)
-        // Skip wakeup when already on the EventLoop thread — the loop
-        // will drain tasks before the next kevent(). pipe write is a
-        // syscall; avoiding it on the hot path eliminates unnecessary overhead.
-        if (!inEventLoop()) {
-            wakeup()
-        }
-    }
-
-    /**
-     * Hands [onLoop] to this EventLoop's thread; runs [ifStopped] on the caller
-     * if the loop is already gone. Does not wait for either to finish — see
-     * [LoopHandoff.runOnLoop] for why, and for what each block may touch.
-     *
-     * **Thread safety**: safe from any thread.
-     */
-    internal fun runOnLoop(onLoop: () -> Unit, ifStopped: () -> Unit = onLoop) {
-        handoff.runOnLoop(onLoop, ifStopped)
-    }
-
-    /**
-     * Returns `true` if the current pthread is this EventLoop's thread.
-     * Returns `false` before [loop] has started (engine init phase) or
-     * from any other thread.
-     */
     override fun inEventLoop(): Boolean {
         val t = eventLoopThread ?: return false
         return pthread_equal(pthread_self(), t) != 0
-    }
-
-    /**
-     * Throws [IllegalStateException] if called from a thread other than
-     * this EventLoop's pthread. Used to assert EL-thread affinity on
-     * internal state transitions that are not guarded by the registration lock
-     * (task queue drain, kevent event processing, etc).
-     *
-     * Holds unconditionally, including before [loop] runs. It used to return
-     * without checking while the thread handle was unset, on the reasoning that
-     * only single-threaded construction could get there. That reasoning was
-     * wrong: `accept()` builds a transport — and registers its fd — on whatever
-     * thread the caller is on, so a registration could reach the submit path
-     * from off-loop during the window between `pthread_create` returning and
-     * [loop] assigning the handle. [register] and [registerCallback] now funnel
-     * through [dispatch] when off-loop, so every caller of a submit path
-     * arrives on the EventLoop thread and the check can be absolute.
-     *
-     * That covers the submit paths, not every `kevent` the engine issues.
-     * One place still calls the syscall directly and never reaches this check:
-     * this class's constructor registers its own wakeup fd via `addReadFilter`,
-     * before the thread it would be checking against exists.
-     */
-    internal fun assertInEventLoop(operation: String) {
-        val t = eventLoopThread
-        check(t != null && pthread_equal(pthread_self(), t) != 0) {
-            "$operation must run on the EventLoop thread"
-        }
     }
 
     // --- Channel registration ---
@@ -356,7 +268,7 @@ internal class KqueueEventLoop(
         reg: Registration,
         cont: CancellableContinuation<Unit>,
     ) {
-        assertInEventLoop("KqueueEventLoop.submitArm")
+        assertInEventLoop("submitArm")
         // The arm is dispatched after the chain append releases the lock, so a
         // close() can queue its teardown in between: cancelAll then resumes
         // this waiter and the fd is closed before this runs. Arming here would
@@ -426,7 +338,7 @@ internal class KqueueEventLoop(
      * level timeout).
      */
     private fun submitAddCallbackFilter(fd: Int, interest: Interest, key: Long) {
-        assertInEventLoop("KqueueEventLoop.submitAddCallbackFilter")
+        assertInEventLoop("submitAddCallbackFilter")
         val kevErr = when (interest) {
             Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
@@ -447,7 +359,7 @@ internal class KqueueEventLoop(
      * Called after [register] or [dispatch] to ensure `kevent()` re-evaluates
      * pending fds and tasks.
      */
-    private fun wakeup() {
+    override fun wakeup() {
         val err = syscallOps.wakeupWrite(wakeupFds[1], wakeupWriteBuf)
         // EAGAIN: pipe buffer full — a wakeup is already pending, which
         // is exactly what we want. Benign.
@@ -493,47 +405,7 @@ internal class KqueueEventLoop(
      */
     internal val deadlineScheduler = DeadlineScheduler(::nowMillis, logger)
 
-    internal fun loop() {
-        eventLoopThread = pthread_self()
-        try {
-            loopBody()
-        } finally {
-            // Order matters: publish "no longer draining" BEFORE the final
-            // drain. A caller that offers a teardown and then reads a 0 here
-            // knows its offer preceded this write, so the drain below is
-            // guaranteed to see it; one that reads 1 takes the work back
-            // itself. Draining first and publishing after would leave a gap
-            // where an offer lands after the drain but before the flag, and
-            // nobody runs it.
-            handoff.markFinished()
-            // markQuiescent() in its own finally: it is the only thing that
-            // releases a runOnLoop caller from an unbounded spin, so a throw
-            // anywhere below would live-lock whatever thread is closing a
-            // server on this loop.
-            try {
-                // Nested so a throw from the drain cannot skip the sweep while
-                // still publishing quiescence: that combination would strand
-                // every waiter *and* free the lock their cancellation handlers
-                // are about to take.
-                try {
-                    drainTasks()
-                } finally {
-                    // After the last drain, before quiescence is published:
-                    // anything still in the ledger is waiting for an arm that
-                    // can no longer issue. Ended here because this thread may
-                    // take the lock and the lock still exists -- only close()
-                    // frees it, and only after a join this thread has not let
-                    // return. It drains again itself: cancelling a waiter
-                    // queues its resume back onto taskQueue.
-                    failWaitersOnStoppedLoop()
-                }
-            } finally {
-                handoff.markQuiescent()
-            }
-        }
-    }
-
-    private fun loopBody() {
+    override fun loopBody() {
         while (running.value != 0) {
             drainTasks()
 
@@ -617,7 +489,7 @@ internal class KqueueEventLoop(
      * filter causes a level-triggered busy loop until the fd is closed.
      */
     private fun dispatchReady(fd: Int, interest: Interest, eofFlag: Boolean) {
-        assertInEventLoop("KqueueEventLoop.dispatchReady")
+        assertInEventLoop("dispatchReady")
         val key = registrationKey(fd, interest)
         val cb = withRegLock { popCallback(key) }
         if (cb != null) {
@@ -704,50 +576,6 @@ internal class KqueueEventLoop(
         }
     }
 
-    /**
-     * Runs all queued coroutine continuations on this thread.
-     *
-     * Uses a while loop because task execution may enqueue new tasks
-     * (e.g., a resumed coroutine calls channel.read() which suspends
-     * and re-registers, then immediately resumes via dispatch()).
-     * Draining in the same iteration prevents starvation where tasks
-     * accumulate faster than kevent() cycles can process them.
-     */
-    override fun drainTasks() {
-        assertInEventLoop("KqueueEventLoop.drainTasks")
-        while (true) {
-            drainBatch.clear()
-            taskQueue.drain(drainBatch)
-            if (drainBatch.isEmpty()) return
-            // Index-based iteration avoids Iterator allocation on every drain cycle.
-            for (i in 0 until drainBatch.size) {
-                // Same catch-and-warn guard as the NIO and io_uring drains: a
-                // dispatched task that throws (engine-internal teardown / arming
-                // Runnables, or a coroutine task whose machinery is not the
-                // thrower) must not kill the EventLoop pthread — every channel
-                // on this loop dies with it — or skip the remaining tasks in
-                // this batch. Coroutine tasks route their body exceptions to
-                // their Job before reaching here; this guard is the backstop
-                // for everything else.
-                try {
-                    drainBatch[i].run()
-                } catch (t: Throwable) {
-                    logger.warn(t) { "dispatched task threw on the EventLoop" }
-                }
-            }
-        }
-    }
-
-    /**
-     * Checks if there are pending tasks without draining them.
-     *
-     * Used to decide `kevent()` timeout: 0 if tasks are pending
-     * (non-blocking poll), null otherwise (block until events).
-     */
-    private fun hasTasksPending(): Boolean {
-        return taskQueue.isNotEmpty()
-    }
-
     // --- Lifecycle ---
 
     /**
@@ -801,7 +629,7 @@ internal class KqueueEventLoop(
             destroyRegistrationLock { errno ->
                 logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(errno)}" }
             }
-            // taskQueue is MpscQueue (lock-free, no mutex to destroy)
+            // The base's task queue is lock-free — no mutex to destroy
             arena.clear()
             // Close the per-EL allocator child. By construction the
             // EventLoopGroup hands each EL the result of

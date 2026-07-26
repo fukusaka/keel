@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.native.posix
 
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -18,6 +21,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -86,6 +90,13 @@ class AbstractPosixReadinessEventLoopTest {
 
         override fun inEventLoop(): Boolean = onLoopThread
 
+        /** No kernel to wait on: the loop body and its wakeup are inert here. */
+        override fun loopBody() = Unit
+
+        override fun wakeup() = Unit
+
+        override val logger = NoopLoggerFactory.logger("FakeLoop")
+
         override fun dispatch(context: CoroutineContext, block: Runnable) {
             dispatchCount++
             pending.add(block)
@@ -146,6 +157,61 @@ class AbstractPosixReadinessEventLoopTest {
 
         fun drain(fd: Int, interest: Interest): List<Registration> =
             generateSequence { popOne(fd, interest).first }.toList()
+
+        /** Non-null after [destroy] if the mutex could not be destroyed. */
+        var destroyErrno: Int? = null
+            private set
+
+        fun destroy() = destroyRegistrationLock { errno -> destroyErrno = errno }
+    }
+
+    /**
+     * A subclass that leaves the base's own queue and drain in place.
+     *
+     * [FakeLoop] overrides both so a test can hold work between dispatch and
+     * run, which means the base's `drainTasks` -- its re-entrancy claim, its
+     * per-task backstop -- never executes there. This one exists to reach them.
+     */
+    private class RealQueueLoop(var onLoopThread: Boolean = true) : AbstractPosixReadinessEventLoop() {
+        val logged = mutableListOf<Pair<LogLevel, String>>()
+
+        /** How many times the base's own drain ran. Teardown must not repeat it. */
+        var drainCalls: Int = 0
+            private set
+
+        /** Counts the wakeups [dispatch] issues, which only an off-loop caller earns. */
+        var wakeups: Int = 0
+            private set
+
+        override fun inEventLoop(): Boolean = onLoopThread
+        override fun loopBody() = Unit
+
+        override fun wakeup() {
+            wakeups++
+        }
+
+        override fun drainTasks() {
+            drainCalls++
+            super.drainTasks()
+        }
+
+        override fun submitArm(
+            fd: Int,
+            interest: Interest,
+            key: Long,
+            reg: Registration,
+            cont: CancellableContinuation<Unit>,
+        ) = Unit
+
+        override val logger = object : Logger {
+            override fun isLoggable(level: LogLevel) = true
+            override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+                logged.add(level to message.toString())
+            }
+        }
+
+        /** [drainTasks] is protected on the base; this is the subclass reaching it. */
+        fun drain() = drainTasks()
 
         /** Non-null after [destroy] if the mutex could not be destroyed. */
         var destroyErrno: Int? = null
@@ -607,6 +673,93 @@ class AbstractPosixReadinessEventLoopTest {
             // leave a cancellation handler mid-flight when the mutex is freed.
             val destroyErrno = loop.destroyErrno
             if (destroyErrno != null) fail("pthread_mutex_destroy() failed: errno=$destroyErrno")
+        }
+    }
+
+    // --- the two guards on the base's own queue and loop ---
+
+    @Test
+    fun `a task that drains again does not lose the batch it re-entered`() {
+        // drainTasks is re-entrant from a task it is running. The outer call
+        // already drains until the queue is empty, so the inner one has nothing
+        // left to do -- and must not clear the shared batch under the iteration.
+        val loop = RealQueueLoop()
+        try {
+            val ran = mutableListOf<String>()
+            loop.dispatch(EmptyCoroutineContext, Runnable { ran.add("first") })
+            loop.dispatch(EmptyCoroutineContext, Runnable { ran.add("re-enters"); loop.drain() })
+            loop.dispatch(EmptyCoroutineContext, Runnable { ran.add("third") })
+
+            loop.drain()
+
+            assertEquals(listOf("first", "re-enters", "third"), ran, "every task runs exactly once")
+        } finally {
+            loop.destroy()
+        }
+    }
+
+    @Test
+    fun `a task that throws does not stop the rest of its batch`() {
+        val loop = RealQueueLoop()
+        try {
+            var laterRan = false
+            loop.dispatch(EmptyCoroutineContext, Runnable { throw IllegalStateException("boom") })
+            loop.dispatch(EmptyCoroutineContext, Runnable { laterRan = true })
+
+            loop.drain()
+
+            assertTrue(laterRan, "the task queued after the throwing one must still run")
+            assertTrue(loop.logged.any { it.first == LogLevel.WARN }, "the throw must be reported: ${loop.logged}")
+        } finally {
+            loop.destroy()
+        }
+    }
+
+    @Test
+    fun `entering the loop a second time is refused without throwing`() {
+        // loop() runs as a pthread entry point with nothing above it to catch,
+        // so a second entry is reported and ignored rather than thrown -- and it
+        // must not re-point the thread identity the whole class reads.
+        val loop = RealQueueLoop()
+        try {
+            loop.loop()
+            val errorsAfterFirst = loop.logged.count { it.first == LogLevel.ERROR }
+
+            loop.loop()
+
+            assertEquals(0, errorsAfterFirst, "the first entry is not an error")
+            assertTrue(
+                loop.logged.any { it.first == LogLevel.ERROR && it.second.contains("entered twice") },
+                "the second entry must be reported: ${loop.logged}",
+            )
+            // The log line alone would pass for a guard that reports and then
+            // falls through, re-publishing the thread and running the whole
+            // teardown a second time on a live loop. The drain count is what
+            // says the second entry returned.
+            assertEquals(1, loop.drainCalls, "teardown ran once, not twice")
+            assertNull(loop.destroyErrno, "and left the registration lock destroyable")
+        } finally {
+            loop.destroy()
+        }
+    }
+
+    @Test
+    fun `dispatch wakes the loop only when the caller is off it`() {
+        // The branch is one line and its failure mode is a stall, not a log:
+        // a cross-thread dispatch that skips the wakeup leaves the task queued
+        // while the kernel wait sits on its deadline, or forever. Neither of
+        // this file's other subclasses can reach it -- one answers on-loop
+        // unconditionally, the other overrides dispatch entirely.
+        val loop = RealQueueLoop(onLoopThread = true)
+        try {
+            loop.dispatch(EmptyCoroutineContext, Runnable { })
+            assertEquals(0, loop.wakeups, "an on-loop caller drains before the next wait")
+
+            loop.onLoopThread = false
+            loop.dispatch(EmptyCoroutineContext, Runnable { })
+            assertEquals(1, loop.wakeups, "an off-loop caller has to interrupt the wait")
+        } finally {
+            loop.destroy()
         }
     }
 
