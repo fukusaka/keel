@@ -264,7 +264,13 @@ class AbstractPosixReadinessEventLoopTest {
     ) : FdReadyListener {
         val ready = mutableListOf<Interest>()
         val peerClosed = mutableListOf<Interest>()
+        var loopStopped = 0
         val order = mutableListOf<String>()
+
+        override fun onLoopStopped() {
+            loopStopped++
+            order.add("onLoopStopped")
+        }
 
         override fun onReady(interest: Interest) {
             ready.add(interest)
@@ -1283,6 +1289,155 @@ class AbstractPosixReadinessEventLoopTest {
         assertEquals(emptyList(), loop.disarmed, "a queued waiter still needs the interest armed")
         assertTrue(loop.waiters(FD, Interest.READ), "and it is still in the chain")
         assertFalse(waiter.resumed.isCompleted)
+    }
+
+    @Test
+    fun `the sweep withdraws every callback the loop will never dispatch`() = loopTest { loop ->
+        // The pipeline half of what the suspend sweep does. A listener left in
+        // the ledger is not merely un-notified: it holds the transport, and the
+        // transport holds the channel and the pipeline graph behind it, for as
+        // long as the stopped loop object is alive.
+        val listener = RecordingListener()
+        loop.registerCallback(FD, Interest.READ, listener)
+        loop.registerCallback(FD, Interest.WRITE, listener)
+
+        loop.failRemainingWaiters()
+
+        assertFalse(loop.hasCallbackRegistration(FD, Interest.READ), "the callback ledger is emptied")
+        assertFalse(loop.hasCallbackRegistration(FD, Interest.WRITE))
+    }
+
+    @Test
+    fun `the sweep tells each listener the loop stopped`() = loopTest { loop ->
+        // Clearing alone would leave the listener silent: it is waiting on a
+        // dispatch that can no longer come, and nothing else will tell it.
+        val listener = RecordingListener()
+        loop.registerCallback(FD, Interest.READ, listener)
+        loop.registerCallback(FD, Interest.WRITE, listener)
+
+        loop.failRemainingWaiters()
+
+        // Once per registration, not once per listener: the same object is
+         // registered on both interests, and each of those is a separate entry the
+         // loop can no longer dispatch.
+        assertEquals(2, listener.loopStopped, "each registration is told, exactly once")
+        assertEquals(emptyList(), listener.ready, "the sweep is not a readiness dispatch")
+        assertEquals(emptyList(), listener.peerClosed, "and it is not a peer close")
+    }
+
+    @Test
+    fun `the sweep drains what a listener queued even with nothing stranded`() {
+        // The drain used to be gated on stranded suspend waiters alone. A
+        // pipeline-only loop strands none -- a write-only client with
+        // readEnabled = false is exactly one, and is the case this sweep exists
+        // for -- so anything the notification queued was dropped on the floor.
+        // Teardown does queue: it cancels a flush continuation whose resume
+        // lands on this very queue, and this is the last drain there will be.
+        val loop = FakeLoop(runDispatchedInline = false)
+        try {
+            var queuedRan = false
+            loop.registerCallback(
+                FD,
+                Interest.READ,
+                object : FdReadyListener {
+                    override fun onReady(interest: Interest) = Unit
+                    override fun onLoopStopped() {
+                        loop.dispatch(EmptyCoroutineContext, Runnable { queuedRan = true })
+                    }
+                },
+            )
+
+            loop.failRemainingWaiters()
+
+            assertTrue(queuedRan, "the sweep's own drain has to deliver it; nothing runs after")
+        } finally {
+            loop.destroy()
+        }
+    }
+
+    @Test
+    fun `a listener that throws does not strand the rest of the sweep`() {
+        // Same backstop drainQueue puts around a dispatched task, for the same
+        // reason: this runs user code, and one bad listener must not take the
+        // others -- nor escape a pthread entry point with nothing above it.
+        // Fails either way when unguarded: the throw either reaches this caller
+        // or the healthy listener never hears, depending on iteration order.
+        val loop = FakeLoop()
+        try {
+            val healthy = RecordingListener()
+            loop.registerCallback(
+                FD,
+                Interest.READ,
+                object : FdReadyListener {
+                    override fun onReady(interest: Interest) = Unit
+                    override fun onLoopStopped(): Unit = throw IllegalStateException("boom")
+                },
+            )
+            loop.registerCallback(FD, Interest.WRITE, healthy)
+
+            loop.failRemainingWaiters()
+
+            assertEquals(1, healthy.loopStopped, "the healthy listener is still told")
+        } finally {
+            loop.destroy()
+        }
+    }
+
+    @Test
+    fun `the sweep tells both interests of a registration keyed on a negative fd`() {
+        // A negative fd sign-extends through the key's interest half, so without
+        // the mask in registrationKey both interests hash to the same key: the
+        // WRITE registration replaces the READ one and only one notification
+        // comes out. Two registrations are what makes that visible -- with one,
+        // the collision has nothing to collide with and the test passes either
+        // way (measured: removing the mask fails nothing when only READ is
+        // registered).
+        //
+        // This replaced an earlier form that pinned an out-of-range Interest
+        // index. That failure mode left with the interest lookup itself.
+        val loop = FakeLoop()
+        try {
+            val listener = RecordingListener()
+            loop.registerCallback(-1, Interest.READ, listener)
+            loop.registerCallback(-1, Interest.WRITE, listener)
+
+            loop.failRemainingWaiters()
+
+            assertEquals(2, listener.loopStopped, "a negative fd still keys its two interests apart")
+        } finally {
+            loop.destroy()
+        }
+    }
+
+    @Test
+    fun `a listener may take the registration lock from onLoopStopped`() {
+        // Why the notification runs outside withRegLock. The real path re-enters:
+        // onLoopStopped -> onReadClosed -> close() -> teardownOnEventLoop ->
+        // unregisterCallback -> withRegLock, on a mutex initialised with default
+        // attributes, so it is not recursive. Moving the notification inside the
+        // lock does not fail this test -- it hangs it, and every pipeline
+        // transport with it, which is the point.
+        val loop = FakeLoop()
+        try {
+            var reEntered = false
+            loop.registerCallback(
+                FD,
+                Interest.READ,
+                object : FdReadyListener {
+                    override fun onReady(interest: Interest) = Unit
+                    override fun onLoopStopped() {
+                        loop.unregisterCallback(FD, Interest.WRITE)
+                        reEntered = true
+                    }
+                },
+            )
+
+            loop.failRemainingWaiters()
+
+            assertTrue(reEntered, "the listener reached a lock-taking call and returned")
+        } finally {
+            loop.destroy()
+        }
     }
 
     @Test

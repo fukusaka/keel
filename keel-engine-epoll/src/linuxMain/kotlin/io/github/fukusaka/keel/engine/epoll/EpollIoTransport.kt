@@ -110,6 +110,37 @@ internal class EpollIoTransport(
         onReadClosed?.invoke()
     }
 
+    /**
+     * The loop that would have reported readiness for this fd has stopped, so
+     * nothing will wake this transport again. Surfaced the same way a peer close
+     * is, because the outcome for anything waiting on this connection is the
+     * same: it is over.
+     *
+     * No [Interest] guard, unlike [onPeerClosed]. Not because a write-only push
+     * client holds only a WRITE registration — it does not: `init` arms READ
+     * unconditionally, whatever `readEnabled` is, precisely so a client that
+     * never enables reads still hears a peer close. The guard is absent because
+     * nothing here acts on the interest: when the loop is gone, every
+     * registration this transport holds on it is gone too. A transport registered
+     * on both is told twice, which is benign for the same reason the peer-close
+     * path documents.
+     *
+     * **What this does not reach**: a transport holding *no* registration. That is
+     * narrower than "paused". `onReadable` re-arms unconditionally right after
+     * `onRead`, and every in-tree pause is issued from inside `onRead` — so a
+     * connection that pauses is back in the ledger by the time that dispatch
+     * returns (the one-shot entry is popped before `onRead` runs, and `armRead()`
+     * puts it back after). It leaves the
+     * ledger only on a *later* readiness event, where the `!readEnabled` return
+     * above skips the re-arm — and only if it holds no WRITE registration either.
+     * Measured, after an earlier revision of this paragraph asserted the wider
+     * claim without doing so.
+     */
+    override fun onLoopStopped() {
+        if (!opened) return
+        onReadClosed?.invoke()
+    }
+
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
     override val inOwningContext: Boolean get() = eventLoop.inEventLoop()

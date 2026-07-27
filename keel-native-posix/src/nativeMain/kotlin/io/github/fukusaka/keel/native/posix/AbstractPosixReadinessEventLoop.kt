@@ -421,9 +421,16 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         internal var tail: Registration? = null
     }
 
-    /** Encodes fd + interest into one key: fd in the low 32 bits, interest above. */
+    /**
+     * Encodes fd + interest into one key: fd in the low 32 bits, interest above.
+     *
+     * The fd is masked rather than widened. A negative one sign-extends through
+     * the interest half, colliding READ with WRITE. Every non-negative fd — which
+     * is every fd a checked `accept` / `socket` / `connect` returns — keys exactly
+     * as before.
+     */
     protected fun registrationKey(fd: Int, interest: Interest): Long {
-        return fd.toLong() or (interest.ordinal.toLong() shl 32)
+        return (fd.toLong() and FD_MASK) or (interest.ordinal.toLong() shl KEY_INTEREST_SHIFT)
     }
 
     /**
@@ -731,15 +738,16 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     }
 
     /**
-     * Ends every waiter still in the **suspend** ledger, because the loop is
-     * about to stop reading it.
+     * Ends everything still in **both** ledgers, because the loop is about to
+     * stop reading them: every suspend waiter is cancelled, and every pipeline
+     * listener is told through [FdReadyListener.onLoopStopped] and dropped.
      *
-     * The callback ledger beside it is not swept. Individual entries do come
+     * The callback half is what this commit adds. Individual entries always came
      * out — [unregisterCallback] on teardown, [dispatchReady] on every event —
-     * but nothing empties it in bulk when the loop stops, so a listener still
-     * registered at that moment is neither told nor removed. That predates this
-     * class owning both; it is named here because "the ledger" stopped being
-     * unambiguous the moment the second one moved in.
+     * but nothing emptied the map in bulk when the loop stopped, so a listener
+     * still registered at that moment was neither told nor removed, and kept its
+     * transport — and the channel and pipeline graph behind it — reachable for as
+     * long as the loop object lived.
      *
      * [loop] calls this from its own `finally`, after the final drain and before
      * it publishes quiescence. Not the subclass: the ledger walked here is this
@@ -801,19 +809,48 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      */
     protected fun failWaitersOnStoppedLoop() {
         val stranded = mutableListOf<Registration>()
+        val orphaned = mutableListOf<FdReadyListener>()
         withRegLock {
             registrations.forEachValue { head -> drainChainInto(head, stranded) }
             registrations.clear()
+            // The pipeline half. Both ledgers empty here, or the one left behind
+            // holds its listeners -- and through them the transports, channels
+            // and pipeline graphs they reference -- for as long as this stopped
+            // loop object is alive.
+            callbackRegistrations.forEachValue { listener -> orphaned.add(listener) }
+            callbackRegistrations.clear()
         }
         // Outside the lock, as in cancelAll: a handler may re-enter this class.
+        // The lists above are the cost of that, and this runs once per loop.
+        // Each call is guarded for the reason drainQueue guards its tasks: these
+        // run user code -- cancellation handlers, and through onLoopStopped a
+        // transport teardown and the pipeline behind it -- and one that throws
+        // must not strand the rest, nor escape a pthread entry point that has
+        // nothing above it to catch.
         for (reg in stranded) {
-            reg.continuation.cancel(
-                CancellationException("EventLoop stopped before arming fd=${reg.fd} for ${reg.interest}"),
-            )
+            try {
+                reg.continuation.cancel(
+                    CancellationException("EventLoop stopped before arming fd=${reg.fd} for ${reg.interest}"),
+                )
+            } catch (t: Throwable) {
+                logger.warn(t) { "waiter's cancellation threw while the EventLoop was stopping" }
+            }
         }
-        // Deliver what those cancellations queued. See the KDoc: without this
-        // the waiter is cancelled and still parked.
-        if (stranded.isNotEmpty()) drainTasks()
+        for (listener in orphaned) {
+            try {
+                listener.onLoopStopped()
+            } catch (t: Throwable) {
+                logger.warn(t) { "listener threw from onLoopStopped while the EventLoop was stopping" }
+            }
+        }
+        // Deliver what either loop queued. Neither engine overrides
+        // isDispatchNeeded, so a resume lands on this loop's queue even though
+        // the sweep already runs on its thread -- and a listener told the loop
+        // stopped can queue as readily as a cancelled waiter can: teardown
+        // cancels the flush continuation of a handler parked on this very
+        // dispatcher. Gating on `stranded` alone missed exactly the case this
+        // sweep exists for, a write-only client with no suspend waiter at all.
+        if (stranded.isNotEmpty() || orphaned.isNotEmpty()) drainTasks()
     }
 
     /**
@@ -1173,4 +1210,12 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * epoll because it is level-triggered.
      */
     private fun popCallback(key: Long): FdReadyListener? = callbackRegistrations.remove(key)
+
+    private companion object {
+        /** Bit position of the interest half in a [registrationKey]; the fd occupies the low 32. */
+        private const val KEY_INTEREST_SHIFT = 32
+
+        /** The fd half of a [registrationKey]: the low 32 bits, without sign extension. */
+        private const val FD_MASK = 0xFFFFFFFFL
+    }
 }

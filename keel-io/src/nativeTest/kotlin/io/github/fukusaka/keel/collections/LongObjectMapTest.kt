@@ -311,6 +311,27 @@ class LongObjectMapTest {
     }
 
     @Test
+    fun `forEachValue visits one value under many keys once per key`() {
+        // Once per entry, not once per distinct value. Pinned because the shape
+        // is invisible to every other test here: they all use distinct values per
+        // key and two compare through toSet(), so a values-view or a dedupe fast
+        // path would leave keel-io green while changing what consumers observe.
+        // The engine ledgers are one such consumer -- they key on (fd, interest)
+        // and hold one listener under both.
+        val map = LongObjectMap<String>()
+        val shared = "one-object"
+        map[1L] = shared
+        map[1L shl 32] = shared
+        map[7L] = "other"
+
+        val seen = mutableListOf<String>()
+        map.forEachValue { seen.add(it) }
+
+        assertEquals(3, seen.size, "three entries, three visits")
+        assertEquals(2, seen.count { it === shared }, "the shared value is visited once per key holding it")
+    }
+
+    @Test
     fun `forEachValue skips removed slots`() {
         // Removal back-shifts within the probe cluster, so a naive scan that
         // trusted stale keys would hand back a value that is no longer there.

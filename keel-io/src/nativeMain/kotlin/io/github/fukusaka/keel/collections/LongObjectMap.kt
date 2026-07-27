@@ -197,6 +197,12 @@ public class LongObjectMap<V : Any>(initialCapacity: Int = DEFAULT_CAPACITY) {
     /**
      * Applies [block] to every value, in no defined order.
      *
+     * **Once per entry, not once per distinct value.** A value stored under N
+     * keys is yielded N times. Stated because a caller cannot tell from the name:
+     * the readiness ledgers key on `(fd, interest)` and hold one listener under
+     * both, so a walk there yields it twice. Whether a consumer wants that or
+     * dedupes is the consumer's to decide — what it must not do is assume.
+     *
      * `inline` so a caller on a hot path pays no lambda: the loops that own a
      * registration ledger walk it while tearing down, where an allocation per
      * entry would land on the thread that is trying to finish.
