@@ -21,12 +21,14 @@ import kotlin.coroutines.resumeWithException
 
 // Kept out of the KDoc because Dokka publishes that, and this is a note to
 // whoever works on these two loops next: the bugs that made them expensive
-// landed in the callback registry and its dispatch path, which this class does
-// not move. Those still exist twice. The measurements are in the pull request,
-// where they stay attached to the revision that took them.
+// landed in the callback registry and its dispatch path. The registry is here
+// now, reached through the keyed accessors below. The dispatch path that reads
+// it still exists twice. The measurements are in the pull request, where they
+// stay attached to the revision that took them.
 /**
- * The registration ledger shared by the POSIX readiness engines — the epoll and
- * kqueue loops.
+ * The registration ledgers shared by the POSIX readiness engines — the epoll and
+ * kqueue loops. Two of them: the FIFO chain of suspend waiters, and the
+ * pipeline-path callback listeners.
  *
  * The two engines kept near-identical copies of everything below. What differed
  * was the arming call, and the statement that prepared its arguments — kqueue
@@ -40,7 +42,9 @@ import kotlin.coroutines.resumeWithException
  * extends — it still ends in `EventLoop`, because that is what it is part of.
  *
  * **What a subclass supplies**: [inEventLoop]; [submitArm] to issue whatever the
- * kernel interface wants (`EV_ADD`, `EPOLL_CTL_ADD` / `MOD`); and [drainTasks],
+ * kernel interface wants (`EV_ADD`, `EPOLL_CTL_ADD` / `MOD`); the arming and
+ * dispatch of the callback path, which reads this class's ledger through
+ * [putCallback] / [popCallback] / [hasCallbackListener]; and [drainTasks],
  * which [failWaitersOnStoppedLoop] needs because cancelling a waiter dispatches
  * its resume back onto the loop's own queue rather than running it. Taking an
  * interest back stays with each engine, because the decision to do so is made in
@@ -64,11 +68,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
 
     /**
      * Guards [registrations] — and, through [withRegLock], whatever else a
-     * subclass chooses to put under it. Both engines guard their own callback
-     * registry with this lock, and epoll its `fdEvents` map as well, so its
-     * scope is wider than the one field named here: narrowing it, splitting it
-     * per key, or destroying it earlier would unprotect state this class cannot
-     * see.
+     * subclass chooses to put under it. It also guards [callbackRegistrations]
+     * here, and epoll keeps its `fdEvents` map under it as well, so its scope is
+     * wider than the one field named here: narrowing it, splitting it per key,
+     * or destroying it earlier would unprotect both this class's second ledger
+     * and state it cannot see.
      *
      * Separate from whatever protects the task queue: `dispatch` (any thread)
      * and `register` (coroutine thread) are independent hot paths that should
@@ -93,6 +97,26 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
 
     /** Suspend-path waiters, keyed by [registrationKey]. */
     private val registrations = LongObjectMap<Registration>()
+
+    /**
+     * Pipeline-path (non-suspend) listeners, keyed by [registrationKey].
+     *
+     * Kept apart from [registrations] rather than unified behind a sealed type:
+     * a sealed wrapper would cost an allocation on the read re-arm, which runs
+     * per readiness event. (Both ledgers are read by the same function —
+     * readiness dispatch checks this one, then falls through to the other —
+     * so it is the allocation that separates them, not the reader.) Taking an
+     * [FdReadyListener] rather than a lambda lets each transport pass `this`,
+     * so that path allocates nothing at all — the same shape
+     * kotlinx.coroutines uses for `Job : DisposableHandle`.
+     *
+     * `private`, reached through [putCallback] / [popCallback] /
+     * [hasCallbackListener], exactly as [registrations] is reached through its
+     * own keyed accessors. A `protected` map would let any subclass mutate it
+     * off the lock, and a [LongObjectMap] mutated concurrently with the loop
+     * thread corrupts its open-addressing table.
+     */
+    private val callbackRegistrations = LongObjectMap<FdReadyListener>()
 
     /**
      * Claims the one teardown of [regMutex].
@@ -532,4 +556,31 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
 
     /** Whether any waiter remains on `(fd, interest)`. Caller holds the lock. */
     protected fun hasWaiters(key: Long): Boolean = registrations[key] != null
+
+    /**
+     * Whether a callback is registered on `key`. Caller holds the lock.
+     *
+     * Keyed per `(fd, interest)` rather than answered as a total, because a
+     * total cannot tell a forgotten WRITE withdrawal from a READ one: both
+     * transports of a loopback pair tear down together, so the total returns to
+     * its baseline either way and the WRITE half can be deleted unnoticed.
+     */
+    protected fun hasCallbackListener(key: Long): Boolean = callbackRegistrations[key] != null
+
+    /** Registers [listener] on `key`, replacing any predecessor. Caller holds the lock. */
+    protected fun putCallback(key: Long, listener: FdReadyListener) {
+        callbackRegistrations[key] = listener
+    }
+
+    /**
+     * Withdraws the callback on `key` and returns it, or `null` if there was
+     * none. Caller holds the lock.
+     *
+     * The kernel interest is left alone, the same caveat [cancelAll] carries for
+     * the suspend ledger: whoever owns the fd disarms it, and until they do a
+     * withdrawn-but-armed interest re-fires into readiness dispatch's no-handler
+     * branch — a WARN per wake on kqueue's persistent filter, and per wake on
+     * epoll because it is level-triggered.
+     */
+    protected fun popCallback(key: Long): FdReadyListener? = callbackRegistrations.remove(key)
 }

@@ -41,6 +41,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`native-posix`): `AbstractPosixReadinessEventLoop` gains five abstract members and
+  takes over the loop, its task queue, both registration ledgers and readiness dispatch
+  (#1005, #1006, #1007)
 - **BREAKING** (`native-posix`): `LoopHandoff` now requires opting in to
   `@InternalPosixEventLoopApi` (#1002)
 - `core`: the pipeline's non-suspend outbound entry points (`requestWrite` / `requestFlush` /
