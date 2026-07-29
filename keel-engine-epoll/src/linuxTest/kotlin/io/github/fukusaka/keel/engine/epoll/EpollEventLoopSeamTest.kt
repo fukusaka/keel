@@ -22,6 +22,7 @@ import platform.posix.EAGAIN
 import platform.posix.EBADF
 import platform.posix.EINTR
 import platform.posix.EMFILE
+import platform.posix.ENOSPC
 import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
 import platform.posix.fcntl
@@ -39,7 +40,7 @@ import kotlin.time.TimeSource
 /**
  * Seam-level unit tests for `EpollEventLoop` syscall error branches
  * via `FakeEpollSyscallOps` injection. Covers the init failure cleanup
- * paths and `addOrModifyEpoll` / `removeInterestFromEpoll` error logging
+ * paths and `addOrModifyEpoll` / `removeInterest` error logging
  * branches that were introduced in PR #355 but were only reachable
  * through a real Linux kernel failure (not testable in integration).
  *
@@ -179,8 +180,8 @@ class EpollEventLoopSeamTest {
     // `register` / `registerCallback` funnel the `epoll_ctl` syscall through
     // the owning EventLoop thread:
     //
-    //   if (inEventLoop()) submitAddOrModifyEpoll(fd, events)
-    //   else dispatch(EmptyCoroutineContext, Runnable { submitAddOrModifyEpoll(fd, events) })
+    //   if (inEventLoop()) submitArmCallback(fd, interest, key)
+    //   else dispatch(EmptyCoroutineContext, Runnable { submitArmCallback(fd, interest, key) })
     //
     // These two pin the pre-start case. It used to be an exception: an extra
     // disjunct, `eventLoopThread == null`, sent registrations issued before the
@@ -454,7 +455,7 @@ class EpollEventLoopSeamTest {
     //
     // When an epoll event fires but no handler (callback or suspend waiter)
     // is registered for that fd+interest, dispatchReady must WARN and call
-    // removeInterestFromEpoll to prevent a level-triggered busy loop. This
+    // removeInterest to prevent a level-triggered busy loop. This
     // can happen if a callback is unregistered after the interest was armed
     // but before the event fires.
 
@@ -509,7 +510,7 @@ class EpollEventLoopSeamTest {
         })
         el.loop()
         assertTrue(readCalled)
-        // Re-registration during onReady() means removeInterestFromEpoll is not
+        // Re-registration during onReady() means removeInterest is not
         // called — no MOD at all on the read hot path.
         val modCalls = fake.ctlCalls.filter { it.op == FakeEpollSyscallOps.CtlOp.MOD }
         assertTrue(modCalls.isEmpty(), "No MOD expected when READ callback re-arms synchronously")
@@ -600,6 +601,44 @@ class EpollEventLoopSeamTest {
         override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.WARN
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
             if (level == LogLevel.WARN) sink.add(message.toString())
+        }
+    }
+
+    @Test
+    fun `a failed callback arm withdraws the listener`() {
+        // kqueue's submitArmCallback has always done this. epoll's discarded the
+        // errno, so a first ADD failing (ENOSPC on max_user_watches, EPERM on a
+        // non-pollable fd) left the listener in the ledger with the fd not in the
+        // interest list at all: no event of any kind is ever delivered for it and
+        // the connection is silently dead.
+        //
+        // Driven on the test thread, like kqueue's copy of this test. Under
+        // start() the assertions would read `errors` -- a plain MutableList the
+        // loop thread appends to -- with no happens-before edge, and the only
+        // signal available to wait on (the ledger withdrawal) is published
+        // strictly *before* the append, so gating on it would not supply one.
+        val errors = mutableListOf<String>()
+        val fake = FakeEpollSyscallOps().apply {
+            scriptAddResult(0) // init ADD (wakeupFd)
+            scriptAddResult(ENOSPC) // ADD for fd 2000 fails
+            scriptWaitFailure(EBADF) // terminate loop()
+        }
+        val el = EpollEventLoop(logger = recordingLogger(errors), syscallOps = fake)
+        try {
+            el.registerCallback(fd = 2000, interest = Interest.READ, listener = NoOpListener)
+
+            el.loop()
+
+            assertFalse(
+                el.hasCallbackRegistration(fd = 2000, interest = Interest.READ),
+                "a listener whose arm failed must not stay in the ledger unarmed",
+            )
+            assertTrue(
+                errors.any { it.contains("readiness callback will not fire") },
+                "the discarded errno is the defect this fixes; report it: $errors",
+            )
+        } finally {
+            el.close()
         }
     }
 

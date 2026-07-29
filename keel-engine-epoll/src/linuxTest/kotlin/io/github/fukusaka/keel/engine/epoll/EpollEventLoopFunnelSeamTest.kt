@@ -28,8 +28,8 @@ import kotlin.time.Duration.Companion.seconds
  * `epoll_ctl(EPOLL_CTL_ADD/MOD)` submission through:
  *
  * ```
- * if (inEventLoop()) submitAddOrModifyEpoll()
- * else dispatch { submitAddOrModifyEpoll() }
+ * if (inEventLoop()) submitArmCallback()
+ * else dispatch { submitArmCallback() }
  * ```
  *
  * The prior seam tests (`EpollEventLoopSeamTest`) drive `loop()` on the

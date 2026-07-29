@@ -47,7 +47,6 @@ import platform.posix.pthread_join
 import platform.posix.pthread_self
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
-import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.time.TimeSource
 
@@ -254,21 +253,36 @@ internal class EpollEventLoop(
     }
 
     /**
-     * EventLoop-thread submission of `EPOLL_CTL_ADD` / `EPOLL_CTL_MOD`
-     * for [fd] with the requested [events]. Wraps [addOrModifyEpoll]
-     * with the [assertInEventLoop] contract.
+     * Maps [interest] onto an epoll mask and arms it.
      *
-     * The `wakeup()` that earlier sat right after `addOrModifyEpoll`
-     * in [register] / [registerCallback] is no longer needed: the
-     * cross-thread caller path goes through [dispatch] (which performs
-     * the eventfd write itself when not in the EL), and the
-     * in-EventLoop / engine-init paths do not need to interrupt
-     * `epoll_wait` because the loop will iterate naturally on the next
-     * pass.
+     * READ asks for `EPOLLRDHUP` alongside `EPOLLIN` so a graceful peer FIN is
+     * reported explicitly: the kernel delivers `EPOLLIN` for it (the read
+     * returns 0), but `EPOLLHUP` only once both directions are closed, so
+     * without `EPOLLRDHUP` the eof flag would reach `dispatchReady` only on a
+     * full close and `onPeerClosed` would fire late.
+     *
+     * Requested here and only here, on a READ arm, so a listener with no READ
+     * arm never sees it. Which connections hold one, and for how long, is
+     * stated at the arm itself in `EpollIoTransport.init`.
+     *
+     * A failed arm withdraws the listener, as kqueue's does. On the first arm —
+     * [addOrModifyEpoll] issues `ADD` and reaches `MOD` only on `EEXIST` — the
+     * fd is left out of the interest list altogether and nothing is delivered
+     * for it, so a retained listener would never fire. On the `MOD` path the fd
+     * stays registered with its previous mask, so `EPOLLERR` / `EPOLLHUP` still
+     * wake the loop; withdrawing means those take the no-handler branch, which
+     * warns and disarms, rather than reaching a listener whose arm did not take.
      */
-    private fun submitAddOrModifyEpoll(fd: Int, events: Int) {
-        assertInEventLoop("submitAddOrModifyEpoll")
-        addOrModifyEpoll(fd, events)
+    override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
+        assertInEventLoop("submitArmCallback")
+        val events = when (interest) {
+            Interest.READ -> EPOLLIN or EPOLLRDHUP
+            Interest.WRITE -> EPOLLOUT
+        }
+        val err = addOrModifyEpoll(fd, events)
+        if (err != 0) {
+            withdrawFailedCallbackArm(fd, interest, key, listener, "epoll_ctl", err)
+        }
     }
 
     /**
@@ -307,54 +321,9 @@ internal class EpollEventLoop(
         }
     }
 
-    /**
-     * Registers a callback for fd readiness notification (pipeline / non-suspend path).
-     *
-     * When `epoll_wait()` reports the fd as ready, [callback] is invoked directly
-     * on the EventLoop thread. The registration is one-shot.
-     */
-    fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
-        val events = when (interest) {
-            // Request EPOLLRDHUP alongside EPOLLIN so peer-shutdown of the
-            // read side (graceful FIN) is delivered explicitly. Without it,
-            // the kernel delivers EPOLLIN on FIN (read returns 0) but
-            // EPOLLHUP only fires for full hangup (both directions closed).
-            // dispatchReady's eofFlag check covers HUP / ERR / RDHUP, so the
-            // listener's onPeerClosed is invoked on graceful peer-FIN.
-            Interest.READ -> EPOLLIN or EPOLLRDHUP
-            Interest.WRITE -> EPOLLOUT
-        }
-        val key = registrationKey(fd, interest)
-
-        withRegLock {
-            putCallback(key, listener)
-        }
-
-        // Same loop-thread funnel the suspend path uses; see [submitOnLoop].
-        submitOnLoop { submitAddOrModifyEpoll(fd, events) }
-    }
-
-    /**
-     * Whether [fd] still has a callback registered for [interest].
-     *
-     * Stays here rather than on the base: its only callers are this module's
-     * `EventLoopGroup` and, through it, the transport-withdrawal tests, and
-     * `internal` is what keeps a test probe from becoming published API. The
-     * base carries the ledger and the reason the query is per-`(fd, interest)`;
-     * this is the two lines that take the lock.
-     */
+    /** `internal` wrapper for this module's `EventLoopGroup`; see [hasCallbackFor]. */
     internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
-        withRegLock { hasCallbackListener(registrationKey(fd, interest)) }
-
-    /**
-     * Removes a pending callback registration for the given fd and interest.
-     *
-     * The kernel interest is left armed — see [popCallback] for what that costs
-     * and who is expected to disarm it.
-     */
-    fun unregisterCallback(fd: Int, interest: Interest) {
-        withRegLock { popCallback(registrationKey(fd, interest)) }
-    }
+        hasCallbackFor(fd, interest)
 
     /**
      * Removes all tracking state for [fd] from [fdEvents].
@@ -580,112 +549,11 @@ internal class EpollEventLoop(
     // --- Helpers ---
 
     /**
-     * Dispatches a ready event for [fd] + [interest] to the appropriate handler.
-     *
-     * Checks callback registrations first (pipeline path), then suspend
-     * registrations (Channel path).
-     *
-     * **Pipeline path**: after [FdReadyListener.onReady] returns, checks whether
-     * the callback was re-registered. READ callbacks always re-arm synchronously
-     * via `armRead()`, so the check is a no-op (fast lock + map lookup, no
-     * epoll_ctl). WRITE callbacks that complete a successful flush do NOT re-arm;
-     * in that case [removeInterestFromEpoll] is called to clear EPOLLOUT from
-     * the epoll filter. Without this, level-triggered epoll keeps reporting
-     * EPOLLOUT on every wait iteration — a busy loop that saturates the
-     * EventLoop thread when many connections have completed writes.
-     *
-     * **Suspend path**: the interest is removed from [fdEvents] and epoll is
-     * updated via MOD when the chain empties, because the coroutine may not
-     * immediately re-register (unlike Pipeline's synchronous armRead cycle).
-     *
-     * **Stale-interest safety net**: when neither a callback nor a suspend
-     * waiter is found, a WARN is logged and the interest is removed from epoll.
-     * Without this, a stale interest left in [fdEvents] would cause a
-     * level-triggered busy loop until the fd is closed.
-     */
-    private fun dispatchReady(fd: Int, interest: Interest, eofFlag: Boolean) {
-        assertInEventLoop("dispatchReady")
-        val key = registrationKey(fd, interest)
-        val cb = withRegLock { popCallback(key) }
-        if (cb != null) {
-            // Order: drain (onReady) before close (onPeerClosed) for combined
-            // data-and-EOF events. For pure EOF the listener detects it via
-            // read syscall returning 0 inside onReady; the eofFlag dispatch
-            // path is the engine-side fallback when read interest was never
-            // armed (`readEnabled = false` write-only push client). Mirrors
-            // the dispatch shape established on KqueueEventLoop.
-            cb.onReady(interest)
-            if (eofFlag) {
-                cb.onPeerClosed(interest)
-                // Same re-registration check as the branch below. This used to
-                // disarm unconditionally, on the reasoning that a connection
-                // reporting EOF is ending and its listener cannot re-register
-                // meaningfully. That is not true of every listener that reaches
-                // here: EPOLLERR and EPOLLHUP set eofFlag too, and they are
-                // reported for a listening socket, whose AcceptArm re-arms on
-                // both WouldBlock and a failed accept. The re-arm issues no
-                // syscall when the mask is unchanged, so disarming after it
-                // discarded a live registration — and once the disarm drops the
-                // fd from the interest list entirely, the always-reported
-                // EPOLLERR that used to bring it back is not delivered either,
-                // leaving an accept loop that never runs again.
-                val reRegistered = withRegLock { hasCallbackListener(key) }
-                if (!reRegistered) {
-                    removeInterestFromEpoll(fd, interest)
-                }
-            } else {
-                // Stale-filter cleanup path: if the callback did not
-                // re-register during onReady (e.g., a WRITE callback after
-                // a successful flush that does not re-arm), remove the
-                // interest from epoll to prevent a stale level-triggered
-                // busy loop. READ callbacks always re-arm via armRead() in
-                // the normal flow.
-                val reRegistered = withRegLock { hasCallbackListener(key) }
-                if (!reRegistered) {
-                    removeInterestFromEpoll(fd, interest)
-                }
-            }
-        } else {
-            // Suspend path: pop one waiter from the FIFO chain. If
-            // siblings remain (concurrent `accept()` callers waiting on
-            // the same serverFd), keep the epoll filter armed so the
-            // next epoll_wait cycle cascade-fires the next sibling — the
-            // chain drains across successive iterations as the kernel
-            // listen queue (or whatever level-triggered condition holds)
-            // stays ready. Only when the chain becomes empty do we
-            // disarm to avoid busy-loop re-fire while the resumed
-            // continuation finishes its asynchronous I/O on another
-            // dispatcher.
-            // Pair<popped Registration?, chain still has waiters?>
-            val pair: Pair<Registration?, Boolean> = withRegLock {
-                val popped = popHeadRegistration(key)
-                popped to hasWaiters(key)
-            }
-            val popped = pair.first
-            if (popped != null) {
-                if (!pair.second) {
-                    removeInterestFromEpoll(fd, interest)
-                }
-                popped.continuation.resume(Unit)
-            } else {
-                // No handler (no callback, no suspend waiter). The epoll interest
-                // is stale: an interest was armed without a corresponding handler, or
-                // was not removed when the last handler deregistered. Level-triggered
-                // epoll re-fires every wait iteration for as long as the fd is ready —
-                // a busy loop. Remove the stale interest now and emit a WARN so the
-                // invariant violation is immediately observable in logs.
-                logger.warn { "dispatchReady: no handler for fd=$fd ${interest.name} — removing stale epoll interest" }
-                removeInterestFromEpoll(fd, interest)
-            }
-        }
-    }
-
-    /**
      * Adds [newEvents] to the epoll registration for [fd].
      *
-     * READ arrives here as `EPOLLIN or EPOLLRDHUP` from [registerCallback] and as
+     * READ arrives here as `EPOLLIN or EPOLLRDHUP` from [submitArmCallback] and as
      * `EPOLLIN` alone from the suspend path; WRITE as `EPOLLOUT`. Whatever is
-     * added has to be taken back by [removeInterestFromEpoll].
+     * added has to be taken back by [removeInterest].
      *
      * Uses EPOLL_CTL_ADD for the first registration. If the fd is already
      * registered (EEXIST), falls back to EPOLL_CTL_MOD with the combined events.
@@ -734,14 +602,14 @@ internal class EpollEventLoop(
      * registration chain empties). Prevents level-triggered busy-loops by removing
      * the interest until the caller arms again.
      *
-     * READ clears `EPOLLRDHUP` along with `EPOLLIN` because [registerCallback] arms
+     * READ clears `EPOLLRDHUP` along with `EPOLLIN` because [submitArmCallback] arms
      * the pair together. Clearing only `EPOLLIN` used to leave `EPOLLRDHUP` armed
      * with nothing able to dispatch it — `loopBody` derives read-readiness from
      * `EPOLLIN|EPOLLERR|EPOLLHUP`, which does not include it — so once the peer sent
      * FIN, level-triggered `epoll_wait` returned that fd on every iteration and the
      * loop spun at 100% until the fd was closed.
      */
-    private fun removeInterestFromEpoll(fd: Int, interest: Interest) {
+    override fun removeInterest(fd: Int, interest: Interest) {
         val removeBit = when (interest) {
             Interest.READ -> EPOLLIN or EPOLLRDHUP
             Interest.WRITE -> EPOLLOUT
@@ -760,9 +628,9 @@ internal class EpollEventLoop(
         // EPOLLERR / EPOLLHUP are reported whether or not they were asked for,
         // so an fd left registered with 0 events still comes back from every
         // epoll_wait once the peer resets — with its one-shot callback already
-        // consumed and no suspend waiter left, that is the stale-interest WARN
-        // below firing in a loop. Drop the fd instead; the next arm re-adds it
-        // (addOrModifyEpoll starts with EPOLL_CTL_ADD).
+        // consumed and no suspend waiter left, that is the no-handler branch of
+        // the base's dispatchReady warning on every wake. Drop the fd instead;
+        // the next arm re-adds it (addOrModifyEpoll starts with EPOLL_CTL_ADD).
         val err = if (remaining == 0) {
             syscallOps.epollDel(epFd, fd)
         } else {
