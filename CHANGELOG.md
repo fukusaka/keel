@@ -72,6 +72,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`, `engine-epoll`, `engine-kqueue`: sweep the pipeline-callback ledger when a loop
+  stops — a registered listener is told through the new `FdReadyListener.onLoopStopped` and
+  released, so a parked reader gets EOF instead of hanging (#1008)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: three readiness-dispatch defects, fixed at the
   now-shared copy — a disarm racing a suspend waiter, a stale queued arm, and a swallowed arm
   error (#1005)
