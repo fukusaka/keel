@@ -62,8 +62,10 @@ interface FdReadyListener {
      *
      * Called once per surviving registration while the loop takes itself apart,
      * on the loop thread, after the ledger has released it — so a listener may
-     * register with another loop from here, and re-registering with this one
-     * would simply never fire.
+     * register with another loop from here. Registering with *this* one is
+     * refused: the ledgers were closed in the same step that emptied them, so
+     * the attempt neither appends nor arms. It is logged and not signalled back
+     * — a second call to this method would lead straight here again.
      *
      * This is not [onPeerClosed]: the peer may be perfectly healthy. What ended
      * is the loop's ability to report readiness, which for a listener waiting on

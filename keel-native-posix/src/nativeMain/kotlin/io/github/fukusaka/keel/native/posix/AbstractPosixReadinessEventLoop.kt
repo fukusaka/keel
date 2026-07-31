@@ -145,6 +145,27 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     private val callbackRegistrations = LongObjectMap<FdReadyListener>()
 
     /**
+     * Set once [failWaitersOnStoppedLoop] has swept, after which both ledgers
+     * refuse to take anything new. Caller holds the lock.
+     *
+     * The sweep empties the ledgers and tells every listener it found, but that
+     * alone does not make it a *fixed point*: an append landing afterwards — a
+     * listener re-registering out of `onLoopStopped`, or a task the sweep's own
+     * final drain runs — went into a map nothing reads again. That entry is
+     * never dispatched, never swept, and holds its transport, channel and
+     * pipeline graph for as long as this stopped loop object lives. Refusing is
+     * also the honest answer: the loop cannot arm it, so parking on it is a hang
+     * dressed as a wait.
+     *
+     * Written inside the sweep's own critical section, so "swept" and "closed"
+     * are one atomic step and nothing can slip between them. Read by both append
+     * paths, which already run under this lock — so the check is a plain field
+     * read on a lock the caller is holding anyway: no new atomic, and nothing on
+     * the per-readiness-event path.
+     */
+    private var ledgersClosed: Boolean = false
+
+    /**
      * Claims the one teardown of [regMutex].
      *
      * A CAS rather than a flag because the hook it guards is published to
@@ -469,7 +490,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * a plain state read: taking another lock, or calling back into this loop,
      * can deadlock. `StreamServer` passes a volatile flag read.
      *
-     * @return the [Registration], or `null` if [stillWanted] returned false.
+     * @return the [Registration], or `null` when it was **not appended** —
+     *   either [stillWanted] returned false, or the loop has stopped and closed
+     *   its ledgers. A caller cannot tell those apart and must not describe the
+     *   result as one of them: the two servers that answer `null` with a
+     *   `CancellationException` name both causes in its message for that reason.
      */
     fun registerIf(
         fd: Int,
@@ -480,7 +505,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         val key = registrationKey(fd, interest)
         val newReg = Registration(fd, interest, cont)
         val appended = withRegLock {
-            if (!stillWanted()) {
+            // A closed ledger declines the same way a caller that stopped
+            // wanting it does. This path already reports "not appended" as
+            // `null` and its caller already resumes the continuation itself, so
+            // it needs no second failure mode.
+            if (ledgersClosed || !stillWanted()) {
                 false
             } else {
                 appendRegistration(key, newReg)
@@ -517,7 +546,34 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         // Append BEFORE arming, to close the window where the kernel reports
         // readiness before the chain entry exists. The loop reads the chain
         // under this same lock, so the head is always found.
-        withRegLock { appendRegistration(key, newReg) }
+        val appended = withRegLock {
+            if (ledgersClosed) {
+                false
+            } else {
+                appendRegistration(key, newReg)
+                true
+            }
+        }
+        if (!appended) {
+            // Same outcome, and the same cause type, as arriving a moment
+            // earlier and being swept: a plain CancellationException. Giving
+            // this its own type was built and measured for the sweep in #1004
+            // and withdrawn -- telling the two apart only helps a caller that
+            // then advances past a stopped loop, which is the hang that change
+            // produced. The returned [Registration] was never appended, so the
+            // caller's `invokeOnCancellation { unregister(reg) }` is a no-op and
+            // the rest of its handler -- closing the fd it owns -- still runs.
+            // Guarded for the reason the sweep guards the identical call: this
+            // runs the caller's cancellation handler, which is user code.
+            try {
+                cont.cancel(
+                    CancellationException("EventLoop stopped before fd=$fd could register for $interest"),
+                )
+            } catch (t: Throwable) {
+                logger.warn(t) { "waiter's cancellation threw while the EventLoop was stopped" }
+            }
+            return newReg
+        }
 
         submitOnLoop { submitArm(fd, interest, key, newReg, cont) }
         return newReg
@@ -561,11 +617,17 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * takes an `ifStopped` fallback for exactly this window, so reach is not what
      * blocks the fix. Cost is: `runOnLoop` adds a `CAS` and a claim object to
      * every submission — a figure taken from reading [LoopHandoff.runOnLoop],
-     * not from a benchmark. The callers left here are [register] and
-     * [registerIf], once per `accept()` / `connect()` / suspending read rather
-     * than per readiness event; [registerCallback] funnels itself.
-     * Closing it properly means refusing the registration at its source, which is
-     * its own change, tracked with the matching teardown hazard on
+     * not from a benchmark. **This class's own callers now narrow it, and do not
+     * close it.** [register], [registerIf] and [registerCallback] all consult
+     * `ledgersClosed`, but each releases the registration lock before
+     * submitting, so a caller that passed the check can still be overtaken: the
+     * sweep runs between the two, ends the waiter it just appended, and the
+     * submission lands in a queue nothing drains. What that costs is no longer a
+     * hang — the waiter is already cancelled — but the `Runnable` and everything
+     * it captures stay reachable for the loop object's lifetime. Closing it
+     * needs the submission itself inside the lock, which puts a syscall there.
+     * The general shape is unchanged for a subclass routing its own submission
+     * through this function, as is the teardown hazard on
      * [destroyRegistrationLock].
      */
     protected inline fun submitOnLoop(crossinline block: () -> Unit) {
@@ -634,7 +696,7 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     }
 
     /** Appends [reg] to the FIFO chain for [key]. Caller MUST hold [regMutex]. */
-    protected fun appendRegistration(key: Long, reg: Registration) {
+    private fun appendRegistration(key: Long, reg: Registration) {
         val head = registrations[key]
         if (head == null) {
             registrations[key] = reg
@@ -761,11 +823,13 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      *
      * **What it closes is one window, not the general case.** A registration
      * that arrives between the final drain and this call is ended here. One
-     * that arrives *after* it still appends to the ledger and dispatches an arm
-     * into a queue nobody drains, and stays parked — measured, not assumed.
-     * Ending those means refusing the registration at its source, which is a
-     * cost on the hot path and a separate decision; the attempt that took it is
-     * recorded with what it cost.
+     * that arrives *after* it is now **refused** rather than parked: the last
+     * act of the critical section that empties the ledgers is to close them, so
+     * everything this function does afterwards — the notifications and the final
+     * drain — already runs against closed ledgers. What that does not reach is a
+     * caller already past the ledger and on its way into
+     * `withContext(ioDispatcher)`, whose resume is itself queued to the dead
+     * queue.
      *
      * **Cancels rather than resuming with the failure.** Only a cancelled
      * continuation runs its `invokeOnCancellation` handler; a continuation
@@ -790,8 +854,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * candidate registers on a loop `engine.close()` stopped as well, parks
      * forever, and can take the registration lock after `close()` freed it. It
      * was implemented, measured and withdrawn. Telling the two apart is only
-     * safe once a stopped loop refuses registrations outright, which needs its
-     * own change.
+     * safe once a stopped loop refuses registrations outright — which it now
+     * does, so the prerequisite is met and the decision is open again. It stays
+     * unmade here because the fallback's call sites are what would have to
+     * change, and that is not this function's to decide.
      *
      * **Drains afterwards, and that is not optional.** Cancelling runs the
      * handler synchronously but not the coroutine: the resume goes back through
@@ -801,11 +867,13 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * on stays parked — which is the hang this exists to end, and is what
      * `channel.ioDispatcher` gives every connection handler.
      *
-     * What remains after this returns: a waiter registered by one of the
-     * coroutines the drain resumed. That is a strictly narrower window than the
-     * one being closed, and it needs a decision about how long a stopping loop
-     * should keep serving new registrations, so it is tracked rather than
-     * papered over with an unbounded sweep/drain alternation here.
+     * A waiter registered by one of the coroutines that drain resumes is **not**
+     * what remains — the ledgers were closed before the drain ran, so it is
+     * refused and ended like any other late arrival. What remains is narrower
+     * still: a caller already past the ledger check and inside
+     * `withContext(ioDispatcher)`, whose resume is queued to this same dead
+     * queue. Reaching that one means gating before the park rather than at the
+     * ledger, which is its own decision and is tracked.
      */
     protected fun failWaitersOnStoppedLoop() {
         val stranded = mutableListOf<Registration>()
@@ -819,6 +887,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // loop object is alive.
             callbackRegistrations.forEachValue { listener -> orphaned.add(listener) }
             callbackRegistrations.clear()
+            // Closed in the same critical section that emptied them, so "swept"
+            // and "closed" are one step. Anything arriving after this -- from
+            // the notifications below, from the final drain, or from another
+            // thread -- is refused rather than parked in a map nobody reads.
+            ledgersClosed = true
         }
         // Outside the lock, as in cancelAll: a handler may re-enter this class.
         // The lists above are the cost of that, and this runs once per loop.
@@ -922,10 +995,17 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * instant the kernel accepts the registration, and a listener that is not
      * in the map yet would be a dropped event.
      *
-     * **Thread safety**: safe from any thread. Off the loop the arm is queued,
-     * and a caller arriving after the loop's final drain queues it to a queue
-     * nothing will drain — the window [submitOnLoop] documents from the suspend
-     * side.
+     * **Thread safety**: safe from any thread. Off the loop the arm is queued.
+     *
+     * **A registration arriving after the loop has stopped is refused**, and the
+     * refusal is silent to the caller — nothing is appended, no arm is issued,
+     * and there is no return value to check. What the caller gets instead is a
+     * WARN naming the fd and interest, because a listener refused here is one
+     * that will never fire: if it was in the ledger when the loop swept it has
+     * been told through [FdReadyListener.onLoopStopped], but a listener
+     * registering for the *first* time after the sweep was never in that ledger
+     * and is told nothing. Reaching that one needs the loop to track live
+     * connections rather than live registrations, which is a separate change.
      *
      * **A second registration on the same `(fd, interest)` replaces the first**,
      * which is then never called and never told. That is what a re-arm is —
@@ -934,8 +1014,32 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      */
     fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
         val key = registrationKey(fd, interest)
-        withRegLock {
-            putCallback(key, listener)
+        val appended = withRegLock {
+            if (ledgersClosed) {
+                false
+            } else {
+                putCallback(key, listener)
+                true
+            }
+        }
+        if (!appended) {
+            // Refused, and reported rather than dropped: a listener that will
+            // never fire is not something to drop in silence. What is *not*
+            // done is calling a hook from the refusal --
+            // a listener registering from inside its own `onLoopStopped` would
+            // then be refused, told, and re-register without bound, which is the
+            // recursion an arm-failure hook produced in an earlier change.
+            //
+            // A listener already in the ledger at sweep time has been told. One
+            // registering for the first time afterwards was never there and is
+            // told nothing; this WARN is all it gets, and reaching it properly
+            // needs the loop to track live connections rather than live
+            // registrations.
+            logger.warn {
+                "${this::class.simpleName}.registerCallback: EventLoop stopped — refusing " +
+                    "fd=$fd ${interest.name}; this listener will not fire"
+            }
+            return
         }
         // The funnel spelled out rather than [submitOnLoop], because the two
         // branches genuinely need different things and this one is the
