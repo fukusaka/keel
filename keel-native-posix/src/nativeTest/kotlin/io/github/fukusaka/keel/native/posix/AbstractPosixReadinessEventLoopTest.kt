@@ -285,6 +285,23 @@ class AbstractPosixReadinessEventLoopTest {
     }
 
     /**
+     * Re-registers from [onLoopStopped] — the path that made the sweep not a
+     * fixed point. Records that it was told, so a test can tell "the ledger
+     * stayed empty because the re-registration was refused" apart from "it
+     * stayed empty because nothing ever called back".
+     */
+    private class RegisteringOnStopListener(private val loop: FakeLoop) : FdReadyListener {
+        var toldCount = 0
+
+        override fun onReady(interest: Interest) = Unit
+
+        override fun onLoopStopped() {
+            toldCount++
+            loop.registerCallback(FD, Interest.WRITE, this)
+        }
+    }
+
+    /**
      * Re-arms from [onPeerClosed] rather than [onReady] — the later of the two
      * points at which a listener can put itself back in the registry, and the
      * one [RecordingListener] cannot reach.
@@ -623,6 +640,123 @@ class AbstractPosixReadinessEventLoopTest {
         assertNull(declined.await(), "a declined registration returns null")
         assertFalse(loop.waiters(FD, Interest.READ), "and appends nothing")
         assertTrue(loop.armed.isEmpty(), "and arms nothing")
+    }
+
+    // --- Ledgers closed after the sweep (the sweep is a fixed point) ---
+    //
+    // The sweep empties both ledgers and tells every surviving listener. What it
+    // did not do was stop the ledgers accepting more: an append landing after it
+    // -- from a listener re-registering out of `onLoopStopped`, or from a task
+    // the sweep's own final drain runs -- went into a map nothing reads again.
+    // The entry is never dispatched, never swept, and holds its transport,
+    // channel and pipeline graph for as long as the stopped loop object lives.
+    //
+    // Closing is done inside the sweep's own critical section, so "swept" and
+    // "closed" are one atomic step: nothing can slip between them. Both append
+    // paths already run under that same lock, so the check costs a plain field
+    // read on a lock the caller is holding anyway -- no new atomic, nothing on
+    // the per-readiness-event path.
+
+    @Test
+    fun `a suspend registration after the sweep is refused and its waiter cancelled`() = loopTest { loop ->
+        loop.failRemainingWaiters()
+
+        val cancelled = CompletableDeferred<Throwable?>()
+        var handlerRan = false
+        launch {
+            try {
+                suspendCancellableCoroutine<Unit> { cont ->
+                    val reg = loop.registerWaiter(FD, Interest.READ, cont)
+                    // The shape awaitWriteReady uses: the handler is installed
+                    // *after* register returns, so it is installed on a
+                    // continuation this call already cancelled. It has to run
+                    // anyway -- on the connect path it is what closes the fd,
+                    // and a refusal that skipped it would leak the descriptor
+                    // it was holding.
+                    cont.invokeOnCancellation {
+                        loop.unregister(reg)
+                        handlerRan = true
+                    }
+                }
+                cancelled.complete(null)
+            } catch (t: Throwable) {
+                cancelled.complete(t)
+            }
+        }
+
+        val cause = cancelled.await()
+        assertTrue(handlerRan, "the cancellation handler must run: on the connect path it closes the fd")
+        assertTrue(
+            cause is CancellationException,
+            "a waiter the loop can never arm must end, not park: got $cause",
+        )
+        assertFalse(loop.waiters(FD, Interest.READ), "and nothing is left in a ledger nobody reads")
+        assertTrue(loop.armed.isEmpty(), "and no arm is issued for it")
+    }
+
+    @Test
+    fun `a callback registration after the sweep is refused without arming`() = loopTest { loop ->
+        loop.failRemainingWaiters()
+
+        loop.registerCallback(FD, Interest.READ, RecordingListener())
+
+        assertFalse(
+            loop.hasCallbackRegistration(FD, Interest.READ),
+            "the callback ledger is closed; an entry here is never dispatched and never swept again",
+        )
+        assertTrue(loop.armedCallbacks.isEmpty(), "and no arm is issued for it")
+        // The refusal's only observable effect. A listener that will never fire
+        // is the one thing here that must not be dropped in silence, and without
+        // this the WARN could be deleted with the suite still green.
+        assertTrue(
+            loop.warnings.any { it.contains("refusing fd=$FD") },
+            "a refused listener must be reported, not dropped: ${loop.warnings}",
+        )
+    }
+
+    @Test
+    fun `registerIf after the sweep declines like a caller that stopped wanting it`() = loopTest { loop ->
+        loop.failRemainingWaiters()
+
+        val declined = CompletableDeferred<AbstractPosixReadinessEventLoop.Registration?>()
+        launch {
+            suspendCancellableCoroutine { cont ->
+                declined.complete(loop.registerIf(FD, Interest.READ, cont) { true })
+                cont.resumeWith(Result.success(Unit))
+            }
+        }
+
+        // Null is the shape this path already has for "not appended", and its
+        // caller already resumes the continuation itself -- so a closed ledger
+        // needs no second failure mode here.
+        assertNull(declined.await(), "a closed ledger declines the same way a withdrawn caller does")
+        assertFalse(loop.waiters(FD, Interest.READ))
+        assertTrue(loop.armed.isEmpty())
+    }
+
+    @Test
+    fun `a listener that re-registers from onLoopStopped leaves the ledger empty`() {
+        // The fixed point, end to end: this is the path that made the sweep not
+        // one. The listener is told, tries to come back, and the ledger it
+        // reaches is already closed -- so the sweep's postcondition survives the
+        // sweep's own notifications.
+        val loop = FakeLoop()
+        try {
+            val listener = RegisteringOnStopListener(loop)
+            loop.registerCallback(FD, Interest.READ, listener)
+
+            loop.failRemainingWaiters()
+
+            // Both halves, or this passes for the wrong reason: a sweep that
+            // stopped telling listeners at all would leave the ledger empty too.
+            assertEquals(1, listener.toldCount, "the listener is told exactly once")
+            assertFalse(
+                loop.hasCallbackRegistration(FD, Interest.WRITE),
+                "and its re-registration must not survive in a ledger the loop will never read",
+            )
+        } finally {
+            loop.destroy()
+        }
     }
 
     @Test

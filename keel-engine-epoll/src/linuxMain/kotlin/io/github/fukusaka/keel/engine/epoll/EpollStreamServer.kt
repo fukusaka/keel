@@ -119,7 +119,18 @@ internal class EpollStreamServer(
                             cont,
                         ) { _active }
                         if (reg == null) {
-                            cont.resumeWithException(CancellationException("StreamServer closed"))
+                            // Two causes reach here and this cannot tell them
+                            // apart: close() cleared `_active`, so the
+                            // predicate above declined; or the loop swept and
+                            // closed its ledgers under a server that never
+                            // closed, leaving `isActive` true. The second
+                            // happens on every path that ends the loop --
+                            // engine.close() as much as a fatal poll errno --
+                            // because the sweep runs from loop()'s finally.
+                            // Naming only the first would blame a state this
+                            // server may well not be in.
+                            val cause = "accept unavailable: StreamServer closed or its EventLoop stopped"
+                            cont.resumeWithException(CancellationException(cause))
                             return@suspendCancellableCoroutine
                         }
                         cont.invokeOnCancellation {
