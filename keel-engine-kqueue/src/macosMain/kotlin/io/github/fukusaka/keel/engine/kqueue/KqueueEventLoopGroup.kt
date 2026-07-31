@@ -80,4 +80,7 @@ internal class KqueueEventLoopGroup(
     /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
     internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
         loops.any { it.hasCallbackRegistration(fd, interest) }
+
+    /** Total participants across this group's loops. */
+    internal fun participants(): Int = loops.sumOf { it.participants() }
 }

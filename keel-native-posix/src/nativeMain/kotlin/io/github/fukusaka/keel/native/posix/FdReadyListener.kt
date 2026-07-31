@@ -55,32 +55,4 @@ interface FdReadyListener {
      * left an accept loop that never ran again.
      */
     fun onPeerClosed(interest: Interest) {}
-
-    /**
-     * The EventLoop this registration was made with has stopped and will not
-     * dispatch again. Default no-op.
-     *
-     * Called once per surviving registration while the loop takes itself apart,
-     * on the loop thread, after the ledger has released it — so a listener may
-     * register with another loop from here. Registering with *this* one is
-     * refused: the ledgers were closed in the same step that emptied them, so
-     * the attempt neither appends nor arms. It is logged and not signalled back
-     * — a second call to this method would lead straight here again.
-     *
-     * This is not [onPeerClosed]: the peer may be perfectly healthy. What ended
-     * is the loop's ability to report readiness, which for a listener waiting on
-     * one is the same practical outcome and a different cause. A listener whose
-     * teardown is driven from elsewhere -- a server closed by `close()` rather
-     * than by readiness -- leaves it as the no-op.
-     *
-     * **No [Interest], unlike its two siblings.** They carry one because a
-     * listener acts on it: [onReady] dispatches read against write, and
-     * [onPeerClosed] returns early on anything but READ. Nothing acts on it here
-     * — when the loop is gone, every registration a listener holds on it is gone
-     * with it, so which one this call stands for changes no decision. Carrying it
-     * anyway cost a keyed walk over the ledger and a public accessor on
-     * [io.github.fukusaka.keel.collections.LongObjectMap] to support it, for a
-     * value no implementation read.
-     */
-    fun onLoopStopped() {}
 }

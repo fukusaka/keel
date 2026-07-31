@@ -107,6 +107,9 @@ class KqueueEngine(
     internal fun hasWorkerRegistration(fd: Int, interest: Interest): Boolean =
         workerGroup.hasCallbackRegistration(fd, interest)
 
+    /** Participants currently held by the worker loops; see the loop's probe. */
+    internal fun workerParticipants(): Int = workerGroup.participants()
+
     init {
         bossLoop.start()
         workerGroup.start()

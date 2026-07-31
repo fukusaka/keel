@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
@@ -150,6 +151,85 @@ class KqueueLoopStopNotifiesTransportTest {
             reader.join()
             serverCh.close()
             server.close()
+        }
+    }
+
+    @Test
+    fun `a connection holding no registration is told when its EventLoop stops`() = runBlocking {
+        // The connection the participant registry exists for. `init` arms READ
+        // once; with `readEnabled` still false (nothing has called read()), the
+        // first readiness event pops that one-shot entry and `onReadable`
+        // declines to re-arm -- so the ledger holds nothing for this fd and the
+        // kernel interest is taken back. A notification keyed on the ledger
+        // walked straight past this state; keyed on the registry, the transport
+        // is told all the same.
+        withTimeout(BODY_TIMEOUT_S.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind(LOOPBACK_HOST, 0)
+            val port = (server.localAddress as InetSocketAddress).port
+
+            val client = engine.connect(LOOPBACK_HOST, port)
+            val serverCh = server.accept()
+
+            val transport = (client as AbstractPipelinedChannel).transport as KqueueIoTransport
+            val closedSignal = CompletableDeferred<Unit>()
+            transport.onReadClosed = { closedSignal.complete(Unit) }
+
+            // One readiness event: the peer sends a byte, the declined wake
+            // consumes the one-shot entry and disarms.
+            val buf = DefaultAllocator.allocate(8)
+            buf.writeByte(0x41)
+            serverCh.write(buf)
+            serverCh.flush()
+
+            // Wait for the ledger to actually empty -- a signal, not a sleep.
+            val empty = withTimeoutOrNull(PARK_TIMEOUT_S.seconds) {
+                while (
+                    engine.hasWorkerRegistration(transport.fd, Interest.READ) ||
+                    engine.hasWorkerRegistration(transport.fd, Interest.WRITE)
+                ) {
+                    delay(PARK_POLL_MS)
+                }
+                true
+            }
+            assertTrue(empty == true, "the declined wake must leave the ledger empty for this fd")
+            assertFalse(closedSignal.isCompleted, "nothing has closed this connection yet")
+
+            engine.close()
+
+            withTimeout(LOOP_STOP_TIMEOUT_S.seconds) { closedSignal.await() }
+            serverCh.close()
+            server.close()
+        }
+    }
+
+    @Test
+    fun `a closed connection leaves the participant registry`() = runBlocking {
+        // The remove half of the registry contract, through the public API. A
+        // transport that closes must leave, or a long-lived loop with
+        // connection churn grows the registry without bound -- the retention
+        // this registry was built to end, reintroduced by a missing removal.
+        withTimeout(BODY_TIMEOUT_S.seconds) {
+            val engine = KqueueEngine()
+            val server = engine.bind(LOOPBACK_HOST, 0)
+            val port = (server.localAddress as InetSocketAddress).port
+
+            val client = engine.connect(LOOPBACK_HOST, port)
+            val serverCh = server.accept()
+            assertTrue(engine.workerParticipants() >= 1, "a live connection is in the registry")
+
+            client.close()
+            serverCh.close()
+
+            // Teardown runs on the loop; wait for it to land, bounded.
+            val left = withTimeoutOrNull(PARK_TIMEOUT_S.seconds) {
+                while (engine.workerParticipants() != 0) delay(PARK_POLL_MS)
+                true
+            }
+            assertTrue(left == true, "closed connections must leave the registry, or churn grows it forever")
+
+            server.close()
+            engine.close()
         }
     }
 }
