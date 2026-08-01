@@ -73,16 +73,21 @@ internal class DefaultPipeline(
      * the handler would be allocated on the fast path too; the dispatched
      * closure is built only in the branch that uses it.
      *
+     * A stopped owning context is asked about separately from a closed
+     * transport: the two are not the same state, and the one that strands work
+     * is a *live* transport whose dispatcher has stopped — its queue accepts
+     * the task and nothing ever drains it.
+     *
      * The `false` return does not close the window entirely: a transport that
-     * closes *after* the dispatch still leaves the task queued, and the queue
-     * only drains while the loop lives.
+     * closes, or whose loop stops, *after* the dispatch still leaves the task
+     * queued.
      */
     private inline fun onOwningContext(crossinline block: () -> Unit): Boolean {
         if (transport.inOwningContext) {
             block()
             return true
         }
-        if (!transport.isOpen) return false
+        if (!transport.isOpen || !transport.canDispatchToOwningContext) return false
         ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
         return true
     }

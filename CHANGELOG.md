@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `IoTransport.canDispatchToOwningContext` — whether work handed to the transport's
+  dispatcher will still run, so the pipeline can release rather than strand it (#1013)
 - `io`: `LongObjectMap.forEachValue` — inline walk over the values, for callers that have to
   drain a map without allocating per entry (#1004)
 - `native-posix`: `AbstractPosixReadinessEventLoop` — the loop, both ledgers and readiness
@@ -72,6 +74,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`, `engine-epoll`, `engine-kqueue`: a stopped EventLoop no longer swallows
+  `shutdownOutput()`, a flush wait, or an off-context write — each is now reported, cancelled
+  with a reason, or released rather than stranded (#1013)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: keep the EventLoop's registration lock valid
   for the process lifetime instead of freeing it at teardown — a cancellation arriving after
   `close()` took a freed mutex — and report `pthread_mutex_lock` / `unlock` failures instead of

@@ -6,11 +6,14 @@ import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.LoopParticipant
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -586,8 +589,188 @@ class KqueueTransportSeamTest {
         assertEquals(0, tracker.outstandingCount, "the stranded pending write must be released")
     }
 
+    // --- entry points a stopped loop used to swallow ---
+
+    @Test
+    fun `shutdownOutput on a stopped loop is refused with a warning`() = runBlocking {
+        // It used to dispatch onto a queue nothing drains: no FIN, no error, no
+        // log -- the peer waited for an EOF that was never coming. The FIN still
+        // is not sent (the buffered writes it waits for will never drain, and
+        // issuing it here would race a concurrent close for the fd), but the
+        // request is now reported instead of disappearing.
+        val warns = RecordingLogger(LogLevel.WARN)
+        val loop = KqueueEventLoop(warns, flushCoalescing = false)
+        loop.start()
+        val fake = FakeNativeSocket().apply { enqueueShutdown(fd, ShutdownResult.Ok) }
+        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+        loop.close()
+
+        // shutdownOutput() is non-blocking on every path, so this budget is a
+        // real one rather than a formality -- it bounds the call itself, not
+        // just the suite's house style.
+        withTimeout(SEAM_TIMEOUT_MS) { transport.shutdownOutput() }
+
+        assertEquals(0, fake.shutdownCalls, "no FIN is issued off the loop that used to order it")
+        assertTrue(
+            warns.messages.any { "shutdownOutput() on a stopped EventLoop" in it },
+            "and the refusal must be reported, not silent: ${warns.messages}",
+        )
+    }
+
+    @Test
+    fun `awaitPendingFlush entered after the loop stopped is cancelled instead of parking`() = runBlocking {
+        // The register Runnable would land on a dead queue, so the continuation
+        // was never even stored -- the one shape close() cannot rescue, because
+        // there is nothing for it to cancel.
+        eventLoop.start()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val queued = CompletableDeferred<Unit>()
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
+                transport.write(buf)
+                transport.flush()
+                queued.complete(Unit)
+            },
+        )
+        withTimeout(SEAM_TIMEOUT_MS) { queued.await() }
+        eventLoop.close()
+
+        var cancelled = false
+        withTimeout(SEAM_TIMEOUT_MS) {
+            try {
+                transport.awaitPendingFlush()
+            } catch (_: CancellationException) {
+                cancelled = true
+            }
+        }
+
+        assertTrue(cancelled, "a caller arriving after the loop stopped must not park forever")
+    }
+
+    @Test
+    fun `the stop sweep ends a caller already parked in awaitPendingFlush`() = runBlocking {
+        // Parked before the stop, on a live dispatcher, and never closed: the
+        // sweep is the only thing that reaches it while the channel is open.
+        eventLoop.start()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
+        transport.write(buf)
+        transport.flush()
+
+        var cancelled = false
+        val waiter = launch(Dispatchers.Default) {
+            try {
+                transport.awaitPendingFlush()
+            } catch (_: CancellationException) {
+                cancelled = true
+            }
+        }
+        withTimeout(SEAM_TIMEOUT_MS) {
+            while (!transport.hasFlushWaiter()) delay(POLL_MS)
+        }
+
+        eventLoop.close() // runs the sweep, which tells every participant
+
+        withTimeout(SEAM_TIMEOUT_MS) { waiter.join() }
+        assertTrue(cancelled, "the sweep must end the write-side wait, not only the read side")
+    }
+
+    @Test
+    fun `awaitPendingFlush on a stopped loop is cancelled with a reason rather than silently resumed`() = runBlocking {
+        // Pins the deliberate choice, so it is not "improved" back into a race.
+        // Deciding whether the queue is really empty means reading pending state
+        // from off the loop, where a concurrent close() is emptying it -- and a
+        // stale read there reports a flush complete whose bytes were dropped.
+        // Cancelling is the fail-safe answer even for a caller that had nothing
+        // queued, and the cause says which fd and why.
+        eventLoop.start()
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+        eventLoop.close()
+
+        val cause = withTimeout(SEAM_TIMEOUT_MS) {
+            runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+        }
+
+        assertTrue(cause is CancellationException, "a stopped loop must not report the flush complete, got: $cause")
+        assertTrue(
+            cause.message?.contains("fd=$fd") == true,
+            "the cancellation must name the fd and the reason, got: ${cause.message}",
+        )
+    }
+
+    @Test
+    fun `a flush awaited from inside the stop sweep is cancelled instead of parking`() = runBlocking {
+        // The window the caller-side check cannot see. The loop has stopped
+        // polling but is not yet quiescent, so work dispatched now still runs --
+        // in the drain the sweep performs *after* it has walked the
+        // participants. A continuation stored there is one the sweep has
+        // already been past, so nothing is left to end the wait.
+        eventLoop.start()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
+        transport.write(buf)
+        transport.flush()
+
+        val outcome = CompletableDeferred<String>()
+        eventLoop.addParticipant(
+            object : LoopParticipant {
+                override fun onLoopStopped() {
+                    // Queued from inside the participant walk, so it lands in
+                    // the drain that follows it.
+                    CoroutineScope(eventLoop).launch {
+                        try {
+                            transport.awaitPendingFlush()
+                            outcome.complete("resumed")
+                        } catch (_: CancellationException) {
+                            outcome.complete("cancelled")
+                        }
+                    }
+                }
+            },
+        )
+
+        eventLoop.close()
+
+        assertEquals(
+            "cancelled",
+            withTimeout(SEAM_TIMEOUT_MS) { outcome.await() },
+            "a flush awaited after the sweep has passed must not park",
+        )
+    }
+
+    @Test
+    fun `a stopped loop reports that it can no longer be dispatched to`() = runBlocking {
+        // What the pipeline asks before handing over a buffer whose ownership
+        // it has taken. The release itself is pinned in the pipeline's own
+        // suite; this pins that this engine answers truthfully -- open, but
+        // with a dispatcher that will never run anything again.
+        //
+        // The budget is declarative here: close() joins the loop thread with no
+        // suspension point, so withTimeout cannot cut a loop that will not
+        // leave its body -- the job timeout does. Stated anyway so the whole
+        // suite reads one way.
+        withTimeout(SEAM_TIMEOUT_MS) {
+            eventLoop.start()
+            val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+            assertTrue(transport.canDispatchToOwningContext, "a live loop still takes work")
+
+            eventLoop.close()
+
+            assertTrue(transport.isOpen, "premise: the transport is still open, only its loop stopped")
+            assertFalse(transport.canDispatchToOwningContext, "a stopped loop must say so")
+        }
+    }
+
     private companion object {
         const val SEAM_TIMEOUT_MS = 5_000L
+
+        /** Poll interval while waiting for a waiter to reach its park. */
+        const val POLL_MS = 5L
 
         /** Payload size for the half-close ordering tests. */
         const val PAYLOAD_BYTES = 5
