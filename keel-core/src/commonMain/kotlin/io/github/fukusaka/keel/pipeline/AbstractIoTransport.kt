@@ -44,12 +44,12 @@ abstract class AbstractIoTransport(
      *
      * Written by [close] once (idempotent transition true → false) and
      * read by [isOpen], [write], and subclass flush paths. `@Volatile`
-     * guarantees that a `false` written on the EventLoop thread is
-     * visible to a caller that reads [isOpen] on another dispatcher.
+     * guarantees the `false` is visible to a reader on another thread.
      *
-     * Subclasses MUST flip this flag only from the EventLoop thread
-     * (or the engine-local equivalent) to keep the `pendingWrites` /
-     * `pendingBytes` mutations below serialised.
+     * Flipped synchronously by [markClosing] on whichever thread calls
+     * `close()` — that has always been the flag's contract; what stays
+     * serialised on the owning thread is the teardown *body*, gated by
+     * [markTeardownStarted].
      */
     @Volatile
     protected var opened = true
@@ -227,9 +227,24 @@ abstract class AbstractIoTransport(
      * Owning-thread-confined while the loop lives. Once the loop has
      * published quiescence, the closing caller may drain it instead —
      * reading through the quiescence flag's acquire edge, with no loop
-     * side left to race.
+     * side left to race. The same story covers [pendingBytes] and the
+     * flush stat counters below.
      */
     protected val pendingWrites = ArrayDeque<PendingWrite>()
+
+    /**
+     * Releases every queued buffer and empties the write ledger: each
+     * [PendingWrite]'s buffer is released, the deque cleared, [pendingBytes]
+     * zeroed. The one implementation of the invariant both teardown bodies —
+     * the on-loop one and the stopped-loop caller-thread one — depend on, so
+     * a change to [PendingWrite] ownership lands once, not per engine.
+     * Caller must hold the teardown claim ([markTeardownStarted]).
+     */
+    protected fun releaseAllPendingWrites() {
+        for (pw in pendingWrites) pw.buf.release()
+        pendingWrites.clear()
+        pendingBytes = 0
+    }
 
     /**
      * Buffers [buf] for the next [flush] call under ownership-transfer
@@ -424,10 +439,11 @@ abstract class AbstractIoTransport(
     // partial-write path that the optimisation under evaluation targets,
     // rather than silently testing the fast path on loopback.
     //
-    // Touched only from the owning EventLoop thread (or the engine-local
-    // serial dispatch queue), matching the same invariant as
-    // `pendingBytes` / `pendingWrites`. Plain `Long` suffices — no atomic /
-    // volatile required.
+    // Same confinement story as `pendingBytes` / `pendingWrites`: owning
+    // EventLoop thread (or the engine-local serial dispatch queue) while the
+    // loop lives; readable by the closing caller once the loop has published
+    // quiescence, through that flag's acquire edge. Plain `Long` suffices —
+    // no atomic / volatile required.
     //
     // Subclasses MUST increment [flushCount] for every flush call (gather
     // or single, regardless of outcome) and [partialWriteCount] for every
@@ -452,9 +468,10 @@ abstract class AbstractIoTransport(
 
     /**
      * Logs the slow-path instrumentation counters on transport teardown.
-     * Subclass [close] implementations call this from inside the
-     * EventLoop-thread teardown body (after the resource is fully
-     * released) so the counts reflect the entire transport lifetime.
+     * Subclass [close] implementations call this from a teardown body —
+     * on the EventLoop thread, or on the closing caller once a stopped
+     * loop has published quiescence — after the resource is fully
+     * released, so the counts reflect the entire transport lifetime.
      *
      * Emitted at debug level — no overhead in production where debug
      * logging is disabled.
