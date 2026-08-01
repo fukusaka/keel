@@ -36,8 +36,8 @@ import kotlin.coroutines.resumeWithException
 /**
  * The loop the POSIX readiness engines — epoll and kqueue — run on, and what it
  * reads: its task queue, both registration ledgers (the FIFO chain of suspend
- * waiters and the pipeline-path callback listeners), and the readiness dispatch
- * over them.
+ * waiters and the pipeline-path callback listeners), the participant registry
+ * the stop notification is keyed on, and the readiness dispatch over them.
  *
  * The two engines kept near-identical copies of everything below. What differed
  * was the arming call, and the statement that prepared its arguments — kqueue
@@ -51,8 +51,9 @@ import kotlin.coroutines.resumeWithException
  * both bits for READ whichever hook set them.
  *
  * **Only these two engines.** The other native loops are not close enough to
- * share it: io_uring keeps a registry too, but as a completion model its ledger
- * has a different shape, and the JDK-backed loop delegates its to a `Selector`.
+ * share it: io_uring tracks its registrations too, but as a completion model
+ * its ledger has a different shape, and the JDK-backed loop delegates its to a
+ * `Selector`.
  * `PosixReadiness` is in the name so it is not mistaken for a base every engine
  * extends — it still ends in `EventLoop`, because that is what it is part of.
  *
@@ -145,21 +146,42 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     private val callbackRegistrations = LongObjectMap<FdReadyListener>()
 
     /**
-     * Set once [failWaitersOnStoppedLoop] has swept, after which both ledgers
-     * refuse to take anything new. Caller holds the lock.
+     * Connection-lifetime participants of this loop, told once each when it
+     * stops. Identity-keyed: a [LoopParticipant] joins at construction and
+     * leaves in its teardown, and none of the in-tree participants overrides
+     * `equals`, so the default identity semantics are the contract.
      *
-     * The sweep empties the ledgers and tells every listener it found, but that
-     * alone does not make it a *fixed point*: an append landing afterwards — a
-     * listener re-registering out of `onLoopStopped`, or a task the sweep's own
-     * final drain runs — went into a map nothing reads again. That entry is
+     * Beside the ledgers rather than derived from them, because the ledgers
+     * cannot answer "who is alive": a paused connection holds no registration —
+     * its one-shot entry was consumed and the back-pressured `onReadable`
+     * declined to re-arm — yet it is exactly the connection most likely to be
+     * waiting on this loop. Keying the stop notification on the ledger walked
+     * past it.
+     *
+     * `private`, guarded by [regMutex] like both ledgers, and closed by the same
+     * [ledgersClosed] write that closes them.
+     */
+    private val participants = LinkedHashSet<LoopParticipant>()
+
+    /**
+     * Set once [failWaitersOnStoppedLoop] has swept, after which both ledgers
+     * and the participant registry refuse to take anything new. Caller holds
+     * the lock.
+     *
+     * The sweep empties the ledgers and the registry, and tells every
+     * participant it found there — but that alone does not make it a *fixed
+     * point*: an append landing afterwards — a participant re-registering out of
+     * `onLoopStopped`, or a task the sweep's own final drain runs — went into a
+     * map nothing reads again. That entry is
      * never dispatched, never swept, and holds its transport, channel and
      * pipeline graph for as long as this stopped loop object lives. Refusing is
      * also the honest answer: the loop cannot arm it, so parking on it is a hang
      * dressed as a wait.
      *
      * Written inside the sweep's own critical section, so "swept" and "closed"
-     * are one atomic step and nothing can slip between them. Read by both append
-     * paths, which already run under this lock — so the check is a plain field
+     * are one atomic step and nothing can slip between them. Read by all three
+     * append paths — both ledgers and the registry — which already run under
+     * this lock, so the check is a plain field
      * read on a lock the caller is holding anyway: no new atomic, and nothing on
      * the per-readiness-event path.
      */
@@ -801,13 +823,18 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
 
     /**
      * Ends everything still in **both** ledgers, because the loop is about to
-     * stop reading them: every suspend waiter is cancelled, and every pipeline
-     * listener is told through [FdReadyListener.onLoopStopped] and dropped.
+     * stop reading them — every suspend waiter is cancelled and the callback
+     * entries are dropped — and tells every [LoopParticipant] in the registry,
+     * once each, through [LoopParticipant.onLoopStopped]. Told per participant
+     * and not per registration: a paused connection holds no registration at all
+     * and is exactly the one most likely to be waiting, and a two-interest
+     * connection is one connection, not two.
      *
-     * The callback half is what this commit adds. Individual entries always came
-     * out — [unregisterCallback] on teardown, [dispatchReady] on every event —
-     * but nothing emptied the map in bulk when the loop stopped, so a listener
-     * still registered at that moment was neither told nor removed, and kept its
+     * The bulk clear of the callback ledger arrived with the sweep's callback
+     * half; the registry and the per-participant keying arrived after it.
+     * Individual entries always came out — [unregisterCallback] on teardown,
+     * [dispatchReady] on every event — but nothing emptied the map in bulk when
+     * the loop stopped, so a listener still registered at that moment kept its
      * transport — and the channel and pipeline graph behind it — reachable for as
      * long as the loop object lived.
      *
@@ -877,16 +904,21 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      */
     protected fun failWaitersOnStoppedLoop() {
         val stranded = mutableListOf<Registration>()
-        val orphaned = mutableListOf<FdReadyListener>()
+        val told = mutableListOf<LoopParticipant>()
         withRegLock {
             registrations.forEachValue { head -> drainChainInto(head, stranded) }
             registrations.clear()
-            // The pipeline half. Both ledgers empty here, or the one left behind
-            // holds its listeners -- and through them the transports, channels
-            // and pipeline graphs they reference -- for as long as this stopped
-            // loop object is alive.
-            callbackRegistrations.forEachValue { listener -> orphaned.add(listener) }
+            // The pipeline ledger is cleared without notifying from it. Both
+            // ledgers empty here, or an entry left behind holds its listener --
+            // and through it the transport, channel and pipeline graph -- for as
+            // long as this stopped loop object is alive. Who gets *told* is the
+            // registry's business: keyed on the ledger, the notification missed
+            // the connection most likely to be waiting -- a paused one, whose
+            // one-shot entry was consumed and whose re-arm declined -- and told
+            // a two-interest connection twice.
             callbackRegistrations.clear()
+            told.addAll(participants)
+            participants.clear()
             // Closed in the same critical section that emptied them, so "swept"
             // and "closed" are one step. Anything arriving after this -- from
             // the notifications below, from the final drain, or from another
@@ -909,11 +941,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
                 logger.warn(t) { "waiter's cancellation threw while the EventLoop was stopping" }
             }
         }
-        for (listener in orphaned) {
+        for (participant in told) {
             try {
-                listener.onLoopStopped()
+                participant.onLoopStopped()
             } catch (t: Throwable) {
-                logger.warn(t) { "listener threw from onLoopStopped while the EventLoop was stopping" }
+                logger.warn(t) { "participant threw from onLoopStopped while the EventLoop was stopping" }
             }
         }
         // Deliver what either loop queued. Neither engine overrides
@@ -921,9 +953,13 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         // the sweep already runs on its thread -- and a listener told the loop
         // stopped can queue as readily as a cancelled waiter can: teardown
         // cancels the flush continuation of a handler parked on this very
-        // dispatcher. Gating on `stranded` alone missed exactly the case this
-        // sweep exists for, a write-only client with no suspend waiter at all.
-        if (stranded.isNotEmpty() || orphaned.isNotEmpty()) drainTasks()
+        // dispatcher. Unconditional, deliberately: every predicate written
+        // here so far under-delivered somewhere (gating on `stranded` alone
+        // missed the write-only client this sweep exists for; gating on the
+        // participants told skips a boss loop, which has none), and the drain
+        // is idempotent, near-free when the queue is empty, and runs once per
+        // loop lifetime.
+        drainTasks()
     }
 
     /**
@@ -1001,11 +1037,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * refusal is silent to the caller — nothing is appended, no arm is issued,
      * and there is no return value to check. What the caller gets instead is a
      * WARN naming the fd and interest, because a listener refused here is one
-     * that will never fire: if it was in the ledger when the loop swept it has
-     * been told through [FdReadyListener.onLoopStopped], but a listener
-     * registering for the *first* time after the sweep was never in that ledger
-     * and is told nothing. Reaching that one needs the loop to track live
-     * connections rather than live registrations, which is a separate change.
+     * that will never fire. Whether anyone was *told* is the registry's
+     * business, not this ledger's: a transport that joined as a
+     * [LoopParticipant] was told once at the sweep, whatever it held here — but
+     * a bare listener that never joined gets only this WARN, which is why the
+     * refusal is not silent.
      *
      * **A second registration on the same `(fd, interest)` replaces the first**,
      * which is then never called and never told. That is what a re-arm is —
@@ -1030,11 +1066,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // then be refused, told, and re-register without bound, which is the
             // recursion an arm-failure hook produced in an earlier change.
             //
-            // A listener already in the ledger at sweep time has been told. One
-            // registering for the first time afterwards was never there and is
-            // told nothing; this WARN is all it gets, and reaching it properly
-            // needs the loop to track live connections rather than live
-            // registrations.
+            // Whether anyone was told is the registry's business: a
+            // [LoopParticipant] was told once at the sweep, whatever it held in
+            // this ledger. A bare listener that never joined gets only this
+            // WARN, which is why the refusal is not silent.
             logger.warn {
                 "${this::class.simpleName}.registerCallback: EventLoop stopped — refusing " +
                     "fd=$fd ${interest.name}; this listener will not fire"
@@ -1097,6 +1132,54 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      */
     fun unregisterCallback(fd: Int, interest: Interest) {
         withRegLock { popCallback(registrationKey(fd, interest)) }
+    }
+
+    /**
+     * Adds [participant] to this loop's registry, so [failWaitersOnStoppedLoop]
+     * tells it once when the loop stops.
+     *
+     * Refused with a WARN once the loop has swept — the same shape as
+     * [registerCallback]'s refusal, and for the same reason: nothing arrives
+     * after the sweep that the sweep will ever read. Refusal rather than a
+     * throw, deliberately: every transport constructor calls this, and none of
+     * the construction sites guards the constructor with a close of the fd it
+     * just accepted or connected, so a throw here would leak that fd mid-unwind
+     * at eight call sites. What the refusal keeps is the report, not the
+     * descriptor: nothing after the sweep guarantees the refused channel's
+     * teardown ever runs — a `close()` may still be picked up by the sweep's
+     * own final drain, or land after it and never execute — so the fd can stay
+     * open until the process exits. Freeing it deterministically, like making
+     * a stopped engine's `connect()` fail fast, is fd-ownership work at those
+     * sites, not a flag here.
+     *
+     * **Thread safety**: safe from any thread; takes the registration lock.
+     */
+    fun addParticipant(participant: LoopParticipant) {
+        val added = withRegLock {
+            if (ledgersClosed) {
+                false
+            } else {
+                participants.add(participant)
+                true
+            }
+        }
+        if (!added) {
+            logger.warn {
+                "${this::class.simpleName}.addParticipant: EventLoop stopped — refusing; " +
+                    "${participant::class.simpleName} will not be told"
+            }
+        }
+    }
+
+    /**
+     * Removes [participant] from the registry, ending the loop's obligation to
+     * tell it. Called from the participant's own teardown; after the sweep the
+     * registry is already empty and this is a no-op.
+     *
+     * **Thread safety**: safe from any thread; takes the registration lock.
+     */
+    fun removeParticipant(participant: LoopParticipant) {
+        withRegLock { participants.remove(participant) }
     }
 
     /**
@@ -1277,6 +1360,17 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      */
     protected fun hasCallbackFor(fd: Int, interest: Interest): Boolean =
         withRegLock { hasCallbackListener(registrationKey(fd, interest)) }
+
+    /**
+     * How many participants this loop currently holds, taking the lock.
+     *
+     * A probe, like [hasCallbackFor]: what it exists to make observable is the
+     * remove half of the registry contract. A transport that closes must leave,
+     * or a long-lived loop with connection churn grows this set without bound —
+     * the retention this registry was built to end, reintroduced by a missing
+     * `removeParticipant`.
+     */
+    protected fun participantCount(): Int = withRegLock { participants.size }
 
     /** Whether any waiter remains on `(fd, interest)`. Caller holds the lock. */
     protected fun hasWaiters(key: Long): Boolean = registrations[key] != null

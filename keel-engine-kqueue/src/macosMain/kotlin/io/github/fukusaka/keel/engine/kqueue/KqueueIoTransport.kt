@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.LoopParticipant
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
@@ -66,7 +67,7 @@ internal class KqueueIoTransport(
      */
     private val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     idleTimeoutMillis: Long = 0,
-) : AbstractIoTransport(allocator), FdReadyListener {
+) : AbstractIoTransport(allocator), FdReadyListener, LoopParticipant {
 
     /** Read-side idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
     override val idleTimeoutMillis: Long = idleTimeoutMillis
@@ -121,25 +122,20 @@ internal class KqueueIoTransport(
      * is, because the outcome for anything waiting on this connection is the
      * same: it is over.
      *
-     * No [Interest] guard, unlike [onPeerClosed]. Not because a write-only push
-     * client holds only a WRITE registration — it does not: `init` arms READ
-     * unconditionally, whatever `readEnabled` is, precisely so a client that
-     * never enables reads still hears a peer close. The guard is absent because
-     * nothing here acts on the interest: when the loop is gone, every
-     * registration this transport holds on it is gone too. A transport registered
-     * on both is told twice, which is benign for the same reason the peer-close
-     * path documents.
+     * **Reached whether or not this transport holds a registration.** The stop
+     * notification is keyed on the participant registry this transport joins in
+     * its `init`, not on the readiness ledger — so a paused connection whose
+     * one-shot entry was consumed and whose back-pressured re-arm declined (the
+     * `!readEnabled` return in `onReadable`, on a *later* readiness event) is
+     * told all the same, and a transport registered on both interests is told
+     * once, not once per entry. An earlier revision keyed the notification on
+     * the ledger and walked straight past exactly that paused connection.
      *
-     * **What this does not reach**: a transport holding *no* registration. That is
-     * narrower than "paused". `onReadable` re-arms unconditionally right after
-     * `onRead`, and every in-tree pause is issued from inside `onRead` — so a
-     * connection that pauses is back in the ledger by the time that dispatch
-     * returns (the one-shot entry is popped before `onRead` runs, and `armRead()`
-     * puts it back after). It leaves the
-     * ledger only on a *later* readiness event, where the `!readEnabled` return
-     * above skips the re-arm — and only if it holds no WRITE registration either.
-     * Measured, after an earlier revision of this paragraph asserted the wider
-     * claim without doing so.
+     * One gap remains at the front: the registry knows this transport from its
+     * constructor, but the channel wires [onReadClosed] only after the
+     * constructor returns, so a sweep landing inside that construction window
+     * is delivered here and forwarded to nobody — and the wiring write carries
+     * no happens-before edge to the sweep's read of it.
      */
     override fun onLoopStopped() {
         if (!opened) return
@@ -192,6 +188,13 @@ internal class KqueueIoTransport(
         // it only once it reads. Closing that gap needs a close-only interest,
         // which EVFILT_READ cannot express: it wakes on data too, so leaving it
         // armed under back-pressure is a busy loop.
+        // Joined before the first arm, so a stopping loop finds this transport
+        // from the moment it can hold a registration -- and after it no longer
+        // holds one, which the ledger-keyed notification missed for a paused
+        // connection. Found is not yet heard: the close bridge is wired only
+        // after this constructor returns (see onLoopStopped's KDoc).
+        @Suppress("LeakingThis")
+        eventLoop.addParticipant(this)
         @Suppress("LeakingThis")
         eventLoop.registerCallback(fd, Interest.READ, this)
     }
@@ -390,6 +393,7 @@ internal class KqueueIoTransport(
         // did not.
         eventLoop.unregisterCallback(fd, Interest.READ)
         eventLoop.unregisterCallback(fd, Interest.WRITE)
+        eventLoop.removeParticipant(this)
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
         logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
     }

@@ -325,6 +325,9 @@ internal class EpollEventLoop(
     internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
         hasCallbackFor(fd, interest)
 
+    /** `internal` wrapper for this module's probes; see [participantCount]. */
+    internal fun participants(): Int = participantCount()
+
     /**
      * Removes all tracking state for [fd] from [fdEvents].
      *

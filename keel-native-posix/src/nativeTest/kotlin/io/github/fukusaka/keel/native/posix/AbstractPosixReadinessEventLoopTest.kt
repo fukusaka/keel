@@ -261,7 +261,7 @@ class AbstractPosixReadinessEventLoopTest {
     private class RecordingListener(
         private val reArmOn: FakeLoop? = null,
         private val fd: Int = FD,
-    ) : FdReadyListener {
+    ) : FdReadyListener, LoopParticipant {
         val ready = mutableListOf<Interest>()
         val peerClosed = mutableListOf<Interest>()
         var loopStopped = 0
@@ -290,7 +290,7 @@ class AbstractPosixReadinessEventLoopTest {
      * stayed empty because the re-registration was refused" apart from "it
      * stayed empty because nothing ever called back".
      */
-    private class RegisteringOnStopListener(private val loop: FakeLoop) : FdReadyListener {
+    private class RegisteringOnStopListener(private val loop: FakeLoop) : FdReadyListener, LoopParticipant {
         var toldCount = 0
 
         override fun onReady(interest: Interest) = Unit
@@ -743,6 +743,7 @@ class AbstractPosixReadinessEventLoopTest {
         val loop = FakeLoop()
         try {
             val listener = RegisteringOnStopListener(loop)
+            loop.addParticipant(listener)
             loop.registerCallback(FD, Interest.READ, listener)
 
             loop.failRemainingWaiters()
@@ -1035,8 +1036,10 @@ class AbstractPosixReadinessEventLoopTest {
             // The log line alone would pass for a guard that reports and then
             // falls through, re-publishing the thread and running the whole
             // teardown a second time on a live loop. The drain count is what
-            // says the second entry returned.
-            assertEquals(1, loop.drainCalls, "teardown ran once, not twice")
+            // says the second entry returned: one completed loop() drains
+            // twice -- the final drain, then the sweep's unconditional one --
+            // so a fallen-through second entry would double it to four.
+            assertEquals(2, loop.drainCalls, "teardown ran once, not twice")
             assertNull(loop.destroyErrno, "and left the registration lock destroyable")
         } finally {
             loop.destroy()
@@ -1442,21 +1445,72 @@ class AbstractPosixReadinessEventLoopTest {
     }
 
     @Test
-    fun `the sweep tells each listener the loop stopped`() = loopTest { loop ->
-        // Clearing alone would leave the listener silent: it is waiting on a
-        // dispatch that can no longer come, and nothing else will tell it.
+    fun `the sweep tells a participant once however many registrations it holds`() = loopTest { loop ->
+        // Once per participant, not once per registration. Stopping is a
+        // lifecycle event: which entries the participant happened to hold
+        // changes nothing about it, and the old per-registration double call
+        // was an artifact of keying the notification on the ledger.
         val listener = RecordingListener()
+        loop.addParticipant(listener)
         loop.registerCallback(FD, Interest.READ, listener)
         loop.registerCallback(FD, Interest.WRITE, listener)
 
         loop.failRemainingWaiters()
 
-        // Once per registration, not once per listener: the same object is
-         // registered on both interests, and each of those is a separate entry the
-         // loop can no longer dispatch.
-        assertEquals(2, listener.loopStopped, "each registration is told, exactly once")
+        assertEquals(1, listener.loopStopped, "told exactly once")
         assertEquals(emptyList(), listener.ready, "the sweep is not a readiness dispatch")
         assertEquals(emptyList(), listener.peerClosed, "and it is not a peer close")
+    }
+
+    @Test
+    fun `the sweep tells a participant holding no registration at all`() = loopTest { loop ->
+        // The connection this registry exists for. A paused connection holds no
+        // registration -- its one-shot entry was consumed and the
+        // back-pressured re-arm declined -- yet it is the one most likely to be
+        // waiting on this loop, because keel's own flow control is what pauses
+        // it. The ledger-keyed notification walked straight past it.
+        val listener = RecordingListener()
+        loop.addParticipant(listener)
+
+        loop.failRemainingWaiters()
+
+        assertEquals(1, listener.loopStopped, "a live participant is told even with an empty ledger")
+    }
+
+    @Test
+    fun `removeParticipant ends the obligation to tell`() = loopTest { loop ->
+        // The teardown half: a transport that closed cleanly must not be told
+        // its loop stopped afterwards -- it is gone, and telling it would run
+        // teardown callbacks on an object that already ran them.
+        val listener = RecordingListener()
+        loop.addParticipant(listener)
+        loop.removeParticipant(listener)
+
+        loop.failRemainingWaiters()
+
+        assertEquals(0, listener.loopStopped, "a removed participant is not told")
+    }
+
+    @Test
+    fun `a participant joining after the sweep is refused with a warning`() = loopTest { loop ->
+        // Same closure, same shape as the ledger refusals: the registry is
+        // emptied and closed in one critical section, so a late joiner is never
+        // silently retained by a registry nothing reads again. Refusal, not a
+        // throw -- every transport constructor calls this, and none of the
+        // construction sites closes its fd on a constructor throw, so a throw
+        // here would trade a reported dead channel for a descriptor leak.
+        loop.failRemainingWaiters()
+
+        val late = RecordingListener()
+        loop.addParticipant(late)
+
+        loop.failRemainingWaiters()
+
+        assertEquals(0, late.loopStopped, "a refused participant is not retained and not told")
+        assertTrue(
+            loop.warnings.any { it.contains("addParticipant") },
+            "and the refusal is reported, not silent: ${loop.warnings}",
+        )
     }
 
     @Test
@@ -1470,11 +1524,8 @@ class AbstractPosixReadinessEventLoopTest {
         val loop = FakeLoop(runDispatchedInline = false)
         try {
             var queuedRan = false
-            loop.registerCallback(
-                FD,
-                Interest.READ,
-                object : FdReadyListener {
-                    override fun onReady(interest: Interest) = Unit
+            loop.addParticipant(
+                object : LoopParticipant {
                     override fun onLoopStopped() {
                         loop.dispatch(EmptyCoroutineContext, Runnable { queuedRan = true })
                     }
@@ -1499,52 +1550,56 @@ class AbstractPosixReadinessEventLoopTest {
         val loop = FakeLoop()
         try {
             val healthy = RecordingListener()
-            loop.registerCallback(
-                FD,
-                Interest.READ,
-                object : FdReadyListener {
-                    override fun onReady(interest: Interest) = Unit
+            loop.addParticipant(
+                object : LoopParticipant {
                     override fun onLoopStopped(): Unit = throw IllegalStateException("boom")
                 },
             )
-            loop.registerCallback(FD, Interest.WRITE, healthy)
+            loop.addParticipant(healthy)
 
             loop.failRemainingWaiters()
 
-            assertEquals(1, healthy.loopStopped, "the healthy listener is still told")
+            assertEquals(1, healthy.loopStopped, "the healthy participant is still told")
         } finally {
             loop.destroy()
         }
     }
 
     @Test
-    fun `the sweep tells both interests of a registration keyed on a negative fd`() {
+    fun `a negative fd keys its two interests apart in the ledger`() {
         // A negative fd sign-extends through the key's interest half, so without
-        // the mask in registrationKey both interests hash to the same key: the
-        // WRITE registration replaces the READ one and only one notification
-        // comes out. Two registrations are what makes that visible -- with one,
-        // the collision has nothing to collide with and the test passes either
-        // way (measured: removing the mask fails nothing when only READ is
-        // registered).
+        // the mask in registrationKey both interests hash to the same key and
+        // the WRITE registration replaces the READ one.
         //
-        // This replaced an earlier form that pinned an out-of-range Interest
-        // index. That failure mode left with the interest lookup itself.
+        // Probed by *identity*, deliberately. A presence probe
+        // (hasCallbackRegistration) re-derives its key through the very
+        // registrationKey being pinned, so under a broken mask both probes find
+        // the one collided entry and pass -- measured: with the mask removed,
+        // that form left all tests green. Identity survives the shared
+        // derivation: under a collision the slot holds the *wrong* listener,
+        // whichever key reaches it.
         val loop = FakeLoop()
         try {
-            val listener = RecordingListener()
-            loop.registerCallback(-1, Interest.READ, listener)
-            loop.registerCallback(-1, Interest.WRITE, listener)
+            val readListener = RecordingListener()
+            val writeListener = RecordingListener()
+            loop.registerCallback(-1, Interest.READ, readListener)
+            loop.registerCallback(-1, Interest.WRITE, writeListener)
 
-            loop.failRemainingWaiters()
-
-            assertEquals(2, listener.loopStopped, "a negative fd still keys its two interests apart")
+            assertTrue(
+                loop.popIfCurrent(loop.keyFor(-1, Interest.READ), readListener),
+                "the READ slot must still hold the READ listener; a collision replaced it with WRITE's",
+            )
+            assertTrue(
+                loop.popIfCurrent(loop.keyFor(-1, Interest.WRITE), writeListener),
+                "and the WRITE slot its own",
+            )
         } finally {
             loop.destroy()
         }
     }
 
     @Test
-    fun `a listener may take the registration lock from onLoopStopped`() {
+    fun `a participant may take the registration lock from onLoopStopped`() {
         // Why the notification runs outside withRegLock. The real path re-enters:
         // onLoopStopped -> onReadClosed -> close() -> teardownOnEventLoop ->
         // unregisterCallback -> withRegLock, on a mutex initialised with default
@@ -1554,11 +1609,8 @@ class AbstractPosixReadinessEventLoopTest {
         val loop = FakeLoop()
         try {
             var reEntered = false
-            loop.registerCallback(
-                FD,
-                Interest.READ,
-                object : FdReadyListener {
-                    override fun onReady(interest: Interest) = Unit
+            loop.addParticipant(
+                object : LoopParticipant {
                     override fun onLoopStopped() {
                         loop.unregisterCallback(FD, Interest.WRITE)
                         reEntered = true
@@ -1568,7 +1620,7 @@ class AbstractPosixReadinessEventLoopTest {
 
             loop.failRemainingWaiters()
 
-            assertTrue(reEntered, "the listener reached a lock-taking call and returned")
+            assertTrue(reEntered, "the participant reached a lock-taking call and returned")
         } finally {
             loop.destroy()
         }
