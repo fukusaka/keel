@@ -235,9 +235,10 @@ abstract class AbstractIoTransport(
     /**
      * Releases every queued buffer and empties the write ledger: each
      * [PendingWrite]'s buffer is released, the deque cleared, [pendingBytes]
-     * zeroed. The one implementation of the invariant both teardown bodies —
-     * the on-loop one and the stopped-loop caller-thread one — depend on, so
-     * a change to [PendingWrite] ownership lands once, not per engine.
+     * zeroed. The shared implementation the POSIX transports' two teardown
+     * bodies — on-loop and stopped-loop — both call, so their release
+     * invariant cannot drift apart; the other engines still carry inline
+     * copies and can adopt this as they gain a stopped-loop path.
      * Caller must hold the teardown claim ([markTeardownStarted]).
      */
     protected fun releaseAllPendingWrites() {

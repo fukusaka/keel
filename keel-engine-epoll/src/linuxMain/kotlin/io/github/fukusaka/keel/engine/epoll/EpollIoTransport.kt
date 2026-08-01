@@ -403,10 +403,11 @@ internal class EpollIoTransport(
      * - **No timer cancels**: the per-loop deadline scheduler is not safe for
      *   two closers to mutate concurrently, and a dead loop never fires it —
      *   the armed handles are retention on the dead loop object, not a leak.
-     * - **The flush waiter is cancelled**, as on the loop: cancellation
-     *   resumes the waiter on whatever dispatcher it suspended under — the
-     *   ordinary caller's own live one — so it is not stranded by this loop
-     *   being gone.
+     * - **The flush waiter is cancelled**, as on the loop. That wakes a
+     *   waiter suspended under its own dispatcher; one that parked under
+     *   *this loop's* dispatcher is beyond anyone's reach — its resume can
+     *   only land on the dead queue (whose dispatcher no longer writes the
+     *   wakeup fd once quiescent) — and ending that wait is tracked work.
      *
      * Releasing the buffers from this thread is allocator-audited: the native
      * pooled allocator routes an off-owner release through its MPSC return
