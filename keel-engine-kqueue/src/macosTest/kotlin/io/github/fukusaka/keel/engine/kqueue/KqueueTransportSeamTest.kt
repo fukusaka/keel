@@ -17,11 +17,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
+import platform.posix.EBADF
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
 import platform.posix.SOCK_STREAM
 import platform.posix.close
 import platform.posix.dup
+import platform.posix.errno
 import platform.posix.socket
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
@@ -70,7 +72,7 @@ class KqueueTransportSeamTest {
         // the recycled-fd hazard the engine funnels exist to avoid. Harmless
         // until these tests started the loop; now it is not.
         eventLoop.close()
-        close(fd)
+        if (fd >= 0) close(fd)
     }
 
     /**
@@ -575,9 +577,12 @@ class KqueueTransportSeamTest {
 
         transport.close()
 
-        val probe = dup(fd)
+        val closedFd = fd
+        fd = -1 // ownership passed to the transport, which closed it; tearDown must not close the number again
+        val probe = dup(closedFd)
         if (probe >= 0) close(probe)
         assertEquals(-1, probe, "the fd must be closed on the caller when the loop is gone")
+        assertEquals(EBADF, errno, "closed, not fd-table exhaustion: the probe must fail with EBADF")
         assertEquals(0, tracker.outstandingCount, "the stranded pending write must be released")
     }
 

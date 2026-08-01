@@ -1,11 +1,15 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import platform.posix.EBADF
 import platform.posix.close
 import platform.posix.dup
+import platform.posix.errno
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -28,32 +32,47 @@ class KqueueCloseAfterLoopStopTest {
     fun `a channel closed after the engine stopped releases its fd`() = runBlocking {
         withTimeout(BODY_TIMEOUT_S.seconds) {
             val engine = KqueueEngine()
-            val server = engine.bind(LOOPBACK_HOST, 0)
-            val port = (server.localAddress as InetSocketAddress).port
-            val client = engine.connect(LOOPBACK_HOST, port)
-            val serverCh = server.accept()
-            val clientFd = ((client as AbstractPipelinedChannel).transport as KqueueIoTransport).fd
-            val serverChFd = ((serverCh as AbstractPipelinedChannel).transport as KqueueIoTransport).fd
+            var client: Channel? = null
+            var serverCh: Channel? = null
+            var server: StreamServer? = null
+            try {
+                server = engine.bind(LOOPBACK_HOST, 0)
+                val port = (server.localAddress as InetSocketAddress).port
+                client = engine.connect(LOOPBACK_HOST, port)
+                serverCh = server.accept()
+                val clientFd = ((client as AbstractPipelinedChannel).transport as KqueueIoTransport).fd
+                val serverChFd = ((serverCh as AbstractPipelinedChannel).transport as KqueueIoTransport).fd
 
-            engine.close()
+                engine.close()
 
-            // Premise, not the assertion under test: the engine tells a
-            // Coroutine-mode connection its loop stopped but deliberately does
-            // not close it — the caller owns the resource.
-            val premise = dup(clientFd)
-            if (premise >= 0) close(premise)
-            assertTrue(premise >= 0, "premise: the fd is still open right after engine.close()")
+                // Premise, not the assertion under test: the engine tells a
+                // Coroutine-mode connection its loop stopped but deliberately
+                // does not close it — the caller owns the resource.
+                val premise = dup(clientFd)
+                if (premise >= 0) close(premise)
+                assertTrue(premise >= 0, "premise: the fd is still open right after engine.close()")
 
-            client.close()
-            serverCh.close()
-            server.close()
+                client.close()
+                serverCh.close()
+                server.close()
 
-            val clientProbe = dup(clientFd)
-            if (clientProbe >= 0) close(clientProbe)
-            assertEquals(-1, clientProbe, "close() on a stopped loop must still release the client fd")
-            val serverProbe = dup(serverChFd)
-            if (serverProbe >= 0) close(serverProbe)
-            assertEquals(-1, serverProbe, "close() on a stopped loop must still release the accepted fd")
+                val clientProbe = dup(clientFd)
+                if (clientProbe >= 0) close(clientProbe)
+                assertEquals(-1, clientProbe, "close() on a stopped loop must still release the client fd")
+                assertEquals(EBADF, errno, "closed, not fd-table exhaustion: the probe must fail with EBADF")
+                val serverProbe = dup(serverChFd)
+                if (serverProbe >= 0) close(serverProbe)
+                assertEquals(-1, serverProbe, "close() on a stopped loop must still release the accepted fd")
+                assertEquals(EBADF, errno, "closed, not fd-table exhaustion: the probe must fail with EBADF")
+            } finally {
+                // Idempotent on the happy path; on a failed assert mid-body it
+                // still releases the channels and stops the loop threads so
+                // they do not outlive this test in the shared process.
+                client?.close()
+                serverCh?.close()
+                server?.close()
+                engine.close()
+            }
         }
     }
 
