@@ -36,8 +36,8 @@ import kotlin.coroutines.resumeWithException
 /**
  * The loop the POSIX readiness engines — epoll and kqueue — run on, and what it
  * reads: its task queue, both registration ledgers (the FIFO chain of suspend
- * waiters and the pipeline-path callback listeners), and the readiness dispatch
- * over them.
+ * waiters and the pipeline-path callback listeners), the participant registry
+ * the stop notification is keyed on, and the readiness dispatch over them.
  *
  * The two engines kept near-identical copies of everything below. What differed
  * was the arming call, and the statement that prepared its arguments — kqueue
@@ -51,8 +51,9 @@ import kotlin.coroutines.resumeWithException
  * both bits for READ whichever hook set them.
  *
  * **Only these two engines.** The other native loops are not close enough to
- * share it: io_uring keeps a registry too, but as a completion model its ledger
- * has a different shape, and the JDK-backed loop delegates its to a `Selector`.
+ * share it: io_uring tracks its registrations too, but as a completion model
+ * its ledger has a different shape, and the JDK-backed loop delegates its to a
+ * `Selector`.
  * `PosixReadiness` is in the name so it is not mistaken for a base every engine
  * extends — it still ends in `EventLoop`, because that is what it is part of.
  *

@@ -395,8 +395,10 @@ class KqueueEngine(
     /**
      * Stops the boss EventLoop and all worker EventLoops, then releases resources.
      *
-     * Pending registrations on the boss/worker loops are abandoned (continuations
-     * are not resumed). Idempotent — safe to call multiple times.
+     * A stopping loop cancels its parked waiters and tells every live
+     * connection it holds, which a Pipeline-mode connection surfaces as
+     * read-closed / EOF; a Coroutine-mode caller still closes its own channels.
+     * Idempotent — safe to call multiple times.
      */
     override suspend fun close() {
         if (!closed) {

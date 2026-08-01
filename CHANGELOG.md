@@ -72,17 +72,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `native-posix`, `engine-epoll`, `engine-kqueue`: a stopping loop now tells every live
-  connection, not just those holding a registration — a new per-loop participant registry
-  (`LoopParticipant`, moved off `FdReadyListener`) keys the stop notification, so a paused
-  connection whose one-shot entry was consumed is told once like any other (#1010)
+- `native-posix`, `engine-epoll`, `engine-kqueue`: a stopping loop tells every live connection
+  through a new per-loop participant registry (`LoopParticipant`), not just those holding a
+  ledger registration (#1010)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: refuse registrations once a stopped loop has
   swept, instead of parking them in a ledger nothing reads again — a waiter is cancelled and a
   callback is declined, so neither hangs nor holds its pipeline graph (#1009)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: sweep the pipeline-callback ledger when a loop
-  stops — a registered listener is told through the new `onLoopStopped` hook (now on
-  `LoopParticipant`, #1010) and
-  released, so a parked reader gets EOF instead of hanging (#1008)
+  stops — a registered listener is told through the `LoopParticipant.onLoopStopped` hook and
+  released, so a parked reader gets EOF instead of hanging (#1008, #1010)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: three readiness-dispatch defects, fixed at the
   now-shared copy — a disarm racing a suspend waiter, a stale queued arm, and a swallowed arm
   error (#1005)

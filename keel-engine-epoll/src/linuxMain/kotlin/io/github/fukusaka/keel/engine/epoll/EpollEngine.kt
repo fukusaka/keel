@@ -376,8 +376,10 @@ class EpollEngine(
     /**
      * Closes the engine, stopping both boss and worker EventLoops.
      *
-     * Does NOT close existing channels — caller is responsible for closing
-     * active connections before shutting down the engine. Idempotent.
+     * A stopping loop cancels its parked waiters and tells every live
+     * connection it holds, which a Pipeline-mode connection surfaces as
+     * read-closed / EOF; a Coroutine-mode caller still closes its own channels.
+     * Idempotent.
      */
     override suspend fun close() {
         if (!closed) {

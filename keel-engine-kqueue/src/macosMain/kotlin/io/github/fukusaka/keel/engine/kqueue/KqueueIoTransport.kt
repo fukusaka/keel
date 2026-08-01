@@ -130,6 +130,12 @@ internal class KqueueIoTransport(
      * told all the same, and a transport registered on both interests is told
      * once, not once per entry. An earlier revision keyed the notification on
      * the ledger and walked straight past exactly that paused connection.
+     *
+     * One gap remains at the front: the registry knows this transport from its
+     * constructor, but the channel wires [onReadClosed] only after the
+     * constructor returns, so a sweep landing inside that construction window
+     * is delivered here and forwarded to nobody — and the wiring write carries
+     * no happens-before edge to the sweep's read of it.
      */
     override fun onLoopStopped() {
         if (!opened) return
@@ -182,10 +188,11 @@ internal class KqueueIoTransport(
         // it only once it reads. Closing that gap needs a close-only interest,
         // which EVFILT_READ cannot express: it wakes on data too, so leaving it
         // armed under back-pressure is a busy loop.
-        // Joined before the first arm, so the loop's stop notification covers
-        // this connection from the moment it can hold a registration -- and
-        // after it no longer holds one, which the ledger-keyed notification
-        // missed for a paused connection.
+        // Joined before the first arm, so a stopping loop finds this transport
+        // from the moment it can hold a registration -- and after it no longer
+        // holds one, which the ledger-keyed notification missed for a paused
+        // connection. Found is not yet heard: the close bridge is wired only
+        // after this constructor returns (see onLoopStopped's KDoc).
         @Suppress("LeakingThis")
         eventLoop.addParticipant(this)
         @Suppress("LeakingThis")
