@@ -430,14 +430,25 @@ internal class DefaultPipeline(
      *
      * The walk ends at [HeadHandler], whose whole job is to call
      * `transport.close()` — the only thing that releases the descriptor. When
-     * the walk cannot run, reproducing just that terminus here is strictly
-     * better than leaving the fd open for the pipeline's lifetime, but it is
-     * **not** a pipeline close: the handlers' `onClose` is genuinely skipped,
-     * which is why it is reported rather than done quietly.
+     * the walk cannot run, reproducing just that terminus here recovers the
+     * descriptor, which would otherwise stay open for the pipeline's lifetime.
+     * It is **not** a pipeline close: the handlers' `onClose` is genuinely
+     * skipped, and anything a handler releases there — a TLS codec's native
+     * session, for one — is skipped with it. That is why this is reported
+     * rather than done quietly, and why "better" here means the fd, not
+     * everything.
      *
      * Silent when the transport is already closed. That is the ordinary
      * close-after-close, and `close()` is idempotent, so there is nothing to
      * report and nothing to do.
+     *
+     * **This calls `close()` from whatever thread the caller is on, and that is
+     * only safe while "cannot dispatch" implies the loop is fully quiescent.**
+     * The engines that answer `false` do so on quiescence, so their `close()`
+     * takes its caller-thread teardown branch. An engine that answered `false`
+     * during a shutdown *in progress* would instead send this caller into the
+     * loop hand-off's wait — turning an ordinary `close()` into a spin on an
+     * arbitrary thread, inside application teardown.
      */
     private fun closeWithoutChain() {
         if (transport.isOpen) {
@@ -523,8 +534,9 @@ internal class DefaultPipeline(
                 //
                 // [firedDrainInline] stays false deliberately — nothing was
                 // propagated through head, so the lifecycle replay below is
-                // still owed to this handler, and it is what tells a bridge
-                // waiting on this connection that it is over.
+                // still owed to this handler. The discard hands it the
+                // inactivation flag it needs; without that the replay matches
+                // no branch and silently does nothing.
                 discardPreAttachJournal()
             } else if (ioDispatcher.isDispatchNeeded(EmptyCoroutineContext)) {
                 ioDispatcher.dispatch(EmptyCoroutineContext, Runnable { drainPreAttachJournal() })
@@ -912,36 +924,6 @@ internal class DefaultPipeline(
      * `handlerAdded`) bypasses the journal and propagates events
      * directly through the head — the journal is one-shot.
      */
-    /**
-     * Releases the journalled reads when the owning context has stopped, so
-     * they are not held by a drain that will never run.
-     *
-     * Only the reads are released — they are the ref-counted part, and the
-     * queued user events and errors go with them because nothing will deliver
-     * those either. The **lifecycle** flags are deliberately left alone: a
-     * handler added now must still learn the connection is inactive, and
-     * `replayLifecycleTo` is what tells it.
-     *
-     * Marking the journal drained stops later reads from re-filling a queue
-     * with the same fate.
-     */
-    private fun discardPreAttachJournal() {
-        preAttachJournalDrained = true
-        val discarded = pendingReads.size
-        while (pendingReads.isNotEmpty()) {
-            ReferenceCountUtil.safeRelease(pendingReads.removeFirst())
-        }
-        pendingUserEvents.clear()
-        pendingErrors.clear()
-        pendingReadComplete = false
-        if (discarded > 0) {
-            logger.warn {
-                "Released $discarded journalled read(s) — a handler was added after this connection's " +
-                    "owning context stopped, so the deferred replay would never have run"
-            }
-        }
-    }
-
     private fun drainPreAttachJournal() {
         if (preAttachJournalDrained) return
         preAttachJournalDrained = true
@@ -975,6 +957,68 @@ internal class DefaultPipeline(
             // [callHandlerAdded] replay) processes onInactive.
             inactiveFired = true
             head.invokeOnInactive()
+        }
+    }
+
+    /**
+     * Releases the journalled reads when the owning context has stopped, so
+     * they are not held by a drain that will never run.
+     *
+     * Only the reads are *released*; the queued user events and errors are
+     * dropped without one. The difference is ownership, not type: [notifyRead]
+     * takes over its message — its own overflow path releases what it drops —
+     * whereas [notifyUserEvent] does not, and its overflow drops unreleased.
+     * Releasing a user event here would free something the emitter may still
+     * hold.
+     *
+     * **The lifecycle bookkeeping is exactly [drainPreAttachJournal]'s**, minus
+     * the head invocations there is no assembled chain to receive. That is the
+     * whole point: [replayLifecycleTo] is the only delivery left, and it fires
+     * on `inactiveObserved && inactiveFired` or on `activeFired` — flags the
+     * drain promotes and this path must promote too. Leaving them as they are
+     * makes the replay match no branch at all and do nothing, silently: a
+     * bridge installed after a peer close would then wait for an EOF it has
+     * already missed. Nothing sets them later, either — [notifyInactive]
+     * returns early once observed, and the drain early-returns once the journal
+     * is marked.
+     *
+     * Marking the journal drained stops later reads from re-filling a queue
+     * with the same fate.
+     */
+    private fun discardPreAttachJournal() {
+        preAttachJournalDrained = true
+        // Promoted before anything below can return early. These are what the
+        // per-handler replay reads, and they are the only delivery left.
+        if (pendingActive) {
+            pendingActive = false
+            activeFired = true
+        }
+        pendingWritability?.let { writable ->
+            pendingWritability = null
+            writabilityCurrent = writable
+        }
+        if (inactiveObserved) inactiveFired = true
+        val reads = pendingReads.size
+        val events = pendingUserEvents.size
+        val errors = pendingErrors.size
+        while (pendingReads.isNotEmpty()) {
+            ReferenceCountUtil.safeRelease(pendingReads.removeFirst())
+        }
+        pendingUserEvents.clear()
+        pendingReadComplete = false
+        // Errors are reported individually, with their cause, the way the
+        // journal's own overflow path reports them. Dropping the only record of
+        // why a connection failed is the silent failure this codebase forbids.
+        while (pendingErrors.isNotEmpty()) {
+            val cause = pendingErrors.removeFirst()
+            logger.warn(cause) { "Discarded a journalled error — this connection's owning context has stopped" }
+        }
+        if (reads > 0 || events > 0 || errors > 0) {
+            logger.warn {
+                "Discarded the pre-attach journal ($reads read(s), $events user event(s), $errors error(s)) " +
+                    "— a handler was added after this connection's owning context stopped, so the deferred " +
+                    "replay would never have run"
+            }
         }
     }
 

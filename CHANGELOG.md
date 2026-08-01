@@ -75,9 +75,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `core`: a close routed through the pipeline from off a stopped owning context now releases the
-  transport's descriptor instead of silently doing nothing, and a dropped flush is reported (#1014)
-- `core`: release journalled pre-attach reads when a handler is added after the owning context has
-  stopped, instead of leaving them in a replay that will never run (#1014)
+  transport's descriptor instead of doing nothing (#1014)
+- `core`: report a flush that cannot reach the pipeline rather than dropping it silently (#1014)
+- `core`: release journalled pre-attach reads, and still replay an observed peer close, when a
+  handler is added after the owning context has stopped (#1014)
 - `core`, `engine-epoll`, `engine-kqueue`: a stopped EventLoop no longer swallows
   `shutdownOutput()`, a flush wait, or an off-context write — each is now reported, cancelled
   with a reason, or released rather than stranded (#1013)

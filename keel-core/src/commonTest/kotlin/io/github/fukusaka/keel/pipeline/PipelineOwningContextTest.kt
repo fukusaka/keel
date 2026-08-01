@@ -191,7 +191,9 @@ class PipelineOwningContextTest {
         val buf = tracker.allocate(8).also { it.writerIndex = 4 }
         stoppedChannel.pipeline.notifyRead(buf)
         assertEquals(1, tracker.outstandingCount, "premise: the read is journalled, not yet delivered")
+        assertTrue(stopped.isOpen, "premise: open, so the release is not just the closed-transport path")
 
+        stopped.owningContext = false
         stopped.owningContextAlive = false
         stoppedChannel.pipeline.addLast(
             "late",
@@ -201,6 +203,58 @@ class PipelineOwningContextTest {
         )
 
         assertEquals(0, tracker.outstandingCount, "the journalled read must be released, not stranded")
+    }
+
+    @Test
+    fun `a handler added after a peer close on a stopped context still receives onInactive`() {
+        // The discard is what ends the journal, so it owes the late handler the
+        // inactivation the drain would have delivered. Without that hand-off the
+        // per-handler replay matches no branch and does nothing at all — and a
+        // bridge installed after a peer close waits for an EOF it already
+        // missed. Pins the guarantee, not the comment claiming it.
+        val stopped = TestIoTransport().apply { dispatcher = NeverRuns }
+        val stoppedChannel = object : AbstractPipelinedChannel(stopped, logger) {}
+        stoppedChannel.pipeline.notifyInactive()
+
+        stopped.owningContext = false
+        stopped.owningContextAlive = false
+        var sawInactive = false
+        stoppedChannel.pipeline.addLast(
+            "late",
+            object : InboundHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) = Unit
+                override fun onInactive(ctx: PipelineHandlerContext) {
+                    sawInactive = true
+                }
+            },
+        )
+
+        assertTrue(sawInactive, "the peer close observed before the handler existed must still reach it")
+    }
+
+    @Test
+    fun `a handler added after activation on a stopped context still receives onActive`() {
+        // The replay's other branch. The discard must leave the lifecycle
+        // bookkeeping exactly where the drain would have — promoting all three
+        // flags, not just the inactive one — or half the replay stays dead.
+        val stopped = TestIoTransport().apply { dispatcher = NeverRuns }
+        val stoppedChannel = object : AbstractPipelinedChannel(stopped, logger) {}
+        stoppedChannel.pipeline.notifyActive()
+
+        stopped.owningContext = false
+        stopped.owningContextAlive = false
+        var sawActive = false
+        stoppedChannel.pipeline.addLast(
+            "late",
+            object : InboundHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) = Unit
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    sawActive = true
+                }
+            },
+        )
+
+        assertTrue(sawActive, "the activation observed before the handler existed must still reach it")
     }
 
     @Test
