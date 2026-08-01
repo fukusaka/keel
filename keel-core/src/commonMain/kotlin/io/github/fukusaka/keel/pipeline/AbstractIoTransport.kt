@@ -5,6 +5,8 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
 /**
  * Base class for [IoTransport] implementations with shared defaults.
@@ -66,8 +68,7 @@ abstract class AbstractIoTransport(
      * Not a compare-and-swap: two concurrent callers may both see
      * `opened = true`, both write `false`, and both return `true`.
      * Final idempotency of the teardown body is provided by
-     * [markTeardownStarted], which is EventLoop-local and therefore
-     * race-free.
+     * [markTeardownStarted].
      */
     protected fun markClosing(): Boolean {
         if (!opened) return false
@@ -76,23 +77,21 @@ abstract class AbstractIoTransport(
     }
 
     /**
-     * Teardown-side idempotency flag. Touched only from the owning
-     * EventLoop (or the engine-specific serial dispatch queue), so no
-     * volatile / atomic is required.
+     * Teardown-side idempotency claim. A CAS rather than a plain flag: once a
+     * loop has stopped, a teardown runs on whichever thread is closing, and
+     * two closers — or a closer racing a teardown the stopping loop's final
+     * drain still executes — must collapse to a single cleanup pass.
      */
-    private var teardownStarted = false
+    @OptIn(ExperimentalAtomicApi::class)
+    private val teardownStarted = AtomicInt(0)
 
     /**
-     * Returns `true` exactly once — for the first teardown invocation
-     * on the EventLoop. Subsequent calls return `false` so subclasses
-     * can collapse concurrent teardown dispatches into a single cleanup
-     * pass. **MUST** be invoked from the owning EventLoop thread.
+     * Returns `true` exactly once — for the first teardown invocation, from
+     * any thread. Subsequent calls return `false` so subclasses can collapse
+     * concurrent teardown attempts into a single cleanup pass.
      */
-    protected fun markTeardownStarted(): Boolean {
-        if (teardownStarted) return false
-        teardownStarted = true
-        return true
-    }
+    @OptIn(ExperimentalAtomicApi::class)
+    protected fun markTeardownStarted(): Boolean = teardownStarted.compareAndSet(0, 1)
 
     // --- Read path callbacks ---
 
@@ -224,6 +223,11 @@ abstract class AbstractIoTransport(
      * to re-enqueue the partial-write remainder at the head — that
      * is the operation [ArrayDeque] makes O(1) and `MutableList`
      * makes O(n).
+     *
+     * Owning-thread-confined while the loop lives. Once the loop has
+     * published quiescence, the closing caller may drain it instead —
+     * reading through the quiescence flag's acquire edge, with no loop
+     * side left to race.
      */
     protected val pendingWrites = ArrayDeque<PendingWrite>()
 
@@ -422,8 +426,8 @@ abstract class AbstractIoTransport(
     //
     // Touched only from the owning EventLoop thread (or the engine-local
     // serial dispatch queue), matching the same invariant as
-    // `pendingBytes` / `pendingWrites` / `teardownStarted`. Plain `Long`
-    // suffices — no atomic / volatile required.
+    // `pendingBytes` / `pendingWrites`. Plain `Long` suffices — no atomic /
+    // volatile required.
     //
     // Subclasses MUST increment [flushCount] for every flush call (gather
     // or single, regardless of outcome) and [partialWriteCount] for every
