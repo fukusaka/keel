@@ -494,10 +494,10 @@ internal class EpollEventLoop(
      *
      * **Must not be called from the EventLoop thread.** `pthread_join` returns
      * `EDEADLK` at once when asked to join the caller, so everything below
-     * would run while the loop is still inside its own body — freeing the
-     * registration lock it is about to take, and the fds it is about to use.
-     * That one errno is treated as fatal misuse: it is logged and nothing is
-     * released, because releasing is what would corrupt. Every other join
+     * would run while the loop is still inside its own body — closing the fds
+     * it is about to use and freeing the scratch it writes through. That one
+     * errno is treated as fatal misuse: it is logged and nothing is released,
+     * because releasing is what would corrupt. Every other join
      * failure falls through and releases anyway, since the `running` CAS above
      * has already fired and no later `close()` can pick it up.
      *
@@ -522,7 +522,7 @@ internal class EpollEventLoop(
                 if (joinRet == EDEADLK) {
                     logger.error {
                         "close() was called from this EventLoop's own thread — releasing nothing, " +
-                            "because the loop is still running and would lose its lock and fds"
+                            "because the loop is still running and would lose the fds it is using"
                     }
                     return
                 }

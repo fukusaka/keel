@@ -254,7 +254,6 @@ class AbstractPosixReadinessEventLoopTest {
             lockFailureExpected = true
             reportRegLockFailure(operation, errno, stillHeld)
         }
-
     }
 
     /**
