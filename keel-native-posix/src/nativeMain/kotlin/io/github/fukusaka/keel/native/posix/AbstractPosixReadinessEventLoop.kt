@@ -1145,11 +1145,12 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * the construction sites guards the constructor with a close of the fd it
      * just accepted or connected, so a throw here would leak that fd mid-unwind
      * at eight call sites. What the refusal keeps is the report, not the
-     * descriptor: an off-loop `close()` of the refused channel dispatches its
-     * teardown to a queue nothing drains (a close still on the loop thread,
-     * inside the sweep's final drain, does tear down inline). Freeing that fd,
-     * like making a stopped engine's `connect()` fail fast, is fd-ownership
-     * work at those sites, not a flag here.
+     * descriptor: nothing after the sweep guarantees the refused channel's
+     * teardown ever runs — a `close()` may still be picked up by the sweep's
+     * own final drain, or land after it and never execute — so the fd can stay
+     * open until the process exits. Freeing it deterministically, like making
+     * a stopped engine's `connect()` fail fast, is fd-ownership work at those
+     * sites, not a flag here.
      *
      * **Thread safety**: safe from any thread; takes the registration lock.
      */
