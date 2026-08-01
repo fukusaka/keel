@@ -91,10 +91,12 @@ class LoopHandoffTest {
         assertEquals(1, ifStopped, "the loop is gone, so the caller must do the fallback")
         assertEquals(0, onLoop)
 
-        // The task was still queued, but claiming it here means a later drain
-        // (there will not be one) could not run it a second time.
+        // Nothing was queued: a quiescent loop is not dispatched to at all —
+        // the offer would pin the closure in a queue nothing reads. A drain
+        // (there will not be one) finds nothing to run.
+        assertTrue(loop.queue.isEmpty(), "no task may be offered to a quiescent loop")
         loop.drain()
-        assertEquals(0, onLoop, "the fallback already claimed the work")
+        assertEquals(0, onLoop, "nothing was queued, so nothing can run")
     }
 
     @Test

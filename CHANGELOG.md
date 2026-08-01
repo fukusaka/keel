@@ -72,6 +72,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`, `engine-epoll`, `engine-kqueue`: closing a Coroutine-mode channel after the engine
+  stopped now releases its fd and pending write buffers on the caller, instead of dispatching
+  the teardown onto a queue nothing drains (#1011)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: a stopping loop tells every live connection
   through a new per-loop participant registry (`LoopParticipant`), not just those holding a
   ledger registration (#1010)

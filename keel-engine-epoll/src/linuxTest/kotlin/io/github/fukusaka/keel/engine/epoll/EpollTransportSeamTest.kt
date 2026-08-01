@@ -17,10 +17,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
+import platform.posix.EBADF
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
 import platform.posix.SOCK_STREAM
 import platform.posix.close
+import platform.posix.dup
+import platform.posix.errno
 import platform.posix.socket
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
@@ -70,7 +73,7 @@ class EpollTransportSeamTest {
         // the recycled-fd hazard the engine funnels exist to avoid. Harmless
         // until these tests started the loop; now it is not.
         eventLoop.close()
-        close(fd)
+        if (fd >= 0) close(fd)
     }
 
     /**
@@ -623,6 +626,47 @@ class EpollTransportSeamTest {
         } finally {
             coalescingLoop.close()
         }
+    }
+
+    // --- Close after the loop has stopped (caller-thread teardown) ---
+
+    @Test
+    fun `close after the loop stopped still releases the fd and the pending buffers`() = runBlocking {
+        // A Coroutine-mode caller closes its channel after engine shutdown.
+        // The loop is gone, so the teardown cannot be dispatched; it has to
+        // run on the caller instead — otherwise the fd and the stranded
+        // write buffers survive to process exit.
+        eventLoop.start()
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply {
+            // Strand one buffer in pendingWrites: the flush stalls on
+            // WouldBlock and the loop stops before any retry.
+            enqueueWrite(fd, WriteResult.WouldBlock)
+        }
+        val transport = EpollIoTransport(fd, eventLoop, tracker, fake)
+        val queued = CompletableDeferred<Unit>()
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = tracker.allocate(PAYLOAD_BYTES)
+                buf.writerIndex = PAYLOAD_BYTES
+                transport.write(buf)
+                transport.flush()
+                queued.complete(Unit)
+            },
+        )
+        withTimeout(SEAM_TIMEOUT_MS) { queued.await() }
+        eventLoop.close()
+
+        transport.close()
+
+        val closedFd = fd
+        fd = -1 // ownership passed to the transport, which closed it; tearDown must not close the number again
+        val probe = dup(closedFd)
+        if (probe >= 0) close(probe)
+        assertEquals(-1, probe, "the fd must be closed on the caller when the loop is gone")
+        assertEquals(EBADF, errno, "closed, not fd-table exhaustion: the probe must fail with EBADF")
+        assertEquals(0, tracker.outstandingCount, "the stranded pending write must be released")
     }
 
     private companion object {

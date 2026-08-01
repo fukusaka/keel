@@ -507,10 +507,14 @@ internal class KqueueEventLoop(
             // EventLoopGroup hands each EL the result of
             // `BufferAllocator.createChild()`, so closing here drains
             // this loop's freelists and runs `Freelist.close()` (mutex
-            // destroy / nativeHeap.free for `MutexFreelist`). Safe because
-            // the EL thread is joined above — no concurrent allocate /
-            // returnToPool calls. Default no-op for `DefaultAllocator` (tests
-            // that instantiate this loop with the stateless allocator).
+            // destroy / nativeHeap.free for `MutexFreelist`). The joined EL
+            // thread can no longer allocate — but a returnToPool can still
+            // arrive from a post-quiescence closing caller (the stopped-loop
+            // transport teardown releases pending writes on its own thread);
+            // that race is the allocator's to absorb, via its cross-thread
+            // return queue's close-sentinel contract. Default no-op for
+            // `DefaultAllocator` (tests that instantiate this loop with the
+            // stateless allocator).
             // Free the shared writev scratch arrays — the loop thread is
             // joined above, so no transport flush can touch them anymore.
             nativeHeap.free(writevBases)

@@ -236,8 +236,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
 
     /**
      * Hands [onLoop] to this EventLoop's thread; runs [ifStopped] on the caller
-     * if the loop is already gone. Does not wait for either to finish — see
-     * [LoopHandoff.runOnLoop] for why, and for what each block may touch.
+     * if the loop is already gone. On a live loop this returns before the work
+     * runs; a caller landing mid-shutdown blocks until the loop is quiet — see
+     * [LoopHandoff.runOnLoop] for the wait's shape, and for what each block
+     * may touch.
      *
      * **Thread safety**: safe from any thread.
      */
@@ -400,18 +402,25 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     protected fun hasTasksPending(): Boolean = taskQueue.isNotEmpty()
 
     /**
-     * Queues [block] for the loop thread and wakes the loop if the caller is not
-     * already on it.
+     * Queues [block] for the loop thread and wakes the loop if the caller is
+     * not already on it — and the loop is not yet quiescent. After quiescence
+     * there is no next drain: the task stays queued, unread, as bounded
+     * retention, and no wakeup is written (the fd may already be released).
      *
-     * The contract a `launch(eventLoop) { }` caller reasons about: the block does
-     * not run here, it runs on the next [drainTasks], which happens before the
-     * kernel wait rather than after it.
+     * The contract a `launch(eventLoop) { }` caller reasons about while the
+     * loop lives: the block does not run here, it runs on the next
+     * [drainTasks], which happens before the kernel wait rather than after it.
      */
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         taskQueue.offer(block)
         // Skip the wakeup when already on the loop thread: the next drain
-        // happens before the kernel wait, and the wakeup is a syscall.
-        if (!inEventLoop()) {
+        // happens before the kernel wait, and the wakeup is a syscall. Skip
+        // it too once the loop is quiescent — its close may already have
+        // released the wakeup fd, and the kernel may have re-handed the
+        // number, so the write would be a stray byte in someone else's
+        // descriptor. The offer stays: bounded retention on a queue nothing
+        // reads, which is the best a dispatch to a dead loop can do.
+        if (!inEventLoop() && !handoff.isQuiescent()) {
             wakeup()
         }
     }

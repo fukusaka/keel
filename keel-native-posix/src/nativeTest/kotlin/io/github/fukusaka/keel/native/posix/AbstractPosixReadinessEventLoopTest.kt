@@ -979,10 +979,11 @@ class AbstractPosixReadinessEventLoopTest {
     fun `an off-loop registerCallback goes through the real queue and wakes the loop`() {
         // [FakeLoop] answers every pipeline test, and it replaces both `dispatch`
         // and `drainTasks` with a list -- so none of them reaches MpscQueue,
-        // drainQueue's batch loop, or the `if (!inEventLoop()) wakeup()` branch
-        // an off-loop registration actually takes. A regression that queued the
-        // arm and skipped the wakeup would leave the re-arm waiting for an
-        // unrelated event and pass every one of them.
+        // drainQueue's batch loop, or the `if (!inEventLoop() &&
+        // !handoff.isQuiescent())` wakeup branch an off-loop registration on a
+        // live loop actually takes. A regression that queued the arm and
+        // skipped the wakeup would leave the re-arm waiting for an unrelated
+        // event and pass every one of them.
         val loop = RealQueueLoop(onLoopThread = false)
         try {
             loop.registerCallback(FD, Interest.READ, RecordingListener())
@@ -1061,6 +1062,26 @@ class AbstractPosixReadinessEventLoopTest {
             loop.onLoopThread = false
             loop.dispatch(EmptyCoroutineContext, Runnable { })
             assertEquals(1, loop.wakeups, "an off-loop caller has to interrupt the wait")
+        } finally {
+            loop.destroy()
+        }
+    }
+
+    @Test
+    fun `dispatch to a quiescent loop keeps the offer but skips the wakeup`() {
+        // Once the loop published quiescence its close may already have
+        // released the wakeup fd -- and the kernel may have re-handed the
+        // number -- so the write would land in someone else's descriptor. The
+        // offer stays: bounded retention on a queue nothing reads, which is
+        // the best a dispatch to a dead loop can do.
+        val loop = RealQueueLoop()
+        try {
+            loop.loop() // runs to completion: finished, swept, quiescent
+            loop.onLoopThread = false
+            var ran = false
+            loop.dispatch(EmptyCoroutineContext, Runnable { ran = true })
+            assertEquals(0, loop.wakeups, "a quiescent loop must not be woken")
+            assertFalse(ran, "and nothing runs the task -- the queue is dead")
         } finally {
             loop.destroy()
         }

@@ -341,18 +341,22 @@ internal class EpollIoTransport(
      * Releases all pending write buffers, unregisters from epoll, and
      * closes the socket fd. Idempotent and thread-safe.
      *
-     * A non-EventLoop caller dispatches the teardown onto the owning
-     * [eventLoop] so the `pendingWrites` / `pendingBytes` mutations and
-     * the `eventLoop.cleanupFd` / `close(fd)` pair stay serialised with
-     * the read / write / flush paths on the EventLoop thread.
+     * A non-EventLoop caller hands the teardown to the owning [eventLoop] so
+     * the `pendingWrites` / `pendingBytes` mutations and the
+     * `eventLoop.cleanupFd` / `close(fd)` pair stay serialised with the read /
+     * write / flush paths on the EventLoop thread — and once that loop has
+     * stopped for good, runs [teardownAfterLoopStopped] itself, because a
+     * Coroutine-mode caller closing after engine shutdown is otherwise
+     * dispatching its only fd release onto a queue nothing drains. A close
+     * that lands mid-shutdown briefly blocks: the hand-off waits out the
+     * loop's final drain and stop sweep before releasing on the caller.
      */
     override fun close() {
         if (!markClosing()) return
-        if (eventLoop.inEventLoop()) {
-            teardownOnEventLoop()
-        } else {
-            eventLoop.dispatch(EmptyCoroutineContext, Runnable { teardownOnEventLoop() })
-        }
+        eventLoop.runOnLoop(
+            onLoop = { teardownOnEventLoop() },
+            ifStopped = { teardownAfterLoopStopped() },
+        )
     }
 
     private fun teardownOnEventLoop() {
@@ -364,9 +368,7 @@ internal class EpollIoTransport(
             flushScheduled = false
             performFlush()
         }
-        for (pw in pendingWrites) pw.buf.release()
-        pendingWrites.clear()
-        pendingBytes = 0
+        releaseAllPendingWrites()
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
         flushContinuation?.let { cont ->
             flushContinuation = null
@@ -383,6 +385,50 @@ internal class EpollIoTransport(
         eventLoop.cleanupFd(fd)
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
         logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
+    }
+
+    /**
+     * Teardown on the closing caller's thread, for a loop that has stopped:
+     * [runOnLoop][EpollEventLoop.runOnLoop] only takes this branch after the
+     * loop published quiescence, so nothing on the loop side runs concurrently
+     * and the loop-written fields are read through that flag's acquire edge.
+     *
+     * What the on-loop teardown does is deliberately narrowed here:
+     * - **No ledger withdrawal, no registry leave, no `cleanupFd`**: the stop
+     *   sweep emptied and closed the ledgers and the registry, the loop may
+     *   already have destroyed the lock guarding them, and the interest
+     *   bookkeeping belongs to a loop that will never read it again.
+     * - **No deferred flush**: the gather scratch the flush path uses is freed
+     *   by the loop's own close, and the bytes have nowhere ordered to go.
+     * - **No timer cancels**: the per-loop deadline scheduler is not safe for
+     *   two closers to mutate concurrently, and a dead loop never fires it —
+     *   the armed handles are retention on the dead loop object, not a leak.
+     * - **The flush waiter is cancelled**, as on the loop. That wakes a
+     *   waiter whose dispatcher still runs; one parked under a stopped
+     *   loop's dispatcher — this one's or a quiescent sibling's — is beyond
+     *   anyone's reach, its resume landing on a dead queue (which no longer
+     *   takes a wakeup write), and ending those waits is tracked work.
+     *
+     * Releasing the buffers from this thread is allocator-audited: the native
+     * pooled allocator routes an off-owner release through its MPSC return
+     * queue, whose close-race contract frees directly when the offer loses; a
+     * same-thread (confinement-owner) release racing the engine-close thread's
+     * allocator teardown is the one seam left, tracked separately. The
+     * `close(fd)` sits in a `finally` so a throw from a release cannot strand
+     * the descriptor behind the consumed teardown claim.
+     */
+    private fun teardownAfterLoopStopped() {
+        if (!markTeardownStarted()) return
+        try {
+            releaseAllPendingWrites()
+            flushContinuation?.let { cont ->
+                flushContinuation = null
+                cont.cancel()
+            }
+        } finally {
+            closeFdSafely(fd, eventLoop.logger, "transport teardown (loop stopped)")
+            logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
+        }
     }
 
     /**
