@@ -98,6 +98,26 @@ class PipelineOwningContextTest {
     }
 
     @Test
+    fun `requestWrite from off the owning context releases when the owning context has stopped`() {
+        // The state neither existing case covers: the transport is *open*, so
+        // the closed check passes, but its dispatcher has stopped -- the queue
+        // accepts the block and nothing drains it, taking the buffer's
+        // ownership with it, past anything the transport's own teardown can
+        // reach. Asking the transport whether a dispatch would still run is
+        // what turns that into a release.
+        transport.owningContext = false
+        transport.owningContextAlive = false
+        val tracker = TrackingAllocator()
+        val buf = tracker.allocate(8).also { it.writerIndex = 4 }
+
+        channel.pipeline.requestWrite(buf)
+
+        assertTrue(transport.isOpen, "premise: open, only its owning context stopped")
+        assertTrue(transport.written.isEmpty(), "nothing runs the block, so nothing is written")
+        assertEquals(0, tracker.outstandingCount, "the abandoned write must still be released")
+    }
+
+    @Test
     fun `requestWrite on the owning context runs inline`() {
         val tracker = TrackingAllocator()
         val buf = tracker.allocate(8).also { it.writerIndex = 4 }

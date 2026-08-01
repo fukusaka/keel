@@ -138,6 +138,15 @@ public open class TestIoTransport(
 
     override val inOwningContext: Boolean get() = owningContext
 
+    /**
+     * Reported by [canDispatchToOwningContext]. Flip to `false` to model the
+     * state no other knob reaches: the transport is still open, but its owning
+     * context has stopped, so a dispatch would be accepted and never run.
+     */
+    public var owningContextAlive: Boolean = true
+
+    override val canDispatchToOwningContext: Boolean get() = owningContextAlive
+
     override fun write(buf: IoBuf) {
         // Ownership transferred from caller per AbstractIoTransport.write
         // contract. We do NOT retain — the buf sits in `written` at the
