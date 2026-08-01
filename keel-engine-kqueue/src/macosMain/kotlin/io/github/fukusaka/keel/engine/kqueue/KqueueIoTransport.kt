@@ -356,17 +356,19 @@ internal class KqueueIoTransport(
      * closing, so the loop stops referencing this transport once the connection
      * is gone; a callback that fires in between is harmless anyway, since they
      * all check [isOpen]. Idempotent and
-     * thread-safe: a non-EventLoop caller dispatches the teardown onto
-     * the owning [eventLoop] so the `pendingWrites` / `pendingBytes`
-     * mutations stay serialised with the read / write / flush paths.
+     * thread-safe: a non-EventLoop caller hands the teardown to the owning
+     * [eventLoop] so the `pendingWrites` / `pendingBytes` mutations stay
+     * serialised with the read / write / flush paths — and once that loop has
+     * stopped for good, runs [teardownAfterLoopStopped] itself, because a
+     * Coroutine-mode caller closing after engine shutdown is otherwise
+     * dispatching its only fd release onto a queue nothing drains.
      */
     override fun close() {
         if (!markClosing()) return
-        if (eventLoop.inEventLoop()) {
-            teardownOnEventLoop()
-        } else {
-            eventLoop.dispatch(EmptyCoroutineContext, Runnable { teardownOnEventLoop() })
-        }
+        eventLoop.runOnLoop(
+            onLoop = { teardownOnEventLoop() },
+            ifStopped = { teardownAfterLoopStopped() },
+        )
     }
 
     private fun teardownOnEventLoop() {
@@ -395,6 +397,35 @@ internal class KqueueIoTransport(
         eventLoop.unregisterCallback(fd, Interest.WRITE)
         eventLoop.removeParticipant(this)
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
+        logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
+    }
+
+    /**
+     * Teardown on the closing caller's thread, for a loop that has stopped:
+     * [runOnLoop][KqueueEventLoop.runOnLoop] only takes this branch after the
+     * loop published quiescence, so nothing on the loop side runs concurrently
+     * and the loop-written fields are read through that flag's acquire edge.
+     *
+     * What the on-loop teardown does is deliberately narrowed here:
+     * - **No ledger withdrawal, no registry leave**: the stop sweep emptied
+     *   and closed both, and the loop may already have destroyed the lock
+     *   guarding them.
+     * - **No deferred flush**: the gather scratch the flush path uses is freed
+     *   by the loop's own close, and the bytes have nowhere ordered to go.
+     * - **The flush waiter is not cancelled**: its resume would dispatch onto
+     *   the dead queue and reach nobody; ending write-side waits on a stopped
+     *   loop is separate work.
+     * - Releasing the stranded buffers here is safe from this thread: once the
+     *   loop's allocator child closed, their pool return takes its closed-flag
+     *   branch and frees directly, and the shared chunk arena belongs to the
+     *   root allocator, which outlives the engine.
+     */
+    private fun teardownAfterLoopStopped() {
+        if (!markTeardownStarted()) return
+        for (pw in pendingWrites) pw.buf.release()
+        pendingWrites.clear()
+        pendingBytes = 0
+        closeFdSafely(fd, eventLoop.logger, "transport teardown (loop stopped)")
         logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
     }
 
