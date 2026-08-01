@@ -736,19 +736,26 @@ class KqueueTransportSeamTest {
     }
 
     @Test
-    fun `a stopped loop reports that it can no longer be dispatched to`() {
+    fun `a stopped loop reports that it can no longer be dispatched to`() = runBlocking {
         // What the pipeline asks before handing over a buffer whose ownership
         // it has taken. The release itself is pinned in the pipeline's own
         // suite; this pins that this engine answers truthfully -- open, but
         // with a dispatcher that will never run anything again.
-        eventLoop.start()
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
-        assertTrue(transport.canDispatchToOwningContext, "a live loop still takes work")
+        //
+        // The budget is declarative, as on the refusal case: close() joins the
+        // loop thread with no suspension point, so withTimeout cannot cut a
+        // loop that will not leave its body -- the job timeout does. Stated so
+        // the whole suite reads one way.
+        withTimeout(SEAM_TIMEOUT_MS) {
+            eventLoop.start()
+            val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+            assertTrue(transport.canDispatchToOwningContext, "a live loop still takes work")
 
-        eventLoop.close()
+            eventLoop.close()
 
-        assertTrue(transport.isOpen, "premise: the transport is still open, only its loop stopped")
-        assertFalse(transport.canDispatchToOwningContext, "a stopped loop must say so")
+            assertTrue(transport.isOpen, "premise: the transport is still open, only its loop stopped")
+            assertFalse(transport.canDispatchToOwningContext, "a stopped loop must say so")
+        }
     }
 
     private companion object {

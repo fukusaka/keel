@@ -93,6 +93,18 @@ abstract class AbstractIoTransport(
     @OptIn(ExperimentalAtomicApi::class)
     protected fun markTeardownStarted(): Boolean = teardownStarted.compareAndSet(0, 1)
 
+    /**
+     * Whether a teardown has been claimed — by this thread or any other.
+     *
+     * For a reader that has just sampled state a teardown destroys, such as the
+     * pending-write queue, and needs to know whether that sample can be
+     * trusted. Read it **after** the sample, not before: a teardown that begins
+     * later cannot invalidate a queue already observed empty, whereas one that
+     * began earlier may be exactly what emptied it.
+     */
+    @OptIn(ExperimentalAtomicApi::class)
+    protected fun teardownHasStarted(): Boolean = teardownStarted.load() == 1
+
     // --- Read path callbacks ---
 
     override var onRead: ((IoBuf) -> Unit)? = null

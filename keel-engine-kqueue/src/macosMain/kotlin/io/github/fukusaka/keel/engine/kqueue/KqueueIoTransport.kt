@@ -152,7 +152,7 @@ internal class KqueueIoTransport(
         // cannot -- it runs after quiescence, where nothing drains again.
         flushContinuation?.let { cont ->
             flushContinuation = null
-            cont.cancel()
+            cont.cancel(stoppedLoopFlushCause())
         }
         onReadClosed?.invoke()
     }
@@ -311,33 +311,35 @@ internal class KqueueIoTransport(
      * asynchronously when the caller is off-loop, and after any buffered
      * writes have drained.
      *
-     * Two consequences of going through the loop hand-off, for a caller that
-     * is off-loop. **On a stopped loop the request is refused**, with a
-     * warning and no FIN — the peer learns of the close when the channel is
-     * closed instead. **On a loop that is mid-shutdown it blocks**, until that
-     * loop finishes tearing down; the teardown runs application code, so a
-     * caller holding a lock that code needs would deadlock. This shares both
-     * properties with [close], which takes the same route.
+     * **On a stopped loop the request is refused**, with a warning and no FIN
+     * — the peer learns of the close when the channel is closed instead. The
+     * call stays non-blocking on every path, unlike [close], which must wait
+     * out a loop mid-shutdown because it has an fd to release; this one has
+     * only a refusal to report.
      */
     override fun shutdownOutput() {
-        eventLoop.runOnLoop(
-            onLoop = { shutdownOutputOwned() },
-            // The loop is gone, so the half-close cannot be ordered the way this
-            // transport orders it: the FIN is held back until the buffered
-            // writes drain, and on a stopped loop they never will. Issuing
-            // `shutdown(2)` from here instead would send the FIN while those
-            // bytes are still queued -- and would race a concurrent close() for
-            // the fd number, off the loop that used to serialise the two. So the
-            // request is refused, and reported, rather than silently dropped:
-            // the peer still learns the connection is over when close() releases
-            // the descriptor, which a stopped loop no longer prevents.
-            ifStopped = {
-                eventLoop.logger.warn {
-                    "shutdownOutput() on a stopped EventLoop: fd=$fd — the FIN is not sent, " +
-                        "the peer sees the close when this channel is closed"
-                }
-            },
-        )
+        when {
+            eventLoop.inEventLoop() -> shutdownOutputOwned()
+            // Refused, not improvised. The half-close is held back until the
+            // buffered writes drain, and on a stopped loop they never will;
+            // issuing shutdown(2) from here would send the FIN with those bytes
+            // still queued *and* race a concurrent close() for the fd number,
+            // off the loop that used to serialise the two. The peer still
+            // learns the connection is over when close() releases the
+            // descriptor. Reported rather than dropped -- the silence was the
+            // defect.
+            //
+            // A plain check rather than the loop hand-off: that one spins out a
+            // loop mid-shutdown, and this is a non-suspending call any thread
+            // may make per connection, so blocking it would expose every such
+            // caller to a wait that runs application teardown. The mid-shutdown
+            // window keeps the dispatch, and the final drain still runs it.
+            eventLoop.isStopped() -> eventLoop.logger.warn {
+                "shutdownOutput() on a stopped EventLoop: fd=$fd — the FIN is not sent, " +
+                    "the peer sees the close when this channel is closed"
+            }
+            else -> eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOwned() })
+        }
     }
 
     override fun sendFin() {
@@ -688,10 +690,21 @@ internal class KqueueIoTransport(
                 // on a flush that is already complete, and a stopped loop does
                 // not make that false. Cancelling it too would fail the very
                 // shutdown paths that await a drain before closing.
-                eventLoop.isStopped() -> when {
-                    !opened -> cont.cancel(stoppedLoopFlushCause())
-                    pendingWrites.isEmpty() -> cont.resume(Unit)
-                    else -> cont.cancel(stoppedLoopFlushCause())
+                // Off the loop, with the loop gone, this reads state a
+                // concurrent close() also mutates -- teardownAfterLoopStopped
+                // releases the queue from whichever thread calls it. So sample
+                // first, then validate: a teardown that starts *after* the
+                // queue was seen empty cannot have released anything unsent,
+                // while one that started before may be precisely what emptied
+                // it. Ordered the other way round, this would report a flush
+                // complete whose bytes were dropped.
+                eventLoop.isStopped() -> {
+                    val drained = opened && pendingWrites.isEmpty()
+                    if (drained && !teardownHasStarted()) {
+                        cont.resume(Unit)
+                    } else {
+                        cont.cancel(stoppedLoopFlushCause())
+                    }
                 }
                 else -> eventLoop.dispatch(EmptyCoroutineContext, register)
             }
