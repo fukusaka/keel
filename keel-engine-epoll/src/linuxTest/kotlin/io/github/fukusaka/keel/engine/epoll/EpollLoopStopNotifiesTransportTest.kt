@@ -13,7 +13,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -135,8 +135,8 @@ class EpollLoopStopNotifiesTransportTest {
                 while (!pipelined.readEnabled) delay(PARK_POLL_MS)
                 true
             }
-            assertTrue(
-                parked == true,
+            assertNotNull(
+                parked,
                 "the reader never reached its park; stopping the loop from here hangs rather than fails",
             )
             assertFalse(readResult.isCompleted, "and nothing has ended it yet")
@@ -192,7 +192,7 @@ class EpollLoopStopNotifiesTransportTest {
                 }
                 true
             }
-            assertTrue(empty == true, "the declined wake must leave the ledger empty for this fd")
+            assertNotNull(empty, "the declined wake must leave the ledger empty for this fd")
             assertFalse(closedSignal.isCompleted, "nothing has closed this connection yet")
 
             engine.close()
@@ -216,7 +216,7 @@ class EpollLoopStopNotifiesTransportTest {
 
             val client = engine.connect(LOOPBACK_HOST, port)
             val serverCh = server.accept()
-            assertTrue(engine.workerParticipants() >= 1, "a live connection is in the registry")
+            assertEquals(2, engine.workerParticipants(), "both live transports (connect side and accepted side) are in the registry")
 
             client.close()
             serverCh.close()
@@ -226,7 +226,7 @@ class EpollLoopStopNotifiesTransportTest {
                 while (engine.workerParticipants() != 0) delay(PARK_POLL_MS)
                 true
             }
-            assertTrue(left == true, "closed connections must leave the registry, or churn grows it forever")
+            assertNotNull(left, "closed connections must leave the registry, or churn grows it forever")
 
             server.close()
             engine.close()
