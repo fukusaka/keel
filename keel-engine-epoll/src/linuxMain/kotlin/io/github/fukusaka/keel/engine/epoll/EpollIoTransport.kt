@@ -680,22 +680,15 @@ internal class EpollIoTransport(
                 // on a flush that is already complete, and a stopped loop does
                 // not make that false. Cancelling it too would fail the very
                 // shutdown paths that await a drain before closing.
-                // Off the loop, with the loop gone, this reads state a
-                // concurrent close() also mutates -- teardownAfterLoopStopped
-                // releases the queue from whichever thread calls it. So sample
-                // first, then validate: a teardown that starts *after* the
-                // queue was seen empty cannot have released anything unsent,
-                // while one that started before may be precisely what emptied
-                // it. Ordered the other way round, this would report a flush
-                // complete whose bytes were dropped.
-                eventLoop.isStopped() -> {
-                    val drained = opened && pendingWrites.isEmpty()
-                    if (drained && !teardownHasStarted()) {
-                        cont.resume(Unit)
-                    } else {
-                        cont.cancel(stoppedLoopFlushCause())
-                    }
-                }
+                // Cancelled without inspecting the queue, deliberately. Doing
+                // better means reading pending state from off the loop, where a
+                // concurrent close() is also emptying it -- and a stale read
+                // there reports a flush complete whose bytes were dropped. A
+                // caller whose queue happened to be empty is told it cannot
+                // wait rather than told, possibly wrongly, that it need not:
+                // an unsatisfiable wait is a visible failure, a false success
+                // is not.
+                eventLoop.isStopped() -> cont.cancel(stoppedLoopFlushCause())
                 else -> eventLoop.dispatch(EmptyCoroutineContext, register)
             }
         }

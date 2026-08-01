@@ -765,16 +765,26 @@ class EpollTransportSeamTest {
     }
 
     @Test
-    fun `awaitPendingFlush on a stopped loop with nothing queued resumes`() = runBlocking {
-        // A stopped loop is a reason the flush will never *complete*, not a
-        // reason to fail a caller whose flush is already complete. The on-loop
-        // path resumes an empty queue; refusing off-loop would cancel the
-        // shutdown paths that await a drain before closing.
+    fun `awaitPendingFlush on a stopped loop is cancelled with a reason rather than silently resumed`() = runBlocking {
+        // Pins the deliberate choice, so it is not "improved" back into a race.
+        // Deciding whether the queue is really empty means reading pending state
+        // from off the loop, where a concurrent close() is emptying it -- and a
+        // stale read there reports a flush complete whose bytes were dropped.
+        // Cancelling is the fail-safe answer even for a caller that had nothing
+        // queued, and the cause says which fd and why.
         eventLoop.start()
         val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
         eventLoop.close()
 
-        withTimeout(SEAM_TIMEOUT_MS) { transport.awaitPendingFlush() }
+        val cause = withTimeout(SEAM_TIMEOUT_MS) {
+            runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+        }
+
+        assertTrue(cause is CancellationException, "a stopped loop must not report the flush complete, got: $cause")
+        assertTrue(
+            cause?.message?.contains("fd=$fd") == true,
+            "the cancellation must name the fd and the reason, got: ${cause?.message}",
+        )
     }
 
     @Test
