@@ -152,7 +152,16 @@ internal class KqueueIoTransport(
         // cannot -- it runs after quiescence, where nothing drains again.
         flushContinuation?.let { cont ->
             flushContinuation = null
-            cont.cancel(stoppedLoopFlushCause())
+            // Guarded on its own, like the sweep guards each waiter it ends:
+            // this resumes user code, and a throw out of it must not take the
+            // read-side notification with it. Before the write side was ended
+            // here, onReadClosed was the only statement and could not be
+            // skipped.
+            try {
+                cont.cancel(stoppedLoopFlushCause())
+            } catch (t: Throwable) {
+                eventLoop.logger.warn(t) { "flush waiter's cancellation threw while the EventLoop was stopping" }
+            }
         }
         onReadClosed?.invoke()
     }
@@ -169,12 +178,18 @@ internal class KqueueIoTransport(
     override val canDispatchToOwningContext: Boolean get() = !eventLoop.isStopped()
 
     /**
-     * Reports the continuation set by [awaitPendingFlush], which the loop
-     * thread writes. The field is not volatile, so an off-loop reader — the
-     * tests that wait for a waiter to park — sees it only eventually; that is
-     * sufficient for polling towards a state that, once reached, persists.
+     * Whether a caller is parked in [awaitPendingFlush] right now.
+     *
+     * `internal`, and declared here rather than on the base: this exists so a
+     * test can wait for a waiter to reach its park instead of asserting on one
+     * that has not, and a test probe should not become published API.
+     *
+     * The field is written by the loop thread and is not volatile, so an
+     * off-loop reader sees it only eventually — and the answer is a moment in
+     * time, not a latch: every normal completion clears it again. A poller must
+     * treat a `true` as "was parked", which is all the tests need.
      */
-    override fun hasFlushWaiter(): Boolean = flushContinuation != null
+    internal fun hasFlushWaiter(): Boolean = flushContinuation != null
 
     // --- Read path ---
 
@@ -319,25 +334,29 @@ internal class KqueueIoTransport(
      */
     override fun shutdownOutput() {
         when {
-            eventLoop.inEventLoop() -> shutdownOutputOwned()
+            // Quiescence first, for the same reason the loop hand-off checks it
+            // first: the loop thread's id is never cleared, so a thread holding
+            // a recycled id would otherwise take the in-loop branch and issue
+            // shutdown(2) plus a flush off the loop -- exactly what this branch
+            // exists to refuse.
+            //
             // Refused, not improvised. The half-close is held back until the
             // buffered writes drain, and on a stopped loop they never will;
-            // issuing shutdown(2) from here would send the FIN with those bytes
-            // still queued *and* race a concurrent close() for the fd number,
-            // off the loop that used to serialise the two. The peer still
-            // learns the connection is over when close() releases the
-            // descriptor. Reported rather than dropped -- the silence was the
-            // defect.
-            //
+            // issuing shutdown(2) here would send the FIN with those bytes still
+            // queued *and* race a concurrent close() for the fd number, off the
+            // loop that used to serialise the two. The peer still learns the
+            // connection is over when close() releases the descriptor. Reported
+            // rather than dropped -- the silence was the defect.
+            eventLoop.isStopped() -> eventLoop.logger.warn {
+                "shutdownOutput() on a stopped EventLoop: fd=$fd — the FIN is not sent, " +
+                    "the peer sees the close when this channel is closed"
+            }
+            eventLoop.inEventLoop() -> shutdownOutputOwned()
             // A plain check rather than the loop hand-off: that one spins out a
             // loop mid-shutdown, and this is a non-suspending call any thread
             // may make per connection, so blocking it would expose every such
             // caller to a wait that runs application teardown. The mid-shutdown
             // window keeps the dispatch, and the final drain still runs it.
-            eventLoop.isStopped() -> eventLoop.logger.warn {
-                "shutdownOutput() on a stopped EventLoop: fd=$fd — the FIN is not sent, " +
-                    "the peer sees the close when this channel is closed"
-            }
             else -> eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOwned() })
         }
     }
@@ -439,7 +458,7 @@ internal class KqueueIoTransport(
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
         flushContinuation?.let { cont ->
             flushContinuation = null
-            cont.cancel()
+            cont.cancel(stoppedLoopFlushCause())
         }
         // Withdraw the registrations before dropping the fd. The map is keyed by
         // fd number, so one left behind keeps this transport — and the channel
@@ -487,7 +506,7 @@ internal class KqueueIoTransport(
             releaseAllPendingWrites()
             flushContinuation?.let { cont ->
                 flushContinuation = null
-                cont.cancel()
+                cont.cancel(stoppedLoopFlushCause())
             }
         } finally {
             closeFdSafely(fd, eventLoop.logger, "transport teardown (loop stopped)")
@@ -638,7 +657,7 @@ internal class KqueueIoTransport(
         suspendCancellableCoroutine { cont ->
             val register = Runnable {
                 when {
-                    !opened -> cont.cancel()
+                    !opened -> cont.cancel(closedTransportFlushCause())
                     pendingWrites.isEmpty() -> cont.resume(Unit)
                     else -> {
                         // Mirror of the epoll defer eager-run: when a caller reaches
@@ -674,31 +693,26 @@ internal class KqueueIoTransport(
                 }
             }
             when {
-                eventLoop.inEventLoop() -> register.run()
-                // Nothing drains the queue again, so dispatching here would park
-                // this caller on a Runnable that never runs and a continuation
-                // that is never even stored -- the one shape close() cannot
-                // rescue either. Checked rather than routed through runOnLoop:
-                // that one waits out a loop mid-shutdown, and blocking a
-                // dispatcher thread from inside suspendCancellableCoroutine is
-                // not a trade worth making. The mid-shutdown window keeps the
-                // dispatch, which is right -- the final drain still runs it,
-                // and the Runnable re-checks before parking, which is the half
-                // that makes this safe rather than merely narrow.
-                // Mirrors what [register] would have decided, rather than
-                // cancelling on sight: a caller with nothing queued is waiting
-                // on a flush that is already complete, and a stopped loop does
-                // not make that false. Cancelling it too would fail the very
-                // shutdown paths that await a drain before closing.
-                // Cancelled without inspecting the queue, deliberately. Doing
-                // better means reading pending state from off the loop, where a
-                // concurrent close() is also emptying it -- and a stale read
-                // there reports a flush complete whose bytes were dropped. A
-                // caller whose queue happened to be empty is told it cannot
-                // wait rather than told, possibly wrongly, that it need not:
-                // an unsatisfiable wait is a visible failure, a false success
-                // is not.
+                // Quiescence first, as the loop hand-off orders it. The loop
+                // thread's id is never cleared, so once it has been joined a
+                // caller whose thread merely *matches* the dead loop's is an
+                // unrelated thread holding a recycled id -- and taking the
+                // in-loop branch there would run performFlush() and mutate the
+                // pending queue off the loop, against a teardown that may be
+                // releasing it on another thread.
                 eventLoop.isStopped() -> cont.cancel(stoppedLoopFlushCause())
+                eventLoop.inEventLoop() -> register.run()
+                // Still running, or shutting down. Nothing else drains the
+                // queue once the loop is gone, so dispatching after quiescence
+                // would park this caller on a Runnable that never runs and a
+                // continuation that is never even stored -- the one shape
+                // close() cannot rescue either. The check above is a plain read
+                // rather than the loop hand-off because that one waits out a
+                // loop mid-shutdown, and blocking a dispatcher thread from
+                // inside suspendCancellableCoroutine is not a trade worth
+                // making. The mid-shutdown window keeps the dispatch, which is
+                // right -- the final drain still runs it, and the Runnable
+                // re-checks before parking.
                 else -> eventLoop.dispatch(EmptyCoroutineContext, register)
             }
         }
@@ -711,6 +725,10 @@ internal class KqueueIoTransport(
      */
     private fun stoppedLoopFlushCause() =
         CancellationException("EventLoop stopped before the pending flush on fd=$fd could drain")
+
+    /** The other reason a flush wait ends unsatisfied: the transport itself is gone. */
+    private fun closedTransportFlushCause() =
+        CancellationException("transport closed before the pending flush on fd=$fd could drain")
 
     private companion object {
         /**

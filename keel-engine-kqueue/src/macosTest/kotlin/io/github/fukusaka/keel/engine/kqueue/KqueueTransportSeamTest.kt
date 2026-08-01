@@ -605,11 +605,9 @@ class KqueueTransportSeamTest {
         val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
         loop.close()
 
-        // Declarative, not enforcing: shutdownOutput() now goes through the
-        // loop hand-off, whose mid-shutdown wait is a usleep spin with no
-        // suspension point, so withTimeout cannot interrupt it. Kept because
-        // the suite states its budgets this way; a real hang here is caught by
-        // the job timeout, not by this.
+        // shutdownOutput() is non-blocking on every path, so this budget is a
+        // real one rather than a formality -- it bounds the call itself, not
+        // just the suite's house style.
         withTimeout(SEAM_TIMEOUT_MS) { transport.shutdownOutput() }
 
         assertEquals(0, fake.shutdownCalls, "no FIN is issued off the loop that used to order it")
@@ -699,8 +697,8 @@ class KqueueTransportSeamTest {
 
         assertTrue(cause is CancellationException, "a stopped loop must not report the flush complete, got: $cause")
         assertTrue(
-            cause?.message?.contains("fd=$fd") == true,
-            "the cancellation must name the fd and the reason, got: ${cause?.message}",
+            cause.message?.contains("fd=$fd") == true,
+            "the cancellation must name the fd and the reason, got: ${cause.message}",
         )
     }
 
@@ -752,10 +750,10 @@ class KqueueTransportSeamTest {
         // suite; this pins that this engine answers truthfully -- open, but
         // with a dispatcher that will never run anything again.
         //
-        // The budget is declarative, as on the refusal case: close() joins the
-        // loop thread with no suspension point, so withTimeout cannot cut a
-        // loop that will not leave its body -- the job timeout does. Stated so
-        // the whole suite reads one way.
+        // The budget is declarative here: close() joins the loop thread with no
+        // suspension point, so withTimeout cannot cut a loop that will not
+        // leave its body -- the job timeout does. Stated anyway so the whole
+        // suite reads one way.
         withTimeout(SEAM_TIMEOUT_MS) {
             eventLoop.start()
             val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())

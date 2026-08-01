@@ -494,16 +494,6 @@ abstract class AbstractIoTransport(
 
     // --- Defaults ---
 
-    /**
-     * Whether a caller is currently parked in [awaitPendingFlush].
-     *
-     * A probe for the tests that have to wait for a waiter to reach its park
-     * before acting on it — asserting on a waiter that has not parked yet tests
-     * nothing. Subclasses that store a continuation override it; the default
-     * has none, matching the no-op [awaitPendingFlush] below.
-     */
-    open fun hasFlushWaiter(): Boolean = false
-
     override suspend fun awaitPendingFlush() {}
     override suspend fun awaitClosed() {}
 
