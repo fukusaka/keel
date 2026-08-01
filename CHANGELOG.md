@@ -72,6 +72,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`, `engine-epoll`, `engine-kqueue`: keep the EventLoop's registration lock valid
+  for the process lifetime instead of freeing it at teardown — a cancellation arriving after
+  `close()` took a freed mutex — and report `pthread_mutex_lock` / `unlock` failures instead of
+  discarding them, ending the loop as a poll fatal does (#1012)
 - `core`, `engine-epoll`, `engine-kqueue`: closing a Coroutine-mode channel after the engine
   stopped now releases its fd and pending write buffers on the caller, instead of dispatching
   the teardown onto a queue nothing drains (#1011)

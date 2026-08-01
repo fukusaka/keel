@@ -502,10 +502,10 @@ internal class KqueueEventLoop(
             closeFdSafely(wakeupFds[0], logger, "event loop teardown (wakeupFds[0])")
             closeFdSafely(wakeupFds[1], logger, "event loop teardown (wakeupFds[1])")
             closeFdSafely(kqFd, logger, "event loop teardown (kqFd)")
-            destroyRegistrationLock { errno ->
-                logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(errno)}" }
-            }
-            // The base's task queue is lock-free — no mutex to destroy
+            // The registration lock is deliberately not destroyed or freed:
+            // a cancellation arriving after this point takes it, and those
+            // arrive without bound (see AbstractPosixReadinessEventLoop's
+            // regMutex). The task queue is lock-free, so it has none either.
             arena.clear()
             // Close the per-EL allocator child. By construction the
             // EventLoopGroup hands each EL the result of
