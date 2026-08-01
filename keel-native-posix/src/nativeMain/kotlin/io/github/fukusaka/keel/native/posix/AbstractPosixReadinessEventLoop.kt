@@ -1142,9 +1142,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * after the sweep that the sweep will ever read. Refusal rather than a
      * throw, deliberately: every transport constructor calls this, and none of
      * the construction sites guards the constructor with a close of the fd it
-     * just accepted or connected, so a throw here would turn "a dead channel,
-     * reported" into a descriptor leak at eight call sites. Making a stopped
-     * engine's `connect()` fail fast is real, but it is fd-ownership work at
+     * just accepted or connected, so a throw here would leak that fd mid-unwind
+     * at eight call sites. What the refusal keeps is the report, not the
+     * descriptor — the refused channel cannot run its own teardown either, its
+     * `close()` dispatches to a queue nothing drains — so freeing that fd, like
+     * making a stopped engine's `connect()` fail fast, is fd-ownership work at
      * those sites, not a flag here.
      *
      * **Thread safety**: safe from any thread; takes the registration lock.
@@ -1161,7 +1163,7 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         if (!added) {
             logger.warn {
                 "${this::class.simpleName}.addParticipant: EventLoop stopped — refusing; " +
-                    "this participant will not be told"
+                    "${participant::class.simpleName} will not be told"
             }
         }
     }
