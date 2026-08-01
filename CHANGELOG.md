@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `IoTransport.canDispatchToOwningContext` — whether work handed to the transport's
+  dispatcher will still run, so the pipeline can release rather than strand it. Defaults to
+  `true`; `AbstractIoTransport.hasFlushWaiter()` reports whether a caller is parked in
+  `awaitPendingFlush` (#1013)
 - `io`: `LongObjectMap.forEachValue` — inline walk over the values, for callers that have to
   drain a map without allocating per entry (#1004)
 - `native-posix`: `AbstractPosixReadinessEventLoop` — the loop, both ledgers and readiness
