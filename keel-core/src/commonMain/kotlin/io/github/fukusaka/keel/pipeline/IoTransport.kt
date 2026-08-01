@@ -241,6 +241,25 @@ interface IoTransport {
      */
     val inOwningContext: Boolean get() = true
 
+    /**
+     * Whether work handed to [ioDispatcher] will still run.
+     *
+     * `false` means the owning context has stopped for good: a `dispatch` is
+     * accepted by the queue and never drained, so anything the pipeline routes
+     * that way — and anything the closure captures, including a buffer whose
+     * ownership was transferred — is stranded for the transport's lifetime.
+     * The pipeline asks before dispatching so it can release instead.
+     *
+     * Default `true`: a transport whose dispatcher outlives it, or which never
+     * leaves [inOwningContext], has nothing to answer. An engine whose loop can
+     * stop while its transports are still reachable overrides this.
+     *
+     * This is not the negation of [isOpen]. A transport can be open with a dead
+     * dispatcher (its loop stopped, nobody has closed the channel yet) — which
+     * is exactly the case worth asking about.
+     */
+    val canDispatchToOwningContext: Boolean get() = true
+
     fun shutdownOutput()
 
     /**
