@@ -185,10 +185,12 @@ internal class KqueueStreamServer(
         // cancelAll takes.
         _active = false
         if (!closeClaimed.compareAndSet(0, 1)) return
-        // cancelAll and close both run on the boss loop: cancelAll touches the
-        // waiter ledger the loop owns, and issuing it off the loop would race
-        // the loop reading it. (The lock itself is safe to take from anywhere:
-        // it is never destroyed. What is not safe is the unsynchronised view.)
+        // cancelAll and close both run on the boss loop, and the reason is
+        // ordering rather than exclusion: cancelAll takes the loop's regMutex
+        // itself, so it is safe from any thread. Running it on the loop puts it
+        // after any arm already queued for this fd, so the close(2) cannot let
+        // the kernel re-hand the number before that arm runs -- the recycled-fd
+        // hazard LoopHandoff.runOnLoop exists for.
         // See KqueuePipelinedStreamServer.close for the close(2) half.
         bossLoop.runOnLoop(
             onLoop = {

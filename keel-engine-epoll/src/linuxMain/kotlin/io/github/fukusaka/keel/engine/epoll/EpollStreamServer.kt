@@ -170,11 +170,13 @@ internal class EpollStreamServer(
         // cancelAll takes.
         _active = false
         if (!closeClaimed.compareAndSet(0, 1)) return
-        // cancelAll, cleanupFd and close all run on the boss loop below: the
-        // first two touch state the loop owns -- the waiter ledger and its own
-        // fd bookkeeping -- and issuing them off the loop would race the loop
-        // reading them. (The lock itself is safe to take from anywhere: it is
-        // never destroyed. What is not safe is the unsynchronised view.)
+        // cancelAll, cleanupFd and close all run on the boss loop below, and
+        // the reason is ordering rather than exclusion: all three are already
+        // safe to call from any thread (the first two take the loop's regMutex
+        // themselves). Running them on the loop puts them after any arm already
+        // queued for this fd, so the close(2) cannot let the kernel re-hand the
+        // number to someone else before that arm runs -- the recycled-fd hazard
+        // LoopHandoff.runOnLoop exists for.
         // Drop the loop's own interest bookkeeping for this fd before the
         // number becomes reusable. Closing the fd clears the kernel's epoll
         // set but not [EpollEventLoop.fdEvents]; a stale entry makes the

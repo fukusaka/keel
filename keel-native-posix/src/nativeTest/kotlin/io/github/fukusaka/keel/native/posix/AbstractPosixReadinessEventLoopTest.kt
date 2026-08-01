@@ -124,6 +124,9 @@ class AbstractPosixReadinessEventLoopTest {
         /** The WARN half of what the base logged, which is what assertions want. */
         val warnings: List<String> get() = logger.warnings
 
+        /** ERROR-level messages, for the paths that report rather than warn. */
+        val errors: List<String> get() = logger.logged.filter { it.first == LogLevel.ERROR }.map { it.second }
+
         override fun inEventLoop(): Boolean = onLoopThread
 
         /** No kernel to wait on: the loop body and its wakeup are inert here. */
@@ -239,6 +242,18 @@ class AbstractPosixReadinessEventLoopTest {
 
         /** [regLockBroken] for the tests. */
         fun lockBroken(): Boolean = regLockBroken()
+
+        /**
+         * Set by a test that trips the failure path on purpose, so the shared
+         * teardown does not report the flag it asked for.
+         */
+        var lockFailureExpected = false
+
+        /** Drives the failure path; a live mutex cannot be made to fail on demand. */
+        fun reportLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
+            lockFailureExpected = true
+            reportRegLockFailure(operation, errno, stillHeld)
+        }
 
     }
 
@@ -395,7 +410,8 @@ class AbstractPosixReadinessEventLoopTest {
         fun lockBroken(): Boolean = regLockBroken()
 
         /** Drives the failure path; a live mutex cannot be made to fail on demand. */
-        fun reportLockFailure(operation: String, errno: Int) = reportRegLockFailure(operation, errno)
+        fun reportLockFailure(operation: String, errno: Int, stillHeld: Boolean) =
+            reportRegLockFailure(operation, errno, stillHeld)
     }
 
     /**
@@ -449,7 +465,9 @@ class AbstractPosixReadinessEventLoopTest {
             // second check is the one with teeth on a healthy mutex -- it fails
             // when a test leaves the lock held, which is what the teardown's old
             // `EBUSY`-on-destroy reported.
-            assertFalse(loop.lockBroken(), "no test may leave the registration lock broken")
+            if (!loop.lockFailureExpected) {
+                assertFalse(loop.lockBroken(), "no test may leave the registration lock broken")
+            }
             assertTrue(loop.lockFree(), "no test may leave the registration lock held")
         }
     }
@@ -861,7 +879,7 @@ class AbstractPosixReadinessEventLoopTest {
         // what wires it to the acquire is covered by the mutation recorded with
         // this change.
         val loop = RealQueueLoop()
-        loop.reportLockFailure("lock", EINVAL)
+        loop.reportLockFailure("lock", EINVAL, stillHeld = false)
 
         assertTrue(loop.lockBroken(), "the loop must be told to stop")
         assertTrue(
@@ -869,6 +887,44 @@ class AbstractPosixReadinessEventLoopTest {
             "and the failure must be reported, not swallowed: ${loop.logged}",
         )
         assertEquals(1, loop.wakeups, "the loop is woken so it notices without waiting for an event")
+    }
+
+    @Test
+    fun `the sweep is skipped when a failed release left the lock held`() = loopTest { loop ->
+        // Re-taking a mutex this thread already holds deadlocks it, so the
+        // sweep steps aside -- but it must still close the ledgers, or every
+        // later registration appends to a loop that will never arm it and
+        // parks forever, which is the hang the sweep exists to end.
+        suspendOn(loop, FD, Interest.READ).await()
+        loop.reportLockFailure("unlock", EINVAL, stillHeld = true)
+
+        loop.failRemainingWaiters()
+
+        assertTrue(loop.waiters(FD, Interest.READ), "the waiter is left parked, as the log says")
+        assertTrue(
+            loop.errors.any { "skipping the stop sweep" in it },
+            "and the skip is reported: ${loop.errors}",
+        )
+        // The ledgers must still be closed, or a later registration appends to a
+        // loop that will never arm it. Probed the way the other refusal tests
+        // do it: a callback that lands in the ledger is one that was accepted.
+        loop.registerCallback(FD, Interest.WRITE, RecordingListener())
+        assertFalse(
+            loop.hasCallbackRegistration(FD, Interest.WRITE),
+            "the ledgers must still be closed, or later registrations park on a dead loop",
+        )
+    }
+
+    @Test
+    fun `the sweep still runs when only the acquire failed`() = loopTest { loop ->
+        // A failed acquire leaves nothing held, so there is no deadlock to
+        // avoid -- ending the waiters unguarded beats leaving them parked.
+        suspendOn(loop, FD, Interest.READ).await()
+        loop.reportLockFailure("lock", EINVAL, stillHeld = false)
+
+        loop.failRemainingWaiters()
+
+        assertFalse(loop.waiters(FD, Interest.READ), "the waiter is ended, not skipped")
     }
 
     @Test
@@ -881,7 +937,7 @@ class AbstractPosixReadinessEventLoopTest {
         loop.loop() // publishes quiescence
         val before = loop.wakeups
 
-        loop.reportLockFailure("lock", EINVAL)
+        loop.reportLockFailure("lock", EINVAL, stillHeld = false)
 
         assertTrue(loop.lockBroken(), "the failure is still recorded")
         assertEquals(before, loop.wakeups, "but a quiescent loop must not be woken")

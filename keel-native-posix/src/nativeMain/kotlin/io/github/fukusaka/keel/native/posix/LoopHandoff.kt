@@ -118,7 +118,8 @@ class LoopHandoff(
         // whose thread id merely *matches* the dead loop's: the real loop
         // thread never returns here after quiescence, so a match is a
         // recycled pthread_t, and running loop-owned teardown on it would
-        // lock state the loop's close may already have destroyed. A caller in
+        // act on a ledger that is swept, closed and no longer this thread's to
+        // touch -- the loop it belonged to is gone. A caller in
         // the narrower window — the loop finished but not yet quiescent —
         // keeps the offer path below: the final drain still picks its task
         // up, on the loop.
