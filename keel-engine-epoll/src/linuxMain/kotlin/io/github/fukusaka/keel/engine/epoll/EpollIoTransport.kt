@@ -140,8 +140,10 @@ internal class EpollIoTransport(
         // open. close() cancels the same continuation, but a Coroutine-mode
         // connection is deliberately not closed here, so without this the waiter
         // is left for a close that may never come. A waiter parked under this
-        // loop's own dispatcher stays out of reach either way -- its resume has
-        // nowhere to land.
+        // loop's own dispatcher is reached: the resume lands on this loop's
+        // queue and the sweep drains once more after notifying participants,
+        // which is what that drain is for. The close path is the one that
+        // cannot -- it runs after quiescence, where nothing drains again.
         flushContinuation?.let { cont ->
             flushContinuation = null
             cont.cancel()
@@ -297,6 +299,14 @@ internal class EpollIoTransport(
      * Idempotent, and safe to call from any thread. The FIN is sent
      * asynchronously when the caller is off-loop, and after any buffered
      * writes have drained.
+     *
+     * Two consequences of going through the loop hand-off, for a caller that
+     * is off-loop. **On a stopped loop the request is refused**, with a
+     * warning and no FIN — the peer learns of the close when the channel is
+     * closed instead. **On a loop that is mid-shutdown it blocks**, until that
+     * loop finishes tearing down; the teardown runs application code, so a
+     * caller holding a lock that code needs would deadlock. This shares both
+     * properties with [close], which takes the same route.
      */
     override fun shutdownOutput() {
         eventLoop.runOnLoop(
@@ -628,6 +638,18 @@ internal class EpollIoTransport(
                                 return@Runnable
                             }
                         }
+                        // About to park on a flush only a future event can
+                        // complete. If the loop has stopped polling, there is
+                        // no such event -- and this Runnable may be running in
+                        // the drain the stop sweep performs *after* walking the
+                        // participants, in which case onLoopStopped has already
+                        // been and gone and nothing is left to end the wait.
+                        // Storing here would reproduce the exact hang this
+                        // change exists to remove.
+                        if (eventLoop.isFinishing()) {
+                            cont.cancel()
+                            return@Runnable
+                        }
                         flushContinuation = cont
                         cont.invokeOnCancellation { flushContinuation = null }
                     }
@@ -642,7 +664,9 @@ internal class EpollIoTransport(
                 // that one waits out a loop mid-shutdown, and blocking a
                 // dispatcher thread from inside suspendCancellableCoroutine is
                 // not a trade worth making. The mid-shutdown window keeps the
-                // dispatch, which is right -- the final drain still runs it.
+                // dispatch, which is right -- the final drain still runs it,
+                // and the Runnable re-checks before parking, which is the half
+                // that makes this safe rather than merely narrow.
                 eventLoop.isStopped() -> cont.cancel()
                 else -> eventLoop.dispatch(EmptyCoroutineContext, register)
             }

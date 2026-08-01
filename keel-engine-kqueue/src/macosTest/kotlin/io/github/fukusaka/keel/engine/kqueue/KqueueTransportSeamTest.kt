@@ -6,11 +6,13 @@ import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.LoopParticipant
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.delay
@@ -603,7 +605,9 @@ class KqueueTransportSeamTest {
         val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
         loop.close()
 
-        transport.shutdownOutput()
+        // Bounded: shutdownOutput() now goes through the loop hand-off, which
+        // blocks for a loop caught mid-shutdown.
+        withTimeout(SEAM_TIMEOUT_MS) { transport.shutdownOutput() }
 
         assertEquals(0, fake.shutdownCalls, "no FIN is issued off the loop that used to order it")
         assertTrue(
@@ -672,6 +676,47 @@ class KqueueTransportSeamTest {
 
         withTimeout(SEAM_TIMEOUT_MS) { waiter.join() }
         assertTrue(cancelled, "the sweep must end the write-side wait, not only the read side")
+    }
+
+    @Test
+    fun `a flush awaited from inside the stop sweep is cancelled instead of parking`() = runBlocking {
+        // The window the caller-side check cannot see. The loop has stopped
+        // polling but is not yet quiescent, so work dispatched now still runs --
+        // in the drain the sweep performs *after* it has walked the
+        // participants. A continuation stored there is one the sweep has
+        // already been past, so nothing is left to end the wait.
+        eventLoop.start()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
+        transport.write(buf)
+        transport.flush()
+
+        val outcome = CompletableDeferred<String>()
+        eventLoop.addParticipant(
+            object : LoopParticipant {
+                override fun onLoopStopped() {
+                    // Queued from inside the participant walk, so it lands in
+                    // the drain that follows it.
+                    CoroutineScope(eventLoop).launch {
+                        try {
+                            transport.awaitPendingFlush()
+                            outcome.complete("resumed")
+                        } catch (_: CancellationException) {
+                            outcome.complete("cancelled")
+                        }
+                    }
+                }
+            },
+        )
+
+        eventLoop.close()
+
+        assertEquals(
+            "cancelled",
+            withTimeout(SEAM_TIMEOUT_MS) { outcome.await() },
+            "a flush awaited after the sweep has passed must not park",
+        )
     }
 
     @Test

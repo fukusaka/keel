@@ -67,6 +67,19 @@ class LoopHandoff(
     }
 
     /**
+     * Whether the loop has stopped polling — it may still run already-queued
+     * work in its final drain, but it will never wait for a kernel event
+     * again.
+     *
+     * The flag for "must I not *park* on this loop": anything waiting to be
+     * woken by future readiness waits forever from here on, whereas
+     * [isQuiescent] answers the narrower "will my task run at all". A task
+     * running inside the final drain reads 1 here and 0 there — exactly the
+     * window in which parking is fatal and dispatching is still fine.
+     */
+    fun isFinished(): Boolean = loopFinished.value == 1
+
+    /**
      * Whether the loop has published quiescence — it will run nothing more,
      * and its own close (which follows) may already have released its wakeup
      * fd. Read by the loop's dispatcher to skip the wakeup write once waking
