@@ -1066,6 +1066,26 @@ class AbstractPosixReadinessEventLoopTest {
         }
     }
 
+    @Test
+    fun `dispatch to a quiescent loop keeps the offer but skips the wakeup`() {
+        // Once the loop published quiescence its close may already have
+        // released the wakeup fd -- and the kernel may have re-handed the
+        // number -- so the write would land in someone else's descriptor. The
+        // offer stays: bounded retention on a queue nothing reads, which is
+        // the best a dispatch to a dead loop can do.
+        val loop = RealQueueLoop()
+        try {
+            loop.loop() // runs to completion: finished, swept, quiescent
+            loop.onLoopThread = false
+            var ran = false
+            loop.dispatch(EmptyCoroutineContext, Runnable { ran = true })
+            assertEquals(0, loop.wakeups, "a quiescent loop must not be woken")
+            assertFalse(ran, "and nothing runs the task -- the queue is dead")
+        } finally {
+            loop.destroy()
+        }
+    }
+
     // --- the pipeline path, which moved onto the base with this class ---
 
     @Test

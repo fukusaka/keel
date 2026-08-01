@@ -109,20 +109,17 @@ class LoopHandoff(
      * **Thread safety**: safe from any thread.
      */
     fun runOnLoop(onLoop: () -> Unit, ifStopped: () -> Unit = onLoop) {
-        // Fully stopped: nothing drains the queue again, so offering — and the
-        // wakeup write the dispatch performs — buys nothing and costs real
-        // hazards: the task would pin its captures in the dead queue for the
-        // loop object's lifetime, and the wakeup fd is closed once the loop's
-        // own close ran (which requires quiescence first), so its number may
-        // already belong to someone else and the write becomes a stray byte in
-        // an unrelated descriptor. This also filters a caller whose thread id
-        // merely *matches* the dead loop's: the real loop thread never returns
-        // here after quiescence, so a match is a recycled pthread_t, and
-        // running loop-owned teardown on it would lock state the loop's close
-        // may already have destroyed. A caller in the narrower window — the
-        // loop finished but not yet quiescent — keeps the offer path below:
-        // the final drain still picks its task up, on the loop, and the
-        // wakeup fd is still open there.
+        // Fully stopped: nothing drains the queue again, so offering buys
+        // nothing and pins the task's captures in the dead queue for the loop
+        // object's lifetime (the dispatcher itself already declines to write
+        // the wakeup fd once quiescent). This check also filters a caller
+        // whose thread id merely *matches* the dead loop's: the real loop
+        // thread never returns here after quiescence, so a match is a
+        // recycled pthread_t, and running loop-owned teardown on it would
+        // lock state the loop's close may already have destroyed. A caller in
+        // the narrower window — the loop finished but not yet quiescent —
+        // keeps the offer path below: the final drain still picks its task
+        // up, on the loop.
         if (loopQuiescent.value == 1) {
             ifStopped()
             return

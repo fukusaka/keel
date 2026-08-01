@@ -402,12 +402,14 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     protected fun hasTasksPending(): Boolean = taskQueue.isNotEmpty()
 
     /**
-     * Queues [block] for the loop thread and wakes the loop if the caller is not
-     * already on it.
+     * Queues [block] for the loop thread and wakes the loop if the caller is
+     * not already on it — and the loop is not yet quiescent. After quiescence
+     * there is no next drain: the task stays queued, unread, as bounded
+     * retention, and no wakeup is written (the fd may already be released).
      *
-     * The contract a `launch(eventLoop) { }` caller reasons about: the block does
-     * not run here, it runs on the next [drainTasks], which happens before the
-     * kernel wait rather than after it.
+     * The contract a `launch(eventLoop) { }` caller reasons about while the
+     * loop lives: the block does not run here, it runs on the next
+     * [drainTasks], which happens before the kernel wait rather than after it.
      */
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         taskQueue.offer(block)

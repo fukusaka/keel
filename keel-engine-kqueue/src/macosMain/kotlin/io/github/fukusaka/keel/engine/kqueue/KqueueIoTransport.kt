@@ -416,10 +416,10 @@ internal class KqueueIoTransport(
      *   two closers to mutate concurrently, and a dead loop never fires it —
      *   the armed handles are retention on the dead loop object, not a leak.
      * - **The flush waiter is cancelled**, as on the loop. That wakes a
-     *   waiter suspended under its own dispatcher; one that parked under
-     *   *this loop's* dispatcher is beyond anyone's reach — its resume can
-     *   only land on the dead queue (whose dispatcher no longer writes the
-     *   wakeup fd once quiescent) — and ending that wait is tracked work.
+     *   waiter whose dispatcher still runs; one parked under a stopped
+     *   loop's dispatcher — this one's or a quiescent sibling's — is beyond
+     *   anyone's reach, its resume landing on a dead queue (which no longer
+     *   takes a wakeup write), and ending those waits is tracked work.
      *
      * Releasing the buffers from this thread is allocator-audited: the native
      * pooled allocator routes an off-owner release through its MPSC return

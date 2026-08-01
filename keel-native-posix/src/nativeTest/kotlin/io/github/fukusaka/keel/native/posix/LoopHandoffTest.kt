@@ -92,9 +92,8 @@ class LoopHandoffTest {
         assertEquals(0, onLoop)
 
         // Nothing was queued: a quiescent loop is not dispatched to at all —
-        // the offer would pin the closure in a queue nothing reads, and the
-        // dispatch's wakeup would write an fd the loop's close may have
-        // released. A drain (there will not be one) finds nothing to run.
+        // the offer would pin the closure in a queue nothing reads. A drain
+        // (there will not be one) finds nothing to run.
         assertTrue(loop.queue.isEmpty(), "no task may be offered to a quiescent loop")
         loop.drain()
         assertEquals(0, onLoop, "nothing was queued, so nothing can run")
