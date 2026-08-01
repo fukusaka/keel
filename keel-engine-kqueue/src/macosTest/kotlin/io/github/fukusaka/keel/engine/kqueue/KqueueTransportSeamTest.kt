@@ -587,7 +587,6 @@ class KqueueTransportSeamTest {
         assertEquals(0, tracker.outstandingCount, "the stranded pending write must be released")
     }
 
-
     // --- entry points a stopped loop used to swallow ---
 
     @Test
