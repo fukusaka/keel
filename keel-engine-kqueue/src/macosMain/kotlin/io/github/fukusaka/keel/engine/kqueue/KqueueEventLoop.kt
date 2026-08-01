@@ -370,6 +370,10 @@ internal class KqueueEventLoop(
 
     override fun loopBody() {
         while (running.value != 0) {
+            // The registration lock failing means the ledgers stopped being
+            // exclusive; end the loop the same way a poll fatal does rather
+            // than keep arming from state nothing is guarding.
+            if (regLockBroken()) break
             drainTasks()
 
             // Non-blocking poll if tasks arrived during drainTasks(), else block
@@ -459,10 +463,10 @@ internal class KqueueEventLoop(
      *
      * **Must not be called from the EventLoop thread.** `pthread_join` returns
      * `EDEADLK` at once when asked to join the caller, so everything below
-     * would run while the loop is still inside its own body — freeing the
-     * registration lock it is about to take, and the fds it is about to use.
-     * That one errno is treated as fatal misuse: it is logged and nothing is
-     * released, because releasing is what would corrupt. Every other join
+     * would run while the loop is still inside its own body — closing the fds
+     * it is about to use and freeing the scratch it writes through. That one
+     * errno is treated as fatal misuse: it is logged and nothing is released,
+     * because releasing is what would corrupt. Every other join
      * failure falls through and releases anyway, since the `running` CAS above
      * has already fired and no later `close()` can pick it up.
      *
@@ -487,7 +491,7 @@ internal class KqueueEventLoop(
                 if (joinRet == EDEADLK) {
                     logger.error {
                         "close() was called from this EventLoop's own thread — releasing nothing, " +
-                            "because the loop is still running and would lose its lock and fds"
+                            "because the loop is still running and would lose the fds it is using"
                     }
                     return
                 }
@@ -498,10 +502,10 @@ internal class KqueueEventLoop(
             closeFdSafely(wakeupFds[0], logger, "event loop teardown (wakeupFds[0])")
             closeFdSafely(wakeupFds[1], logger, "event loop teardown (wakeupFds[1])")
             closeFdSafely(kqFd, logger, "event loop teardown (kqFd)")
-            destroyRegistrationLock { errno ->
-                logger.warn { "pthread_mutex_destroy() failed: ${errnoMessage(errno)}" }
-            }
-            // The base's task queue is lock-free — no mutex to destroy
+            // The registration lock is deliberately not destroyed or freed:
+            // a cancellation arriving after this point takes it, and those
+            // arrive without bound (see AbstractPosixReadinessEventLoop's
+            // regMutex). The task queue is lock-free, so it has none either.
             arena.clear()
             // Close the per-EL allocator child. By construction the
             // EventLoopGroup hands each EL the result of

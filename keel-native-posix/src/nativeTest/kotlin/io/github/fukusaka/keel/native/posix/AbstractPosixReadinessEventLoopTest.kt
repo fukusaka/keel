@@ -19,6 +19,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
+import platform.posix.EINVAL
 import platform.posix.ENOMEM
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
@@ -29,7 +30,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
-import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -123,6 +123,9 @@ class AbstractPosixReadinessEventLoopTest {
 
         /** The WARN half of what the base logged, which is what assertions want. */
         val warnings: List<String> get() = logger.warnings
+
+        /** ERROR-level messages, for the paths that report rather than warn. */
+        val errors: List<String> get() = logger.logged.filter { it.first == LogLevel.ERROR }.map { it.second }
 
         override fun inEventLoop(): Boolean = onLoopThread
 
@@ -230,11 +233,27 @@ class AbstractPosixReadinessEventLoopTest {
         fun drain(fd: Int, interest: Interest): List<Registration> =
             generateSequence { popOne(fd, interest).first }.toList()
 
-        /** Non-null after [destroy] if the mutex could not be destroyed. */
-        var destroyErrno: Int? = null
-            private set
+        /**
+         * Whether the lock can be acquired right now, so a test that left it
+         * held is caught rather than passed on to the next one -- the signal
+         * the teardown's old `EBUSY`-on-destroy check used to carry.
+         */
+        fun lockFree(): Boolean = regLockFree()
 
-        fun destroy() = destroyRegistrationLock { errno -> destroyErrno = errno }
+        /** [regLockBroken] for the tests. */
+        fun lockBroken(): Boolean = regLockBroken()
+
+        /**
+         * Set by a test that trips the failure path on purpose, so the shared
+         * teardown does not report the flag it asked for.
+         */
+        var lockFailureExpected = false
+
+        /** Drives the failure path; a live mutex cannot be made to fail on demand. */
+        fun reportLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
+            lockFailureExpected = true
+            reportRegLockFailure(operation, errno, stillHeld)
+        }
     }
 
     /**
@@ -372,11 +391,26 @@ class AbstractPosixReadinessEventLoopTest {
         /** [drainTasks] is protected on the base; this is the subclass reaching it. */
         fun drain() = drainTasks()
 
-        /** Non-null after [destroy] if the mutex could not be destroyed. */
-        var destroyErrno: Int? = null
-            private set
+        /**
+         * Takes the registration lock. Deliberately returns nothing: a failed
+         * acquire still runs the block, so any value from in there would be
+         * true whatever happened -- what reports the failure is [lockBroken].
+         */
+        fun takeRegLock() = withRegLock { }
 
-        fun destroy() = destroyRegistrationLock { errno -> destroyErrno = errno }
+        /**
+         * Whether the lock can be acquired right now, so a test that left it
+         * held is caught rather than passed on to the next one -- the signal
+         * the teardown's old `EBUSY`-on-destroy check used to carry.
+         */
+        fun lockFree(): Boolean = regLockFree()
+
+        /** [regLockBroken] for the tests. */
+        fun lockBroken(): Boolean = regLockBroken()
+
+        /** Drives the failure path; a live mutex cannot be made to fail on demand. */
+        fun reportLockFailure(operation: String, errno: Int, stillHeld: Boolean) =
+            reportRegLockFailure(operation, errno, stillHeld)
     }
 
     /**
@@ -389,19 +423,20 @@ class AbstractPosixReadinessEventLoopTest {
     )
 
     /**
-     * Runs [block] with a scope whose waiters are cancelled, and whose lock is
-     * destroyed, at the end — in that order.
+     * Runs [block] with a scope whose waiters are cancelled at the end, and
+     * checks the registration lock survived it.
      *
      * Most waiters here are deliberately never resumed; that is the state under
      * test. They are launched into a scope of their own rather than the
      * timeout's, because `withTimeout` waits for its children and would report
      * a parked waiter as a timeout instead of letting the test assert on it.
      *
-     * The order matters and is the same one production gets wrong: [suspendOn]
-     * installs the real `invokeOnCancellation { unregister(reg) }`, so a waiter
-     * cancelled after the lock is freed takes it on freed memory. Cancelling
-     * first keeps this suite honest about that. Destroying here rather than in
-     * each test also means the lock is freed when an assertion fails.
+     * Waiters are cancelled and joined first so no cancellation handler runs
+     * into the next test's fake — [suspendOn] installs the real
+     * `invokeOnCancellation { unregister(reg) }`, which takes the registration
+     * lock. That lock is never freed, so the ordering is about test isolation
+     * rather than memory safety; what the teardown then checks is that no test
+     * left it broken or held.
      */
     private fun loopTest(block: suspend CoroutineScope.(FakeLoop) -> Unit) = loopTestWith(FakeLoop(), block)
 
@@ -412,25 +447,27 @@ class AbstractPosixReadinessEventLoopTest {
                 waiters.block(loop)
             } finally {
                 // join, not just cancel: suspendOn installs the production
-                // invokeOnCancellation { unregister(reg) }, which takes the lock
-                // destroy() is about to free. Cancel handlers happen to run
-                // inline today because every waiter is parked at its suspension
-                // point — joining makes the ordering structural instead.
+                // invokeOnCancellation { unregister(reg) }, so joining keeps a
+                // handler from running into the next test's fake. It no longer
+                // orders anything against a teardown — the registration lock is
+                // never freed — but leaving waiters mid-cancel across tests is
+                // its own flake source.
                 //
                 // NonCancellable because this finally also runs on the timeout
                 // path, where the enclosing coroutine is already cancelled and a
-                // bare join() throws at once — measured: the destroy() below is
-                // then skipped and the mutex leaks on exactly the run that
-                // failed.
+                // bare join() throws at once.
                 waiters.cancel()
                 withContext(NonCancellable) { waiters.coroutineContext.job.join() }
-                loop.destroy()
             }
-            // Reported after the block, never from the finally: a teardown
-            // failure must not replace the assertion that actually failed —
-            // which is what throwing from `finally` would do.
-            val destroyErrno = loop.destroyErrno
-            if (destroyErrno != null) fail("pthread_mutex_destroy() failed: errno=$destroyErrno")
+            // The lock outlives every test: nothing frees it, so a fake that
+            // reports a failure means this class broke its own exclusion. The
+            // second check is the one with teeth on a healthy mutex -- it fails
+            // when a test leaves the lock held, which is what the teardown's old
+            // `EBUSY`-on-destroy reported.
+            if (!loop.lockFailureExpected) {
+                assertFalse(loop.lockBroken(), "no test may leave the registration lock broken")
+            }
+            assertTrue(loop.lockFree(), "no test may leave the registration lock held")
         }
     }
 
@@ -741,23 +778,19 @@ class AbstractPosixReadinessEventLoopTest {
         // reaches is already closed -- so the sweep's postcondition survives the
         // sweep's own notifications.
         val loop = FakeLoop()
-        try {
-            val listener = RegisteringOnStopListener(loop)
-            loop.addParticipant(listener)
-            loop.registerCallback(FD, Interest.READ, listener)
+        val listener = RegisteringOnStopListener(loop)
+        loop.addParticipant(listener)
+        loop.registerCallback(FD, Interest.READ, listener)
 
-            loop.failRemainingWaiters()
+        loop.failRemainingWaiters()
 
-            // Both halves, or this passes for the wrong reason: a sweep that
-            // stopped telling listeners at all would leave the ledger empty too.
-            assertEquals(1, listener.toldCount, "the listener is told exactly once")
-            assertFalse(
-                loop.hasCallbackRegistration(FD, Interest.WRITE),
-                "and its re-registration must not survive in a ledger the loop will never read",
-            )
-        } finally {
-            loop.destroy()
-        }
+        // Both halves, or this passes for the wrong reason: a sweep that
+        // stopped telling listeners at all would leave the ledger empty too.
+        assertEquals(1, listener.toldCount, "the listener is told exactly once")
+        assertFalse(
+            loop.hasCallbackRegistration(FD, Interest.WRITE),
+            "and its re-registration must not survive in a ledger the loop will never read",
+        )
     }
 
     @Test
@@ -823,13 +856,90 @@ class AbstractPosixReadinessEventLoopTest {
     }
 
     @Test
-    fun `destroying the registration lock twice frees it once`() = loopTest { loop ->
-        // The one behaviour this class adds rather than moves. Without the
-        // claim, a second caller frees a slot the allocator has already taken
-        // back; with only a plain flag, two concurrent callers both pass.
-        loop.destroy()
-        loop.destroy()
-        assertNull(loop.destroyErrno, "the first teardown succeeded and the second did nothing")
+    fun `the registration lock stays usable after the loop has run and stopped`() {
+        // Never destroyed, never freed, and that is load-bearing rather than
+        // laziness: unregister runs from a cancellation handler on whichever
+        // thread cancels, and a refused registration on a stopped loop cancels
+        // its caller -- so acquisitions arrive after teardown, without bound.
+        // Destroying the slot turns those into EINVAL; freeing it turns them
+        // into a use-after-free. This pins that neither happens.
+        val loop = RealQueueLoop()
+        loop.loop() // full lifecycle: final drain, sweep, quiescence
+        loop.takeRegLock()
+        assertFalse(loop.lockBroken(), "a post-teardown acquisition must succeed, not report a failure")
+        assertTrue(loop.lockFree(), "and must leave the lock free for the next one")
+    }
+
+    @Test
+    fun `a registration-lock failure is reported and stops the loop`() {
+        // The return values used to be discarded, so a failed acquire ran the
+        // block with no exclusion at all and said nothing. A live pthread mutex
+        // cannot be made to fail on demand, so the handler is driven directly;
+        // what wires it to the acquire is covered by the mutation recorded with
+        // this change.
+        val loop = RealQueueLoop()
+        loop.reportLockFailure("lock", EINVAL, stillHeld = false)
+
+        assertTrue(loop.lockBroken(), "the loop must be told to stop")
+        assertTrue(
+            loop.logged.any { it.first == LogLevel.ERROR && "registration lock" in it.second },
+            "and the failure must be reported, not swallowed: ${loop.logged}",
+        )
+        assertEquals(1, loop.wakeups, "the loop is woken so it notices without waiting for an event")
+    }
+
+    @Test
+    fun `the sweep is skipped when a failed release left the lock held`() = loopTest { loop ->
+        // Re-taking a mutex this thread already holds deadlocks it, so the
+        // sweep steps aside -- but it must still close the ledgers, or every
+        // later registration appends to a loop that will never arm it and
+        // parks forever, which is the hang the sweep exists to end.
+        suspendOn(loop, FD, Interest.READ).await()
+        loop.reportLockFailure("unlock", EINVAL, stillHeld = true)
+
+        loop.failRemainingWaiters()
+
+        assertTrue(loop.waiters(FD, Interest.READ), "the waiter is left parked, as the log says")
+        assertTrue(
+            loop.errors.any { "skipping the stop sweep" in it },
+            "and the skip is reported: ${loop.errors}",
+        )
+        // The ledgers must still be closed, or a later registration appends to a
+        // loop that will never arm it. Probed the way the other refusal tests
+        // do it: a callback that lands in the ledger is one that was accepted.
+        loop.registerCallback(FD, Interest.WRITE, RecordingListener())
+        assertFalse(
+            loop.hasCallbackRegistration(FD, Interest.WRITE),
+            "the ledgers must still be closed, or later registrations park on a dead loop",
+        )
+    }
+
+    @Test
+    fun `the sweep still runs when only the acquire failed`() = loopTest { loop ->
+        // A failed acquire leaves nothing held, so there is no deadlock to
+        // avoid -- ending the waiters unguarded beats leaving them parked.
+        suspendOn(loop, FD, Interest.READ).await()
+        loop.reportLockFailure("lock", EINVAL, stillHeld = false)
+
+        loop.failRemainingWaiters()
+
+        assertFalse(loop.waiters(FD, Interest.READ), "the waiter is ended, not skipped")
+    }
+
+    @Test
+    fun `a registration-lock failure on a quiescent loop does not write the wakeup fd`() {
+        // The failure path runs on whichever thread took the lock, which after
+        // teardown is any thread at all -- and by then the loop's own close has
+        // released the wakeup fd, whose number the kernel may have re-handed.
+        // Same guard, and the same reason, as the dispatch path.
+        val loop = RealQueueLoop()
+        loop.loop() // publishes quiescence
+        val before = loop.wakeups
+
+        loop.reportLockFailure("lock", EINVAL, stillHeld = false)
+
+        assertTrue(loop.lockBroken(), "the failure is still recorded")
+        assertEquals(before, loop.wakeups, "but a quiescent loop must not be woken")
     }
 
     @Test
@@ -854,8 +964,8 @@ class AbstractPosixReadinessEventLoopTest {
     fun `the sweep fails every waiter the loop will never arm`() = loopTest { loop ->
         // What the loop runs after its final drain. Anything still in the ledger
         // is waiting on an arm that can no longer issue, so it has to end here --
-        // on the loop thread, where the lock is still valid, because close() has
-        // not yet joined and destroyed it.
+        // on the loop thread, where the lock is valid as it is everywhere,
+        // because nothing ever frees it.
         val readers = (0..1).map { suspendOn(loop, FD, Interest.READ).await() }
         val writer = suspendOn(loop, FD, Interest.WRITE).await()
 
@@ -941,15 +1051,13 @@ class AbstractPosixReadinessEventLoopTest {
             } finally {
                 parent.cancel()
                 withContext(NonCancellable) { parent.coroutineContext.job.join() }
-                loop.destroy()
             }
-            // Reported after the block for the same reason loopTest does it:
-            // a teardown failure must not replace the assertion that failed.
             // This test hand-rolls its scope, and is the only sweep test whose
-            // waiter is not wrapped in a catch -- the shape most likely to
-            // leave a cancellation handler mid-flight when the mutex is freed.
-            val destroyErrno = loop.destroyErrno
-            if (destroyErrno != null) fail("pthread_mutex_destroy() failed: errno=$destroyErrno")
+            // waiter is not wrapped in a catch -- the shape most likely to leave
+            // a cancellation handler mid-flight, which is exactly the caller
+            // that must still find a working lock.
+            assertFalse(loop.lockBroken(), "the cancellation handlers must not have broken the lock")
+            assertTrue(loop.lockFree(), "nor left it held")
         }
     }
 
@@ -961,18 +1069,14 @@ class AbstractPosixReadinessEventLoopTest {
         // already drains until the queue is empty, so the inner one has nothing
         // left to do -- and must not clear the shared batch under the iteration.
         val loop = RealQueueLoop()
-        try {
-            val ran = mutableListOf<String>()
-            loop.dispatch(EmptyCoroutineContext, Runnable { ran.add("first") })
-            loop.dispatch(EmptyCoroutineContext, Runnable { ran.add("re-enters"); loop.drain() })
-            loop.dispatch(EmptyCoroutineContext, Runnable { ran.add("third") })
+        val ran = mutableListOf<String>()
+        loop.dispatch(EmptyCoroutineContext, Runnable { ran.add("first") })
+        loop.dispatch(EmptyCoroutineContext, Runnable { ran.add("re-enters"); loop.drain() })
+        loop.dispatch(EmptyCoroutineContext, Runnable { ran.add("third") })
 
-            loop.drain()
+        loop.drain()
 
-            assertEquals(listOf("first", "re-enters", "third"), ran, "every task runs exactly once")
-        } finally {
-            loop.destroy()
-        }
+        assertEquals(listOf("first", "re-enters", "third"), ran, "every task runs exactly once")
     }
 
     @Test
@@ -985,36 +1089,28 @@ class AbstractPosixReadinessEventLoopTest {
         // skipped the wakeup would leave the re-arm waiting for an unrelated
         // event and pass every one of them.
         val loop = RealQueueLoop(onLoopThread = false)
-        try {
-            loop.registerCallback(FD, Interest.READ, RecordingListener())
+        loop.registerCallback(FD, Interest.READ, RecordingListener())
 
-            assertTrue(loop.armedCallbacks.isEmpty(), "the arm is queued, not run on the caller")
-            assertEquals(1, loop.wakeups, "and an off-loop caller wakes the loop")
+        assertTrue(loop.armedCallbacks.isEmpty(), "the arm is queued, not run on the caller")
+        assertEquals(1, loop.wakeups, "and an off-loop caller wakes the loop")
 
-            loop.onLoopThread = true
-            loop.drain()
+        loop.onLoopThread = true
+        loop.drain()
 
-            assertEquals(listOf(FD to Interest.READ), loop.armedCallbacks, "the real drain delivers it")
-        } finally {
-            loop.destroy()
-        }
+        assertEquals(listOf(FD to Interest.READ), loop.armedCallbacks, "the real drain delivers it")
     }
 
     @Test
     fun `a task that throws does not stop the rest of its batch`() {
         val loop = RealQueueLoop()
-        try {
-            var laterRan = false
-            loop.dispatch(EmptyCoroutineContext, Runnable { throw IllegalStateException("boom") })
-            loop.dispatch(EmptyCoroutineContext, Runnable { laterRan = true })
+        var laterRan = false
+        loop.dispatch(EmptyCoroutineContext, Runnable { throw IllegalStateException("boom") })
+        loop.dispatch(EmptyCoroutineContext, Runnable { laterRan = true })
 
-            loop.drain()
+        loop.drain()
 
-            assertTrue(laterRan, "the task queued after the throwing one must still run")
-            assertTrue(loop.logged.any { it.first == LogLevel.WARN }, "the throw must be reported: ${loop.logged}")
-        } finally {
-            loop.destroy()
-        }
+        assertTrue(laterRan, "the task queued after the throwing one must still run")
+        assertTrue(loop.logged.any { it.first == LogLevel.WARN }, "the throw must be reported: ${loop.logged}")
     }
 
     @Test
@@ -1023,28 +1119,24 @@ class AbstractPosixReadinessEventLoopTest {
         // so a second entry is reported and ignored rather than thrown -- and it
         // must not re-point the thread identity the whole class reads.
         val loop = RealQueueLoop()
-        try {
-            loop.loop()
-            val errorsAfterFirst = loop.logged.count { it.first == LogLevel.ERROR }
+        loop.loop()
+        val errorsAfterFirst = loop.logged.count { it.first == LogLevel.ERROR }
 
-            loop.loop()
+        loop.loop()
 
-            assertEquals(0, errorsAfterFirst, "the first entry is not an error")
-            assertTrue(
-                loop.logged.any { it.first == LogLevel.ERROR && it.second.contains("entered twice") },
-                "the second entry must be reported: ${loop.logged}",
-            )
-            // The log line alone would pass for a guard that reports and then
-            // falls through, re-publishing the thread and running the whole
-            // teardown a second time on a live loop. The drain count is what
-            // says the second entry returned: one completed loop() drains
-            // twice -- the final drain, then the sweep's unconditional one --
-            // so a fallen-through second entry would double it to four.
-            assertEquals(2, loop.drainCalls, "teardown ran once, not twice")
-            assertNull(loop.destroyErrno, "and left the registration lock destroyable")
-        } finally {
-            loop.destroy()
-        }
+        assertEquals(0, errorsAfterFirst, "the first entry is not an error")
+        assertTrue(
+            loop.logged.any { it.first == LogLevel.ERROR && it.second.contains("entered twice") },
+            "the second entry must be reported: ${loop.logged}",
+        )
+        // The log line alone would pass for a guard that reports and then
+        // falls through, re-publishing the thread and running the whole
+        // teardown a second time on a live loop. The drain count is what
+        // says the second entry returned: one completed loop() drains
+        // twice -- the final drain, then the sweep's unconditional one --
+        // so a fallen-through second entry would double it to four.
+        assertEquals(2, loop.drainCalls, "teardown ran once, not twice")
+        assertFalse(loop.lockBroken(), "and left the registration lock working")
     }
 
     @Test
@@ -1055,16 +1147,12 @@ class AbstractPosixReadinessEventLoopTest {
         // this file's other subclasses can reach it -- one answers on-loop
         // unconditionally, the other overrides dispatch entirely.
         val loop = RealQueueLoop(onLoopThread = true)
-        try {
-            loop.dispatch(EmptyCoroutineContext, Runnable { })
-            assertEquals(0, loop.wakeups, "an on-loop caller drains before the next wait")
+        loop.dispatch(EmptyCoroutineContext, Runnable { })
+        assertEquals(0, loop.wakeups, "an on-loop caller drains before the next wait")
 
-            loop.onLoopThread = false
-            loop.dispatch(EmptyCoroutineContext, Runnable { })
-            assertEquals(1, loop.wakeups, "an off-loop caller has to interrupt the wait")
-        } finally {
-            loop.destroy()
-        }
+        loop.onLoopThread = false
+        loop.dispatch(EmptyCoroutineContext, Runnable { })
+        assertEquals(1, loop.wakeups, "an off-loop caller has to interrupt the wait")
     }
 
     @Test
@@ -1075,16 +1163,12 @@ class AbstractPosixReadinessEventLoopTest {
         // offer stays: bounded retention on a queue nothing reads, which is
         // the best a dispatch to a dead loop can do.
         val loop = RealQueueLoop()
-        try {
-            loop.loop() // runs to completion: finished, swept, quiescent
-            loop.onLoopThread = false
-            var ran = false
-            loop.dispatch(EmptyCoroutineContext, Runnable { ran = true })
-            assertEquals(0, loop.wakeups, "a quiescent loop must not be woken")
-            assertFalse(ran, "and nothing runs the task -- the queue is dead")
-        } finally {
-            loop.destroy()
-        }
+        loop.loop() // runs to completion: finished, swept, quiescent
+        loop.onLoopThread = false
+        var ran = false
+        loop.dispatch(EmptyCoroutineContext, Runnable { ran = true })
+        assertEquals(0, loop.wakeups, "a quiescent loop must not be woken")
+        assertFalse(ran, "and nothing runs the task -- the queue is dead")
     }
 
     // --- the pipeline path, which moved onto the base with this class ---
@@ -1543,22 +1627,18 @@ class AbstractPosixReadinessEventLoopTest {
         // Teardown does queue: it cancels a flush continuation whose resume
         // lands on this very queue, and this is the last drain there will be.
         val loop = FakeLoop(runDispatchedInline = false)
-        try {
-            var queuedRan = false
-            loop.addParticipant(
-                object : LoopParticipant {
-                    override fun onLoopStopped() {
-                        loop.dispatch(EmptyCoroutineContext, Runnable { queuedRan = true })
-                    }
-                },
-            )
+        var queuedRan = false
+        loop.addParticipant(
+            object : LoopParticipant {
+                override fun onLoopStopped() {
+                    loop.dispatch(EmptyCoroutineContext, Runnable { queuedRan = true })
+                }
+            },
+        )
 
-            loop.failRemainingWaiters()
+        loop.failRemainingWaiters()
 
-            assertTrue(queuedRan, "the sweep's own drain has to deliver it; nothing runs after")
-        } finally {
-            loop.destroy()
-        }
+        assertTrue(queuedRan, "the sweep's own drain has to deliver it; nothing runs after")
     }
 
     @Test
@@ -1569,21 +1649,17 @@ class AbstractPosixReadinessEventLoopTest {
         // Fails either way when unguarded: the throw either reaches this caller
         // or the healthy listener never hears, depending on iteration order.
         val loop = FakeLoop()
-        try {
-            val healthy = RecordingListener()
-            loop.addParticipant(
-                object : LoopParticipant {
-                    override fun onLoopStopped(): Unit = throw IllegalStateException("boom")
-                },
-            )
-            loop.addParticipant(healthy)
+        val healthy = RecordingListener()
+        loop.addParticipant(
+            object : LoopParticipant {
+                override fun onLoopStopped(): Unit = throw IllegalStateException("boom")
+            },
+        )
+        loop.addParticipant(healthy)
 
-            loop.failRemainingWaiters()
+        loop.failRemainingWaiters()
 
-            assertEquals(1, healthy.loopStopped, "the healthy participant is still told")
-        } finally {
-            loop.destroy()
-        }
+        assertEquals(1, healthy.loopStopped, "the healthy participant is still told")
     }
 
     @Test
@@ -1600,23 +1676,19 @@ class AbstractPosixReadinessEventLoopTest {
         // derivation: under a collision the slot holds the *wrong* listener,
         // whichever key reaches it.
         val loop = FakeLoop()
-        try {
-            val readListener = RecordingListener()
-            val writeListener = RecordingListener()
-            loop.registerCallback(-1, Interest.READ, readListener)
-            loop.registerCallback(-1, Interest.WRITE, writeListener)
+        val readListener = RecordingListener()
+        val writeListener = RecordingListener()
+        loop.registerCallback(-1, Interest.READ, readListener)
+        loop.registerCallback(-1, Interest.WRITE, writeListener)
 
-            assertTrue(
-                loop.popIfCurrent(loop.keyFor(-1, Interest.READ), readListener),
-                "the READ slot must still hold the READ listener; a collision replaced it with WRITE's",
-            )
-            assertTrue(
-                loop.popIfCurrent(loop.keyFor(-1, Interest.WRITE), writeListener),
-                "and the WRITE slot its own",
-            )
-        } finally {
-            loop.destroy()
-        }
+        assertTrue(
+            loop.popIfCurrent(loop.keyFor(-1, Interest.READ), readListener),
+            "the READ slot must still hold the READ listener; a collision replaced it with WRITE's",
+        )
+        assertTrue(
+            loop.popIfCurrent(loop.keyFor(-1, Interest.WRITE), writeListener),
+            "and the WRITE slot its own",
+        )
     }
 
     @Test
@@ -1628,23 +1700,19 @@ class AbstractPosixReadinessEventLoopTest {
         // lock does not fail this test -- it hangs it, and every pipeline
         // transport with it, which is the point.
         val loop = FakeLoop()
-        try {
-            var reEntered = false
-            loop.addParticipant(
-                object : LoopParticipant {
-                    override fun onLoopStopped() {
-                        loop.unregisterCallback(FD, Interest.WRITE)
-                        reEntered = true
-                    }
-                },
-            )
+        var reEntered = false
+        loop.addParticipant(
+            object : LoopParticipant {
+                override fun onLoopStopped() {
+                    loop.unregisterCallback(FD, Interest.WRITE)
+                    reEntered = true
+                }
+            },
+        )
 
-            loop.failRemainingWaiters()
+        loop.failRemainingWaiters()
 
-            assertTrue(reEntered, "the participant reached a lock-taking call and returned")
-        } finally {
-            loop.destroy()
-        }
+        assertTrue(reEntered, "the participant reached a lock-taking call and returned")
     }
 
     @Test
@@ -1694,7 +1762,6 @@ class AbstractPosixReadinessEventLoopTest {
                 // assertion be reported.
                 loop.drainDispatched()
                 withContext(NonCancellable) { waiters.coroutineContext.job.join() }
-                loop.destroy()
             }
         }
     }

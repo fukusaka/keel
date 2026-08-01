@@ -97,9 +97,11 @@ class LoopHandoff(
      * The two blocks exist because the fallback runs off the loop. [onLoop] may
      * touch loop-owned state (registries the loop guards), because it only ever
      * runs on the loop thread. [ifStopped] runs on the caller once the loop has
-     * stopped, where those registries are moot and their lock may already be
-     * destroyed by close, so it must be self-contained — releasing the fd is
-     * the one thing still required, and that is thread-safe anywhere.
+     * stopped, where those registries are moot — swept and closed — and reading
+     * them from another thread buys nothing, so it must be self-contained:
+     * releasing the fd is the one thing still required, and that is thread-safe
+     * anywhere. (Their lock is safe to take from any thread; it is never
+     * destroyed. What the fallback must not do is act on state the loop owned.)
      *
      * Exactly one of the two runs, enforced by a shared CAS, and neither can be
      * missed: the loop publishes [markFinished] before its final drain, so a
@@ -116,7 +118,8 @@ class LoopHandoff(
         // whose thread id merely *matches* the dead loop's: the real loop
         // thread never returns here after quiescence, so a match is a
         // recycled pthread_t, and running loop-owned teardown on it would
-        // lock state the loop's close may already have destroyed. A caller in
+        // act on a ledger that is swept, closed and no longer this thread's to
+        // touch -- the loop it belonged to is gone. A caller in
         // the narrower window — the loop finished but not yet quiescent —
         // keeps the offer path below: the final drain still picks its task
         // up, on the loop.

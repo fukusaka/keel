@@ -170,10 +170,13 @@ internal class EpollStreamServer(
         // cancelAll takes.
         _active = false
         if (!closeClaimed.compareAndSet(0, 1)) return
-        // cancelAll, cleanupFd and close all run on the boss loop below: the
-        // first two take the loop's regMutex, which EventLoop.close() destroys,
-        // so issuing them off the loop would be a use-after-free once the engine
-        // has been closed first.
+        // cancelAll, cleanupFd and close all run on the boss loop below, and
+        // the reason is ordering rather than exclusion: all three are already
+        // safe to call from any thread (the first two take the loop's regMutex
+        // themselves). Running them on the loop puts them after any arm already
+        // queued for this fd, so the close(2) cannot let the kernel re-hand the
+        // number to someone else before that arm runs -- the recycled-fd hazard
+        // LoopHandoff.runOnLoop exists for.
         // Drop the loop's own interest bookkeeping for this fd before the
         // number becomes reusable. Closing the fd clears the kernel's epoll
         // set but not [EpollEventLoop.fdEvents]; a stale entry makes the
@@ -190,8 +193,8 @@ internal class EpollStreamServer(
                 bossLoop.cleanupFd(serverFd)
                 closeFdSafely(serverFd, logger, "server close")
             },
-            // Loop gone: its registry is dead (any waiters died with it) and the
-            // regMutex may be freed, so only release the fd.
+            // Loop gone: its registry is dead (any waiters died with it), so
+            // there is nothing to withdraw and only the fd to release.
             ifStopped = {
                 closeFdSafely(serverFd, logger, "server close")
             },

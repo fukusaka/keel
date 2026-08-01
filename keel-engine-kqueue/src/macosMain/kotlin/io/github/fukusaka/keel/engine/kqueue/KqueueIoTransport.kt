@@ -408,8 +408,7 @@ internal class KqueueIoTransport(
      *
      * What the on-loop teardown does is deliberately narrowed here:
      * - **No ledger withdrawal, no registry leave**: the stop sweep emptied
-     *   and closed both, and the loop may already have destroyed the lock
-     *   guarding them.
+     *   and closed both, so there is nothing left in either to withdraw.
      * - **No deferred flush**: the gather scratch the flush path uses is freed
      *   by the loop's own close, and the bytes have nowhere ordered to go.
      * - **No timer cancels**: the per-loop deadline scheduler is not safe for

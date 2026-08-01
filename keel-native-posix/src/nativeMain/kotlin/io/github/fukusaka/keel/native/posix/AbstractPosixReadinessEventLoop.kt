@@ -7,17 +7,16 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.free
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
-import platform.posix.pthread_mutex_destroy
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
+import platform.posix.pthread_mutex_trylock
 import platform.posix.pthread_mutex_unlock
 import platform.posix.pthread_self
 import platform.posix.pthread_t
@@ -104,12 +103,29 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * and `register` (coroutine thread) are independent hot paths that should
      * not block each other.
      *
-     * Allocated from `nativeHeap` rather than from a subclass arena so that the
-     * thing that creates it is the thing that frees it, in
-     * [destroyRegistrationLock] — for a loop that reaches `close()`. A subclass
-     * `init` that throws discards the instance without ever calling it, and this
-     * slot leaks; the arena it replaced leaked the same way, so the failure path
-     * is unchanged rather than fixed.
+     * Allocated from `nativeHeap`, and **never destroyed or freed** — the slot
+     * stays valid for as long as the process runs.
+     *
+     * That is deliberate, and it is the only shape that is safe. [unregister]
+     * runs on whichever thread cancels, straight out of an
+     * `invokeOnCancellation` handler, and takes this lock; so does every
+     * refused registration on a stopped loop, since refusing cancels the
+     * caller's continuation and that runs the same handler. A cancellation can
+     * arrive at any time after `close()` — user code calling `read()` on a
+     * stopped engine produces one — so there is no point at which "nobody will
+     * take this lock again" becomes true. Freeing it at teardown made that a
+     * use-after-free; ordering the teardown behind the cancellations already
+     * pending does not help, because the arrivals are unbounded in time.
+     *
+     * The cost is one `pthread_mutex_t` per EventLoop instance, never
+     * reclaimed: bounded by how many loops the process creates, and paid only
+     * by a process that keeps building and closing engines. A destroyed lock
+     * would still have to be memory nobody frees to be safe to touch, so
+     * destroying without freeing buys nothing but an `EINVAL` on the next
+     * acquire.
+     *
+     * A subclass `init` that throws discards the instance without this slot
+     * ever being reachable; that was already true and is unchanged.
      *
      * `@PublishedApi internal` rather than private because [withRegLock] is
      * inline and reaches it. Inlining matters: the dispatch path takes this lock
@@ -188,15 +204,18 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     private var ledgersClosed: Boolean = false
 
     /**
-     * Claims the one teardown of [regMutex].
-     *
-     * A CAS rather than a flag because the hook it guards is published to
-     * subclasses: the two engines happen to funnel `close()` through their own
-     * compare-and-set first, but nothing in this class requires that, and a
-     * plain `Boolean` would let two concurrent callers both pass the check and
-     * free the same slot twice.
+     * Set once the registration lock has failed to acquire or release. Read by
+     * each engine's `loopBody` through [regLockBroken] so the loop ends the way
+     * a poll fatal ends it.
      */
-    private val lockDestroyed = AtomicInt(0)
+    private val regLockFailed = AtomicInt(0)
+
+    /**
+     * Set when a *release* failed, so the mutex is still held by the thread
+     * that reported it. Distinct from [regLockFailed] because only this case
+     * makes re-taking the lock a deadlock rather than merely unguarded.
+     */
+    private val regLockStuck = AtomicInt(0)
 
     /**
      * Claims the one entry into [loop], and the one drain in flight.
@@ -488,23 +507,103 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     /**
      * Runs [block] under the registration mutex.
      *
-     * Moved as it was. The `pthread_mutex_lock` / `unlock` return codes are
-     * still dropped here, which the project's error-handling rule counts as a
-     * silent failure — but checking them turns a failed acquire into a throw on
-     * a path that has no receiver, and deciding what a loop should do about
-     * that is its own change rather than a side effect of moving the ledger.
-     * Filed separately.
+     * Both return codes are checked, and a failure goes to
+     * [reportRegLockFailure] — which ends the loop rather than throwing, for
+     * the reasons written there.
+     *
+     * **[block] still runs after a failed acquire.** There is nothing better to
+     * return from an inline helper whose callers all expect a value, and the
+     * loop is on its way down either way. **The release does not**: unlocking a
+     * mutex this thread does not hold is undefined, and an implementation that
+     * does not check ownership would release the section another thread is
+     * inside — turning one thread's failed acquire into a loss of exclusion for
+     * everyone. So the unlock is conditional on the acquire having succeeded.
      *
      * `inline` so the critical section costs no lambda: the dispatch path takes
      * this lock per readiness event.
      */
     protected inline fun <T> withRegLock(block: () -> T): T {
-        pthread_mutex_lock(regMutex.ptr)
+        val lockRet = pthread_mutex_lock(regMutex.ptr)
+        if (lockRet != 0) reportRegLockFailure("lock", lockRet, stillHeld = false)
         try {
             return block()
         } finally {
-            pthread_mutex_unlock(regMutex.ptr)
+            if (lockRet == 0) {
+                val unlockRet = pthread_mutex_unlock(regMutex.ptr)
+                if (unlockRet != 0) reportRegLockFailure("unlock", unlockRet, stillHeld = true)
+            }
         }
+    }
+
+    /**
+     * Records that the registration lock failed, and tells the loop to stop.
+     *
+     * A failure here means the ledgers are no longer exclusive — a failed
+     * acquire runs [withRegLock]'s block anyway (there is nothing better to
+     * return from an inline helper whose callers all expect a value), and a
+     * failed release leaves the lock held forever. Neither state is one the
+     * loop can keep serving connections in: the next arm could be issued for a
+     * key another thread is mid-way through changing.
+     *
+     * So this takes the shape the poll fatals already use — `logger.error` and
+     * end the loop thread, rather than a throw. A throw from here would leave
+     * the ledgers exactly as they were (this is the first statement of the
+     * readiness dispatch), and a level-triggered fd would report ready again
+     * immediately; guarding that with a catch turns it into a spin. Ending the
+     * loop instead runs the same teardown any other fatal takes.
+     *
+     * **Unreachable in practice, and that is the point.** The lock is a default
+     * `pthread_mutex_t` (no error-checking attribute) that is never destroyed,
+     * so `EDEADLK` cannot arise and `EINVAL` needs the slot itself to have been
+     * invalidated. What this replaces is a discarded return value: the failure
+     * was not impossible before, it was silent.
+     *
+     * `@PublishedApi internal` because [withRegLock] is inline and reaches it.
+     */
+    @PublishedApi
+    internal fun reportRegLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
+        regLockFailed.value = 1
+        // A failed release leaves this thread holding the mutex; a failed
+        // acquire does not. The teardown has to tell them apart: it can still
+        // run its sweep in the second case, but re-taking a mutex this thread
+        // already holds would deadlock the loop inside its own teardown.
+        if (stillHeld) regLockStuck.value = 1
+        logger.error {
+            "pthread_mutex_$operation() failed on the registration lock: ${errnoMessage(errno)} — " +
+                "the ledgers are no longer exclusive, so this EventLoop is stopping"
+        }
+        // Same guard [dispatch] takes, and for the same reason: this runs on
+        // whichever thread took the lock, which after teardown is any thread at
+        // all, and a quiescent loop's wakeup fd is closed — its number possibly
+        // re-handed. A loop that is already quiescent has nothing to be woken
+        // for either.
+        if (!handoff.isQuiescent()) wakeup()
+    }
+
+    /**
+     * Whether the registration lock has failed, in which case the loop must
+     * stop. Read by each engine's `loopBody` beside its own poll fatal.
+     */
+    protected fun regLockBroken(): Boolean = regLockFailed.value != 0
+
+    /**
+     * Whether the registration lock can be acquired right now — it takes it and
+     * puts it straight back.
+     *
+     * A probe, in the same family as [hasCallbackFor]: it answers "is this lock
+     * free", which is the question a teardown used to answer implicitly by
+     * seeing whether `pthread_mutex_destroy` reported `EBUSY`. Nothing destroys
+     * the lock any more, so that signal has to be asked for.
+     */
+    protected fun regLockFree(): Boolean {
+        val rc = pthread_mutex_trylock(regMutex.ptr)
+        if (rc != 0) return false
+        val unlockRet = pthread_mutex_unlock(regMutex.ptr)
+        if (unlockRet != 0) {
+            reportRegLockFailure("unlock", unlockRet, stillHeld = true)
+            return false // took it and could not put it back: not free
+        }
+        return true
     }
 
     /**
@@ -658,8 +757,7 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * it captures stay reachable for the loop object's lifetime. Closing it
      * needs the submission itself inside the lock, which puts a syscall there.
      * The general shape is unchanged for a subclass routing its own submission
-     * through this function, as is the teardown hazard on
-     * [destroyRegistrationLock].
+     * through this function.
      */
     protected inline fun submitOnLoop(crossinline block: () -> Unit) {
         if (inEventLoop()) {
@@ -790,47 +888,6 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     }
 
     /**
-     * Destroys the registration mutex and frees it.
-     *
-     * The subclass calls this in its own teardown, after its loop thread is
-     * joined and its fds are closed. That ends every use of the lock *from the
-     * loop* and stops the kernel reporting readiness — it does not end every use
-     * of the lock.
-     *
-     * **Known hazard, not introduced here.** [unregister] runs on whichever
-     * thread cancels, straight from an `invokeOnCancellation` handler, and takes
-     * this lock. A waiter whose coroutine is cancelled after this call locks
-     * freed memory. Nothing in the teardown sequence prevents it, because a
-     * cancellation handler is neither loop work nor kernel readiness. The
-     * sibling hand-off helper records the same thing from the other side: work
-     * that runs off the loop after it stops must not touch loop-owned state,
-     * "their lock may already be destroyed by close".
-     *
-     * Idempotent, like the `close()` of the mutex this follows: whoever wins
-     * [lockDestroyed] does the teardown and everyone else returns, so a second
-     * call — sequential or concurrent — cannot destroy and free memory that is
-     * already gone.
-     *
-     * The slot is freed whatever `pthread_mutex_destroy` returns, including
-     * `EBUSY` — which means the mutex was still held or had a waiter, so that
-     * holder resumes on freed memory. The arena this replaced did the same; the
-     * decision now lives here, and it is the failed-destroy end of the hazard
-     * described above rather than a separate one.
-     *
-     * @param onDestroyFailure invoked with the errno if `pthread_mutex_destroy`
-     *   fails, so the subclass can log through its own logger. Called after the
-     *   slot is freed, so it cannot leak it — but it must not throw: it runs
-     *   partway through the subclass's `close()`, and an exception here skips
-     *   whatever that method frees afterwards.
-     */
-    protected fun destroyRegistrationLock(onDestroyFailure: (Int) -> Unit) {
-        if (!lockDestroyed.compareAndSet(0, 1)) return
-        val destroyRet = pthread_mutex_destroy(regMutex.ptr)
-        nativeHeap.free(regMutex)
-        if (destroyRet != 0) onDestroyFailure(destroyRet)
-    }
-
-    /**
      * Ends everything still in **both** ledgers, because the loop is about to
      * stop reading them — every suspend waiter is cancelled and the callback
      * entries are dropped — and tells every [LoopParticipant] in the registry,
@@ -850,12 +907,9 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * [loop] calls this from its own `finally`, after the final drain and before
      * it publishes quiescence. Not the subclass: the ledger walked here is this
      * class's, and so is the rule for when a waiter can no longer be
-     * served. It runs on the loop thread, so
-     * taking the lock is legal, and the lock still exists: the only thing that
-     * frees it is [destroyRegistrationLock], reachable only from a `close()`
-     * that has completed its `pthread_join` — which cannot happen while this
-     * thread is still here. (Both loops refuse that teardown when the join
-     * reports `EDEADLK`, which is what a `close()` on this very thread produces.)
+     * served. It runs on the loop thread, so taking the lock is legal — and
+     * the lock is valid here as it is everywhere, because nothing ever frees
+     * it (see [regMutex]).
      *
      * **What it closes is one window, not the general case.** A registration
      * that arrives between the final drain and this call is ended here. One
@@ -887,9 +941,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * `CancellationException`, which any subclass satisfies. Making them act on
      * it means editing those call sites, and *that* is the part that must not
      * come back: with the fallback advancing past a stopped loop, the next
-     * candidate registers on a loop `engine.close()` stopped as well, parks
-     * forever, and can take the registration lock after `close()` freed it. It
-     * was implemented, measured and withdrawn. Telling the two apart is only
+     * candidate registers on a loop `engine.close()` stopped as well and parks
+     * forever. (It could also take the registration lock after `close()` freed
+     * it — that half is gone: nothing frees it now.) It was implemented,
+     * measured and withdrawn. Telling the two apart is only
      * safe once a stopped loop refuses registrations outright — which it now
      * does, so the prerequisite is met and the decision is open again. It stays
      * unmade here because the fallback's call sites are what would have to
@@ -912,6 +967,25 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * ledger, which is its own decision and is tracked.
      */
     protected fun failWaitersOnStoppedLoop() {
+        // A *release* failure leaves the mutex held by this very thread, so
+        // taking it again here would deadlock the loop inside its own teardown
+        // — and with it the quiescence publish and the closer's join. That one
+        // case has to skip the sweep. An acquire failure does not: this thread
+        // holds nothing, so the sweep runs, unguarded like everything else on
+        // a loop whose exclusion is already gone, and still ends its waiters.
+        if (regLockStuck.value != 0) {
+            // Closed even though the write is unguarded here. Exclusion is
+            // already lost, so the write is no less safe than the reads around
+            // it — and leaving the ledgers open is worse than either: every
+            // later registration would append to a loop that will never arm it
+            // and park forever, which is the hang this sweep exists to end.
+            ledgersClosed = true
+            logger.error {
+                "${this::class.simpleName}: skipping the stop sweep — the registration lock is held " +
+                    "after a failed release, so waiters stay parked and listeners are not told"
+            }
+            return
+        }
         val stranded = mutableListOf<Registration>()
         val told = mutableListOf<LoopParticipant>()
         withRegLock {
@@ -982,8 +1056,7 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // while the first, healthy loop is still serving every connection
             // on this engine. Returning skips the quiescence publish below, and
             // that is right: the entry that did claim the loop publishes it, and
-            // a second one has no loop to make quiet. Same shape as
-            // destroyRegistrationLock's claim-once.
+            // a second one has no loop to make quiet.
             logger.error { "${this::class.simpleName}.loop() entered twice; the second entry is ignored" }
             return
         }
@@ -1004,20 +1077,18 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // anywhere below would live-lock whatever thread is closing a
             // server on this loop.
             try {
-                // Nested so a throw from the drain cannot skip the sweep while
-                // still publishing quiescence: that combination would strand
-                // every waiter *and* free the lock their cancellation handlers
-                // are about to take.
+                // Nested so a throw from the drain cannot skip the sweep
+                // while still publishing quiescence: that combination would
+                // strand every waiter, with nothing left to end them.
                 try {
                     drainTasks()
                 } finally {
                     // After the last drain, before quiescence is published:
                     // anything still in the ledger is waiting for an arm that
-                    // can no longer issue. Ended here because this thread may
-                    // take the lock and the lock still exists -- only close()
-                    // frees it, and only after a join this thread has not let
-                    // return. It drains again itself: cancelling a waiter
-                    // queues its resume back onto taskQueue.
+                    // can no longer issue. Ended here, on the loop thread,
+                    // while the ledger is still this loop's to walk. It drains
+                    // again itself: cancelling a waiter queues its resume back
+                    // onto taskQueue.
                     failWaitersOnStoppedLoop()
                 }
             } finally {

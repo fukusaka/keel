@@ -185,10 +185,13 @@ internal class KqueueStreamServer(
         // cancelAll takes.
         _active = false
         if (!closeClaimed.compareAndSet(0, 1)) return
-        // cancelAll and close both run on the boss loop: cancelAll takes the
-        // loop's regMutex, which EventLoop.close() destroys, so issuing it off
-        // the loop would be a use-after-free once the engine has been closed
-        // first. See KqueuePipelinedStreamServer.close for the close(2) half.
+        // cancelAll and close both run on the boss loop, and the reason is
+        // ordering rather than exclusion: cancelAll takes the loop's regMutex
+        // itself, so it is safe from any thread. Running it on the loop puts it
+        // after any arm already queued for this fd, so the close(2) cannot let
+        // the kernel re-hand the number before that arm runs -- the recycled-fd
+        // hazard LoopHandoff.runOnLoop exists for.
+        // See KqueuePipelinedStreamServer.close for the close(2) half.
         bossLoop.runOnLoop(
             onLoop = {
                 bossLoop.cancelAll(
@@ -198,8 +201,8 @@ internal class KqueueStreamServer(
                 )
                 closeFdSafely(serverFd, logger, "server close")
             },
-            // Loop gone: its registry is dead (any waiters died with it) and the
-            // regMutex may be freed, so only release the fd.
+            // Loop gone: its registry is dead (any waiters died with it), so
+            // there is nothing to withdraw and only the fd to release.
             ifStopped = {
                 closeFdSafely(serverFd, logger, "server close")
             },
