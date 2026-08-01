@@ -25,6 +25,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.set
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -162,7 +163,12 @@ internal class EpollIoTransport(
      */
     override val canDispatchToOwningContext: Boolean get() = !eventLoop.isStopped()
 
-    /** EventLoop-confined, like the continuation it reports on. */
+    /**
+     * Reports the continuation set by [awaitPendingFlush], which the loop
+     * thread writes. The field is not volatile, so an off-loop reader — the
+     * tests that wait for a waiter to park — sees it only eventually; that is
+     * sufficient for polling towards a state that, once reached, persists.
+     */
     override fun hasFlushWaiter(): Boolean = flushContinuation != null
 
     // --- Read path ---
@@ -647,7 +653,7 @@ internal class EpollIoTransport(
                         // Storing here would reproduce the exact hang this
                         // change exists to remove.
                         if (eventLoop.isFinishing()) {
-                            cont.cancel()
+                            cont.cancel(stoppedLoopFlushCause())
                             return@Runnable
                         }
                         flushContinuation = cont
@@ -667,11 +673,28 @@ internal class EpollIoTransport(
                 // dispatch, which is right -- the final drain still runs it,
                 // and the Runnable re-checks before parking, which is the half
                 // that makes this safe rather than merely narrow.
-                eventLoop.isStopped() -> cont.cancel()
+                // Mirrors what [register] would have decided, rather than
+                // cancelling on sight: a caller with nothing queued is waiting
+                // on a flush that is already complete, and a stopped loop does
+                // not make that false. Cancelling it too would fail the very
+                // shutdown paths that await a drain before closing.
+                eventLoop.isStopped() -> when {
+                    !opened -> cont.cancel(stoppedLoopFlushCause())
+                    pendingWrites.isEmpty() -> cont.resume(Unit)
+                    else -> cont.cancel(stoppedLoopFlushCause())
+                }
                 else -> eventLoop.dispatch(EmptyCoroutineContext, register)
             }
         }
     }
+
+    /**
+     * Names why a flush wait ended, so the caller sees a reason rather than a
+     * bare cancellation — the same objection this class raises against a
+     * `shutdownOutput()` that vanished without a word.
+     */
+    private fun stoppedLoopFlushCause() =
+        CancellationException("EventLoop stopped before the pending flush on fd=$fd could drain")
 
     private companion object {
         /**

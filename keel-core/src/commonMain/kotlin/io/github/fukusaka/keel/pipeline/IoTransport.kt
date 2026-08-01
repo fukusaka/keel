@@ -250,9 +250,12 @@ interface IoTransport {
      * ownership was transferred — is stranded for the transport's lifetime.
      * The pipeline asks before dispatching so it can release instead.
      *
-     * Default `true`: a transport whose dispatcher outlives it, or which never
-     * leaves [inOwningContext], has nothing to answer. An engine whose loop can
-     * stop while its transports are still reachable overrides this.
+     * Default `true`, which is the *unchanged* answer rather than the correct
+     * one everywhere. It is accurate for a transport whose dispatcher outlives
+     * it or which never leaves [inOwningContext]; the other engines whose loops
+     * can also stop while their transports stay reachable have simply not been
+     * moved onto it yet, and strand the same work meanwhile. Overriding it is
+     * what fixes that, engine by engine.
      *
      * This is not the negation of [isOpen]. A transport can be open with a dead
      * dispatcher (its loop stopped, nobody has closed the channel yet) — which

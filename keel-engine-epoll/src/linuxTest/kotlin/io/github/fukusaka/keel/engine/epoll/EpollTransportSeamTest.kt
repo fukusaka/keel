@@ -688,8 +688,11 @@ class EpollTransportSeamTest {
         val transport = EpollIoTransport(fd, loop, DefaultAllocator, fake)
         loop.close()
 
-        // Bounded: shutdownOutput() now goes through the loop hand-off, which
-        // blocks for a loop caught mid-shutdown.
+        // Declarative, not enforcing: shutdownOutput() now goes through the
+        // loop hand-off, whose mid-shutdown wait is a usleep spin with no
+        // suspension point, so withTimeout cannot interrupt it. Kept because
+        // the suite states its budgets this way; a real hang here is caught by
+        // the job timeout, not by this.
         withTimeout(SEAM_TIMEOUT_MS) { transport.shutdownOutput() }
 
         assertEquals(0, fake.shutdownCalls, "no FIN is issued off the loop that used to order it")
@@ -759,6 +762,19 @@ class EpollTransportSeamTest {
 
         withTimeout(SEAM_TIMEOUT_MS) { waiter.join() }
         assertTrue(cancelled, "the sweep must end the write-side wait, not only the read side")
+    }
+
+    @Test
+    fun `awaitPendingFlush on a stopped loop with nothing queued resumes`() = runBlocking {
+        // A stopped loop is a reason the flush will never *complete*, not a
+        // reason to fail a caller whose flush is already complete. The on-loop
+        // path resumes an empty queue; refusing off-loop would cancel the
+        // shutdown paths that await a drain before closing.
+        eventLoop.start()
+        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+        eventLoop.close()
+
+        withTimeout(SEAM_TIMEOUT_MS) { transport.awaitPendingFlush() }
     }
 
     @Test
