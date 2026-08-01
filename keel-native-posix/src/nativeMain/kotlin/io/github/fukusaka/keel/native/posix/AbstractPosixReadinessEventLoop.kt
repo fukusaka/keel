@@ -916,7 +916,7 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // one-shot entry was consumed and whose re-arm declined -- and told
             // a two-interest connection twice.
             callbackRegistrations.clear()
-            participants.forEach { told.add(it) }
+            told.addAll(participants)
             participants.clear()
             // Closed in the same critical section that emptied them, so "swept"
             // and "closed" are one step. Anything arriving after this -- from
@@ -952,9 +952,13 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         // the sweep already runs on its thread -- and a listener told the loop
         // stopped can queue as readily as a cancelled waiter can: teardown
         // cancels the flush continuation of a handler parked on this very
-        // dispatcher. Gating on `stranded` alone missed exactly the case this
-        // sweep exists for, a write-only client with no suspend waiter at all.
-        if (stranded.isNotEmpty() || told.isNotEmpty()) drainTasks()
+        // dispatcher. Unconditional, deliberately: every predicate written
+        // here so far under-delivered somewhere (gating on `stranded` alone
+        // missed the write-only client this sweep exists for; gating on the
+        // participants told skips a boss loop, which has none), and the drain
+        // is idempotent, near-free when the queue is empty, and runs once per
+        // loop lifetime.
+        drainTasks()
     }
 
     /**

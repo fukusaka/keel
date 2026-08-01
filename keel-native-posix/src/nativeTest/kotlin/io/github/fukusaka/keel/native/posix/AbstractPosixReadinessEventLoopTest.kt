@@ -1036,8 +1036,10 @@ class AbstractPosixReadinessEventLoopTest {
             // The log line alone would pass for a guard that reports and then
             // falls through, re-publishing the thread and running the whole
             // teardown a second time on a live loop. The drain count is what
-            // says the second entry returned.
-            assertEquals(1, loop.drainCalls, "teardown ran once, not twice")
+            // says the second entry returned: one completed loop() drains
+            // twice -- the final drain, then the sweep's unconditional one --
+            // so a fallen-through second entry would double it to four.
+            assertEquals(2, loop.drainCalls, "teardown ran once, not twice")
             assertNull(loop.destroyErrno, "and left the registration lock destroyable")
         } finally {
             loop.destroy()
