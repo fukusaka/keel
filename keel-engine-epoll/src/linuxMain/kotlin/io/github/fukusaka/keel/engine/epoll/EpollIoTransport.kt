@@ -395,9 +395,9 @@ internal class EpollIoTransport(
      *
      * What the on-loop teardown does is deliberately narrowed here:
      * - **No ledger withdrawal, no registry leave, no `cleanupFd`**: the stop
-     *   sweep emptied and closed the ledgers and the registry, the loop may
-     *   already have destroyed the lock guarding them, and the interest
-     *   bookkeeping belongs to a loop that will never read it again.
+     *   sweep emptied and closed the ledgers and the registry, so there is
+     *   nothing to withdraw, and the interest bookkeeping belongs to a loop
+     *   that will never read it again.
      * - **No deferred flush**: the gather scratch the flush path uses is freed
      *   by the loop's own close, and the bytes have nowhere ordered to go.
      * - **No timer cancels**: the per-loop deadline scheduler is not safe for

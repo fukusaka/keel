@@ -185,10 +185,11 @@ internal class KqueueStreamServer(
         // cancelAll takes.
         _active = false
         if (!closeClaimed.compareAndSet(0, 1)) return
-        // cancelAll and close both run on the boss loop: cancelAll takes the
-        // loop's regMutex, which EventLoop.close() destroys, so issuing it off
-        // the loop would be a use-after-free once the engine has been closed
-        // first. See KqueuePipelinedStreamServer.close for the close(2) half.
+        // cancelAll and close both run on the boss loop: cancelAll touches the
+        // waiter ledger the loop owns, and issuing it off the loop would race
+        // the loop reading it. (The lock itself is safe to take from anywhere:
+        // it is never destroyed. What is not safe is the unsynchronised view.)
+        // See KqueuePipelinedStreamServer.close for the close(2) half.
         bossLoop.runOnLoop(
             onLoop = {
                 bossLoop.cancelAll(
@@ -198,8 +199,8 @@ internal class KqueueStreamServer(
                 )
                 closeFdSafely(serverFd, logger, "server close")
             },
-            // Loop gone: its registry is dead (any waiters died with it) and the
-            // regMutex may be freed, so only release the fd.
+            // Loop gone: its registry is dead (any waiters died with it), so
+            // there is nothing to withdraw and only the fd to release.
             ifStopped = {
                 closeFdSafely(serverFd, logger, "server close")
             },

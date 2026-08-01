@@ -230,14 +230,16 @@ class AbstractPosixReadinessEventLoopTest {
         fun drain(fd: Int, interest: Interest): List<Registration> =
             generateSequence { popOne(fd, interest).first }.toList()
 
-        /** Takes the registration lock, so a test can prove it is still usable. */
-        fun lockUsable(): Boolean = withRegLock { true }
+        /**
+         * Whether the lock can be acquired right now, so a test that left it
+         * held is caught rather than passed on to the next one -- the signal
+         * the teardown's old `EBUSY`-on-destroy check used to carry.
+         */
+        fun lockFree(): Boolean = regLockFree()
 
         /** [regLockBroken] for the tests. */
         fun lockBroken(): Boolean = regLockBroken()
 
-        /** Drives the failure path; a live mutex cannot be made to fail on demand. */
-        fun reportLockFailure(operation: String, errno: Int) = reportRegLockFailure(operation, errno)
     }
 
     /**
@@ -375,8 +377,19 @@ class AbstractPosixReadinessEventLoopTest {
         /** [drainTasks] is protected on the base; this is the subclass reaching it. */
         fun drain() = drainTasks()
 
-        /** Takes the registration lock, so a test can prove it is still usable. */
-        fun lockUsable(): Boolean = withRegLock { true }
+        /**
+         * Takes the registration lock. Deliberately returns nothing: a failed
+         * acquire still runs the block, so any value from in there would be
+         * true whatever happened -- what reports the failure is [lockBroken].
+         */
+        fun takeRegLock() = withRegLock { }
+
+        /**
+         * Whether the lock can be acquired right now, so a test that left it
+         * held is caught rather than passed on to the next one -- the signal
+         * the teardown's old `EBUSY`-on-destroy check used to carry.
+         */
+        fun lockFree(): Boolean = regLockFree()
 
         /** [regLockBroken] for the tests. */
         fun lockBroken(): Boolean = regLockBroken()
@@ -403,11 +416,12 @@ class AbstractPosixReadinessEventLoopTest {
      * timeout's, because `withTimeout` waits for its children and would report
      * a parked waiter as a timeout instead of letting the test assert on it.
      *
-     * The order matters and is the same one production gets wrong: [suspendOn]
-     * installs the real `invokeOnCancellation { unregister(reg) }`, so a waiter
-     * cancelled after the lock is freed takes it on freed memory. Cancelling
-     * first keeps this suite honest about that. Destroying here rather than in
-     * each test also means the lock is freed when an assertion fails.
+     * Waiters are cancelled and joined first so no cancellation handler runs
+     * into the next test's fake — [suspendOn] installs the real
+     * `invokeOnCancellation { unregister(reg) }`, which takes the registration
+     * lock. That lock is never freed, so the ordering is about test isolation
+     * rather than memory safety; what the teardown then checks is that no test
+     * left it broken or held.
      */
     private fun loopTest(block: suspend CoroutineScope.(FakeLoop) -> Unit) = loopTestWith(FakeLoop(), block)
 
@@ -431,8 +445,12 @@ class AbstractPosixReadinessEventLoopTest {
                 withContext(NonCancellable) { waiters.coroutineContext.job.join() }
             }
             // The lock outlives every test: nothing frees it, so a fake that
-            // reports a failure means this class broke its own exclusion.
+            // reports a failure means this class broke its own exclusion. The
+            // second check is the one with teeth on a healthy mutex -- it fails
+            // when a test leaves the lock held, which is what the teardown's old
+            // `EBUSY`-on-destroy reported.
             assertFalse(loop.lockBroken(), "no test may leave the registration lock broken")
+            assertTrue(loop.lockFree(), "no test may leave the registration lock held")
         }
     }
 
@@ -830,8 +848,9 @@ class AbstractPosixReadinessEventLoopTest {
         // into a use-after-free. This pins that neither happens.
         val loop = RealQueueLoop()
         loop.loop() // full lifecycle: final drain, sweep, quiescence
-        assertTrue(loop.lockUsable(), "a post-teardown acquisition must still succeed")
-        assertFalse(loop.lockBroken(), "and must not report a lock failure")
+        loop.takeRegLock()
+        assertFalse(loop.lockBroken(), "a post-teardown acquisition must succeed, not report a failure")
+        assertTrue(loop.lockFree(), "and must leave the lock free for the next one")
     }
 
     @Test
@@ -850,6 +869,22 @@ class AbstractPosixReadinessEventLoopTest {
             "and the failure must be reported, not swallowed: ${loop.logged}",
         )
         assertEquals(1, loop.wakeups, "the loop is woken so it notices without waiting for an event")
+    }
+
+    @Test
+    fun `a registration-lock failure on a quiescent loop does not write the wakeup fd`() {
+        // The failure path runs on whichever thread took the lock, which after
+        // teardown is any thread at all -- and by then the loop's own close has
+        // released the wakeup fd, whose number the kernel may have re-handed.
+        // Same guard, and the same reason, as the dispatch path.
+        val loop = RealQueueLoop()
+        loop.loop() // publishes quiescence
+        val before = loop.wakeups
+
+        loop.reportLockFailure("lock", EINVAL)
+
+        assertTrue(loop.lockBroken(), "the failure is still recorded")
+        assertEquals(before, loop.wakeups, "but a quiescent loop must not be woken")
     }
 
     @Test
@@ -967,6 +1002,7 @@ class AbstractPosixReadinessEventLoopTest {
             // a cancellation handler mid-flight, which is exactly the caller
             // that must still find a working lock.
             assertFalse(loop.lockBroken(), "the cancellation handlers must not have broken the lock")
+            assertTrue(loop.lockFree(), "nor left it held")
         }
     }
 

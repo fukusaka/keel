@@ -16,6 +16,7 @@ import kotlinx.coroutines.Runnable
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
+import platform.posix.pthread_mutex_trylock
 import platform.posix.pthread_mutex_unlock
 import platform.posix.pthread_self
 import platform.posix.pthread_t
@@ -499,12 +500,17 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     /**
      * Runs [block] under the registration mutex.
      *
-     * Moved as it was. The `pthread_mutex_lock` / `unlock` return codes are
-     * still dropped here, which the project's error-handling rule counts as a
-     * silent failure — but checking them turns a failed acquire into a throw on
-     * a path that has no receiver, and deciding what a loop should do about
-     * that is its own change rather than a side effect of moving the ledger.
-     * Filed separately.
+     * Both return codes are checked, and a failure goes to
+     * [reportRegLockFailure] — which ends the loop rather than throwing, for
+     * the reasons written there.
+     *
+     * **[block] still runs after a failed acquire.** There is nothing better to
+     * return from an inline helper whose callers all expect a value, and the
+     * loop is on its way down either way. **The release does not**: unlocking a
+     * mutex this thread does not hold is undefined, and an implementation that
+     * does not check ownership would release the section another thread is
+     * inside — turning one thread's failed acquire into a loss of exclusion for
+     * everyone. So the unlock is conditional on the acquire having succeeded.
      *
      * `inline` so the critical section costs no lambda: the dispatch path takes
      * this lock per readiness event.
@@ -515,8 +521,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         try {
             return block()
         } finally {
-            val unlockRet = pthread_mutex_unlock(regMutex.ptr)
-            if (unlockRet != 0) reportRegLockFailure("unlock", unlockRet)
+            if (lockRet == 0) {
+                val unlockRet = pthread_mutex_unlock(regMutex.ptr)
+                if (unlockRet != 0) reportRegLockFailure("unlock", unlockRet)
+            }
         }
     }
 
@@ -552,7 +560,12 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             "pthread_mutex_$operation() failed on the registration lock: ${errnoMessage(errno)} — " +
                 "the ledgers are no longer exclusive, so this EventLoop is stopping"
         }
-        wakeup()
+        // Same guard [dispatch] takes, and for the same reason: this runs on
+        // whichever thread took the lock, which after teardown is any thread at
+        // all, and a quiescent loop's wakeup fd is closed — its number possibly
+        // re-handed. A loop that is already quiescent has nothing to be woken
+        // for either.
+        if (!handoff.isQuiescent()) wakeup()
     }
 
     /**
@@ -560,6 +573,23 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * stop. Read by each engine's `loopBody` beside its own poll fatal.
      */
     protected fun regLockBroken(): Boolean = regLockFailed.value != 0
+
+    /**
+     * Whether the registration lock can be acquired right now — it takes it and
+     * puts it straight back.
+     *
+     * A probe, in the same family as [hasCallbackFor]: it answers "is this lock
+     * free", which is the question a teardown used to answer implicitly by
+     * seeing whether `pthread_mutex_destroy` reported `EBUSY`. Nothing destroys
+     * the lock any more, so that signal has to be asked for.
+     */
+    protected fun regLockFree(): Boolean {
+        val rc = pthread_mutex_trylock(regMutex.ptr)
+        if (rc != 0) return false
+        val unlockRet = pthread_mutex_unlock(regMutex.ptr)
+        if (unlockRet != 0) reportRegLockFailure("unlock", unlockRet)
+        return true
+    }
 
     /**
      * [register]s only if [stillWanted] holds, evaluated under the same lock
@@ -921,6 +951,20 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * ledger, which is its own decision and is tracked.
      */
     protected fun failWaitersOnStoppedLoop() {
+        // A broken lock is why this loop is stopping, and the sweep cannot run
+        // without it: a failed *release* leaves the mutex held by this very
+        // thread, so taking it again here deadlocks the loop thread — and with
+        // it the quiescence publish and the closer's join. Report and skip.
+        // What that costs is real (waiters stay parked, listeners are not told)
+        // and is the lesser of the two: the alternative is a close() that never
+        // returns.
+        if (regLockBroken()) {
+            logger.error {
+                "${this::class.simpleName}: skipping the stop sweep — the registration lock failed, " +
+                    "so waiters stay parked and listeners are not told"
+            }
+            return
+        }
         val stranded = mutableListOf<Registration>()
         val told = mutableListOf<LoopParticipant>()
         withRegLock {
