@@ -397,6 +397,10 @@ internal class EpollEventLoop(
 
     override fun loopBody() {
         while (running.value != 0) {
+            // The registration lock failing means the ledgers stopped being
+            // exclusive; end the loop the same way a poll fatal does rather
+            // than keep arming from state nothing is guarding.
+            if (regLockBroken()) break
             drainTasks()
 
             // Non-blocking poll if tasks arrived during drainTasks(), else block

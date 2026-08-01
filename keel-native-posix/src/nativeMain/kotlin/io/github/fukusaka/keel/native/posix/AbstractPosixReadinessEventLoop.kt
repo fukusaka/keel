@@ -188,15 +188,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     private var ledgersClosed: Boolean = false
 
     /**
-     * Claims the one teardown of [regMutex].
-     *
-     * A CAS rather than a flag because the hook it guards is published to
-     * subclasses: the two engines happen to funnel `close()` through their own
-     * compare-and-set first, but nothing in this class requires that, and a
-     * plain `Boolean` would let two concurrent callers both pass the check and
-     * free the same slot twice.
+     * Set once the registration lock has failed to acquire or release. Read by
+     * each engine's `loopBody` through [regLockBroken] so the loop ends the way
+     * a poll fatal ends it.
      */
-    private val lockDestroyed = AtomicInt(0)
+    private val regLockFailed = AtomicInt(0)
 
     /**
      * Claims the one entry into [loop], and the one drain in flight.
@@ -499,13 +495,56 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * this lock per readiness event.
      */
     protected inline fun <T> withRegLock(block: () -> T): T {
-        pthread_mutex_lock(regMutex.ptr)
+        val lockRet = pthread_mutex_lock(regMutex.ptr)
+        if (lockRet != 0) reportRegLockFailure("lock", lockRet)
         try {
             return block()
         } finally {
-            pthread_mutex_unlock(regMutex.ptr)
+            val unlockRet = pthread_mutex_unlock(regMutex.ptr)
+            if (unlockRet != 0) reportRegLockFailure("unlock", unlockRet)
         }
     }
+
+    /**
+     * Records that the registration lock failed, and tells the loop to stop.
+     *
+     * A failure here means the ledgers are no longer exclusive — a failed
+     * acquire runs [withRegLock]'s block anyway (there is nothing better to
+     * return from an inline helper whose callers all expect a value), and a
+     * failed release leaves the lock held forever. Neither state is one the
+     * loop can keep serving connections in: the next arm could be issued for a
+     * key another thread is mid-way through changing.
+     *
+     * So this takes the shape the poll fatals already use — `logger.error` and
+     * end the loop thread, rather than a throw. A throw from here would leave
+     * the ledgers exactly as they were (this is the first statement of the
+     * readiness dispatch), and a level-triggered fd would report ready again
+     * immediately; guarding that with a catch turns it into a spin. Ending the
+     * loop instead runs the same teardown any other fatal takes.
+     *
+     * **Unreachable in practice, and that is the point.** The lock is a default
+     * `pthread_mutex_t` (no error-checking attribute) that is never destroyed,
+     * so `EDEADLK` cannot arise and `EINVAL` needs the slot itself to have been
+     * invalidated. What this replaces is a discarded return value: the failure
+     * was not impossible before, it was silent.
+     *
+     * `@PublishedApi internal` because [withRegLock] is inline and reaches it.
+     */
+    @PublishedApi
+    internal fun reportRegLockFailure(operation: String, errno: Int) {
+        regLockFailed.value = 1
+        logger.error {
+            "pthread_mutex_$operation() failed on the registration lock: ${errnoMessage(errno)} — " +
+                "the ledgers are no longer exclusive, so this EventLoop is stopping"
+        }
+        wakeup()
+    }
+
+    /**
+     * Whether the registration lock has failed, in which case the loop must
+     * stop. Read by each engine's `loopBody` beside its own poll fatal.
+     */
+    protected fun regLockBroken(): Boolean = regLockFailed.value != 0
 
     /**
      * [register]s only if [stillWanted] holds, evaluated under the same lock
