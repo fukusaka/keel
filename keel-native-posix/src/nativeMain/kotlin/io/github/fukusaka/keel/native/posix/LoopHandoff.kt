@@ -67,6 +67,14 @@ class LoopHandoff(
     }
 
     /**
+     * Whether the loop has published quiescence — it will run nothing more,
+     * and its own close (which follows) may already have released its wakeup
+     * fd. Read by the loop's dispatcher to skip the wakeup write once waking
+     * can no longer mean anything.
+     */
+    fun isQuiescent(): Boolean = loopQuiescent.value == 1
+
+    /**
      * Hands [onLoop] to the loop thread; runs [ifStopped] on the caller if the
      * loop is already gone.
      *
