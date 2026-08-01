@@ -347,7 +347,9 @@ internal class EpollIoTransport(
      * write / flush paths on the EventLoop thread — and once that loop has
      * stopped for good, runs [teardownAfterLoopStopped] itself, because a
      * Coroutine-mode caller closing after engine shutdown is otherwise
-     * dispatching its only fd release onto a queue nothing drains.
+     * dispatching its only fd release onto a queue nothing drains. A close
+     * that lands mid-shutdown briefly blocks: the hand-off waits out the
+     * loop's final drain and stop sweep before releasing on the caller.
      */
     override fun close() {
         if (!markClosing()) return
@@ -366,9 +368,7 @@ internal class EpollIoTransport(
             flushScheduled = false
             performFlush()
         }
-        for (pw in pendingWrites) pw.buf.release()
-        pendingWrites.clear()
-        pendingBytes = 0
+        releaseAllPendingWrites()
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
         flushContinuation?.let { cont ->
             flushContinuation = null
@@ -400,21 +400,34 @@ internal class EpollIoTransport(
      *   bookkeeping belongs to a loop that will never read it again.
      * - **No deferred flush**: the gather scratch the flush path uses is freed
      *   by the loop's own close, and the bytes have nowhere ordered to go.
-     * - **The flush waiter is not cancelled**: its resume would dispatch onto
-     *   the dead queue and reach nobody; ending write-side waits on a stopped
-     *   loop is separate work.
-     * - Releasing the stranded buffers here is safe from this thread: once the
-     *   loop's allocator child closed, their pool return takes its closed-flag
-     *   branch and frees directly, and the shared chunk arena belongs to the
-     *   root allocator, which outlives the engine.
+     * - **No timer cancels**: the per-loop deadline scheduler is not safe for
+     *   two closers to mutate concurrently, and a dead loop never fires it —
+     *   the armed handles are retention on the dead loop object, not a leak.
+     * - **The flush waiter is cancelled**, as on the loop: cancellation
+     *   resumes the waiter on whatever dispatcher it suspended under — the
+     *   ordinary caller's own live one — so it is not stranded by this loop
+     *   being gone.
+     *
+     * Releasing the buffers from this thread is allocator-audited: the native
+     * pooled allocator routes an off-owner release through its MPSC return
+     * queue, whose close-race contract frees directly when the offer loses; a
+     * same-thread (confinement-owner) release racing the engine-close thread's
+     * allocator teardown is the one seam left, tracked separately. The
+     * `close(fd)` sits in a `finally` so a throw from a release cannot strand
+     * the descriptor behind the consumed teardown claim.
      */
     private fun teardownAfterLoopStopped() {
         if (!markTeardownStarted()) return
-        for (pw in pendingWrites) pw.buf.release()
-        pendingWrites.clear()
-        pendingBytes = 0
-        closeFdSafely(fd, eventLoop.logger, "transport teardown (loop stopped)")
-        logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
+        try {
+            releaseAllPendingWrites()
+            flushContinuation?.let { cont ->
+                flushContinuation = null
+                cont.cancel()
+            }
+        } finally {
+            closeFdSafely(fd, eventLoop.logger, "transport teardown (loop stopped)")
+            logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
+        }
     }
 
     /**
