@@ -139,12 +139,34 @@ internal class KqueueIoTransport(
      */
     override fun onLoopStopped() {
         if (!opened) return
+        // The write side too, not just the read side: a caller parked in
+        // awaitPendingFlush is waiting for a flush this loop will never run, and
+        // the sweep is the only thing that reaches it while the channel is still
+        // open. close() cancels the same continuation, but a Coroutine-mode
+        // connection is deliberately not closed here, so without this the waiter
+        // is left for a close that may never come. A waiter parked under this
+        // loop's own dispatcher stays out of reach either way -- its resume has
+        // nowhere to land.
+        flushContinuation?.let { cont ->
+            flushContinuation = null
+            cont.cancel()
+        }
         onReadClosed?.invoke()
     }
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
     override val inOwningContext: Boolean get() = eventLoop.inEventLoop()
+
+    /**
+     * `false` once this connection's loop has stopped: the queue still accepts
+     * a dispatch and nothing drains it again, so the pipeline must release what
+     * it would otherwise strand rather than hand it over.
+     */
+    override val canDispatchToOwningContext: Boolean get() = !eventLoop.isStopped()
+
+    /** EventLoop-confined, like the continuation it reports on. */
+    override fun hasFlushWaiter(): Boolean = flushContinuation != null
 
     // --- Read path ---
 
@@ -282,11 +304,24 @@ internal class KqueueIoTransport(
      * writes have drained.
      */
     override fun shutdownOutput() {
-        if (eventLoop.inEventLoop()) {
-            shutdownOutputOwned()
-        } else {
-            eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOwned() })
-        }
+        eventLoop.runOnLoop(
+            onLoop = { shutdownOutputOwned() },
+            // The loop is gone, so the half-close cannot be ordered the way this
+            // transport orders it: the FIN is held back until the buffered
+            // writes drain, and on a stopped loop they never will. Issuing
+            // `shutdown(2)` from here instead would send the FIN while those
+            // bytes are still queued -- and would race a concurrent close() for
+            // the fd number, off the loop that used to serialise the two. So the
+            // request is refused, and reported, rather than silently dropped:
+            // the peer still learns the connection is over when close() releases
+            // the descriptor, which a stopped loop no longer prevents.
+            ifStopped = {
+                eventLoop.logger.warn {
+                    "shutdownOutput() on a stopped EventLoop: fd=$fd — the FIN is not sent, " +
+                        "the peer sees the close when this channel is closed"
+                }
+            },
+        )
     }
 
     override fun sendFin() {
@@ -608,10 +643,18 @@ internal class KqueueIoTransport(
                     }
                 }
             }
-            if (eventLoop.inEventLoop()) {
-                register.run()
-            } else {
-                eventLoop.dispatch(EmptyCoroutineContext, register)
+            when {
+                eventLoop.inEventLoop() -> register.run()
+                // Nothing drains the queue again, so dispatching here would park
+                // this caller on a Runnable that never runs and a continuation
+                // that is never even stored -- the one shape close() cannot
+                // rescue either. Checked rather than routed through runOnLoop:
+                // that one waits out a loop mid-shutdown, and blocking a
+                // dispatcher thread from inside suspendCancellableCoroutine is
+                // not a trade worth making. The mid-shutdown window keeps the
+                // dispatch, which is right -- the final drain still runs it.
+                eventLoop.isStopped() -> cont.cancel()
+                else -> eventLoop.dispatch(EmptyCoroutineContext, register)
             }
         }
     }
