@@ -68,7 +68,7 @@ class LoopHandoff(
 
     /**
      * Hands [onLoop] to the loop thread; runs [ifStopped] on the caller if the
-     * loop is already gone. Does not wait for either to finish.
+     * loop is already gone.
      *
      * Listener teardown uses this so the `close(2)` for a watched fd is issued
      * by the thread that owns the readiness set, never by a caller racing that
@@ -77,10 +77,14 @@ class LoopHandoff(
      * registration already queued for the same fd, so a dispatched arm cannot
      * land on a descriptor number the kernel has since handed to someone else.
      *
-     * **This returns before the work runs.** `close()` is asynchronous by
-     * contract for exactly this reason: waiting here would block the caller on
-     * a loop that may be mid-syscall, and the engines backed by io_uring or a
-     * `Selector` cannot offer a synchronous release either.
+     * **On a live loop this returns before the work runs** — waiting would
+     * block the caller on a loop that may be mid-syscall. **On a stopping
+     * loop it blocks**: a caller landing between [markFinished] and
+     * [markQuiescent] spins out the final drain and the stop sweep — which run
+     * user code — and then runs [ifStopped] synchronously. A caller that
+     * blocks inside that window while holding something the sweep's handlers
+     * need turns the wait into a deadlock; close paths must not hold
+     * application locks.
      *
      * The two blocks exist because the fallback runs off the loop. [onLoop] may
      * touch loop-owned state (registries the loop guards), because it only ever
@@ -97,6 +101,24 @@ class LoopHandoff(
      * **Thread safety**: safe from any thread.
      */
     fun runOnLoop(onLoop: () -> Unit, ifStopped: () -> Unit = onLoop) {
+        // Fully stopped: nothing drains the queue again, so offering — and the
+        // wakeup write the dispatch performs — buys nothing and costs real
+        // hazards: the task would pin its captures in the dead queue for the
+        // loop object's lifetime, and the wakeup fd is closed once the loop's
+        // own close ran (which requires quiescence first), so its number may
+        // already belong to someone else and the write becomes a stray byte in
+        // an unrelated descriptor. This also filters a caller whose thread id
+        // merely *matches* the dead loop's: the real loop thread never returns
+        // here after quiescence, so a match is a recycled pthread_t, and
+        // running loop-owned teardown on it would lock state the loop's close
+        // may already have destroyed. A caller in the narrower window — the
+        // loop finished but not yet quiescent — keeps the offer path below:
+        // the final drain still picks its task up, on the loop, and the
+        // wakeup fd is still open there.
+        if (loopQuiescent.value == 1) {
+            ifStopped()
+            return
+        }
         if (inEventLoop()) {
             onLoop()
             return
