@@ -416,13 +416,55 @@ internal class DefaultPipeline(
     }
 
     override fun requestFlush(): Pipeline {
-        onOwningContext { tail.invokeOnFlush() }
+        if (!onOwningContext { tail.invokeOnFlush() }) reportDroppedFlush()
         return this
     }
 
     override fun requestClose(): Pipeline {
-        onOwningContext { tail.invokeOnClose() }
+        if (!onOwningContext { tail.invokeOnClose() }) closeWithoutChain()
         return this
+    }
+
+    /**
+     * Closes the transport when a close could not reach the chain.
+     *
+     * The walk ends at [HeadHandler], whose whole job is to call
+     * `transport.close()` — the only thing that releases the descriptor. When
+     * the walk cannot run, reproducing just that terminus here is strictly
+     * better than leaving the fd open for the pipeline's lifetime, but it is
+     * **not** a pipeline close: the handlers' `onClose` is genuinely skipped,
+     * which is why it is reported rather than done quietly.
+     *
+     * Silent when the transport is already closed. That is the ordinary
+     * close-after-close, and `close()` is idempotent, so there is nothing to
+     * report and nothing to do.
+     */
+    private fun closeWithoutChain() {
+        if (transport.isOpen) {
+            logger.warn {
+                "close could not reach the pipeline — the owning context has stopped, so the handlers' " +
+                    "onClose is skipped; closing the transport directly so its descriptor is released"
+            }
+        }
+        transport.close()
+    }
+
+    /**
+     * Reports a flush that could not reach the chain.
+     *
+     * Nothing is recovered here: a flush carries no ownership, and whatever is
+     * already buffered stays in the transport's queue until its teardown
+     * releases it. What would be wrong is saying nothing — the caller asked for
+     * bytes to go out and they will not.
+     *
+     * Silent on a closed transport, where a dropped flush is expected.
+     */
+    private fun reportDroppedFlush() {
+        if (!transport.isOpen) return
+        logger.warn {
+            "flush could not reach the pipeline — the owning context has stopped; anything already " +
+                "buffered stays queued until the transport is closed"
+        }
     }
 
     // --- Internal ---
@@ -470,7 +512,21 @@ internal class DefaultPipeline(
             // meant for inline execution) — fall back to inline drain;
             // unit tests typically add a single handler before
             // `notifyXxx`, so partial-chain replay does not arise.
-            if (ioDispatcher.isDispatchNeeded(EmptyCoroutineContext)) {
+            if (!transport.canDispatchToOwningContext) {
+                // The dispatcher will not run again, so a deferred drain would
+                // sit in a queue nobody reads, holding the journal's pooled
+                // buffers for as long as this pipeline is reachable. Draining
+                // inline is not the alternative: that runs handler code off the
+                // owning context, on the assembly path every connection takes.
+                // The connection is over and these reads can no longer be
+                // handled by anyone, so they are released instead of stranded.
+                //
+                // [firedDrainInline] stays false deliberately — nothing was
+                // propagated through head, so the lifecycle replay below is
+                // still owed to this handler, and it is what tells a bridge
+                // waiting on this connection that it is over.
+                discardPreAttachJournal()
+            } else if (ioDispatcher.isDispatchNeeded(EmptyCoroutineContext)) {
                 ioDispatcher.dispatch(EmptyCoroutineContext, Runnable { drainPreAttachJournal() })
             } else {
                 drainPreAttachJournal()
@@ -638,11 +694,15 @@ internal class DefaultPipeline(
         }
 
         override fun propagateFlush() {
-            pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnFlush() }
+            if (!pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnFlush() }) {
+                pipelineRef.reportDroppedFlush()
+            }
         }
 
         override fun propagateClose() {
-            pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnClose() }
+            if (!pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnClose() }) {
+                pipelineRef.closeWithoutChain()
+            }
         }
 
         // --- Invoke with try-catch (leak prevention) ---
@@ -852,6 +912,36 @@ internal class DefaultPipeline(
      * `handlerAdded`) bypasses the journal and propagates events
      * directly through the head — the journal is one-shot.
      */
+    /**
+     * Releases the journalled reads when the owning context has stopped, so
+     * they are not held by a drain that will never run.
+     *
+     * Only the reads are released — they are the ref-counted part, and the
+     * queued user events and errors go with them because nothing will deliver
+     * those either. The **lifecycle** flags are deliberately left alone: a
+     * handler added now must still learn the connection is inactive, and
+     * `replayLifecycleTo` is what tells it.
+     *
+     * Marking the journal drained stops later reads from re-filling a queue
+     * with the same fate.
+     */
+    private fun discardPreAttachJournal() {
+        preAttachJournalDrained = true
+        val discarded = pendingReads.size
+        while (pendingReads.isNotEmpty()) {
+            ReferenceCountUtil.safeRelease(pendingReads.removeFirst())
+        }
+        pendingUserEvents.clear()
+        pendingErrors.clear()
+        pendingReadComplete = false
+        if (discarded > 0) {
+            logger.warn {
+                "Released $discarded journalled read(s) — a handler was added after this connection's " +
+                    "owning context stopped, so the deferred replay would never have run"
+            }
+        }
+    }
+
     private fun drainPreAttachJournal() {
         if (preAttachJournalDrained) return
         preAttachJournalDrained = true
