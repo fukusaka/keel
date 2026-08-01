@@ -979,10 +979,11 @@ class AbstractPosixReadinessEventLoopTest {
     fun `an off-loop registerCallback goes through the real queue and wakes the loop`() {
         // [FakeLoop] answers every pipeline test, and it replaces both `dispatch`
         // and `drainTasks` with a list -- so none of them reaches MpscQueue,
-        // drainQueue's batch loop, or the `if (!inEventLoop()) wakeup()` branch
-        // an off-loop registration actually takes. A regression that queued the
-        // arm and skipped the wakeup would leave the re-arm waiting for an
-        // unrelated event and pass every one of them.
+        // drainQueue's batch loop, or the `if (!inEventLoop() &&
+        // !handoff.isQuiescent())` wakeup branch an off-loop registration on a
+        // live loop actually takes. A regression that queued the arm and
+        // skipped the wakeup would leave the re-arm waiting for an unrelated
+        // event and pass every one of them.
         val loop = RealQueueLoop(onLoopThread = false)
         try {
             loop.registerCallback(FD, Interest.READ, RecordingListener())
