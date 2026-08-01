@@ -78,8 +78,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `core`, `engine-epoll`, `engine-kqueue`: the entry points a stopped EventLoop used to swallow —
   `shutdownOutput()` now reports instead of vanishing, `awaitPendingFlush()` is cancelled rather
-  than parking forever (whether entered before or after the stop), and an off-context write is
-  released instead of stranded with its buffer (#1013)
+  than parking forever, and an off-context write is released instead of stranded with its
+  buffer (#1013)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: keep the EventLoop's registration lock valid
   for the process lifetime instead of freeing it at teardown — a cancellation arriving after
   `close()` took a freed mutex — and report `pthread_mutex_lock` / `unlock` failures instead of
