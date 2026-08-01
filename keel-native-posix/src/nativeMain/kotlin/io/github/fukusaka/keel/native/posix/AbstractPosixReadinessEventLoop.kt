@@ -267,6 +267,20 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     }
 
     /**
+     * Whether this loop has stopped for good — it will run nothing more, so a
+     * [dispatch] is accepted by the queue and never drained.
+     *
+     * For callers that must decide *before* handing work over, where
+     * [runOnLoop] is the wrong shape: it waits out a loop that is mid-shutdown,
+     * and a caller inside `suspendCancellableCoroutine` cannot afford to block
+     * its thread there. Reading this instead leaves the mid-shutdown window on
+     * the dispatch path, which is correct — the final drain still picks that up.
+     *
+     * **Thread safety**: safe from any thread.
+     */
+    fun isStopped(): Boolean = handoff.isQuiescent()
+
+    /**
      * The loop's own thread, published by [loop] as the first thing it does
      * after claiming entry.
      *
