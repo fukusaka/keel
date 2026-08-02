@@ -29,8 +29,8 @@ internal class KqueueTransportFlushWaitSeamTest : KqueueTransportSeamFixture() {
      * Regression test for teardown cancellation: `teardownOnEventLoop` must cancel
      * any coroutine suspended in `awaitPendingFlush`.
      *
-     * See `EpollTransportSeamTest` for the full rationale; this is the
-     * macOS / kqueue counterpart exercising `KqueueIoTransport`.
+     * See `EpollTransportFlushWaitSeamTest` for the full rationale; this is
+     * the macOS / kqueue counterpart exercising `KqueueIoTransport`.
      */
     @Test
     fun `awaitPendingFlush is cancelled when transport is torn down`() = runBlocking {

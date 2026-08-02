@@ -27,7 +27,8 @@ import platform.posix.write
  * seam + integration testing strategy).
  *
  * Unlike the synchronous `shutdownOutput` / `flush` branches in
- * [EpollTransportSeamTest], `onReadable` is a private method driven
+ * [EpollTransportShutdownSeamTest] and [EpollTransportFlushSeamTest],
+ * `onReadable` is a private method driven
  * by an epoll readiness callback, so these tests run a real
  * [EpollEventLoop] on a pipe pair (`readFd` registered with epoll,
  * `writeFd` used only to trigger readiness). Once the event loop
