@@ -357,6 +357,21 @@ internal class DefaultPipeline(
         if (preAttachJournalDrained) {
             inactiveFired = true
             head.invokeOnInactive()
+        } else if (!transport.canDispatchToOwningContext) {
+            // The journal is still waiting for a drain that will not come: it
+            // was dispatched to a context that has since stopped, or the
+            // pipeline never gained an inbound handler to schedule it. This is
+            // the one place that learns the connection is over *and* still has
+            // the pipeline in hand, so it is where those buffers get released.
+            //
+            // Fired through head as well, unlike the discard in
+            // [callHandlerAdded]: the chain is fully assembled by now, so the
+            // handlers that are already here receive `onInactive` the way the
+            // drain would have delivered it. Late arrivals still get the
+            // per-handler replay, which the discard leaves armed.
+            discardPreAttachJournal()
+            inactiveFired = true
+            head.invokeOnInactive()
         }
         // Pre-attach: the inactiveObserved flag is sufficient; drain replays
         // it via head.invokeOnInactive at drain time and sets

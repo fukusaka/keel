@@ -74,6 +74,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: release journalled pre-attach reads when a connection ends and their deferred replay can
+  no longer run — the ordering where the drain was dispatched before the owning context stopped (#1016)
 - `core`, `engine-epoll`, `engine-kqueue`: report a half-close whose FIN was deferred behind
   buffered writes when the EventLoop stops before they drain — the FIN is still not sent, but the
   peer's wait is no longer unexplained (#1015)

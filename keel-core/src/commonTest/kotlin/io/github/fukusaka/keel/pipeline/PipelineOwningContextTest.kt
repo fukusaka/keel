@@ -177,6 +177,52 @@ class PipelineOwningContextTest {
     }
 
     @Test
+    fun `a journal whose drain was dispatched before the context stopped is released on inactive`() {
+        // The likelier ordering, and the one the handler-added gate cannot see:
+        // the handler arrives while the context is alive, so the drain is
+        // dispatched and the gate is never re-evaluated. The context stops
+        // afterwards, and that Runnable is left in a queue nobody reads --
+        // holding the journal's pooled buffers with it.
+        val tracker = TrackingAllocator()
+        val stopped = TestIoTransport(tracker).apply { dispatcher = NeverRuns }
+        val stoppedChannel = object : AbstractPipelinedChannel(stopped, logger) {}
+        stoppedChannel.pipeline.notifyRead(tracker.allocate(8).also { it.writerIndex = 4 })
+        // Alive here: the drain is dispatched, not discarded.
+        stoppedChannel.pipeline.addLast(
+            "late",
+            object : InboundHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) = Unit
+            },
+        )
+        assertEquals(1, tracker.outstandingCount, "premise: dispatched, so still held")
+
+        stopped.owningContextAlive = false
+        stoppedChannel.pipeline.notifyInactive()
+
+        assertEquals(0, tracker.outstandingCount, "the stranded journal must be released once the connection is over")
+    }
+
+    @Test
+    fun `a journal is not released on inactive while its drain can still run`() {
+        // The negative case: a peer close on a live connection must not throw
+        // away reads the dispatched drain is still going to deliver.
+        val tracker = TrackingAllocator()
+        val live = TestIoTransport(tracker).apply { dispatcher = NeverRuns }
+        val liveChannel = object : AbstractPipelinedChannel(live, logger) {}
+        liveChannel.pipeline.notifyRead(tracker.allocate(8).also { it.writerIndex = 4 })
+        liveChannel.pipeline.addLast(
+            "late",
+            object : InboundHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) = Unit
+            },
+        )
+
+        liveChannel.pipeline.notifyInactive()
+
+        assertEquals(1, tracker.outstandingCount, "a live context still owes the drain, so nothing may be released")
+    }
+
+    @Test
     fun `a close on a stopped context releases the journalled reads as well as the descriptor`() {
         // The other way a stopped connection ends. Recovering the descriptor and
         // leaving the journal holding its buffers would fix half of the same
