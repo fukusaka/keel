@@ -1,0 +1,36 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ArgumentListWrapping:NodeEngineIdleTimeoutTest.kt$NodeEngineIdleTimeoutTest$(timeout = 25.seconds)</ID>
+    <ID>ArgumentListWrapping:NodeListenerTlsIntegrationTest.kt$NodeListenerTlsIntegrationTest$("-k", "-s", "--max-time", "5", "--connect-timeout", "3", "https://localhost:$port/hello")</ID>
+    <ID>ImportOrdering:NodeEngineConcurrencyTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.async import kotlinx.coroutines.awaitAll import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout import kotlinx.coroutines.yield</ID>
+    <ID>ImportOrdering:NodeEngineConnectTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertNotNull import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout</ID>
+    <ID>ImportOrdering:NodeEngineLifecycleTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.core.UnixSocketAddress import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFailsWith import kotlin.test.assertFalse import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout</ID>
+    <ID>ImportOrdering:NodeEngineReadWriteTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.core.IoEngineConfig import io.github.fukusaka.keel.io.BufferedSuspendSink import io.github.fukusaka.keel.io.BufferedSuspendSource import kotlin.test.Test import kotlin.test.assertEquals import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout</ID>
+    <ID>ImportOrdering:NodeMultiAddressBindTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.core.BindSpec import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.core.SocketAddress import io.github.fukusaka.keel.pipeline.InboundHandler import io.github.fukusaka.keel.pipeline.PipelineHandlerContext import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFailsWith import kotlin.test.fail import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.channels.Channel import kotlinx.coroutines.delay import kotlinx.coroutines.test.runTest</ID>
+    <ID>ImportOrdering:NodeSocketOptionsTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.core.BindConfig import io.github.fukusaka.keel.core.ConnectConfig import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.core.SocketOptions import kotlin.test.Test import kotlin.test.assertEquals import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout</ID>
+    <ID>Indentation:NodeTestCertificates.kt$NodeTestCertificates$ </ID>
+    <ID>NoBlankLineBeforeRbrace:NodeEngineConcurrencyTest.kt$NodeEngineConcurrencyTest$ </ID>
+    <ID>NoBlankLineBeforeRbrace:NodeEngineConnectTest.kt$NodeEngineConnectTest$ </ID>
+    <ID>NoBlankLineBeforeRbrace:NodeEngineLifecycleTest.kt$NodeEngineLifecycleTest$ </ID>
+    <ID>NoBlankLineBeforeRbrace:NodeEngineReadWriteTest.kt$NodeEngineReadWriteTest$ </ID>
+    <ID>NoConsecutiveBlankLines:NodeEngineConcurrencyTest.kt$ </ID>
+    <ID>NoConsecutiveBlankLines:NodeEngineConnectTest.kt$ </ID>
+    <ID>NoConsecutiveBlankLines:NodeEngineLifecycleTest.kt$ </ID>
+    <ID>NoConsecutiveBlankLines:NodeEngineReadWriteTest.kt$ </ID>
+    <ID>NoUnusedImports:NodeEngineConcurrencyTest.kt$io.github.fukusaka.keel.engine.nodejs.NodeEngineConcurrencyTest.kt</ID>
+    <ID>NoUnusedImports:NodeEngineConnectTest.kt$io.github.fukusaka.keel.engine.nodejs.NodeEngineConnectTest.kt</ID>
+    <ID>NoUnusedImports:NodeEngineLifecycleTest.kt$io.github.fukusaka.keel.engine.nodejs.NodeEngineLifecycleTest.kt</ID>
+    <ID>NoUnusedImports:NodeEngineReadWriteTest.kt$io.github.fukusaka.keel.engine.nodejs.NodeEngineReadWriteTest.kt</ID>
+    <ID>NoUnusedImports:NodeSocketOptionsTest.kt$io.github.fukusaka.keel.engine.nodejs.NodeSocketOptionsTest.kt</ID>
+    <ID>TrailingCommaOnCallSite:NodeListenerTlsIntegrationTest.kt$NodeListenerTlsIntegrationTest$("-k", "-s", "--max-time", "5", "--connect-timeout", "3", "--cert", certPath, "--key", keyPath, "-w", "\n%{http_code}", "https://localhost:$port/hello")</ID>
+    <ID>TrailingCommaOnCallSite:NodeListenerTlsIntegrationTest.kt$NodeListenerTlsIntegrationTest$("-k", "-s", "--max-time", "5", "--connect-timeout", "3", "--tls-max", "1.2", "--tlsv1.2", "https://localhost:$port/hello")</ID>
+    <ID>TrailingCommaOnCallSite:NodeListenerTlsIntegrationTest.kt$NodeListenerTlsIntegrationTest$("-k", "-s", "--max-time", "5", "--connect-timeout", "3", "-w", "\n%{http_code}", "https://localhost:$port/hello")</ID>
+    <ID>TrailingCommaOnCallSite:NodeListenerTlsIntegrationTest.kt$NodeListenerTlsIntegrationTest$("-k", "-s", "--max-time", "5", "--connect-timeout", "3", "https://localhost:$port/hello")</ID>
+    <ID>TrailingCommaOnCallSite:NodeListenerTlsIntegrationTest.kt$NodeListenerTlsIntegrationTest$("-k", "-s", "-v", "--http1.1", "--max-time", "5", "--connect-timeout", "3", "https://localhost:$port/hello")</ID>
+    <ID>Wrapping:NodeEngineIdleTimeoutTest.kt$NodeEngineIdleTimeoutTest$;</ID>
+    <ID>Wrapping:NodeListenerTlsIntegrationTest.kt$NodeListenerTlsIntegrationTest$(</ID>
+    <ID>Wrapping:NodeListenerTlsIntegrationTest.kt$NodeListenerTlsIntegrationTest$;</ID>
+  </CurrentIssues>
+</SmellBaseline>

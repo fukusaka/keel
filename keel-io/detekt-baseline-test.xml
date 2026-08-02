@@ -1,0 +1,85 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ArenaLeak:ChunkArenaCarveBenchmark.kt$ChunkArenaCarveBenchmark$Arena()</ID>
+    <ID>ArenaLeak:CrossThreadReturnQueueTest.kt$CrossThreadReturnQueueTest$Arena()</ID>
+    <ID>ArenaLeak:PooledAllocatorContendedBenchmark.kt$PooledAllocatorContendedBenchmark$Arena()</ID>
+    <ID>ArenaLeak:ScopeLocalNativeIsolationTest.kt$ScopeLocalNativeIsolationTest$Arena()</ID>
+    <ID>ArgumentListWrapping:CacheTrimFootprintMeasure.kt$CacheTrimFootprintMeasure$(afterTrim &lt;= PooledAllocator.WARM_RESERVE + 1, "trim should approach the warm reserve (was $afterTrim)")</ID>
+    <ID>ArgumentListWrapping:CrossThreadReturnQueueTest.kt$CrossThreadReturnQueueTest$( RACE_BUFFERS, drained.size + accepted.count { !it }, "every buffer emitted xor rejected — no strand, no double-free", )</ID>
+    <ID>ArgumentListWrapping:CrossThreadReturnQueueTest.kt$CrossThreadReturnQueueTest$( accepted[i], bufs[i] in drained, "buffer $i: emitted-by-close iff its offer was accepted", )</ID>
+    <ID>ArgumentListWrapping:CrossThreadReturnQueueTest.kt$CrossThreadReturnQueueTest$( allocated.load(), released.load(), "every allocated buffer must fire onReleased exactly once — a lost or double buffer signals drain-scratch corruption", )</ID>
+    <ID>ArgumentListWrapping:CrossThreadReturnQueueTest.kt$CrossThreadReturnQueueTest$( threadPtr.ptr, null, staticCFunction { arg -> val held = arg!!.asStableRef&lt;List&lt;IoBuf>>().get() for (b in held) b.release() arg.asStableRef&lt;List&lt;IoBuf>>().dispose() null }, ref.asCPointer(), )</ID>
+    <ID>ArgumentListWrapping:CrossThreadReturnQueueTest.kt$CrossThreadReturnQueueTest$( threadPtrs[i].ptr, null, staticCFunction { arg -> val a = arg!!.asStableRef&lt;OfferArg>().get() val won = a.q.offer(a.buf) a.accepted[a.idx] = won if (!won) a.buf.close() // rejected by the closed queue: caller frees arg.asStableRef&lt;OfferArg>().dispose() null }, ref.asCPointer(), )</ID>
+    <ID>ArgumentListWrapping:CrossThreadReturnQueueTest.kt$CrossThreadReturnQueueTest$( threadPtrs[w].ptr, null, staticCFunction { arg -> val a = arg!!.asStableRef&lt;ChurnArg>().get() repeat(a.iters) { a.allocator.allocate(CLASS).release() } arg.asStableRef&lt;ChurnArg>().dispose() null }, ref.asCPointer(), )</ID>
+    <ID>ArgumentListWrapping:IoBufAsciiTextBenchmark.kt$IoBufAsciiTextBenchmark$("=== IoBufAsciiText vs String (payload='$PAYLOAD', ${payloadBytes.size} bytes, iters=$ITERS × $TRIALS) ===")</ID>
+    <ID>ArgumentListWrapping:IoBufWrapExternalTest.kt$IoBufWrapExternalTest$( ptr, capacity = 4, bytesWritten = 0, owner = owner, )</ID>
+    <ID>ArgumentListWrapping:IoBufWrapExternalTest.kt$IoBufWrapExternalTest$( ptr, capacity = 4, bytesWritten = 1, owner = owner, )</ID>
+    <ID>ArgumentListWrapping:LongObjectMapTest.kt$LongObjectMapTest$(k)</ID>
+    <ID>ArgumentListWrapping:LongObjectMapTest.kt$LongObjectMapTest$(ref.containsKey(k), m.containsKey(k), "seed=$seed iter=$iter key=$k containsKey diverged")</ID>
+    <ID>ArgumentListWrapping:LongPriorityQueueTest.kt$LongPriorityQueueTest$(10L, 20L)</ID>
+    <ID>ArgumentListWrapping:LongPriorityQueueTest.kt$LongPriorityQueueTest$(10L, 20L, 40L, 50L)</ID>
+    <ID>ArgumentListWrapping:LongPriorityQueueTest.kt$LongPriorityQueueTest$(1L, 2L, 3L, 4L, 5L)</ID>
+    <ID>ArgumentListWrapping:LongPriorityQueueTest.kt$LongPriorityQueueTest$(listOf(10L, 20L), generateSequence { q.poll() }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList())</ID>
+    <ID>ArgumentListWrapping:LongPriorityQueueTest.kt$LongPriorityQueueTest$(listOf(10L, 20L, 40L, 50L), generateSequence { q.poll() }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList())</ID>
+    <ID>ArgumentListWrapping:LongPriorityQueueTest.kt$LongPriorityQueueTest$(listOf(1L, 2L, 3L, 4L, 5L), generateSequence { q.poll() }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList())</ID>
+    <ID>ArgumentListWrapping:MixedClassFootprintMeasure.kt$MixedClassFootprintMeasure$(" after short-lived drop : $afterShortDrop chunks vs long-lived min packing $minLong (over-retention ×${ratio(afterShortDrop, minLong)})")</ID>
+    <ID>ArgumentListWrapping:MixedClassFootprintMeasure.kt$MixedClassFootprintMeasure$(" long=$LONG_BUFFERS × ${LONG_CLASS / 1024}KiB held, short=$SHORT_BUFFERS × ${SHORT_CLASS / 1024}KiB churning ($CHURN_CYCLES cycles)")</ID>
+    <ID>ArgumentListWrapping:MixedClassFootprintMeasure.kt$MixedClassFootprintMeasure$(" long=$LONG_BUFFERS × ${LONG_CLASS / 1024}KiB held, short=${LONG_BUFFERS * perBurst} × ${SHORT_CLASS / 1024}KiB ($CHURN_CYCLES cycles)")</ID>
+    <ID>ArgumentListWrapping:MixedClassFootprintMeasure.kt$MixedClassFootprintMeasure$(afterShortDrop, minLong)</ID>
+    <ID>ArgumentListWrapping:PoolChunkTest.kt$PoolChunkTest$(pageSize = 8192, pageShifts = 13, chunkSize = 256 * 1024, directMemoryCacheAlignment = 0)</ID>
+    <ID>ArgumentListWrapping:PooledDirectAllocatorConcurrencyTest.kt$PooledDirectAllocatorConcurrencyTest$( allocated.get(), released.get(), "every allocated buffer must fire onReleased exactly once — an imbalance signals a lost/double buffer", )</ID>
+    <ID>ArgumentListWrapping:ScopeLocalNativeIsolationTest.kt$ScopeLocalNativeIsolationTest$( threadPtr.ptr, null, staticCFunction { arg -> val slot = arg!!.asStableRef&lt;Slot>().get() // First read on this pthread: own fresh Box(0), not main's 99. slot.before[slot.index] = slot.local.current().n slot.local.current().n = 7 + slot.index // Cached within this pthread: same instance, new value. arg.asStableRef&lt;Slot>().dispose() null }, ref.asCPointer(), )</ID>
+    <ID>ArgumentListWrapping:SharedChunkArenaConcurrencyTest.kt$SharedChunkArenaConcurrencyTest$(consumers.none { it.isAlive }, "all consumers completed within budget (ArenaLock deadlock guard)")</ID>
+    <ID>ArgumentListWrapping:SharedChunkArenaConcurrencyTest.kt$SharedChunkArenaConcurrencyTest$(producers.none { it.isAlive }, "all producers completed within budget (ArenaLock deadlock guard)")</ID>
+    <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..200L</ID>
+    <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..20L</ID>
+    <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..20L step 2</ID>
+    <ID>FunctionOnlyReturningConstant:InterfaceDispatchProbeBenchmark.kt$InterfaceDispatchProbeBenchmark.Concrete$fun v(): Int</ID>
+    <ID>ImportOrdering:BufferedSuspendSinkTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.IoBuf import io.github.fukusaka.keel.buf.TrackingAllocator import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFalse import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout</ID>
+    <ID>ImportOrdering:BufferedSuspendSourceTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.IoBuf import io.github.fukusaka.keel.buf.TrackingAllocator import io.github.fukusaka.keel.buf.createDefaultIoBuf import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFailsWith import kotlin.test.assertNotNull import kotlin.test.assertNull import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout</ID>
+    <ID>ImportOrdering:ChunkArenaCarveBenchmark.kt$import kotlin.concurrent.AtomicInt import kotlin.test.Ignore import kotlin.test.Test import kotlin.time.TimeSource import kotlinx.cinterop.Arena import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.cinterop.StableRef import kotlinx.cinterop.allocArray import kotlinx.cinterop.asStableRef import kotlinx.cinterop.get import kotlinx.cinterop.plus import kotlinx.cinterop.staticCFunction import platform.posix.pthread_create import platform.posix.pthread_join import platform.posix.pthread_tVar</ID>
+    <ID>ImportOrdering:CrossThreadReturnQueueTest.kt$import kotlinx.cinterop.Arena import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.cinterop.StableRef import kotlinx.cinterop.alloc import kotlinx.cinterop.asStableRef import kotlinx.cinterop.get import kotlinx.cinterop.ptr import kotlinx.cinterop.staticCFunction import kotlin.concurrent.atomics.AtomicLong import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue import platform.posix.pthread_create import platform.posix.pthread_join import platform.posix.pthread_tVar</ID>
+    <ID>ImportOrdering:DispatchQueueLocalTest.kt$import kotlin.concurrent.atomics.AtomicInt import kotlin.concurrent.atomics.ExperimentalAtomicApi import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFalse import kotlin.test.assertSame import kotlin.test.assertTrue import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.coroutines.CompletableDeferred import kotlinx.coroutines.runBlocking import kotlinx.coroutines.withTimeout import kotlin.time.Duration.Companion.seconds import platform.darwin.dispatch_async import platform.darwin.dispatch_group_create import platform.darwin.dispatch_group_enter import platform.darwin.dispatch_group_leave import platform.darwin.dispatch_group_wait import platform.darwin.dispatch_queue_create import platform.darwin.DISPATCH_TIME_FOREVER</ID>
+    <ID>ImportOrdering:InterfaceDispatchProbeBenchmark.kt$import kotlin.test.Ignore import kotlin.test.Test import kotlin.time.TimeSource import platform.posix.getpid</ID>
+    <ID>ImportOrdering:IoBufTest.kt$import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFalse import kotlin.test.assertFailsWith import kotlin.test.assertTrue</ID>
+    <ID>ImportOrdering:PerThreadCacheFrontMicroBenchmark.kt$import io.github.fukusaka.keel.scope.ScopeLocal import io.github.fukusaka.keel.scope.ThreadLocalScopeLocal import io.github.fukusaka.keel.scope.scopeLocal import kotlin.concurrent.AtomicInt import kotlin.concurrent.AtomicReference import kotlin.native.concurrent.ThreadLocal import kotlin.test.Ignore import kotlin.test.Test import kotlin.time.TimeSource import platform.posix.pthread_equal import platform.posix.pthread_self</ID>
+    <ID>ImportOrdering:PooledAllocatorContendedBenchmark.kt$import kotlin.concurrent.AtomicInt import kotlin.test.Ignore import kotlin.test.Test import kotlin.time.TimeSource import kotlinx.cinterop.Arena import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.cinterop.StableRef import kotlinx.cinterop.allocArray import kotlinx.cinterop.asStableRef import kotlinx.cinterop.get import kotlinx.cinterop.plus import kotlinx.cinterop.staticCFunction import platform.posix.pthread_create import platform.posix.pthread_join import platform.posix.pthread_tVar</ID>
+    <ID>ImportOrdering:ScopeLocalNativeIsolationTest.kt$import kotlinx.cinterop.Arena import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.cinterop.StableRef import kotlinx.cinterop.alloc import kotlinx.cinterop.asStableRef import kotlinx.cinterop.get import kotlinx.cinterop.ptr import kotlinx.cinterop.staticCFunction import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue import platform.posix.pthread_create import platform.posix.pthread_join import platform.posix.pthread_tVar</ID>
+    <ID>Indentation:BufferedSuspendSinkTest.kt$BufferedSuspendSinkTest$ </ID>
+    <ID>Indentation:BufferedSuspendSourceTest.kt$BufferedSuspendSourceTest$ </ID>
+    <ID>MaxLineLength:MixedClassFootprintMeasure.kt$MixedClassFootprintMeasure$println(" after short-lived drop : $afterShortDrop chunks vs long-lived min packing $minLong (over-retention ×${ratio(afterShortDrop, minLong)})")</ID>
+    <ID>MaxLineLength:MixedClassFootprintMeasure.kt$MixedClassFootprintMeasure$println(" long=$LONG_BUFFERS × ${LONG_CLASS / 1024}KiB held, short=$SHORT_BUFFERS × ${SHORT_CLASS / 1024}KiB churning ($CHURN_CYCLES cycles)")</ID>
+    <ID>MaxLineLength:MixedClassFootprintMeasure.kt$MixedClassFootprintMeasure$println(" long=$LONG_BUFFERS × ${LONG_CLASS / 1024}KiB held, short=${LONG_BUFFERS * perBurst} × ${SHORT_CLASS / 1024}KiB ($CHURN_CYCLES cycles)")</ID>
+    <ID>MaximumLineLength:MixedClassFootprintMeasure.kt$MixedClassFootprintMeasure$ </ID>
+    <ID>MultiLineIfElse:LongObjectMapTest.kt$LongObjectMapTest$assertEquals(i, m[pageSize * i], "survivor ${pageSize * i} stranded after remove")</ID>
+    <ID>MultiLineIfElse:LongObjectMapTest.kt$LongObjectMapTest$assertNull(m[pageSize * i])</ID>
+    <ID>NoConsecutiveBlankLines:LeakDetectingAllocatorGcTest.kt$ </ID>
+    <ID>NoConsecutiveBlankLines:LeakDetectingAllocatorGcTest.kt$LeakDetectingAllocatorGcTest$ </ID>
+    <ID>NoMultipleSpaces:IoBufAsciiTextBenchmark.kt$IoBufAsciiTextBenchmark$ </ID>
+    <ID>NoMultipleSpaces:IoBufAsciiTextBenchmark.kt$IoBufAsciiTextBenchmark.Companion$ </ID>
+    <ID>NoMultipleSpaces:IoBufAsciiTextTest.kt$IoBufAsciiTextTest$ </ID>
+    <ID>NoMultipleSpaces:IoBufTest.kt$IoBufTest$ </ID>
+    <ID>NoMultipleSpaces:LongObjectMapTest.kt$LongObjectMapTest$ </ID>
+    <ID>NoMultipleSpaces:LongPriorityQueueTest.kt$LongPriorityQueueTest$ </ID>
+    <ID>NoUnusedImports:BufferedSuspendSinkTest.kt$io.github.fukusaka.keel.io.BufferedSuspendSinkTest.kt</ID>
+    <ID>NoUnusedImports:BufferedSuspendSourceTest.kt$io.github.fukusaka.keel.io.BufferedSuspendSourceTest.kt</ID>
+    <ID>PropertyWrapping:PoolChunkTest.kt$PoolChunkTest$private val sizeClasses = SizeClasses(pageSize = 8192, pageShifts = 13, chunkSize = 256 * 1024, directMemoryCacheAlignment = 0)</ID>
+    <ID>StringTemplate:IoBufPerBytePathBenchmark.kt$IoBufPerBytePathBenchmark$${byteFmt}</ID>
+    <ID>StringTemplate:IoBufPerBytePathBenchmark.kt$IoBufPerBytePathBenchmark$${loopFmt}</ID>
+    <ID>StringTemplate:IoBufPerBytePathBenchmark.kt$IoBufPerBytePathBenchmark$${nsByteRounded}</ID>
+    <ID>StringTemplate:IoBufPerBytePathBenchmark.kt$IoBufPerBytePathBenchmark$${nsOpRounded}</ID>
+    <ID>SwallowedException:IoBufLifecycleConcurrencyTest.kt$IoBufLifecycleConcurrencyTest$@Suppress("TooGenericExceptionCaught") t: Throwable</ID>
+    <ID>UnusedPrivateProperty:BufferedSuspendSourceTest.kt$BufferedSuspendSourceTest.&lt;no name provided>$i</ID>
+    <ID>Wrapping:CrossThreadReleaseProfileTest.kt$CrossThreadReleaseProfileTest$;</ID>
+    <ID>Wrapping:FreelistContendedBenchmark.kt$FreelistContendedBenchmark$;</ID>
+    <ID>Wrapping:IoBufLifecycleConcurrencyTest.kt$IoBufLifecycleConcurrencyTest$;</ID>
+    <ID>Wrapping:LongObjectMapTest.kt$LongObjectMapTest$;</ID>
+    <ID>Wrapping:LongPriorityQueueTest.kt$LongPriorityQueueTest$;</ID>
+    <ID>Wrapping:LongPriorityQueueTest.kt$LongPriorityQueueTest$it != LongPriorityQueue.NO_VALUE</ID>
+    <ID>Wrapping:LongPriorityQueueTest.kt$LongPriorityQueueTest$q.poll()</ID>
+    <ID>Wrapping:PoolMapVariantBenchmark.kt$PoolMapVariantBenchmark.IntArrayScanAdapter$;</ID>
+    <ID>Wrapping:PoolMapVariantBenchmark.kt$PoolMapVariantBenchmark.SpinLockHashMapAdapter$;</ID>
+  </CurrentIssues>
+</SmellBaseline>

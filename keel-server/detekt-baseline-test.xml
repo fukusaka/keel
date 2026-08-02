@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>CommentWrapping:ServerTlsTest.kt$ServerTlsTest$/* no-op */</ID>
+    <ID>ImportOrdering:ServerConnectorTest.kt$import io.github.fukusaka.keel.core.BindConfig import io.github.fukusaka.keel.core.Channel import io.github.fukusaka.keel.server.dsl.connector import io.github.fukusaka.keel.core.IoEngineConfig import io.github.fukusaka.keel.core.SocketAddress import io.github.fukusaka.keel.core.SocketOptions import io.github.fukusaka.keel.core.StreamEngine import io.github.fukusaka.keel.core.StreamServer import io.github.fukusaka.keel.tls.TlsCodec import io.github.fukusaka.keel.tls.TlsCodecFactory import io.github.fukusaka.keel.tls.TlsConfig import kotlin.coroutines.CoroutineContext import kotlin.coroutines.EmptyCoroutineContext import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFailsWith import kotlin.test.assertIs import kotlin.test.assertNull import kotlin.test.assertSame import kotlin.test.assertTrue</ID>
+    <ID>TooGenericExceptionThrown:AcceptLoopTest.kt$AcceptLoopTest.&lt;no name provided>$throw RuntimeException("server shutting down")</ID>
+    <ID>Wrapping:ConnectorDslTest.kt$ConnectorDslTest$;</ID>
+    <ID>Wrapping:ServerConnectorTest.kt$ServerConnectorTest$;</ID>
+  </CurrentIssues>
+</SmellBaseline>
