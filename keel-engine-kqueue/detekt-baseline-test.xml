@@ -18,7 +18,6 @@
     <ID>ImportOrdering:KqueueOnReadableSeamTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.logging.NoopLoggerFactory import io.github.fukusaka.keel.native.posix.FakeNativeSocket import io.github.fukusaka.keel.native.posix.ReadResult import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.cinterop.addressOf import kotlinx.cinterop.usePinned import kotlinx.coroutines.CompletableDeferred import kotlinx.coroutines.runBlocking import kotlinx.coroutines.withTimeout import kotlin.test.AfterTest import kotlin.test.BeforeTest import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds import platform.posix.close import platform.posix.pipe import platform.posix.write</ID>
     <ID>Indentation:KqueueReadResumeAfterFinTest.kt$KqueueReadResumeAfterFinTest$ </ID>
     <ID>Indentation:KqueueReadResumeAfterFinTest.kt$KqueueReadResumeAfterFinTest.Companion$ </ID>
-    <ID>LargeClass:KqueueTransportSeamTest.kt$KqueueTransportSeamTest</ID>
     <ID>NoBlankLineBeforeRbrace:KqueueEngineConcurrencyTest.kt$KqueueEngineConcurrencyTest$ </ID>
     <ID>NoBlankLineBeforeRbrace:KqueueEngineConnectTest.kt$KqueueEngineConnectTest$ </ID>
     <ID>NoBlankLineBeforeRbrace:KqueueEngineLifecycleTest.kt$KqueueEngineLifecycleTest$ </ID>
@@ -26,9 +25,7 @@
     <ID>NoBlankLineBeforeRbrace:KqueueEngineReadWriteTest.kt$KqueueEngineReadWriteTest$ </ID>
     <ID>NoBlankLineBeforeRbrace:KqueueEngineResourceTest.kt$KqueueEngineResourceTest$ </ID>
     <ID>NoConsecutiveBlankLines:KqueueBindRegistrationTest.kt$KqueueBindRegistrationTest$ </ID>
-    <ID>NoEmptyFirstLineInMethodBlock:KqueueTransportSeamTest.kt$KqueueTransportSeamTest$ </ID>
     <ID>NoMultipleSpaces:KqueueEventLoopSeamTest.kt$KqueueEventLoopSeamTest$ </ID>
-    <ID>NoMultipleSpaces:KqueueTransportSeamTest.kt$KqueueTransportSeamTest$ </ID>
     <ID>NoUnusedImports:KqueueEngineResourceTest.kt$io.github.fukusaka.keel.engine.kqueue.KqueueEngineResourceTest.kt</ID>
     <ID>SpacingBetweenDeclarationsWithComments:KqueueReadResumeAfterFinTest.kt$KqueueReadResumeAfterFinTest.Companion$/** Wall-clock bound for the whole body, not just the await. */</ID>
     <ID>Wrapping:KqueueEnginePipelineTest.kt$KqueueEnginePipelineTest$(</ID>
@@ -40,7 +37,5 @@
     <ID>Wrapping:KqueueEventLoopSeamTest.kt$KqueueEventLoopSeamTest.&lt;no name provided>$(</ID>
     <ID>Wrapping:KqueueEventLoopSeamTest.kt$KqueueEventLoopSeamTest.&lt;no name provided>$(5000, interest, object : FdReadyListener { override fun onReady(interest: Interest) { /* second callback; never fires in this test */ } })</ID>
     <ID>Wrapping:KqueueOnReadableSeamTest.kt$KqueueOnReadableSeamTest$;</ID>
-    <ID>Wrapping:KqueueTransportSeamTest.kt$KqueueTransportSeamTest$(</ID>
-    <ID>Wrapping:KqueueTransportSeamTest.kt$KqueueTransportSeamTest$(EmptyCoroutineContext, Runnable { transport.onReady(Interest.WRITE) })</ID>
   </CurrentIssues>
 </SmellBaseline>
