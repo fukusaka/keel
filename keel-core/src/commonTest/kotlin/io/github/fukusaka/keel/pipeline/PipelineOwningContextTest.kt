@@ -177,6 +177,26 @@ class PipelineOwningContextTest {
     }
 
     @Test
+    fun `a close on a stopped context releases the journalled reads as well as the descriptor`() {
+        // The other way a stopped connection ends. Recovering the descriptor and
+        // leaving the journal holding its buffers would fix half of the same
+        // leak -- and the journal is this pipeline's own state, so the
+        // transport's teardown cannot reach it.
+        val tracker = TrackingAllocator()
+        val stopped = TestIoTransport(tracker).apply { dispatcher = NeverRuns }
+        val stoppedChannel = object : AbstractPipelinedChannel(stopped, logger) {}
+        stoppedChannel.pipeline.notifyRead(tracker.allocate(8).also { it.writerIndex = 4 })
+        assertEquals(1, tracker.outstandingCount, "premise: the read is journalled")
+
+        stopped.owningContext = false
+        stopped.owningContextAlive = false
+        stoppedChannel.pipeline.requestClose()
+
+        assertTrue(stopped.closed, "the descriptor must be released")
+        assertEquals(0, tracker.outstandingCount, "and the journal must not be left holding its buffers")
+    }
+
+    @Test
     fun `a handler added after the owning context stopped releases the journalled reads`() {
         // The pipeline's other dispatch site. Reads that arrive before any
         // inbound handler exists are journalled and replayed on the next
@@ -193,7 +213,9 @@ class PipelineOwningContextTest {
         assertEquals(1, tracker.outstandingCount, "premise: the read is journalled, not yet delivered")
         assertTrue(stopped.isOpen, "premise: open, so the release is not just the closed-transport path")
 
-        stopped.owningContext = false
+        // Only `owningContextAlive` matters here: the handler-added path reads
+        // that and never consults `inOwningContext`, so setting the latter
+        // would suggest a coverage this test does not have.
         stopped.owningContextAlive = false
         stoppedChannel.pipeline.addLast(
             "late",
@@ -212,11 +234,15 @@ class PipelineOwningContextTest {
         // per-handler replay matches no branch and does nothing at all — and a
         // bridge installed after a peer close waits for an EOF it already
         // missed. Pins the guarantee, not the comment claiming it.
-        val stopped = TestIoTransport().apply { dispatcher = NeverRuns }
+        val tracker = TrackingAllocator()
+        val stopped = TestIoTransport(tracker).apply { dispatcher = NeverRuns }
         val stoppedChannel = object : AbstractPipelinedChannel(stopped, logger) {}
         stoppedChannel.pipeline.notifyInactive()
+        // Journalled alongside the lifecycle state, so this also covers the
+        // ordering the discard depends on: promote the flags, then drain the
+        // queues.
+        stoppedChannel.pipeline.notifyRead(tracker.allocate(8).also { it.writerIndex = 4 })
 
-        stopped.owningContext = false
         stopped.owningContextAlive = false
         var sawInactive = false
         stoppedChannel.pipeline.addLast(
@@ -230,6 +256,7 @@ class PipelineOwningContextTest {
         )
 
         assertTrue(sawInactive, "the peer close observed before the handler existed must still reach it")
+        assertEquals(0, tracker.outstandingCount, "and the journalled read alongside it must be released")
     }
 
     @Test
@@ -241,7 +268,6 @@ class PipelineOwningContextTest {
         val stoppedChannel = object : AbstractPipelinedChannel(stopped, logger) {}
         stoppedChannel.pipeline.notifyActive()
 
-        stopped.owningContext = false
         stopped.owningContextAlive = false
         var sawActive = false
         stoppedChannel.pipeline.addLast(

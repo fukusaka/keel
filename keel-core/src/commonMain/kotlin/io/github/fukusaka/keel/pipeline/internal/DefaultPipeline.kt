@@ -457,7 +457,16 @@ internal class DefaultPipeline(
                     "onClose is skipped; closing the transport directly so its descriptor is released"
             }
         }
-        transport.close()
+        // The journal goes with the descriptor. Nothing else releases it — it
+        // is this pipeline's own state, not the transport's, so the teardown
+        // that runs inside close() cannot reach it, and the drain that would
+        // have is exactly what is not going to happen.
+        discardPreAttachJournal()
+        // Invoked rather than re-implemented: the head *is* the terminus, and a
+        // second responsibility added there later has to land on this path too.
+        // No re-entry — the head is a DuplexHandler, so this takes the outbound
+        // branch straight into its own onClose.
+        head.invokeOnClose()
     }
 
     /**
@@ -472,11 +481,21 @@ internal class DefaultPipeline(
      */
     private fun reportDroppedFlush() {
         if (!transport.isOpen) return
+        // Once per pipeline. A streaming response flushes per frame, and some
+        // callers reach this without the channel's own `isOpen` guard, so an
+        // engine shutdown with responses in flight would otherwise emit a line
+        // per frame per connection. The condition is per-connection, not
+        // per-frame; saying it once says all of it.
+        if (droppedFlushReported) return
+        droppedFlushReported = true
         logger.warn {
             "flush could not reach the pipeline — the owning context has stopped; anything already " +
-                "buffered stays queued until the transport is closed"
+                "buffered stays queued until the transport is closed (reported once per connection)"
         }
     }
+
+    /** Latch for [reportDroppedFlush]; owning-context-confined like the lifecycle flags. */
+    private var droppedFlushReported: Boolean = false
 
     // --- Internal ---
 
@@ -514,15 +533,6 @@ internal class DefaultPipeline(
         var firedDrainInline = false
         if (!preAttachJournalDrained && !drainScheduled && ctx.handler is InboundHandler) {
             drainScheduled = true
-            // Defer drain via the dispatcher so any addX calls remaining
-            // in the current synchronous block (e.g. codec stack setup
-            // adding decoder + aggregator + handler back-to-back) all
-            // accumulate before drain replays through the assembled
-            // chain. Test transports backed by `Dispatchers.Unconfined`
-            // — which throws from `dispatch()` by design (Unconfined is
-            // meant for inline execution) — fall back to inline drain;
-            // unit tests typically add a single handler before
-            // `notifyXxx`, so partial-chain replay does not arise.
             if (!transport.canDispatchToOwningContext) {
                 // The dispatcher will not run again, so a deferred drain would
                 // sit in a queue nobody reads, holding the journal's pooled
@@ -539,8 +549,17 @@ internal class DefaultPipeline(
                 // no branch and silently does nothing.
                 discardPreAttachJournal()
             } else if (ioDispatcher.isDispatchNeeded(EmptyCoroutineContext)) {
+                // Defer drain via the dispatcher so any addX calls remaining
+                // in the current synchronous block (e.g. codec stack setup
+                // adding decoder + aggregator + handler back-to-back) all
+                // accumulate before drain replays through the assembled chain.
                 ioDispatcher.dispatch(EmptyCoroutineContext, Runnable { drainPreAttachJournal() })
             } else {
+                // Test transports backed by `Dispatchers.Unconfined` — which
+                // throws from `dispatch()` by design (Unconfined is meant for
+                // inline execution) — fall back to inline drain; unit tests
+                // typically add a single handler before `notifyXxx`, so
+                // partial-chain replay does not arise.
                 drainPreAttachJournal()
                 firedDrainInline = true
             }
@@ -972,20 +991,35 @@ internal class DefaultPipeline(
      * hold.
      *
      * **The lifecycle bookkeeping is exactly [drainPreAttachJournal]'s**, minus
-     * the head invocations there is no assembled chain to receive. That is the
-     * whole point: [replayLifecycleTo] is the only delivery left, and it fires
-     * on `inactiveObserved && inactiveFired` or on `activeFired` — flags the
-     * drain promotes and this path must promote too. Leaving them as they are
-     * makes the replay match no branch at all and do nothing, silently: a
-     * bridge installed after a peer close would then wait for an EOF it has
-     * already missed. Nothing sets them later, either — [notifyInactive]
+     * the head invocations. Not because the chain is unassembled — [addLast]
+     * links the new context before calling here, which is why the inline-drain
+     * branch has to set `firedDrainInline` at all — but because a head sweep
+     * now would reach only the handlers added so far, and deferring past that
+     * is the whole reason the drain is dispatched. On a stopped loop there is
+     * no later tick to defer to, so the per-handler replay carries what it can.
+     *
+     * That replay fires on `inactiveObserved && inactiveFired` or on
+     * `activeFired` — flags the drain promotes and this path must promote too.
+     * Leaving them as they are makes it match no branch at all and do nothing,
+     * silently: a bridge installed after a peer close would wait for an EOF it
+     * has already missed. Nothing sets them later, either — [notifyInactive]
      * returns early once observed, and the drain early-returns once the journal
      * is marked.
+     *
+     * **What the replay cannot carry** is anything with no branch of its own:
+     * a journalled writability change (the drain delivers it through head
+     * unconditionally; the replay only inside the `activeFired` branch), the
+     * queued user events, and the errors — which is why the errors are at least
+     * reported with their cause below rather than dropped.
      *
      * Marking the journal drained stops later reads from re-filling a queue
      * with the same fate.
      */
     private fun discardPreAttachJournal() {
+        // Guarded like [drainPreAttachJournal]: there are two callers now, and
+        // a close after the journal already went would otherwise re-run the
+        // flag promotion below.
+        if (preAttachJournalDrained) return
         preAttachJournalDrained = true
         // Promoted before anything below can return early. These are what the
         // per-handler replay reads, and they are the only delivery left.
