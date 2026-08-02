@@ -158,10 +158,18 @@ internal class EpollIoTransport(
                 eventLoop.logger.warn(t) { "flush waiter's cancellation threw while the EventLoop was stopping" }
             }
         }
-        // The other ordering: a FIN deferred while the loop was still running,
-        // whose drain never came. The sweep runs before the final drain, so it
-        // sees this one and the half-close path above sees the other.
-        reportAbandonedFin()
+        // A FIN deferred while the loop was still running, whose drain never
+        // came. Which path finds a deferral depends on when it was created, not
+        // on drain order: this one exists before the sweep reaches this
+        // transport, whereas one created later is found by the half-close
+        // itself. Guarded for the same reason as the cancel above -- the logger
+        // is user-supplied, and a throw here must not take the read-side
+        // notification with it.
+        try {
+            reportAbandonedFin()
+        } catch (t: Throwable) {
+            eventLoop.logger.warn(t) { "reporting an abandoned half-close threw while the EventLoop was stopping" }
+        }
         onReadClosed?.invoke()
     }
 
@@ -397,6 +405,9 @@ internal class EpollIoTransport(
                     transport.onFlushComplete?.invoke()
                     transport.sendFinIfDrained()
                 }
+                // The last chance this transport had to send a deferred FIN. If
+                // it is still pending after this, nothing else will take it.
+                transport.reportAbandonedFin()
             },
         )
         return false
@@ -748,6 +759,12 @@ internal class EpollIoTransport(
      */
     private fun reportAbandonedFin() {
         if (!eventLoop.isFinishing()) return
+        // A coalesced flush is still queued, and the drain that runs it will
+        // attempt the write and call sendFinIfDrained itself. Giving up here
+        // would abandon a FIN that is about to go out -- the deferral is only
+        // unkeepable once that last attempt has been made, which is why this is
+        // also called from the end of that Runnable.
+        if (flushScheduled) return
         if (!abandonDeferredFin()) return
         eventLoop.logger.warn {
             "shutdownOutput() deferred the FIN behind buffered writes on fd=$fd and the EventLoop " +

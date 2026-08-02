@@ -622,9 +622,174 @@ class KqueueTransportSeamTest {
         loop.close()
 
         assertEquals(0, fake.shutdownCalls, "premise: the FIN never went out")
+        assertEquals(
+            1,
+            warns.messages.count { "deferred the FIN behind buffered writes" in it },
+            "reported exactly once -- both discovery points run, and only one may claim it: ${warns.messages}",
+        )
+    }
+
+    @Test
+    fun `a queued flush that cannot drain reports the abandoned FIN itself`() = runBlocking {
+        // The same window as the test below, but the queued write blocks. The
+        // half-close deferred to that flush and stayed quiet because it was
+        // still coming; the flush then cannot drain either, and it is the last
+        // thing that could have sent the FIN. If it does not speak, nobody does
+        // -- which is the silence this whole change is about.
+        val warns = RecordingLogger(LogLevel.WARN)
+        val loop = KqueueEventLoop(warns, flushCoalescing = true)
+        loop.start()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
+        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+
+        val buffered = CompletableDeferred<Unit>()
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                transport.write(buf)
+                buffered.complete(Unit)
+            },
+        )
+        withTimeout(SEAM_TIMEOUT_MS) { buffered.await() }
+
+        loop.addParticipant(
+            object : LoopParticipant {
+                override fun onLoopStopped() {
+                    transport.shutdownOutput()
+                }
+            },
+        )
+
+        loop.close()
+
+        assertEquals(0, fake.shutdownCalls, "premise: the FIN never went out")
+        assertEquals(
+            1,
+            warns.messages.count { "deferred the FIN behind buffered writes" in it },
+            "the queued flush is the last chance, so it must report -- exactly once: ${warns.messages}",
+        )
+    }
+
+    @Test
+    fun `a half-close during the sweep waits for its queued flush before giving up`() = runBlocking {
+        // The regression this guard exists for, in the only configuration that
+        // can show it: the loop is finishing, so the report is armed, *and*
+        // coalescing is on, so flush() has queued the write rather than
+        // performing it. The queued Runnable still runs -- the sweep drains
+        // again after walking the participants -- and it is what sends the FIN.
+        // Giving up at the half-close would destroy a FIN that was about to go
+        // out, and say so in a warning that is false.
+        val warns = RecordingLogger(LogLevel.WARN)
+        val loop = KqueueEventLoop(warns, flushCoalescing = true)
+        loop.start()
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(fd, WriteResult.Written(PAYLOAD_BYTES))
+            enqueueShutdown(fd, ShutdownResult.Ok)
+        }
+        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+
+        val buffered = CompletableDeferred<Unit>()
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                transport.write(buf)
+                buffered.complete(Unit)
+            },
+        )
+        withTimeout(SEAM_TIMEOUT_MS) { buffered.await() }
+
+        loop.addParticipant(
+            object : LoopParticipant {
+                override fun onLoopStopped() {
+                    transport.shutdownOutput()
+                }
+            },
+        )
+
+        loop.close()
+
+        assertEquals(1, fake.shutdownCalls, "the queued flush must still get to send the FIN")
         assertTrue(
-            warns.messages.any { "deferred the FIN behind buffered writes" in it },
-            "an abandoned half-close must be reported, not left silent: ${warns.messages}",
+            warns.messages.none { "deferred the FIN behind buffered writes" in it },
+            "nothing was abandoned, so nothing should be reported: ${warns.messages}",
+        )
+    }
+
+    @Test
+    fun `a FIN deferred on a running loop is not reported`() = runBlocking {
+        // The negative case, and the one that decides whether this is a fix or
+        // a log flood. Deferring a FIN behind buffered writes is the ordinary
+        // half-close -- it is what the deferral is for -- and on a running loop
+        // a completion path will still send it. Reporting here would mean a
+        // warning per connection on every healthy server under backpressure.
+        val warns = RecordingLogger(LogLevel.WARN)
+        val loop = KqueueEventLoop(warns, flushCoalescing = false)
+        loop.start()
+        try {
+            val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
+            val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+
+            val issued = CompletableDeferred<Unit>()
+            loop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                    transport.write(buf)
+                    transport.shutdownOutput()
+                    issued.complete(Unit)
+                },
+            )
+            withTimeout(SEAM_TIMEOUT_MS) { issued.await() }
+
+            assertEquals(0, fake.shutdownCalls, "premise: the FIN is deferred, not sent")
+            assertTrue(
+                warns.messages.none { "deferred the FIN behind buffered writes" in it },
+                "an ordinary deferral on a live loop must stay quiet: ${warns.messages}",
+            )
+        } finally {
+            withTimeout(SEAM_TIMEOUT_MS) { loop.close() }
+        }
+    }
+
+    @Test
+    fun `a coalesced flush queued behind a half-close still sends the FIN`() = runBlocking {
+        // The regression the report can cause if it fires too early. With
+        // coalescing on -- the default -- flush() does not write, it queues a
+        // Runnable that writes on the next drain and sends the deferred FIN
+        // itself. Giving the deferral up before that Runnable has had its turn
+        // abandons a FIN that was about to go out.
+        val warns = RecordingLogger(LogLevel.WARN)
+        val loop = KqueueEventLoop(warns, flushCoalescing = true)
+        loop.start()
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(fd, WriteResult.Written(PAYLOAD_BYTES))
+            enqueueShutdown(fd, ShutdownResult.Ok)
+        }
+        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+
+        val issued = CompletableDeferred<Unit>()
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                transport.write(buf)
+                transport.shutdownOutput()
+                issued.complete(Unit)
+            },
+        )
+        withTimeout(SEAM_TIMEOUT_MS) { issued.await() }
+        // Drained on *this* loop, not the fixture's: the coalesced Runnable was
+        // queued here, and a marker on the other loop would never run.
+        val drained = CompletableDeferred<Unit>()
+        loop.dispatch(EmptyCoroutineContext, Runnable { drained.complete(Unit) })
+        withTimeout(SEAM_TIMEOUT_MS) { drained.await() }
+
+        assertEquals(1, fake.shutdownCalls, "the queued flush must still get to send the FIN")
+        assertTrue(
+            warns.messages.none { "deferred the FIN behind buffered writes" in it },
+            "and nothing was abandoned, so nothing should be reported: ${warns.messages}",
         )
     }
 
@@ -653,6 +818,9 @@ class KqueueTransportSeamTest {
         )
         withTimeout(SEAM_TIMEOUT_MS) { buffered.await() }
 
+        // Added after the transport, which registers itself in its constructor,
+        // so the sweep reaches the transport first -- while no deferral exists
+        // yet. That order is what leaves this one for the half-close path.
         loop.addParticipant(
             object : LoopParticipant {
                 override fun onLoopStopped() {

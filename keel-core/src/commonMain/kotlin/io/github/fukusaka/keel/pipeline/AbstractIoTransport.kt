@@ -386,7 +386,12 @@ abstract class AbstractIoTransport(
      * unkeepable deferral — the half-close itself, and the loop's stop
      * notification — do not both report the same one.
      *
-     * **MUST** be invoked from the owning thread.
+     * **MUST** be invoked from the owning thread, and **MUST NOT** be invoked
+     * while any completion path can still run: a deferral given up early is a
+     * FIN that would have gone out and now will not, which is the silent loss
+     * this exists to report. A queued flush counts as a completion path —
+     * under flush coalescing the write happens on a later tick, and that tick
+     * calls [sendFinIfDrained] itself.
      */
     protected fun abandonDeferredFin(): Boolean {
         if (!finDeferred) return false
