@@ -41,7 +41,9 @@ class PendingWriteSnapshotPoolAllocationBenchmark {
     private val tmx = ManagementFactory.getThreadMXBean() as ThreadMXBean
 
     private fun source(): ArrayDeque<PendingWrite> =
-        ArrayDeque(listOf(PendingWrite(EmptyIoBuf, 0, 1), PendingWrite(EmptyIoBuf, 0, 2), PendingWrite(EmptyIoBuf, 0, 3)))
+        ArrayDeque(
+            listOf(PendingWrite(EmptyIoBuf, 0, 1), PendingWrite(EmptyIoBuf, 0, 2), PendingWrite(EmptyIoBuf, 0, 3)),
+        )
 
     private fun measure(iterations: Int, cycle: () -> Unit): Long {
         repeat(WARMUP) { cycle() }
@@ -67,7 +69,8 @@ class PendingWriteSnapshotPoolAllocationBenchmark {
                 pool.recycle(writes)
             }
         }
-        trialsA.sort(); trialsB.sort()
+        trialsA.sort()
+        trialsB.sort()
         val medA = trialsA[TRIALS / 2]
         val medB = trialsB[TRIALS / 2]
 

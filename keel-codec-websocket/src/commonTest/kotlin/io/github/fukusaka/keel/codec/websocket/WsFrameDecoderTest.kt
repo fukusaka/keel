@@ -220,7 +220,12 @@ class WsFrameDecoderTest {
         // When acting as a client (or inspecting server→client traffic),
         // the decoder must not reject unmasked frames — RFC 6455 §5.1
         // forbids servers from masking their replies.
-        val frame = WsFrame(fin = true, opcode = WsOpcode.TEXT, maskKey = null, payload = "server-reply".encodeToByteArray())
+        val frame = WsFrame(
+            fin = true,
+            opcode = WsOpcode.TEXT,
+            maskKey = null,
+            payload = "server-reply".encodeToByteArray(),
+        )
         pipeline.notifyRead(encodeToIoBuf(frame))
 
         assertEquals(1, collector.frames.size)

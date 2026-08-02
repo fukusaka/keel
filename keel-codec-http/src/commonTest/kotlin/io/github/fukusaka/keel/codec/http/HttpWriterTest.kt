@@ -144,7 +144,7 @@ class HttpWriterTest {
         writeResponseHead(HttpStatus.OK, HttpVersion.HTTP_1_1, headers, out)
         assertEquals(
             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n",
-            out.readString()
+            out.readString(),
         )
     }
 
@@ -192,7 +192,7 @@ class HttpWriterTest {
         val result = out.readString()
         assertEquals(
             "POST /submit HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello",
-            result
+            result,
         )
     }
 
@@ -207,7 +207,7 @@ class HttpWriterTest {
         writeResponse(res, out)
         assertEquals(
             "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello",
-            out.readString()
+            out.readString(),
         )
     }
 

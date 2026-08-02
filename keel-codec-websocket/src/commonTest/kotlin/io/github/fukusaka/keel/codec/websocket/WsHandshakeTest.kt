@@ -12,14 +12,14 @@ class WsHandshakeTest {
     @Test
     fun computeAcceptKeyKnownVector() {
         val clientKey = "dGhlIHNhbXBsZSBub25jZQ=="
-        val expected  = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        val expected = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
         assertEquals(expected, computeAcceptKey(clientKey))
     }
 
     @Test
     fun computeAcceptKeyDifferentKey() {
-        val key1 = "dGhlIHNhbXBsZSBub25jZQ=="  // "the sample nonce" (16 bytes)
-        val key2 = "AAECAwQFBgcICQoLDA0ODw=="    // 0x00..0x0F (16 bytes)
+        val key1 = "dGhlIHNhbXBsZSBub25jZQ==" // "the sample nonce" (16 bytes)
+        val key2 = "AAECAwQFBgcICQoLDA0ODw==" // 0x00..0x0F (16 bytes)
         assertNotEquals(computeAcceptKey(key1), computeAcceptKey(key2))
     }
 

@@ -1,16 +1,13 @@
 package io.github.fukusaka.keel.engine.netty
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.net.Socket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -261,5 +258,4 @@ class NettyEngineConcurrencyTest {
         server.close()
         engine.close()
     }
-
 }

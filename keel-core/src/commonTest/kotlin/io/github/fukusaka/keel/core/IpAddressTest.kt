@@ -162,7 +162,10 @@ class IpAddressTest {
     @Test
     fun `V6 ofBytes round-trip`() {
         val raw = ByteArray(16)
-        raw[0] = 0x20; raw[1] = 0x01; raw[2] = 0x0d; raw[3] = 0xb8.toByte()
+        raw[0] = 0x20
+        raw[1] = 0x01
+        raw[2] = 0x0d
+        raw[3] = 0xb8.toByte()
         raw[15] = 0x01
         val a = IpAddress.ofBytes(raw)
         assertIs<IpAddress.V6>(a)

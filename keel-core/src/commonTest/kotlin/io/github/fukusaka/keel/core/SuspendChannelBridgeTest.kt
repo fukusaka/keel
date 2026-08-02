@@ -3,11 +3,10 @@ package io.github.fukusaka.keel.core
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 class SuspendChannelBridgeTest {
 
@@ -47,7 +46,7 @@ class SuspendChannelBridgeTest {
     }
 
     @Test
-    fun `SuspendChannelSource delegates read to channel`()= runTest(timeout = 15.seconds) {
+    fun `SuspendChannelSource delegates read to channel`() = runTest(timeout = 15.seconds) {
         val channel = StubChannel()
         val source = channel.asSuspendSource()
 
@@ -61,7 +60,7 @@ class SuspendChannelBridgeTest {
     }
 
     @Test
-    fun `SuspendChannelSink delegates write and flush to channel`()= runTest(timeout = 15.seconds) {
+    fun `SuspendChannelSink delegates write and flush to channel`() = runTest(timeout = 15.seconds) {
         val channel = StubChannel()
         val sink = channel.asSuspendSink()
 

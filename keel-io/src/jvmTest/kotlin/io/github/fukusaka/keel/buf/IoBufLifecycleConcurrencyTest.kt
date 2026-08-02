@@ -159,9 +159,11 @@ class IoBufLifecycleConcurrencyTest {
                     closeError.incrementAndGet()
                 }
             }
-            releaser.start(); closer.start()
+            releaser.start()
+            closer.start()
             start.countDown()
-            releaser.join(); closer.join()
+            releaser.join()
+            closer.join()
 
             // After both ops complete, exactly one of them must have driven the
             // refcount to zero (close always does so, release only if close hasn't

@@ -8,14 +8,14 @@ import io.ktor.server.request.receiveMultipart
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.net.HttpURLConnection
 import java.net.URI
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 /**
  * Regression tests for multipart receive on keel engines.
@@ -102,7 +102,8 @@ class KeelEngineMultipartTest {
         server.start(wait = false)
         try {
             val port = runBlocking {
-                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                withTimeout(15.seconds) {
+                    server.engine.resolvedConnectors().first().port
                 }
             }
             block(port)
@@ -139,8 +140,11 @@ class KeelEngineMultipartTest {
         }
         conn.outputStream.use { it.write(body) }
         val status = conn.responseCode
-        val responseBody = if (status in 200..299) conn.inputStream.bufferedReader().readText()
-        else conn.errorStream?.bufferedReader()?.readText() ?: ""
+        val responseBody = if (status in 200..299) {
+            conn.inputStream.bufferedReader().readText()
+        } else {
+            conn.errorStream?.bufferedReader()?.readText() ?: ""
+        }
         conn.disconnect()
         return status to responseBody
     }

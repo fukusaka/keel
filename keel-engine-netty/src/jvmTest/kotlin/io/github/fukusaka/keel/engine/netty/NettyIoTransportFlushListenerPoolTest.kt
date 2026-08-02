@@ -73,7 +73,11 @@ class NettyIoTransportFlushListenerPoolTest {
         deferred.complete(1)
         assertEquals(1, completions, "resolving generation 2 must fire exactly its own listener")
         deferred.complete(0)
-        assertEquals(2, completions, "resolving generation 1 afterward must not have been affected by generation 2's completion")
+        assertEquals(
+            2,
+            completions,
+            "resolving generation 1 afterward must not have been affected by generation 2's completion",
+        )
         deferred.complete(2)
         assertEquals(3, completions)
     }

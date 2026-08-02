@@ -165,8 +165,8 @@ class KqueueEventLoopSeamTest {
     fun `loop retries waitEvents on EINTR then exits on fatal errno`() {
         val errors = mutableListOf<String>()
         val fake = FakeKqueueSyscallOps().apply {
-            scriptWaitFailure(EINTR)   // 1st: retriable, loop should `continue`
-            scriptWaitFailure(EBADF)   // 2nd: fatal, loop should log + break
+            scriptWaitFailure(EINTR) // 1st: retriable, loop should `continue`
+            scriptWaitFailure(EBADF) // 2nd: fatal, loop should log + break
         }
         val el = KqueueEventLoop(logger = levelRecordingLogger(LogLevel.ERROR, errors), syscallOps = fake)
         el.loop()
@@ -196,7 +196,7 @@ class KqueueEventLoopSeamTest {
     fun `loop exits immediately on fatal waitEvents errno`() {
         val errors = mutableListOf<String>()
         val fake = FakeKqueueSyscallOps().apply {
-            scriptWaitFailure(EBADF)   // fatal on first call
+            scriptWaitFailure(EBADF) // fatal on first call
         }
         val el = KqueueEventLoop(logger = levelRecordingLogger(LogLevel.ERROR, errors), syscallOps = fake)
         el.loop()
@@ -214,9 +214,9 @@ class KqueueEventLoopSeamTest {
         val fake = FakeKqueueSyscallOps().apply {
             scriptKqueueCreateFd(fd = 1000)
             scriptMakePipeFds(readFd = 1001, writeFd = 1002)
-            scriptAddFilterResult(0)      // loop init arms its own wakeup fd
+            scriptAddFilterResult(0) // loop init arms its own wakeup fd
             scriptAddFilterResult(ENOMEM) // the arm for fd 5000 fails
-            scriptWaitFailure(EBADF)      // terminate loop()
+            scriptWaitFailure(EBADF) // terminate loop()
         }
         val el = KqueueEventLoop(logger = levelRecordingLogger(LogLevel.ERROR, errors), syscallOps = fake)
         try {
@@ -257,15 +257,23 @@ class KqueueEventLoopSeamTest {
             scriptMakePipeFds(readFd = 1001, writeFd = 1002)
             // addFilter queue empty → all addFilter calls succeed (default 0)
             scriptWaitOk(Triple(5000, EVFILT_WRITE, 0)) // fd 5000 writable
-            scriptWaitFailure(EBADF)                     // terminate loop
+            scriptWaitFailure(EBADF) // terminate loop
         }
         val el = KqueueEventLoop(logger, syscallOps = fake)
         // Callback does NOT re-register: simulates a flush that completed fully.
-        el.registerCallback(5000, Interest.WRITE, object : FdReadyListener {
-            override fun onReady(interest: Interest) { /* no-op */ }
-        })
+        el.registerCallback(
+            5000,
+            Interest.WRITE,
+            object : FdReadyListener {
+                override fun onReady(interest: Interest) { /* no-op */ }
+            },
+        )
         el.loop()
-        assertEquals(1, fake.deleteFilterCalls.size, "deleteWriteFilter must be called when callback does not re-register")
+        assertEquals(
+            1,
+            fake.deleteFilterCalls.size,
+            "deleteWriteFilter must be called when callback does not re-register",
+        )
         assertEquals(FakeKqueueSyscallOps.FilterKind.WRITE, fake.deleteFilterCalls[0].filter)
         assertEquals(5000, fake.deleteFilterCalls[0].fd)
     }
@@ -280,15 +288,23 @@ class KqueueEventLoopSeamTest {
         }
         val el = KqueueEventLoop(logger, syscallOps = fake)
         // Callback re-registers: simulates a partial flush that needs another WRITE event.
-        el.registerCallback(5000, Interest.WRITE, object : FdReadyListener {
-            override fun onReady(interest: Interest) {
-                el.registerCallback(5000, interest, object : FdReadyListener {
-                    override fun onReady(interest: Interest) {
-                        /* second callback; never fires in this test */
-                    }
-                })
-            }
-        })
+        el.registerCallback(
+            5000,
+            Interest.WRITE,
+            object : FdReadyListener {
+                override fun onReady(interest: Interest) {
+                    el.registerCallback(
+                        5000,
+                        interest,
+                        object : FdReadyListener {
+                            override fun onReady(interest: Interest) {
+                                /* second callback; never fires in this test */
+                            }
+                        },
+                    )
+                }
+            },
+        )
         el.loop()
         assertTrue(fake.deleteFilterCalls.isEmpty(), "deleteWriteFilter must NOT be called when callback re-registers")
     }

@@ -36,7 +36,10 @@ class KeelHttpClientConcurrencyTest {
         withTimeout(60.seconds) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 get("/hello") { call -> call.respondText("hello world") }
             }
             server.start()

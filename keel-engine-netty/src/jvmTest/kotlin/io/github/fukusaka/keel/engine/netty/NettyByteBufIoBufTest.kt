@@ -84,7 +84,9 @@ class NettyByteBufIoBufTest {
     @Test
     fun `readByte advances readerIndex`() {
         val buf = newBuf()
-        buf.writeByte(0x30); buf.writeByte(0x31); buf.writeByte(0x32)
+        buf.writeByte(0x30)
+        buf.writeByte(0x31)
+        buf.writeByte(0x32)
         assertEquals(0x30.toByte(), buf.readByte())
         assertEquals(0x31.toByte(), buf.readByte())
         assertEquals(2, buf.readerIndex)
@@ -117,7 +119,9 @@ class NettyByteBufIoBufTest {
     @Test
     fun `clear resets indices`() {
         val buf = newBuf()
-        buf.writeByte(1); buf.writeByte(2); buf.readByte()
+        buf.writeByte(1)
+        buf.writeByte(2)
+        buf.readByte()
         buf.clear()
         assertEquals(0, buf.readerIndex)
         assertEquals(0, buf.writerIndex)
@@ -185,7 +189,8 @@ class NettyByteBufIoBufTest {
         val out = ByteArray(4)
         dest.readByteArray(out, 0, 4)
         assertContentEquals(byteArrayOf(1, 2, 3, 4), out)
-        src.release(); dest.release()
+        src.release()
+        dest.release()
     }
 
     @Test
@@ -264,13 +269,23 @@ class NettyByteBufIoBufTest {
     @Test
     fun `borrow resets indices even when the underlying wrapper object is reused`() {
         val first = ByteBufAllocator.DEFAULT.directBuffer(8, 8)
-        val a = NettyByteBufIoBuf.borrow(first, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = NoOpLifecycleListener)
+        val a = NettyByteBufIoBuf.borrow(
+            first,
+            baseOffset = 0,
+            initialWriterIndex = 0,
+            lifecycleListener = NoOpLifecycleListener,
+        )
         a.writeByteArray(byteArrayOf(9, 9, 9), 0, 3)
         assertEquals(3, a.writerIndex)
         assertTrue(a.release()) // refCnt 1 -> 0, wrapper (if pooled) returns to RECYCLER
 
         val second = ByteBufAllocator.DEFAULT.directBuffer(4, 4)
-        val b = NettyByteBufIoBuf.borrow(second, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = NoOpLifecycleListener)
+        val b = NettyByteBufIoBuf.borrow(
+            second,
+            baseOffset = 0,
+            initialWriterIndex = 0,
+            lifecycleListener = NoOpLifecycleListener,
+        )
         // A recycled wrapper must never leak state from its previous binding.
         assertEquals(0, b.readerIndex)
         assertEquals(0, b.writerIndex)
@@ -305,7 +320,12 @@ class NettyByteBufIoBufTest {
             val seen = mutableListOf<NettyByteBufIoBuf>()
             repeat(BORROW_RELEASE_CYCLES) {
                 val byteBuf = ByteBufAllocator.DEFAULT.directBuffer(8, 8)
-                val buf = NettyByteBufIoBuf.borrow(byteBuf, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = NoOpLifecycleListener)
+                val buf = NettyByteBufIoBuf.borrow(
+                    byteBuf,
+                    baseOffset = 0,
+                    initialWriterIndex = 0,
+                    lifecycleListener = NoOpLifecycleListener,
+                )
                 seen += buf
                 buf.release()
             }
@@ -314,7 +334,10 @@ class NettyByteBufIoBufTest {
         thread.start()
         thread.join(THREAD_JOIN_TIMEOUT_MS)
         assertFalse(thread.isAlive, "borrow/release loop did not finish within ${THREAD_JOIN_TIMEOUT_MS}ms")
-        assertTrue(reused, "expected at least one wrapper object reuse across $BORROW_RELEASE_CYCLES borrow/release cycles on a FastThreadLocalThread")
+        assertTrue(
+            reused,
+            "expected at least one wrapper object reuse across $BORROW_RELEASE_CYCLES borrow/release cycles on a FastThreadLocalThread",
+        )
     }
 
     @Test

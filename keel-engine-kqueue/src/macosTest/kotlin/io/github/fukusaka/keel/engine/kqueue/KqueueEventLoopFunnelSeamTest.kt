@@ -76,7 +76,10 @@ class KqueueEventLoopFunnelSeamTest {
     @Test
     fun `a registration made before the loop starts is queued rather than run on the caller`() = runBlocking {
         withTimeout(FUNNEL_BUDGET) {
-            val fake = FakeKqueueSyscallOps().apply { liveMode = true; watchedFd = FD_UNDER_TEST }
+            val fake = FakeKqueueSyscallOps().apply {
+                liveMode = true
+                watchedFd = FD_UNDER_TEST
+            }
             val el = KqueueEventLoop(logger, syscallOps = fake)
             try {
                 val beforeCalls = fake.addFilterCalls.size
@@ -116,7 +119,10 @@ class KqueueEventLoopFunnelSeamTest {
     @Test
     fun `cross-thread registerCallback funnels addFilter to the EventLoop thread`() = runBlocking {
         withTimeout(FUNNEL_BUDGET) {
-            val fake = FakeKqueueSyscallOps().apply { liveMode = true; watchedFd = FD_UNDER_TEST }
+            val fake = FakeKqueueSyscallOps().apply {
+                liveMode = true
+                watchedFd = FD_UNDER_TEST
+            }
             val el = KqueueEventLoop(logger, syscallOps = fake)
             val callerThreadId = currentThreadId()
             try {
@@ -148,7 +154,10 @@ class KqueueEventLoopFunnelSeamTest {
     @Test
     fun `in-EventLoop registerCallback runs addFilter inline on the EventLoop thread`() = runBlocking {
         withTimeout(FUNNEL_BUDGET) {
-            val fake = FakeKqueueSyscallOps().apply { liveMode = true; watchedFd = FD_UNDER_TEST }
+            val fake = FakeKqueueSyscallOps().apply {
+                liveMode = true
+                watchedFd = FD_UNDER_TEST
+            }
             val el = KqueueEventLoop(logger, syscallOps = fake)
             val taskThreadId = AtomicLong(0L)
             try {

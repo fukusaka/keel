@@ -25,7 +25,10 @@ class ReferenceCountUtilTest {
     fun `safeRelease calls release on Releasable`() {
         var released = false
         val releasable = object : Releasable {
-            override fun release(): Boolean { released = true; return true }
+            override fun release(): Boolean {
+                released = true
+                return true
+            }
         }
         ReferenceCountUtil.safeRelease(releasable)
         assertTrue(released, "expected release() to be called on Releasable")

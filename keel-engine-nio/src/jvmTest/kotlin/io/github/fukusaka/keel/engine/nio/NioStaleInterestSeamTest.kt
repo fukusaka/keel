@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
+import kotlinx.coroutines.runBlocking
 import java.nio.ByteBuffer
 import java.nio.channels.Pipe
 import java.nio.channels.SelectionKey
@@ -15,7 +16,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
-import kotlinx.coroutines.runBlocking
 
 /**
  * Red-Green regression test for `NioEventLoop.processReadyKey`'s
@@ -69,10 +69,13 @@ class NioStaleInterestSeamTest {
         // fault-injection setup missed its window.
         val callbackRan = AtomicInteger(0)
         val armLatch = CountDownLatch(1)
-        loop.dispatch(EmptyCoroutineContext, Runnable {
-            loop.setInterestCallback(key, SelectionKey.OP_READ, Runnable { callbackRan.incrementAndGet() })
-            armLatch.countDown()
-        })
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                loop.setInterestCallback(key, SelectionKey.OP_READ, Runnable { callbackRan.incrementAndGet() })
+                armLatch.countDown()
+            },
+        )
         if (!armLatch.await(IO_OP_SHORT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             fail("arm dispatched task did not run within timeout")
         }
@@ -83,11 +86,14 @@ class NioStaleInterestSeamTest {
         // interest bit is left set, mimicking a hypothetical bug where a
         // slot is cleared without also clearing its interest.
         val faultLatch = CountDownLatch(1)
-        loop.dispatch(EmptyCoroutineContext, Runnable {
-            val callbacks = key.attachment() as NioEventLoop.KeyCallbacks
-            callbacks.readCallback = null
-            faultLatch.countDown()
-        })
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val callbacks = key.attachment() as NioEventLoop.KeyCallbacks
+                callbacks.readCallback = null
+                faultLatch.countDown()
+            },
+        )
         if (!faultLatch.await(IO_OP_SHORT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             fail("fault-injection dispatched task did not run within timeout")
         }
@@ -114,10 +120,13 @@ class NioStaleInterestSeamTest {
         // read on the EL thread since interestOps is unsynchronised.
         val interestAfter = AtomicInteger(-1)
         val readbackLatch = CountDownLatch(1)
-        loop.dispatch(EmptyCoroutineContext, Runnable {
-            interestAfter.set(key.interestOps())
-            readbackLatch.countDown()
-        })
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                interestAfter.set(key.interestOps())
+                readbackLatch.countDown()
+            },
+        )
         if (!readbackLatch.await(IO_OP_SHORT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             fail("readback dispatched task did not run within timeout")
         }

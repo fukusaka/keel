@@ -92,7 +92,8 @@ class IoUringEventLoopCallbackGuardSeamTest {
     fun `a throwing deferred re-arm does not skip the remaining starved re-arms`() {
         val fake = FakeIoUringRing()
         val el = IoUringEventLoop(logger, syscallOps = FakeIoUringSyscallOps(), ioUringRing = fake)
-        val ring = ProvidedBufferRing(el, logger, bufferCount = 4, bufferSize = 64, bgid = 0, FakeIoUringBufferRingOps())
+        val ring =
+            ProvidedBufferRing(el, logger, bufferCount = 4, bufferSize = 64, bgid = 0, FakeIoUringBufferRingOps())
         try {
             ring.initOnEventLoop()
             var secondRearmed = 0

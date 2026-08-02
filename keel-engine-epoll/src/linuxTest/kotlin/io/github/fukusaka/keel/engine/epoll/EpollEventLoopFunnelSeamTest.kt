@@ -82,7 +82,10 @@ class EpollEventLoopFunnelSeamTest {
     @Test
     fun `a registration made before the loop starts is queued rather than run on the caller`() = runBlocking {
         withTimeout(FUNNEL_BUDGET) {
-            val fake = FakeEpollSyscallOps().apply { liveMode = true; watchedFd = FD_UNDER_TEST }
+            val fake = FakeEpollSyscallOps().apply {
+                liveMode = true
+                watchedFd = FD_UNDER_TEST
+            }
             val el = EpollEventLoop(logger, syscallOps = fake)
             val callerThread = pthread_self()
             try {
@@ -118,7 +121,10 @@ class EpollEventLoopFunnelSeamTest {
     @Test
     fun `cross-thread registerCallback funnels epoll_ctl to the EventLoop thread`() = runBlocking {
         withTimeout(FUNNEL_BUDGET) {
-            val fake = FakeEpollSyscallOps().apply { liveMode = true; watchedFd = FD_UNDER_TEST }
+            val fake = FakeEpollSyscallOps().apply {
+                liveMode = true
+                watchedFd = FD_UNDER_TEST
+            }
             val el = EpollEventLoop(logger, syscallOps = fake)
             val callerThread = pthread_self()
             try {
@@ -155,7 +161,10 @@ class EpollEventLoopFunnelSeamTest {
     @Test
     fun `in-EventLoop registerCallback runs epoll_ctl inline on the EventLoop thread`() = runBlocking {
         withTimeout(FUNNEL_BUDGET) {
-            val fake = FakeEpollSyscallOps().apply { liveMode = true; watchedFd = FD_UNDER_TEST }
+            val fake = FakeEpollSyscallOps().apply {
+                liveMode = true
+                watchedFd = FD_UNDER_TEST
+            }
             val el = EpollEventLoop(logger, syscallOps = fake)
             val inlineMatch = AtomicInt(-1)
             try {

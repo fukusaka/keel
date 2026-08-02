@@ -11,6 +11,10 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.writeFully
 import io.ktor.utils.io.writeStringUtf8
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -24,10 +28,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 /**
  * Integration tests for the `KeelCio` factory — `embeddedServer(KeelCio)` driving
@@ -364,7 +364,8 @@ class KeelCioEngineTest {
         server.start(wait = false)
         try {
             val port = runBlocking {
-                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                withTimeout(15.seconds) {
+                    server.engine.resolvedConnectors().first().port
                 }
             }
             block(port)

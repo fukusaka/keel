@@ -1,10 +1,10 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import platform.posix.getpid
 import kotlin.concurrent.AtomicReference
-import io.github.fukusaka.keel.logging.Logger
-import io.github.fukusaka.keel.logging.LogLevel
 
 /**
  * Shared helpers + constants for the categorised `IoUringEngine*Test` files.
@@ -29,9 +29,11 @@ import io.github.fukusaka.keel.logging.LogLevel
 // hang (normal latency on loopback is <10ms) but long enough not to
 // flake on CI runners under load.
 internal const val IO_OP_TIMEOUT_MS = 5_000L
+
 // Shorter variant for ops expected to complete quickly on the happy
 // path (e.g. a read that should already have data queued).
 internal const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
+
 // Hang-detection bound for dispatch-await regression tests: if the EL
 // has not processed a cross-thread dispatch within this window the test
 // is treated as a deadlock regression. The healthy path completes in

@@ -1,19 +1,19 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
-import kotlin.concurrent.atomics.AtomicInt
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
-import kotlin.test.Ignore
-import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.darwin.DISPATCH_QUEUE_CONCURRENT
+import platform.darwin.DISPATCH_TIME_FOREVER
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_group_create
 import platform.darwin.dispatch_group_enter
 import platform.darwin.dispatch_group_leave
 import platform.darwin.dispatch_group_wait
 import platform.darwin.dispatch_queue_create
-import platform.darwin.DISPATCH_TIME_FOREVER
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.test.Ignore
+import kotlin.test.Test
+import kotlin.test.assertEquals
 
 /**
  * Synthetic verification: does Kotlin/Native honour Grand Central Dispatch's

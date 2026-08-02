@@ -2,19 +2,12 @@
 
 package io.github.fukusaka.keel.engine.iouring
 
-
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io_uring.io_uring_prep_read
-import kotlin.coroutines.EmptyCoroutineContext
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.reinterpret
@@ -33,6 +26,12 @@ import kotlinx.coroutines.withTimeout
 import platform.posix.close
 import platform.posix.pipe
 import platform.posix.write
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class IoUringEngineUringSpecificTest {
@@ -101,7 +100,10 @@ class IoUringEngineUringSpecificTest {
             readJobs.joinAll()
         }
 
-        for (i in 0 until n) { close(readFds[i]); close(writeFds[i]) }
+        for (i in 0 until n) {
+            close(readFds[i])
+            close(writeFds[i])
+        }
         for (buf in readBufs) buf.release()
         loop.close()
     }
@@ -356,5 +358,4 @@ class IoUringEngineUringSpecificTest {
         server.close()
         engine.close()
     }
-
 }

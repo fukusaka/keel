@@ -2,11 +2,14 @@ package io.github.fukusaka.keel.engine.iouring
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
@@ -15,15 +18,12 @@ import platform.posix.EPIPE
 import platform.posix.SOCK_STREAM
 import platform.posix.close
 import platform.posix.socket
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
-import kotlinx.coroutines.Runnable
-import kotlin.coroutines.EmptyCoroutineContext
-import kotlinx.coroutines.CompletableDeferred
-import io.github.fukusaka.keel.logging.LogLevel
 
 /**
  * Seam-level unit tests for [IoUringIoTransport] — synchronous

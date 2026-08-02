@@ -1,21 +1,20 @@
 package io.github.fukusaka.keel.engine.iouring
 
-
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.UnixSocketAddress
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
 import platform.posix.unlink
 import platform.posix.write
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 // getaddrinfo() is a blocking, non-cancellable syscall, so withTimeout cannot
 // interrupt it — the budget must exceed the system resolver's worst-case failure
@@ -259,5 +258,4 @@ class IoUringEngineLifecycleTest {
             engine.close()
         }
     }
-
 }

@@ -55,7 +55,10 @@ class HttpHeadersCharSequenceLookupTest {
             add("Accept-Language", "en-US,en;q=0.9")
         }
         try {
-            val builder = StringBuilder().apply { append("Accept-"); append("Language") }
+            val builder = StringBuilder().apply {
+                append("Accept-")
+                append("Language")
+            }
             assertEquals("en-US,en;q=0.9", headers.getString(builder))
             assertTrue(builder in headers)
         } finally {

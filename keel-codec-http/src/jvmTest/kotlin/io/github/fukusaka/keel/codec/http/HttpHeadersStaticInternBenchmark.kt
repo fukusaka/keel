@@ -82,7 +82,10 @@ class HttpHeadersStaticInternBenchmark {
         // Browser-original (10) — most have unique values
         h.add("Host", "api.example.com")
         h.add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/605.1.15")
-        h.add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7") // INTERN HIT
+        // Named because wrapping would put the literal on its own indented line, past the cap.
+        val browserAccept = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif," +
+            "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+        h.add("Accept", browserAccept) // INTERN HIT
         h.add("Accept-Language", "en-US,en;q=0.9")
         h.add("Accept-Encoding", "gzip, deflate, br") // INTERN HIT
         h.add("Connection", "keep-alive") // INTERN HIT

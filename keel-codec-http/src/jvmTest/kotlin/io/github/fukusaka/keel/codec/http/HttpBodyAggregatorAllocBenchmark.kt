@@ -77,7 +77,11 @@ class HttpBodyAggregatorAllocBenchmark {
 
         println(
             "HBA-ALLOC perAgg=%.0f heap-bytes (body=%dB in %d x %dB chunks, iters=%d)".format(
-                perAggregation, BODY_SIZE, CHUNK_COUNT, CHUNK_SIZE, ITERATIONS,
+                perAggregation,
+                BODY_SIZE,
+                CHUNK_COUNT,
+                CHUNK_SIZE,
+                ITERATIONS,
             ),
         )
     }

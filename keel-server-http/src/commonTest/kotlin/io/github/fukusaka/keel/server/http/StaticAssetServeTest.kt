@@ -80,7 +80,11 @@ class StaticAssetServeTest {
         router.register(HttpMethod.GET, "/assets/*") { call -> handler.handle(call) }
         router.register(HttpMethod.HEAD, "/assets/*") { call -> handler.handle(call) }
         channel.installHttpServerPipeline(
-            router, emptyList(), ErrorHandlers.DEFAULT, QueryParameterConfig.DEFAULT, scope,
+            router,
+            emptyList(),
+            ErrorHandlers.DEFAULT,
+            QueryParameterConfig.DEFAULT,
+            scope,
         )
     }
 
@@ -392,7 +396,8 @@ class StaticAssetServeTest {
         installStaticFiles()
 
         feed(
-            "GET", "/assets/data.txt",
+            "GET",
+            "/assets/data.txt",
             "If-Range: Sun, 06 Nov 1994 08:49:37 GMT\r\nRange: bytes=0-3\r\n",
         )
 

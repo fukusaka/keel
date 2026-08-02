@@ -10,13 +10,13 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
+import platform.posix.pthread_create
+import platform.posix.pthread_join
+import platform.posix.pthread_tVar
 import kotlin.concurrent.atomics.AtomicLong
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
-import platform.posix.pthread_create
-import platform.posix.pthread_join
-import platform.posix.pthread_tVar
 
 /**
  * Verifies the Native sharded-return path: a cross-thread release (refcount
@@ -230,7 +230,8 @@ class CrossThreadReturnQueueTest {
         churnAllocReleaseOnWorkers(allocator, CHURN_WORKERS, CHURN_ITERS)
         allocator.close() // drains the MPSC + pool, settling every outstanding release
         assertEquals(
-            allocated.load(), released.load(),
+            allocated.load(),
+            released.load(),
             "every allocated buffer must fire onReleased exactly once — a lost or double buffer signals drain-scratch corruption",
         )
     }
@@ -259,12 +260,14 @@ class CrossThreadReturnQueueTest {
                 // an emitted one is freed here — every buffer accounted for once.
                 for (i in bufs.indices) {
                     assertEquals(
-                        accepted[i], bufs[i] in drained,
+                        accepted[i],
+                        bufs[i] in drained,
                         "buffer $i: emitted-by-close iff its offer was accepted",
                     )
                 }
                 assertEquals(
-                    RACE_BUFFERS, drained.size + accepted.count { !it },
+                    RACE_BUFFERS,
+                    drained.size + accepted.count { !it },
                     "every buffer emitted xor rejected — no strand, no double-free",
                 )
                 for (b in drained) (b as NativeIoBuf).close()
@@ -285,7 +288,8 @@ class CrossThreadReturnQueueTest {
             for (i in bufs.indices) {
                 val ref = StableRef.create(OfferArg(q, bufs[i], accepted, i))
                 val rc = pthread_create(
-                    threadPtrs[i].ptr, null,
+                    threadPtrs[i].ptr,
+                    null,
                     staticCFunction { arg ->
                         val a = arg!!.asStableRef<OfferArg>().get()
                         val won = a.q.offer(a.buf)
@@ -341,7 +345,8 @@ class CrossThreadReturnQueueTest {
             for (w in 0 until workers) {
                 val ref = StableRef.create(ChurnArg(allocator, iters))
                 val rc = pthread_create(
-                    threadPtrs[w].ptr, null,
+                    threadPtrs[w].ptr,
+                    null,
                     staticCFunction { arg ->
                         val a = arg!!.asStableRef<ChurnArg>().get()
                         repeat(a.iters) { a.allocator.allocate(CLASS).release() }
@@ -365,7 +370,8 @@ class CrossThreadReturnQueueTest {
             val threadPtr = arena.alloc<pthread_tVar>()
             val ref = StableRef.create(bufs)
             val rc = pthread_create(
-                threadPtr.ptr, null,
+                threadPtr.ptr,
+                null,
                 staticCFunction { arg ->
                     val held = arg!!.asStableRef<List<IoBuf>>().get()
                     for (b in held) b.release()

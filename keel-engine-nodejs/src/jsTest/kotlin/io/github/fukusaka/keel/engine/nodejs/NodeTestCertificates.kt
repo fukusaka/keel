@@ -28,7 +28,7 @@ dA0v0c6TRwAZKuG5BIzAh9r94fM0NzYvaYamE+/WIm6orpjzUELVKjVebvmAWkN0
 DckJ9HFnEw1KPYC/9e7a1JUrkfMgCFcgIdRGQA/qMHISUzQND9Zs/ZnPvhaf+x7N
 wIy8X6kST+S43rMGiQ==
 -----END CERTIFICATE-----
-""".trimIndent() + "\n"
+    """.trimIndent() + "\n"
 
     val SERVER_KEY: String = """
 -----BEGIN PRIVATE KEY-----
@@ -59,7 +59,7 @@ yGIdCqVeuv9SC0duPplXUVQwuYkLDZaIASA8goes6f5UiFEkE8TXYAKTitNUQqob
 s0/JN9iAF2/A2ct6J46JuRo8bxt+LdZY2znb8weICRpxx7/Sf+lswHA7OiUJT8UG
 XDEgg9dRd2akza/XK5Hj
 -----END PRIVATE KEY-----
-""".trimIndent() + "\n"
+    """.trimIndent() + "\n"
 
     val CLIENT_CA_CERT: String = """
 -----BEGIN CERTIFICATE-----
@@ -81,7 +81,7 @@ sRvtg6+FkAt/W3iR8aJ9rQddvLnM5tYK8xSd/GiE3XS6XOpImgcierzIgZaaDCif
 c+2EM1rwl0DuKVcfOjOLlwSk9rYPwoZSphhCV2xKs8gEAP7wrJ9Coe/5u0mEdeo1
 F1n/hcr7SImvdjcT85WEDf/dfkBK9dvTRZN+DFC5s3Zg
 -----END CERTIFICATE-----
-""".trimIndent() + "\n"
+    """.trimIndent() + "\n"
 
     val CLIENT_CERT: String = """
 -----BEGIN CERTIFICATE-----
@@ -103,7 +103,7 @@ PDadoQXSTtYBP5CB6W9KHjMUE8UKLjovWg1vvCKGi0vsN0hJlL89ZWxkCEbVELUC
 en4mee+VvtzJB0RVu3cLIH6bte2aO+rQsxDO3sjJ4ythZvWV0tiQLZO4zs8YOcyx
 6yH5pLwn6/CJsR99JQ==
 -----END CERTIFICATE-----
-""".trimIndent() + "\n"
+    """.trimIndent() + "\n"
 
     val CLIENT_KEY: String = """
 -----BEGIN PRIVATE KEY-----
@@ -134,5 +134,5 @@ nHC2R7cVDjdJjz4lWUOrhaYAFh+vwvu/dSkWVPMhB7NhcmDW3HGK6iqKb7ZXqQ3A
 JTcPZjukAqrn3BFvs5JCyfqdN1iRCJ1UIv4UgGlZf0Cyc2Q/w4L/FCsFaLVRB4AV
 BMQUaN68Zpzysj1HXecj
 -----END PRIVATE KEY-----
-""".trimIndent() + "\n"
+    """.trimIndent() + "\n"
 }

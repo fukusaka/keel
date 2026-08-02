@@ -86,7 +86,8 @@ class NettySslInstallerTlsConfigTest {
         assertTrue(serverCh.sslHandler().handshakeFuture().isSuccess, "server handshake must complete")
         assertTrue(clientCh.sslHandler().handshakeFuture().isSuccess, "client handshake must complete")
 
-        clientCh.close(); serverCh.close()
+        clientCh.close()
+        serverCh.close()
     }
 
     // --- alpnProtocols ---
@@ -123,7 +124,8 @@ class NettySslInstallerTlsConfigTest {
             "server must negotiate the shared ALPN protocol — before this fix alpnProtocols was dropped",
         )
 
-        clientCh.close(); serverCh.close()
+        clientCh.close()
+        serverCh.close()
     }
 
     // --- minVersion / maxVersion ---
@@ -155,7 +157,8 @@ class NettySslInstallerTlsConfigTest {
             "server must reject a TLS 1.2 client when minVersion = TLS 1.3",
         )
 
-        clientCh.close(); serverCh.close()
+        clientCh.close()
+        serverCh.close()
     }
 
     // --- verifyMode (mTLS) ---
@@ -185,7 +188,8 @@ class NettySslInstallerTlsConfigTest {
             "server must reject an anonymous client when verifyMode = REQUIRED",
         )
 
-        clientCh.close(); serverCh.close()
+        clientCh.close()
+        serverCh.close()
     }
 
     @Test
@@ -212,7 +216,8 @@ class NettySslInstallerTlsConfigTest {
         assertTrue(serverCh.sslHandler().handshakeFuture().isSuccess)
         assertTrue(clientCh.sslHandler().handshakeFuture().isSuccess)
 
-        clientCh.close(); serverCh.close()
+        clientCh.close()
+        serverCh.close()
     }
 
     // --- trustAnchors scope ---
@@ -250,7 +255,8 @@ class NettySslInstallerTlsConfigTest {
             "server must reject a client cert rooted elsewhere",
         )
 
-        clientCh.close(); serverCh.close()
+        clientCh.close()
+        serverCh.close()
     }
 
     // --- KeyStoreFile cert × mTLS (the `forServer(KeyManagerFactory)` +
@@ -287,7 +293,8 @@ class NettySslInstallerTlsConfigTest {
         )
         assertTrue(clientCh.sslHandler().handshakeFuture().isSuccess)
 
-        clientCh.close(); serverCh.close()
+        clientCh.close()
+        serverCh.close()
     }
 
     @Test
@@ -323,7 +330,8 @@ class NettySslInstallerTlsConfigTest {
             "KeyStoreFile-loaded server must still reject an anonymous client under REQUIRED",
         )
 
-        clientCh.close(); serverCh.close()
+        clientCh.close()
+        serverCh.close()
     }
 
     // --- helpers ---

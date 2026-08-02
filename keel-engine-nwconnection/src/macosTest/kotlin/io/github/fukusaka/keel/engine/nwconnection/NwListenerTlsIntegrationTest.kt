@@ -39,8 +39,6 @@ import platform.posix.pipe
 import platform.posix.read
 import platform.posix.usleep
 import platform.posix.waitpid
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -164,7 +162,12 @@ class NwListenerTlsIntegrationTest {
                 ),
             ) { port ->
                 val (exit, _) = curl(
-                    "-k", "-s", "--max-time", "5", "--connect-timeout", "3",
+                    "-k",
+                    "-s",
+                    "--max-time",
+                    "5",
+                    "--connect-timeout",
+                    "3",
                     "https://localhost:$port/hello",
                 )
                 assertNotEquals(0, exit, "REQUIRED server must reject an anonymous curl client")
@@ -190,7 +193,11 @@ class NwListenerTlsIntegrationTest {
                     "-w", "\n%{http_code}",
                     "https://localhost:$port/hello",
                 )
-                assertEquals(0, exit, "REQUIRED server must accept a client with a cert signed by the trust anchor (output=$out)")
+                assertEquals(
+                    0,
+                    exit,
+                    "REQUIRED server must accept a client with a cert signed by the trust anchor (output=$out)",
+                )
                 assertTrue(out.contains("200"), "response must be 200 (output=$out)")
             }
         }
@@ -206,7 +213,8 @@ class NwListenerTlsIntegrationTest {
         try {
             val response = HttpResponse.ok("Hello, NW!", contentType = "text/plain")
             val server = engine.bindPipeline(
-                "127.0.0.1", 0,
+                "127.0.0.1",
+                0,
                 config = TlsServerConfig(config, installer = null),
             ) { channel ->
                 channel.pipeline.addLast("encoder", HttpResponseEncoder())
@@ -295,14 +303,22 @@ class NwListenerTlsIntegrationTest {
 
     private fun writeTemp(nameHint: String, contents: String): String {
         val path = "/tmp/keel-nw-tls-$nameHint-${platform.posix.getpid()}.pem"
-        val fd = platform.posix.open(path, platform.posix.O_WRONLY or platform.posix.O_CREAT or platform.posix.O_TRUNC, 0x180u /* 0600 */)
+        val fd = platform.posix.open(
+            path,
+            platform.posix.O_WRONLY or platform.posix.O_CREAT or platform.posix.O_TRUNC,
+            0x180u, /* 0600 */
+        )
         check(fd >= 0) { "open($path) failed" }
         try {
             val bytes = contents.encodeToByteArray()
             bytes.usePinned { pinned ->
                 var written = 0
                 while (written < bytes.size) {
-                    val n = platform.posix.write(fd, pinned.addressOf(written), (bytes.size - written).convert()).toInt()
+                    val n = platform.posix.write(
+                        fd,
+                        pinned.addressOf(written),
+                        (bytes.size - written).convert(),
+                    ).toInt()
                     if (n <= 0) error("write($path) failed")
                     written += n
                 }

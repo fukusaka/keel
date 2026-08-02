@@ -104,7 +104,9 @@ class NodeEngineIdleTimeoutTest {
     }
 
     @Test
-    fun `a slow-read client is closed by the write idle timeout while reads stay active`() = runTest(timeout = 25.seconds) {
+    fun `a slow-read client is closed by the write idle timeout while reads stay active`() = runTest(
+        timeout = 25.seconds,
+    ) {
         val engine = NodeEngine(IoEngineConfig(threads = 1, idleTimeoutMillis = IDLE_MS))
         val closed = CompletableDeferred<Unit>()
         val server = engine.bindPipeline("127.0.0.1", SLOW_READ_PORT) { channel ->
@@ -163,10 +165,17 @@ class NodeEngineIdleTimeoutTest {
         return suspendCancellableCoroutine { cont ->
             var done = false
             val timer = setTimeout({
-                if (!done) { done = true; cont.resume(false) }
+                if (!done) {
+                    done = true
+                    cont.resume(false)
+                }
             }, timeoutMs)
             sock.on("close") { _: dynamic ->
-                if (!done) { done = true; clearTimeout(timer); cont.resume(true) }
+                if (!done) {
+                    done = true
+                    clearTimeout(timer)
+                    cont.resume(true)
+                }
             }
             cont.invokeOnCancellation { clearTimeout(timer) }
         }

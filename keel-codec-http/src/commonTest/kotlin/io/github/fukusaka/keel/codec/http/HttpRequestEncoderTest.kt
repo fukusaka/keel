@@ -392,9 +392,9 @@ class HttpRequestEncoderTest {
         pipeline.requestWrite(
             HttpRequestHead(HttpMethod.POST, "/chunks", headers = HttpHeaders.of("Transfer-Encoding" to "chunked")),
         )
-        pipeline.requestWrite(HttpBody(bufOf("aa")))     // "2\r\n" + "aa" + "\r\n"
-        pipeline.requestWrite(HttpBody(bufOf("bbbb")))   // "4\r\n" + "bbbb" + "\r\n"
-        pipeline.requestWrite(HttpBodyEnd.EMPTY)         // "0\r\n\r\n"
+        pipeline.requestWrite(HttpBody(bufOf("aa"))) // "2\r\n" + "aa" + "\r\n"
+        pipeline.requestWrite(HttpBody(bufOf("bbbb"))) // "4\r\n" + "bbbb" + "\r\n"
+        pipeline.requestWrite(HttpBodyEnd.EMPTY) // "0\r\n\r\n"
 
         assertEquals(
             "POST /chunks HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n" +

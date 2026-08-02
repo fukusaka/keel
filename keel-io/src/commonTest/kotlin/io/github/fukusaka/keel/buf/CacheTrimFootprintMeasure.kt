@@ -60,6 +60,9 @@ class CacheTrimFootprintMeasure {
         // resident set down to the warm reserve while a no-trim run stays elevated.
         assertTrue(peakB >= 2, "burst should span multiple chunks (was $peakB)")
         assertTrue(afterTrim < idleNoTrim, "trim should reclaim idle chunks ($afterTrim !< $idleNoTrim)")
-        assertTrue(afterTrim <= PooledAllocator.WARM_RESERVE + 1, "trim should approach the warm reserve (was $afterTrim)")
+        assertTrue(
+            afterTrim <= PooledAllocator.WARM_RESERVE + 1,
+            "trim should approach the warm reserve (was $afterTrim)",
+        )
     }
 }

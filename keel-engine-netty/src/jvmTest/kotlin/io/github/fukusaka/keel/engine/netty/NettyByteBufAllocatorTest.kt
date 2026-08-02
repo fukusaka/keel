@@ -92,7 +92,8 @@ class NettyByteBufAllocatorTest {
         val out = ByteArray(4)
         slice.readByteArray(out, 0, 4)
         assertEquals(listOf(30.toByte(), 40.toByte(), 50.toByte(), 60.toByte()), out.toList())
-        src.release(); slice.release()
+        src.release()
+        slice.release()
     }
 
     @Test

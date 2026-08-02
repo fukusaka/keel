@@ -14,7 +14,6 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-
 /**
  * Pins that [EncoderSession.finish] does not falsely return `FINISHED`
  * before the gzip trailer (CRC32 + ISIZE, 8 bytes) has been fully
@@ -120,7 +119,10 @@ class GzipFinishBoundaryTest {
                 while (true) {
                     when (encoder.update(input, warmOut)) {
                         CodecStatus.NEED_OUTPUT -> drainAll(warmOut, collected)
-                        CodecStatus.NEED_INPUT -> { drainAll(warmOut, collected); break }
+                        CodecStatus.NEED_INPUT -> {
+                            drainAll(warmOut, collected)
+                            break
+                        }
                         CodecStatus.FINISHED -> error("update must not return FINISHED")
                     }
                 }
@@ -137,7 +139,10 @@ class GzipFinishBoundaryTest {
                 val status = encoder.finish(oneByteOut)
                 drainAll(oneByteOut, collected)
                 finishCalls++
-                if (status == CodecStatus.FINISHED) { finished = true; break }
+                if (status == CodecStatus.FINISHED) {
+                    finished = true
+                    break
+                }
                 assertEquals(
                     CodecStatus.NEED_OUTPUT,
                     status,
@@ -201,7 +206,10 @@ class GzipFinishBoundaryTest {
             while (true) {
                 when (encoder.update(input, warmOut)) {
                     CodecStatus.NEED_OUTPUT -> drainAll(warmOut, collected)
-                    CodecStatus.NEED_INPUT -> { drainAll(warmOut, collected); break }
+                    CodecStatus.NEED_INPUT -> {
+                        drainAll(warmOut, collected)
+                        break
+                    }
                     CodecStatus.FINISHED -> error("update must not return FINISHED")
                 }
             }
@@ -222,7 +230,10 @@ class GzipFinishBoundaryTest {
                 val status = encoder.finish(oneByteOut)
                 drainAll(oneByteOut, collected)
                 finishCalls++
-                if (status == CodecStatus.FINISHED) { finished = true; break }
+                if (status == CodecStatus.FINISHED) {
+                    finished = true
+                    break
+                }
                 assertEquals(
                     CodecStatus.NEED_OUTPUT,
                     status,
@@ -261,7 +272,10 @@ class GzipFinishBoundaryTest {
             while (true) {
                 when (decoder.update(src, out)) {
                     CodecStatus.NEED_OUTPUT -> drainAll(out, sink)
-                    CodecStatus.NEED_INPUT -> { drainAll(out, sink); break }
+                    CodecStatus.NEED_INPUT -> {
+                        drainAll(out, sink)
+                        break
+                    }
                     CodecStatus.FINISHED -> error("update must not return FINISHED on decode")
                 }
             }
@@ -272,7 +286,9 @@ class GzipFinishBoundaryTest {
                 if (status == CodecStatus.FINISHED) break
             }
         } finally {
-            src.release(); out.release(); decoder.close()
+            src.release()
+            out.release()
+            decoder.close()
         }
         return ByteArray(sink.size) { sink[it] }
     }

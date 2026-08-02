@@ -135,9 +135,15 @@ class FreelistContendedBenchmark {
         var guard = 0
         while (true) {
             val node = freelist.pop() ?: break
-            if (guard++ > poolNodes * 4) { corrupt = true; break }
+            if (guard++ > poolNodes * 4) {
+                corrupt = true
+                break
+            }
             val id = node.id
-            if (id < 0 || id >= poolNodes || seen[id]) { corrupt = true; break }
+            if (id < 0 || id >= poolNodes || seen[id]) {
+                corrupt = true
+                break
+            }
             seen[id] = true
             drained++
         }

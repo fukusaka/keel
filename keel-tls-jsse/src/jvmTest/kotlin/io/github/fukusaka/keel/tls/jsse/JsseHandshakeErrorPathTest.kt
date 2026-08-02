@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.tls.jsse
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.tls.TlsCertificateSource
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsConfig
@@ -135,7 +134,11 @@ class JsseHandshakeErrorPathTest {
             TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.NONE, minVersion = TlsVersion.TLS1_3),
         )
         val client = factory.createClientCodec(
-            TlsConfig(trustAnchors = TlsTrustSource.InsecureTrustAll, verifyMode = TlsVerifyMode.NONE, maxVersion = TlsVersion.TLS1_2),
+            TlsConfig(
+                trustAnchors = TlsTrustSource.InsecureTrustAll,
+                verifyMode = TlsVerifyMode.NONE,
+                maxVersion = TlsVersion.TLS1_2,
+            ),
         )
 
         assertFailsWith<TlsException>("non-overlapping version ranges must abort the handshake") {
@@ -168,5 +171,4 @@ class JsseHandshakeErrorPathTest {
         client.close()
         server.close()
     }
-
 }

@@ -3,8 +3,8 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.PosixRawClient
-import kotlin.concurrent.AtomicReference
 import platform.posix.getpid
+import kotlin.concurrent.AtomicReference
 
 /**
  * Shared helpers + constants for the categorised `KqueueEngine*Test` files.

@@ -4,15 +4,13 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.buf.createDefaultIoBuf
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 class BufferedSuspendSourceTest {
 
@@ -107,7 +105,7 @@ class BufferedSuspendSourceTest {
         val dest = ByteArray(10)
         assertEquals(-1, source.readAtMostTo(dest, 0, 10))
         source.close()
-        }
+    }
 
     // ============================================================
     // Pull-mode: buffer boundary tests
@@ -158,7 +156,7 @@ class BufferedSuspendSourceTest {
         val result = source.readByteArray(100)
         assertEquals(data, result.decodeToString())
         source.close()
-        }
+    }
 
     // ============================================================
     // Push-mode tests

@@ -117,7 +117,11 @@ class RingOccupancyPressureMeasure {
                         for (fd in fds) PosixRawClient.rawWrite(fd, "x")
                         for (fd in fds) {
                             val ackByte = PosixRawClient.rawRead(fd, 1)
-                            assertEquals(ACK.toInt().toChar().toString(), ackByte, "every round must complete (no stall)")
+                            assertEquals(
+                                ACK.toInt().toChar().toString(),
+                                ackByte,
+                                "every round must complete (no stall)",
+                            )
                         }
                     }
                 }

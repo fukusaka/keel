@@ -51,7 +51,10 @@ class PendingWriteSnapshotPoolTest {
         val snapshot = pool.borrow(source(1, 2, 3))
         pool.recycle(snapshot)
 
-        assertTrue(snapshot.isEmpty(), "recycle must clear the list's contents immediately, not defer to the next borrow")
+        assertTrue(
+            snapshot.isEmpty(),
+            "recycle must clear the list's contents immediately, not defer to the next borrow",
+        )
     }
 
     @Test

@@ -41,7 +41,8 @@ class NioEngineResourceTest {
         engine.close()
 
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
@@ -79,7 +80,8 @@ class NioEngineResourceTest {
         engine.close()
 
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
@@ -109,9 +111,9 @@ class NioEngineResourceTest {
         engine.close()
 
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
-
 }

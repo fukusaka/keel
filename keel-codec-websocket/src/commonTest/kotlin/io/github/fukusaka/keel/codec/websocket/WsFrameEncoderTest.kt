@@ -179,7 +179,10 @@ class WsFrameEncoderTest {
     fun `close frame with code encodes correctly`() {
         val pipeline = createPipeline()
         // Close frame payload starts with 2-byte close code.
-        val payload = byteArrayOf(((WsCloseCode.NORMAL_CLOSURE.code shr 8) and 0xFF).toByte(), (WsCloseCode.NORMAL_CLOSURE.code and 0xFF).toByte())
+        val payload = byteArrayOf(
+            ((WsCloseCode.NORMAL_CLOSURE.code shr 8) and 0xFF).toByte(),
+            (WsCloseCode.NORMAL_CLOSURE.code and 0xFF).toByte(),
+        )
         val frame = WsFrame(fin = true, opcode = WsOpcode.CLOSE, payload = payload)
         pipeline.requestWrite(frame)
 

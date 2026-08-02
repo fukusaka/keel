@@ -1,16 +1,14 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 class NodeEngineReadWriteTest {
 
@@ -330,5 +328,4 @@ class NodeEngineReadWriteTest {
         server.close()
         engine.close()
     }
-
 }

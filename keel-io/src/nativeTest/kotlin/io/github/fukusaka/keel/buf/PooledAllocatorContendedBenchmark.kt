@@ -1,9 +1,5 @@
 package io.github.fukusaka.keel.buf
 
-import kotlin.concurrent.AtomicInt
-import kotlin.test.Ignore
-import kotlin.test.Test
-import kotlin.time.TimeSource
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -15,6 +11,10 @@ import kotlinx.cinterop.staticCFunction
 import platform.posix.pthread_create
 import platform.posix.pthread_join
 import platform.posix.pthread_tVar
+import kotlin.concurrent.AtomicInt
+import kotlin.test.Ignore
+import kotlin.test.Test
+import kotlin.time.TimeSource
 
 /**
  * Native counterpart of the JVM `PooledAllocatorContendedBenchmark`. Drives N

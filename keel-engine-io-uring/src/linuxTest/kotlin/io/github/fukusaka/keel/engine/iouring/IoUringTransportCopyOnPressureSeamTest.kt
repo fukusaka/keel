@@ -38,7 +38,8 @@ class IoUringTransportCopyOnPressureSeamTest {
      */
     private fun withTransport(
         bufferCount: Int = 8,
-        block: (FakeIoUringRing, FakeIoUringBufferRingOps, IoUringEventLoop, ProvidedBufferRing, IoUringIoTransport) -> Unit,
+        block:
+        (FakeIoUringRing, FakeIoUringBufferRingOps, IoUringEventLoop, ProvidedBufferRing, IoUringIoTransport) -> Unit,
     ) {
         val fake = FakeIoUringRing()
         val bufRingFake = FakeIoUringBufferRingOps()
@@ -136,7 +137,11 @@ class IoUringTransportCopyOnPressureSeamTest {
             // Releasing the delivered copy is an allocator release — it must
             // not return any ring slot a second time.
             buf.release()
-            assertEquals(addsBefore + 1, bufRingFake.addCalls.size, "the consumer release touches the allocator, not the ring")
+            assertEquals(
+                addsBefore + 1,
+                bufRingFake.addCalls.size,
+                "the consumer release touches the allocator, not the ring",
+            )
         }
     }
 

@@ -67,10 +67,10 @@ class HttpPipelineIntegrationTest {
         pipeline.notifyRead(
             bufOf(
                 "POST /echo HTTP/1.1\r\n" +
-                "Host: localhost\r\n" +
-                "Content-Length: 11\r\n" +
-                "\r\n" +
-                "hello world",
+                    "Host: localhost\r\n" +
+                    "Content-Length: 11\r\n" +
+                    "\r\n" +
+                    "hello world",
             ),
         )
 
@@ -89,13 +89,13 @@ class HttpPipelineIntegrationTest {
         pipeline.notifyRead(
             bufOf(
                 "POST /echo HTTP/1.1\r\n" +
-                "Host: localhost\r\n" +
-                "Transfer-Encoding: chunked\r\n" +
-                "\r\n" +
-                "5\r\nhello\r\n" +
-                "6\r\n world\r\n" +
-                "0\r\n" +
-                "\r\n",
+                    "Host: localhost\r\n" +
+                    "Transfer-Encoding: chunked\r\n" +
+                    "\r\n" +
+                    "5\r\nhello\r\n" +
+                    "6\r\n world\r\n" +
+                    "0\r\n" +
+                    "\r\n",
             ),
         )
 

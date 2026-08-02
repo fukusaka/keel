@@ -1,16 +1,14 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-
 import io.github.fukusaka.keel.core.InetSocketAddress
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.yield
 
 class NodeEngineConcurrencyTest {
 
@@ -57,5 +55,4 @@ class NodeEngineConcurrencyTest {
         server.close()
         engine.close()
     }
-
 }

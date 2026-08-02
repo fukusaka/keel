@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.core.InetSocketAddress
-
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -55,5 +54,4 @@ class NwEngineConnectTest {
             engine.close()
         }
     }
-
 }

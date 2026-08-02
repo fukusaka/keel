@@ -64,14 +64,17 @@ class NioEventLoopFunnelTest {
     fun `setInterestCallback inside dispatch applies inline before block returns`() {
         val applied = AtomicBoolean(false)
         val latch = CountDownLatch(1)
-        loop.dispatch(EmptyCoroutineContext, Runnable {
-            // Inside a dispatched task we are on the EL thread; the funnel
-            // takes the inline branch. The interest mask must be visible
-            // immediately, before this Runnable returns.
-            loop.setInterestCallback(key, SelectionKey.OP_READ, Runnable { /* no-op */ })
-            applied.set((key.interestOps() and SelectionKey.OP_READ) != 0)
-            latch.countDown()
-        })
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                // Inside a dispatched task we are on the EL thread; the funnel
+                // takes the inline branch. The interest mask must be visible
+                // immediately, before this Runnable returns.
+                loop.setInterestCallback(key, SelectionKey.OP_READ, Runnable { /* no-op */ })
+                applied.set((key.interestOps() and SelectionKey.OP_READ) != 0)
+                latch.countDown()
+            },
+        )
         if (!latch.await(IO_OP_SHORT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             fail("dispatched task did not run within timeout")
         }
@@ -82,10 +85,13 @@ class NioEventLoopFunnelTest {
     fun `removeInterest inside dispatch applies inline before block returns`() {
         // Arrange: arm OP_READ first.
         val armLatch = CountDownLatch(1)
-        loop.dispatch(EmptyCoroutineContext, Runnable {
-            loop.setInterestCallback(key, SelectionKey.OP_READ, Runnable { /* no-op */ })
-            armLatch.countDown()
-        })
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                loop.setInterestCallback(key, SelectionKey.OP_READ, Runnable { /* no-op */ })
+                armLatch.countDown()
+            },
+        )
         if (!armLatch.await(IO_OP_SHORT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             fail("arm dispatched task did not run within timeout")
         }
@@ -94,11 +100,14 @@ class NioEventLoopFunnelTest {
         // Act + Assert: remove from inside a dispatched task.
         val removed = AtomicBoolean(false)
         val latch = CountDownLatch(1)
-        loop.dispatch(EmptyCoroutineContext, Runnable {
-            loop.removeInterest(key, SelectionKey.OP_READ)
-            removed.set((key.interestOps() and SelectionKey.OP_READ) == 0)
-            latch.countDown()
-        })
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                loop.removeInterest(key, SelectionKey.OP_READ)
+                removed.set((key.interestOps() and SelectionKey.OP_READ) == 0)
+                latch.countDown()
+            },
+        )
         if (!latch.await(IO_OP_SHORT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             fail("remove dispatched task did not run within timeout")
         }

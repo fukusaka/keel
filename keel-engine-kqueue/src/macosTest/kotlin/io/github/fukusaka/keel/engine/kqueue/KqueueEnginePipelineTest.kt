@@ -21,16 +21,20 @@ class KqueueEnginePipelineTest {
         withTimeout(15.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 1))
             val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok(
-                "Hello!", contentType = "text/plain",
+                "Hello!",
+                contentType = "text/plain",
             )
             response.headers.size // warm flatEntries cache
 
             val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
                 channel.pipeline.addLast("decoder", io.github.fukusaka.keel.codec.http.HttpRequestDecoder())
-                channel.pipeline.addLast("routing", io.github.fukusaka.keel.codec.http.RoutingHandler(
-                    mapOf("/hello" to { response }),
-                ))
+                channel.pipeline.addLast(
+                    "routing",
+                    io.github.fukusaka.keel.codec.http.RoutingHandler(
+                        mapOf("/hello" to { response }),
+                    ),
+                )
             }
 
             // Discover bound port from server fd (use SocketUtils).
@@ -49,16 +53,20 @@ class KqueueEnginePipelineTest {
             val port = 19876 // Fixed port for test
 
             val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok(
-                "Pipeline!", contentType = "text/plain",
+                "Pipeline!",
+                contentType = "text/plain",
             )
             response.headers.size
 
             val server = engine.bindPipeline("127.0.0.1", port) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
                 channel.pipeline.addLast("decoder", io.github.fukusaka.keel.codec.http.HttpRequestDecoder())
-                channel.pipeline.addLast("routing", io.github.fukusaka.keel.codec.http.RoutingHandler(
-                    mapOf("/hello" to { response }),
-                ))
+                channel.pipeline.addLast(
+                    "routing",
+                    io.github.fukusaka.keel.codec.http.RoutingHandler(
+                        mapOf("/hello" to { response }),
+                    ),
+                )
             }
 
             // Allow server to start accepting.
@@ -89,9 +97,12 @@ class KqueueEnginePipelineTest {
             val server = engine.bindPipeline("127.0.0.1", port) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
                 channel.pipeline.addLast("decoder", io.github.fukusaka.keel.codec.http.HttpRequestDecoder())
-                channel.pipeline.addLast("routing", io.github.fukusaka.keel.codec.http.RoutingHandler(
-                    mapOf("/hello" to { response }),
-                ))
+                channel.pipeline.addLast(
+                    "routing",
+                    io.github.fukusaka.keel.codec.http.RoutingHandler(
+                        mapOf("/hello" to { response }),
+                    ),
+                )
             }
 
             usleep(100_000u) // 100ms
@@ -115,16 +126,20 @@ class KqueueEnginePipelineTest {
             val port = 19878
 
             val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok(
-                "Hi", contentType = "text/plain",
+                "Hi",
+                contentType = "text/plain",
             )
             response.headers.size
 
             val server = engine.bindPipeline("127.0.0.1", port) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
                 channel.pipeline.addLast("decoder", io.github.fukusaka.keel.codec.http.HttpRequestDecoder())
-                channel.pipeline.addLast("routing", io.github.fukusaka.keel.codec.http.RoutingHandler(
-                    mapOf("/hello" to { response }),
-                ))
+                channel.pipeline.addLast(
+                    "routing",
+                    io.github.fukusaka.keel.codec.http.RoutingHandler(
+                        mapOf("/hello" to { response }),
+                    ),
+                )
             }
 
             usleep(100_000u) // 100ms
@@ -146,5 +161,4 @@ class KqueueEnginePipelineTest {
             engine.close()
         }
     }
-
 }

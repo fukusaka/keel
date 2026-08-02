@@ -95,7 +95,12 @@ class CompressionHandlerTest {
 
         handler.onRead(
             ctx,
-            HttpRequestHead(HttpMethod.GET, "/x", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") }),
+            HttpRequestHead(
+                HttpMethod.GET,
+                "/x",
+                HttpVersion.HTTP_1_1,
+                HttpHeaders().apply { add("Accept-Encoding", "upper") },
+            ),
         )
         handler.onWrite(
             ctx,
@@ -118,7 +123,10 @@ class CompressionHandlerTest {
         handler.onWrite(ctx, HttpBodyEnd.EMPTY)
 
         assertTrue(firstEncoded.startsWith("UNO"), "first chunk must encode 'uno', got: $firstEncoded")
-        assertTrue(secondEncoded.startsWith("DOS"), "second chunk must encode 'dos' (not aliased to the first), got: $secondEncoded")
+        assertTrue(
+            secondEncoded.startsWith("DOS"),
+            "second chunk must encode 'dos' (not aliased to the first), got: $secondEncoded",
+        )
     }
 
     @Test
@@ -135,7 +143,12 @@ class CompressionHandlerTest {
 
         handler.onRead(
             ctx,
-            HttpRequestHead(HttpMethod.GET, "/x", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") }),
+            HttpRequestHead(
+                HttpMethod.GET,
+                "/x",
+                HttpVersion.HTTP_1_1,
+                HttpHeaders().apply { add("Accept-Encoding", "upper") },
+            ),
         )
 
         val body = "hello aggregated world".encodeToByteArray()
@@ -250,8 +263,21 @@ class CompressionHandlerTest {
         val handler = CompressionHandler(registry, DefaultAllocator)
         val ctx = TestCtx(state)
 
-        handler.onRead(ctx, HttpRequestHead(HttpMethod.GET, "/", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "br;q=1.0") }))
-        val head = HttpResponseHead(HttpStatus(200), headers = HttpHeaders().apply { add("Content-Type", "text/plain") })
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.GET,
+                "/",
+                HttpVersion.HTTP_1_1,
+                HttpHeaders().apply {
+                    add("Accept-Encoding", "br;q=1.0")
+                },
+            ),
+        )
+        val head = HttpResponseHead(
+            HttpStatus(200),
+            headers = HttpHeaders().apply { add("Content-Type", "text/plain") },
+        )
         handler.onWrite(ctx, head)
         handler.onWrite(ctx, HttpBody(bufOf("hello")))
         handler.onWrite(ctx, HttpBodyEnd.EMPTY)
@@ -269,7 +295,17 @@ class CompressionHandlerTest {
         val handler = CompressionHandler(registry, DefaultAllocator)
         val ctx = TestCtx(state)
 
-        handler.onRead(ctx, HttpRequestHead(HttpMethod.GET, "/", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") }))
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.GET,
+                "/",
+                HttpVersion.HTTP_1_1,
+                HttpHeaders().apply {
+                    add("Accept-Encoding", "upper")
+                },
+            ),
+        )
         handler.onWrite(ctx, HttpResponseHead(HttpStatus(204), headers = HttpHeaders()))
         handler.onWrite(ctx, HttpBodyEnd.EMPTY)
 
@@ -288,7 +324,9 @@ class CompressionHandlerTest {
         val handler = CompressionHandler(registry, DefaultAllocator, maxPendingResponses = cap)
         val ctx = TestCtx(state)
         fun req() = HttpRequestHead(
-            HttpMethod.GET, "/", HttpVersion.HTTP_1_1,
+            HttpMethod.GET,
+            "/",
+            HttpVersion.HTTP_1_1,
             HttpHeaders().apply { add("Accept-Encoding", "upper") },
         )
         // `cap` heads with no responses fill the queue exactly.
@@ -332,7 +370,17 @@ class CompressionHandlerTest {
         val handler = CompressionHandler(registry, DefaultAllocator)
         val ctx = TestCtx(state)
 
-        handler.onRead(ctx, HttpRequestHead(HttpMethod.GET, "/", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") }))
+        handler.onRead(
+            ctx,
+            HttpRequestHead(
+                HttpMethod.GET,
+                "/",
+                HttpVersion.HTTP_1_1,
+                HttpHeaders().apply {
+                    add("Accept-Encoding", "upper")
+                },
+            ),
+        )
         val head = HttpResponseHead(
             status = HttpStatus(200),
             headers = HttpHeaders().apply { add("Content-Encoding", "br") },
@@ -535,7 +583,11 @@ class CompressionHandlerTest {
             aborted = true
         }
         assertTrue(aborted, "scratch allocation failure must propagate out of handleAggregatedResponse")
-        assertEquals(0, encoder.openSessions, "the EncoderSession created before ensureScratch must be closed on the failure path")
+        assertEquals(
+            0,
+            encoder.openSessions,
+            "the EncoderSession created before ensureScratch must be closed on the failure path",
+        )
     }
 
     @Test
@@ -558,7 +610,11 @@ class CompressionHandlerTest {
             aborted = true
         }
         assertTrue(aborted, "scratch allocation failure must propagate out of handleResponseHead")
-        assertEquals(0, encoder.openSessions, "the EncoderSession created before ensureScratch must be closed on the failure path")
+        assertEquals(
+            0,
+            encoder.openSessions,
+            "the EncoderSession created before ensureScratch must be closed on the failure path",
+        )
     }
 
     @Test
@@ -817,7 +873,10 @@ class CompressionHandlerTest {
                     }
                     return when {
                         pending.isNotEmpty() -> CodecStatus.NEED_OUTPUT
-                        isFinish -> { finished = true; CodecStatus.FINISHED }
+                        isFinish -> {
+                            finished = true
+                            CodecStatus.FINISHED
+                        }
                         else -> CodecStatus.NEED_INPUT
                     }
                 }

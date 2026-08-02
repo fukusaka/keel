@@ -1,11 +1,10 @@
 package io.github.fukusaka.keel.tls.jsse
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-
 import io.github.fukusaka.keel.codec.http.HttpRequestDecoder
 import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseEncoder
 import io.github.fukusaka.keel.codec.http.RoutingHandler
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.engine.nio.NioEngine
 import io.github.fukusaka.keel.server.TlsCodecServerInstaller
 import io.github.fukusaka.keel.server.TlsServerConfig
@@ -49,7 +48,11 @@ class JsseHttpsEchoTest {
 
             val response = HttpResponse.ok("Hello, JSSE!", contentType = "text/plain")
 
-            val server = engine.bindPipeline("127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory))) { channel ->
+            val server = engine.bindPipeline(
+                "127.0.0.1",
+                0,
+                config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory)),
+            ) { channel ->
                 channel.pipeline.addLast("encoder", HttpResponseEncoder())
                 channel.pipeline.addLast("decoder", HttpRequestDecoder())
                 channel.pipeline.addLast("routing", RoutingHandler(mapOf("/hello" to { response })))

@@ -108,7 +108,10 @@ class MixedClassFootprintMeasure {
 
         val minLong = ((LONG_BUFFERS * LONG_CLASS) + PooledAllocator.CHUNK_SIZE - 1) / PooledAllocator.CHUNK_SIZE
         println("== mixed-class footprint, scenario A: long-lived first (no scatter) ==")
-        println("  long=$LONG_BUFFERS × ${LONG_CLASS / 1024}KiB held, short=$SHORT_BUFFERS × ${SHORT_CLASS / 1024}KiB churning ($CHURN_CYCLES cycles)")
+        // Named because wrapping puts the literal on its own indented line, past the length cap.
+        val shape = "  long=$LONG_BUFFERS × ${LONG_CLASS / 1024}KiB held, " +
+            "short=$SHORT_BUFFERS × ${SHORT_CLASS / 1024}KiB churning ($CHURN_CYCLES cycles)"
+        println(shape)
         println("  after long allocate      : $afterLong chunks")
         println("  after short allocate     : $afterAllocate chunks")
         println("  after sustained churn    : $afterChurn chunks")
@@ -169,10 +172,17 @@ class MixedClassFootprintMeasure {
         val drained = a.chunkCount
 
         println("== mixed-class footprint, scenario B: long-lived interleaved (scatter) ==")
-        println("  long=$LONG_BUFFERS × ${LONG_CLASS / 1024}KiB held, short=${LONG_BUFFERS * perBurst} × ${SHORT_CLASS / 1024}KiB ($CHURN_CYCLES cycles)")
+        val shape = "  long=$LONG_BUFFERS × ${LONG_CLASS / 1024}KiB held, " +
+            "short=${LONG_BUFFERS * perBurst} × ${SHORT_CLASS / 1024}KiB ($CHURN_CYCLES cycles)"
+        println(shape)
         println("  after setup              : $afterSetup chunks")
         println("  after sustained churn    : $afterChurn chunks")
-        println("  after short-lived drop   : $afterShortDrop chunks vs long-lived min packing $minLong  (over-retention ×${ratio(afterShortDrop, minLong)})")
+        println(
+            "  after short-lived drop   : $afterShortDrop chunks vs long-lived min packing $minLong  (over-retention ×${ratio(
+                afterShortDrop,
+                minLong,
+            )})",
+        )
         println("  drained (all released)   : $drained chunks (warm reserve = ${PooledAllocator.WARM_RESERVE})")
         println("  → over-retention > 1 = intra-chunk fragmentation invisible to the 8K-mono measurement.")
 

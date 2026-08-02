@@ -39,7 +39,7 @@ yGIdCqVeuv9SC0duPplXUVQwuYkLDZaIASA8goes6f5UiFEkE8TXYAKTitNUQqob
 s0/JN9iAF2/A2ct6J46JuRo8bxt+LdZY2znb8weICRpxx7/Sf+lswHA7OiUJT8UG
 XDEgg9dRd2akza/XK5Hj
 -----END PRIVATE KEY-----
-""".trimIndent() + "\n"
+    """.trimIndent() + "\n"
 
     @Test
     fun `isPkcs8 detects PKCS8 structure`() {
@@ -52,7 +52,8 @@ XDEgg9dRd2akza/XK5Hj
         // A PKCS#1 RSA key starts with SEQUENCE { INTEGER, INTEGER, ... }
         // but the second element is INTEGER, not SEQUENCE (AlgorithmIdentifier).
         // Use certificate DER which has different structure.
-        val certDer = PemDerConverter.pemToDer("""
+        val certDer = PemDerConverter.pemToDer(
+            """
 -----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUaVO1WKzG9gPzYk5Td3h5tNjDl0QwDQYJKoZIhvcNAQEL
 BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDQwMzA0MjcxNloXDTI3MDQw
@@ -72,7 +73,8 @@ dA0v0c6TRwAZKuG5BIzAh9r94fM0NzYvaYamE+/WIm6orpjzUELVKjVebvmAWkN0
 DckJ9HFnEw1KPYC/9e7a1JUrkfMgCFcgIdRGQA/qMHISUzQND9Zs/ZnPvhaf+x7N
 wIy8X6kST+S43rMGiQ==
 -----END CERTIFICATE-----
-""".trimIndent() + "\n")
+            """.trimIndent() + "\n",
+        )
         // X.509 certificate has SEQUENCE { SEQUENCE { ... }, ... } but
         // the inner structure differs from PKCS#8 (no version INTEGER first).
         // isPkcs8 checks SEQUENCE → INTEGER → SEQUENCE pattern.
@@ -159,12 +161,19 @@ wIy8X6kST+S43rMGiQ==
         //   OCTET STRING { 0x30 0x00 (empty SEQUENCE as fake inner key) }
         // }
         val fakeAlgoId = byteArrayOf(
-            0x30, 0x05, // SEQUENCE, length 5
-            0x06, 0x03, 0x55, 0x04, 0x03, // OID 2.5.4.3 (commonName, not RSA/EC)
+            0x30,
+            0x05, // SEQUENCE, length 5
+            0x06,
+            0x03,
+            0x55,
+            0x04,
+            0x03, // OID 2.5.4.3 (commonName, not RSA/EC)
         )
         val innerKey = byteArrayOf(
-            0x04, 0x02, // OCTET STRING, length 2
-            0x30, 0x00, // fake inner key (empty SEQUENCE)
+            0x04,
+            0x02, // OCTET STRING, length 2
+            0x30,
+            0x00, // fake inner key (empty SEQUENCE)
         )
         val version = byteArrayOf(0x02, 0x01, 0x00) // INTEGER 0
         val body = version + fakeAlgoId + innerKey
@@ -197,13 +206,15 @@ wIy8X6kST+S43rMGiQ==
         // 0x80 = indefinite length, not valid in DER
         // SEQUENCE with indefinite length: 0x30 0x80
         assertFailsWith<IllegalArgumentException> {
-            Pkcs8KeyUnwrapper.unwrap(byteArrayOf(
-                0x30, 0x80.toByte(), // SEQUENCE, indefinite length
-                0x02, 0x01, 0x00,    // INTEGER 0
-                0x30, 0x00,          // SEQUENCE (empty)
-                0x04, 0x00,          // OCTET STRING (empty)
-                0x00, 0x00,          // end-of-contents octets
-            ))
+            Pkcs8KeyUnwrapper.unwrap(
+                byteArrayOf(
+                    0x30, 0x80.toByte(), // SEQUENCE, indefinite length
+                    0x02, 0x01, 0x00, // INTEGER 0
+                    0x30, 0x00, // SEQUENCE (empty)
+                    0x04, 0x00, // OCTET STRING (empty)
+                    0x00, 0x00, // end-of-contents octets
+                ),
+            )
         }
     }
 
@@ -222,9 +233,13 @@ wIy8X6kST+S43rMGiQ==
         // After outer SEQUENCE, expect INTEGER for version.
         // Provide OCTET STRING (0x04) instead.
         val body = byteArrayOf(
-            0x04, 0x01, 0x00, // OCTET STRING instead of INTEGER
-            0x30, 0x00,       // SEQUENCE (AlgorithmIdentifier)
-            0x04, 0x00,       // OCTET STRING (privateKey)
+            0x04,
+            0x01,
+            0x00, // OCTET STRING instead of INTEGER
+            0x30,
+            0x00, // SEQUENCE (AlgorithmIdentifier)
+            0x04,
+            0x00, // OCTET STRING (privateKey)
         )
         val der = byteArrayOf(0x30, body.size.toByte()) + body
         val ex = assertFailsWith<IllegalArgumentException> {
@@ -238,9 +253,14 @@ wIy8X6kST+S43rMGiQ==
         // After version INTEGER, expect SEQUENCE for AlgorithmIdentifier.
         // Provide INTEGER (0x02) instead.
         val body = byteArrayOf(
-            0x02, 0x01, 0x00, // INTEGER 0 (version) — correct
-            0x02, 0x01, 0x00, // INTEGER instead of SEQUENCE (AlgorithmIdentifier)
-            0x04, 0x00,       // OCTET STRING (privateKey)
+            0x02,
+            0x01,
+            0x00, // INTEGER 0 (version) — correct
+            0x02,
+            0x01,
+            0x00, // INTEGER instead of SEQUENCE (AlgorithmIdentifier)
+            0x04,
+            0x00, // OCTET STRING (privateKey)
         )
         val der = byteArrayOf(0x30, body.size.toByte()) + body
         val ex = assertFailsWith<IllegalArgumentException> {
@@ -254,8 +274,13 @@ wIy8X6kST+S43rMGiQ==
         // After AlgorithmIdentifier, expect OCTET STRING (0x04).
         // Provide INTEGER (0x02) instead.
         val fakeAlgoId = byteArrayOf(
-            0x30, 0x05,
-            0x06, 0x03, 0x55, 0x04, 0x03,
+            0x30,
+            0x05,
+            0x06,
+            0x03,
+            0x55,
+            0x04,
+            0x03,
         )
         val body = byteArrayOf(0x02, 0x01, 0x00) + // version
             fakeAlgoId +
@@ -282,8 +307,12 @@ wIy8X6kST+S43rMGiQ==
         )
         // Fake EC private key (SEC 1 format, simplified)
         val fakeEcKey = byteArrayOf(
-            0x04, 0x04, // OCTET STRING, length 4
-            0x30, 0x02, 0x02, 0x00, // minimal fake inner key
+            0x04,
+            0x04, // OCTET STRING, length 4
+            0x30,
+            0x02,
+            0x02,
+            0x00, // minimal fake inner key
         )
         val version = byteArrayOf(0x02, 0x01, 0x00)
         val body = version + ecAlgoId + fakeEcKey
@@ -298,9 +327,9 @@ wIy8X6kST+S43rMGiQ==
         // Minimal valid PKCS#8: SEQUENCE { INTEGER 0, SEQUENCE { OID }, OCTET STRING { data } }
         // isPkcs8 requires der.size >= 10, so must include enough content
         val body = byteArrayOf(
-            0x02, 0x01, 0x00,       // INTEGER 0
+            0x02, 0x01, 0x00, // INTEGER 0
             0x30, 0x02, 0x06, 0x00, // SEQUENCE { OID (empty) }
-            0x04, 0x01, 0x00,       // OCTET STRING { 0x00 }
+            0x04, 0x01, 0x00, // OCTET STRING { 0x00 }
         )
         val der = byteArrayOf(0x30, body.size.toByte()) + body
         assertTrue(der.size >= 10, "Synthetic PKCS#8 must be at least 10 bytes")
@@ -311,8 +340,10 @@ wIy8X6kST+S43rMGiQ==
     fun `isPkcs8 rejects SEQUENCE followed by SEQUENCE instead of INTEGER`() {
         // SEQUENCE { SEQUENCE {...}, ... } — looks like X.509 TBSCertificate, not PKCS#8
         val body = byteArrayOf(
-            0x30, 0x00, // SEQUENCE (not INTEGER for version)
-            0x30, 0x00, // SEQUENCE
+            0x30,
+            0x00, // SEQUENCE (not INTEGER for version)
+            0x30,
+            0x00, // SEQUENCE
         )
         val der = byteArrayOf(0x30, body.size.toByte()) + body
         assertFalse(Pkcs8KeyUnwrapper.isPkcs8(der))
@@ -354,13 +385,18 @@ wIy8X6kST+S43rMGiQ==
     fun `unwrap rejects OCTET STRING length exceeding remaining data`() {
         // Craft PKCS#8 where OCTET STRING claims length=100 but only 2 bytes remain
         val fakeAlgoId = byteArrayOf(
-            0x30, 0x05,
-            0x06, 0x03, 0x55, 0x04, 0x03,
+            0x30,
+            0x05,
+            0x06,
+            0x03,
+            0x55,
+            0x04,
+            0x03,
         )
         val body = byteArrayOf(0x02, 0x01, 0x00) + // version
             fakeAlgoId +
             byteArrayOf(0x04, 0x64) + // OCTET STRING, length=100
-            byteArrayOf(0x30, 0x00)   // only 2 bytes of data (not 100)
+            byteArrayOf(0x30, 0x00) // only 2 bytes of data (not 100)
         val der = byteArrayOf(0x30, body.size.toByte()) + body
         assertFailsWith<IllegalArgumentException> {
             Pkcs8KeyUnwrapper.unwrap(der)
@@ -373,8 +409,9 @@ wIy8X6kST+S43rMGiQ==
         // After skipping past the claimed length, the next expectTag will fail
         // because offset is beyond the data.
         val body = byteArrayOf(
-            0x02, 0x32, // INTEGER, length=50
-            0x00,       // only 1 byte (not 50)
+            0x02,
+            0x32, // INTEGER, length=50
+            0x00, // only 1 byte (not 50)
         )
         val der = byteArrayOf(0x30, body.size.toByte()) + body
         assertFailsWith<IllegalArgumentException> {
@@ -387,9 +424,13 @@ wIy8X6kST+S43rMGiQ==
         // SEQUENCE claims length=50 but only a few bytes remain.
         // After skipping past the claimed length, the next expectTag will fail.
         val body = byteArrayOf(
-            0x02, 0x01, 0x00,  // version INTEGER 0
-            0x30, 0x32,        // SEQUENCE, length=50
-            0x06, 0x00,        // only 2 bytes (not 50)
+            0x02,
+            0x01,
+            0x00, // version INTEGER 0
+            0x30,
+            0x32, // SEQUENCE, length=50
+            0x06,
+            0x00, // only 2 bytes (not 50)
         )
         val der = byteArrayOf(0x30, body.size.toByte()) + body
         assertFailsWith<IllegalArgumentException> {
@@ -432,8 +473,11 @@ wIy8X6kST+S43rMGiQ==
         // versionStart ~ 6, so 6 + 32767 = 32773 > actual data size (~20 bytes).
         // Uses subtraction-based bounds check to avoid integer overflow.
         val body = byteArrayOf(
-            0x02, 0x82.toByte(), 0x7F, 0xFF.toByte(), // INTEGER, 2-byte length = 32767
-            0x00,                                       // only 1 byte of data
+            0x02,
+            0x82.toByte(),
+            0x7F,
+            0xFF.toByte(), // INTEGER, 2-byte length = 32767
+            0x00, // only 1 byte of data
         )
         val der = byteArrayOf(0x30, body.size.toByte()) + body
         assertFailsWith<IllegalArgumentException> {
@@ -447,8 +491,8 @@ wIy8X6kST+S43rMGiQ==
         // With exactly 10 bytes but readLength fails → should return false, not throw.
         val der = byteArrayOf(
             0x30, 0x84.toByte(), 0x00, 0x00, 0x00, 0x00, // SEQUENCE, 4-byte length = 0
-            0x02, 0x01, 0x00,                              // INTEGER 0
-            0x30,                                           // SEQUENCE (but version length claims past this)
+            0x02, 0x01, 0x00, // INTEGER 0
+            0x30, // SEQUENCE (but version length claims past this)
         )
         // This should not throw — isPkcs8 catches all IllegalArgumentExceptions
         val result = Pkcs8KeyUnwrapper.isPkcs8(der)
@@ -487,9 +531,9 @@ wIy8X6kST+S43rMGiQ==
         // but must not crash with an unrecoverable error.
         val der = byteArrayOf(
             0x30, 0x81.toByte(), 0xC8.toByte(), // SEQUENCE, length=200 (2-byte encoding)
-            0x02, 0x01, 0x00,                    // INTEGER 0
-            0x30, 0x00,                          // SEQUENCE
-            0x04, 0x00,                          // OCTET STRING
+            0x02, 0x01, 0x00, // INTEGER 0
+            0x30, 0x00, // SEQUENCE
+            0x04, 0x00, // OCTET STRING
         )
         try {
             Pkcs8KeyUnwrapper.isPkcs8(der)

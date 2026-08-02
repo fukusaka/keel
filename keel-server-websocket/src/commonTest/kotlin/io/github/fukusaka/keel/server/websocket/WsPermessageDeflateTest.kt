@@ -624,7 +624,10 @@ class WsPermessageDeflateTest {
                     override fun flush(output: IoBuf): CodecStatus = delegate.flush(output)
                     override fun finish(output: IoBuf): CodecStatus = delegate.finish(output)
                     override fun reset() = delegate.reset()
-                    override fun close() { encoderCloseCalls++; delegate.close() }
+                    override fun close() {
+                        encoderCloseCalls++
+                        delegate.close()
+                    }
                 }
             }
         }
@@ -638,7 +641,10 @@ class WsPermessageDeflateTest {
                     override fun flush(output: IoBuf): CodecStatus = delegate.flush(output)
                     override fun finish(output: IoBuf): CodecStatus = delegate.finish(output)
                     override fun reset() = delegate.reset()
-                    override fun close() { decoderCloseCalls++; delegate.close() }
+                    override fun close() {
+                        decoderCloseCalls++
+                        delegate.close()
+                    }
                 }
             }
         }

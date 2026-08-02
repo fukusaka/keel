@@ -6,13 +6,13 @@ import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_queue_create
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import platform.darwin.dispatch_async
-import platform.darwin.dispatch_queue_create
 
 /**
  * Pin the **I/O ownership invariant funnel routing** for NWConnection —

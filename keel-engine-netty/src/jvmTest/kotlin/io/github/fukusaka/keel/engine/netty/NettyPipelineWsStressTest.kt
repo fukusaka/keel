@@ -82,46 +82,46 @@ class NettyPipelineWsStressTest {
         // withTimeout: 5 minutes budget — matches the existing perTestTimeout wall-clock check.
         // Stress test runs 50 × 100 = 5000 echo rounds over real Netty + JDK HttpClient.
         withTimeout(5.minutes) {
-        assumeTrue(
-            "stress tests are gated; opt in with -Dkeel.stress=true",
-            System.getProperty("keel.stress") == "true",
-        )
+            assumeTrue(
+                "stress tests are gated; opt in with -Dkeel.stress=true",
+                System.getProperty("keel.stress") == "true",
+            )
 
-        val connections = 50
-        val rounds = 100
-        val perTestTimeout = 5.minutes
+            val connections = 50
+            val rounds = 100
+            val perTestTimeout = 5.minutes
 
-        val engine = NettyEngine()
-        val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
-            channel.pipeline.addLast("encoder", HttpResponseEncoder())
-            channel.pipeline.addLast("decoder", HttpRequestDecoder())
-            channel.pipeline.addLast("ws-echo", WsEchoHandler())
-        }
-        val port = (server.localAddress as InetSocketAddress).port
-
-        try {
-            newTestHttpClient(threadPoolSize = 16).use { client ->
-                val totalEchoes = AtomicLong(0)
-                val startNanos = System.nanoTime()
-                coroutineScope {
-                    (1..connections).map { vu ->
-                        async { runConnection(client.http, port, vu, rounds, totalEchoes) }
-                    }.awaitAll()
-                }
-                val elapsed = (System.nanoTime() - startNanos).nanoseconds
-                assertEquals(
-                    (connections * rounds).toLong(),
-                    totalEchoes.get(),
-                    "expected $connections × $rounds = ${connections * rounds} echoes",
-                )
-                require(elapsed < perTestTimeout) {
-                    "stress test wall-clock $elapsed exceeded budget $perTestTimeout"
-                }
+            val engine = NettyEngine()
+            val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
+                channel.pipeline.addLast("encoder", HttpResponseEncoder())
+                channel.pipeline.addLast("decoder", HttpRequestDecoder())
+                channel.pipeline.addLast("ws-echo", WsEchoHandler())
             }
-        } finally {
-            server.close()
-            engine.close()
-        }
+            val port = (server.localAddress as InetSocketAddress).port
+
+            try {
+                newTestHttpClient(threadPoolSize = 16).use { client ->
+                    val totalEchoes = AtomicLong(0)
+                    val startNanos = System.nanoTime()
+                    coroutineScope {
+                        (1..connections).map { vu ->
+                            async { runConnection(client.http, port, vu, rounds, totalEchoes) }
+                        }.awaitAll()
+                    }
+                    val elapsed = (System.nanoTime() - startNanos).nanoseconds
+                    assertEquals(
+                        (connections * rounds).toLong(),
+                        totalEchoes.get(),
+                        "expected $connections × $rounds = ${connections * rounds} echoes",
+                    )
+                    require(elapsed < perTestTimeout) {
+                        "stress test wall-clock $elapsed exceeded budget $perTestTimeout"
+                    }
+                }
+            } finally {
+                server.close()
+                engine.close()
+            }
         }
     }
 
@@ -146,24 +146,27 @@ class NettyPipelineWsStressTest {
     ) {
         val pending = ArrayDeque<CompletableFuture<String>>()
         val ws = http.newWebSocketBuilder()
-            .buildAsync(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener {
-                override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
-                override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): Nothing? {
-                    if (last) {
+            .buildAsync(
+                URI("ws://127.0.0.1:$port/ws-echo"),
+                object : WebSocket.Listener {
+                    override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
+                    override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): Nothing? {
+                        if (last) {
+                            synchronized(pending) {
+                                pending.removeFirstOrNull()?.complete(data.toString())
+                            }
+                        }
+                        return null
+                    }
+                    override fun onError(ws: WebSocket, error: Throwable) {
                         synchronized(pending) {
-                            pending.removeFirstOrNull()?.complete(data.toString())
+                            while (pending.isNotEmpty()) {
+                                pending.removeFirst().completeExceptionally(error)
+                            }
                         }
                     }
-                    return null
-                }
-                override fun onError(ws: WebSocket, error: Throwable) {
-                    synchronized(pending) {
-                        while (pending.isNotEmpty()) {
-                            pending.removeFirst().completeExceptionally(error)
-                        }
-                    }
-                }
-            })
+                },
+            )
             .await()
 
         try {

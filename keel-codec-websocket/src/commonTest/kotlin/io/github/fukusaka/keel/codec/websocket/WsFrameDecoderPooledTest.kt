@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.codec.websocket
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
@@ -169,7 +168,10 @@ class WsFrameDecoderPooledTest {
         val payloads = listOf("a".encodeToByteArray(), "bb".encodeToByteArray(), "ccc".encodeToByteArray())
         val scratch = Buffer()
         payloads.forEachIndexed { i, p ->
-            writeFrame(WsFrame(fin = true, opcode = WsOpcode.BINARY, maskKey = 0x11111111 * (i + 1), payload = p), scratch)
+            writeFrame(
+                WsFrame(fin = true, opcode = WsOpcode.BINARY, maskKey = 0x11111111 * (i + 1), payload = p),
+                scratch,
+            )
         }
         val size = scratch.size.toInt()
         val bytes = ByteArray(size)
@@ -235,7 +237,9 @@ class WsFrameDecoderPooledTest {
     @Test
     fun `an unmasked client data frame fails before any pooled allocation`() {
         val h = Harness()
-        h.feedFrame(WsFrame(fin = true, opcode = WsOpcode.BINARY, maskKey = null, payload = "no-mask".encodeToByteArray()))
+        h.feedFrame(
+            WsFrame(fin = true, opcode = WsOpcode.BINARY, maskKey = null, payload = "no-mask".encodeToByteArray()),
+        )
 
         assertEquals(0, h.collector.frames.size)
         assertEquals(1, h.collector.errors.size)
@@ -280,7 +284,9 @@ class WsFrameDecoderPooledTest {
     fun `many sequential pooled frames do not leak`() {
         val h = Harness()
         repeat(100) { i ->
-            h.feedFrame(WsFrame(fin = true, opcode = WsOpcode.BINARY, maskKey = i + 1, payload = "f$i".encodeToByteArray()))
+            h.feedFrame(
+                WsFrame(fin = true, opcode = WsOpcode.BINARY, maskKey = i + 1, payload = "f$i".encodeToByteArray()),
+            )
         }
         assertEquals(100, h.collector.frames.size)
         for (i in 0 until 100) {

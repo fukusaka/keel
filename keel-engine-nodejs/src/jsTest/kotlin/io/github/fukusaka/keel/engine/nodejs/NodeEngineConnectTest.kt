@@ -1,14 +1,12 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-
 import io.github.fukusaka.keel.core.InetSocketAddress
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 class NodeEngineConnectTest {
 
@@ -47,5 +45,4 @@ class NodeEngineConnectTest {
         server.close()
         engine.close()
     }
-
 }

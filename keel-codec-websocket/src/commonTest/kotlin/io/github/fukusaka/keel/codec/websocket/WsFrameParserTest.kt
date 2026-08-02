@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.codec.websocket
 
 import kotlinx.io.Buffer
 import kotlinx.io.write
-import kotlinx.io.writeString
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals

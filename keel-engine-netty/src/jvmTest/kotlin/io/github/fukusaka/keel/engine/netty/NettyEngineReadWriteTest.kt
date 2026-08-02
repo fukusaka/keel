@@ -1,9 +1,8 @@
 package io.github.fukusaka.keel.engine.netty
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
-
-import io.github.fukusaka.keel.buf.DefaultAllocator
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -227,7 +226,8 @@ class NettyEngineReadWriteTest {
         rawWrite(client, "test")
 
         val source = io.github.fukusaka.keel.io.BufferedSuspendSource(
-            ch.asSuspendSource(), ch.allocator,
+            ch.asSuspendSource(),
+            ch.allocator,
         )
         val data = source.readByteArray(4)
         assertEquals("test", data.decodeToString())
@@ -249,7 +249,8 @@ class NettyEngineReadWriteTest {
         val ch = server.accept()
 
         val sink = io.github.fukusaka.keel.io.BufferedSuspendSink(
-            ch.asSuspendSink(), ch.allocator,
+            ch.asSuspendSink(),
+            ch.allocator,
         )
         sink.writeString("data")
         sink.flush()
@@ -314,5 +315,4 @@ class NettyEngineReadWriteTest {
         server.close()
         engine.close()
     }
-
 }

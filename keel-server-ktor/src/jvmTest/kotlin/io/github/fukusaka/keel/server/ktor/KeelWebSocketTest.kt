@@ -17,6 +17,8 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.http.HttpClient
@@ -30,8 +32,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 class KeelWebSocketTest {
 
@@ -119,18 +119,27 @@ class KeelWebSocketTest {
                 val texts = mutableListOf<String>()
                 val gotTwo = CompletableFuture<List<String>>()
                 val pendingText = StringBuilder()
-                val ws = openWebSocket(client.http, port, "/ws", object : WebSocket.Listener {
-                    override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
-                    override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
-                        pendingText.append(data)
-                        if (last) {
-                            texts += pendingText.toString()
-                            pendingText.clear()
-                            if (texts.size == 2) gotTwo.complete(texts.toList())
+                val ws = openWebSocket(
+                    client.http,
+                    port,
+                    "/ws",
+                    object : WebSocket.Listener {
+                        override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
+                        override fun onText(
+                            webSocket: WebSocket,
+                            data: CharSequence,
+                            last: Boolean,
+                        ): CompletionStage<*>? {
+                            pendingText.append(data)
+                            if (last) {
+                                texts += pendingText.toString()
+                                pendingText.clear()
+                                if (texts.size == 2) gotTwo.complete(texts.toList())
+                            }
+                            return null
                         }
-                        return null
-                    }
-                })
+                    },
+                )
                 ws.sendText("hello", true).get(5, TimeUnit.SECONDS)
                 ws.sendText("world", true).get(5, TimeUnit.SECONDS)
                 // Wait for both echoes before sending CLOSE.
@@ -157,17 +166,26 @@ class KeelWebSocketTest {
             newTestHttpClient().use { client ->
                 val payload = byteArrayOf(0xDE.toByte(), 0xAD.toByte(), 0xBE.toByte(), 0xEF.toByte())
                 val gotEcho = CompletableFuture<ByteArray>()
-                val ws = openWebSocket(client.http, port, "/ws-bin", object : WebSocket.Listener {
-                    override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
-                    override fun onBinary(webSocket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage<*>? {
-                        if (last) {
-                            val bytes = ByteArray(data.remaining())
-                            data.get(bytes)
-                            gotEcho.complete(bytes)
+                val ws = openWebSocket(
+                    client.http,
+                    port,
+                    "/ws-bin",
+                    object : WebSocket.Listener {
+                        override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
+                        override fun onBinary(
+                            webSocket: WebSocket,
+                            data: ByteBuffer,
+                            last: Boolean,
+                        ): CompletionStage<*>? {
+                            if (last) {
+                                val bytes = ByteArray(data.remaining())
+                                data.get(bytes)
+                                gotEcho.complete(bytes)
+                            }
+                            return null
                         }
-                        return null
-                    }
-                })
+                    },
+                )
                 ws.sendBinary(ByteBuffer.wrap(payload), true).get(5, TimeUnit.SECONDS)
                 val received = gotEcho.get(5, TimeUnit.SECONDS)
                 ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
@@ -200,14 +218,26 @@ class KeelWebSocketTest {
             newTestHttpClient().use { client ->
                 val gotEcho = CompletableFuture<String>()
                 val pendingText = StringBuilder()
-                val ws = openWebSocket(client.http, port, "/ws", object : WebSocket.Listener {
-                    override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
-                    override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
-                        pendingText.append(data)
-                        if (last) { gotEcho.complete(pendingText.toString()); pendingText.clear() }
-                        return null
-                    }
-                })
+                val ws = openWebSocket(
+                    client.http,
+                    port,
+                    "/ws",
+                    object : WebSocket.Listener {
+                        override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
+                        override fun onText(
+                            webSocket: WebSocket,
+                            data: CharSequence,
+                            last: Boolean,
+                        ): CompletionStage<*>? {
+                            pendingText.append(data)
+                            if (last) {
+                                gotEcho.complete(pendingText.toString())
+                                pendingText.clear()
+                            }
+                            return null
+                        }
+                    },
+                )
                 ws.sendText("ping", true).get(5, TimeUnit.SECONDS)
                 val received = gotEcho.get(5, TimeUnit.SECONDS)
                 ws.sendClose(WebSocket.NORMAL_CLOSURE, "").get(5, TimeUnit.SECONDS)
@@ -314,7 +344,8 @@ class KeelWebSocketTest {
         server.start(wait = false)
         try {
             val port = runBlocking {
-                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                withTimeout(15.seconds) {
+                    server.engine.resolvedConnectors().first().port
                 }
             }
             block(port)

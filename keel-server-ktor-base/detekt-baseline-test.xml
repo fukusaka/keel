@@ -1,9 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<SmellBaseline>
-  <ManuallySuppressedIssues/>
-  <CurrentIssues>
-    <ID>ImportOrdering:KeelContentEncodersTest.kt$import io.ktor.utils.io.ByteReadChannel import io.ktor.utils.io.readRemaining import kotlin.test.Test import kotlin.test.assertContentEquals import kotlin.test.assertEquals import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout import kotlinx.io.readByteArray</ID>
-    <ID>Indentation:KeelContentEncodersTest.kt$KeelContentEncodersTest$ </ID>
-    <ID>NoUnusedImports:KeelContentEncodersTest.kt$io.github.fukusaka.keel.server.ktor.compression.KeelContentEncodersTest.kt</ID>
-  </CurrentIssues>
-</SmellBaseline>

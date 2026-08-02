@@ -63,7 +63,10 @@ class JsZlibRoundTripTest {
         // If strategy were dropped on the JS path, the two sizes would match.
         val payload = "ABCD".repeat(500).encodeToByteArray()
         fun encode(strategy: Strategy) =
-            encodeAll(payload, DeflateEncoder.newSession(allocator, EncoderOptions(tuning = DeflateTuning(strategy = strategy))))
+            encodeAll(
+                payload,
+                DeflateEncoder.newSession(allocator, EncoderOptions(tuning = DeflateTuning(strategy = strategy))),
+            )
         val default = encode(Strategy.Default)
         val huffman = encode(Strategy.HuffmanOnly)
         assertTrue(

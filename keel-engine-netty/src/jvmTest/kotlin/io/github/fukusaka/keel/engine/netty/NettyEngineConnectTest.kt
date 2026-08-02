@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.engine.netty
 
 import io.github.fukusaka.keel.core.InetSocketAddress
-
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -62,5 +61,4 @@ class NettyEngineConnectTest {
         server.close()
         engine.close()
     }
-
 }

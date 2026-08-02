@@ -107,7 +107,9 @@ class NettyReadPathAllocationBenchmark {
         val trialsA = LongArray(TRIALS) { measure(ITERS, ::pathA) }
         val trialsB = LongArray(TRIALS) { measure(ITERS, ::pathB) }
         val trialsC = LongArray(TRIALS) { measure(ITERS, ::pathC) }
-        trialsA.sort(); trialsB.sort(); trialsC.sort()
+        trialsA.sort()
+        trialsB.sort()
+        trialsC.sort()
         val medA = trialsA[TRIALS / 2]
         val medB = trialsB[TRIALS / 2]
         val medC = trialsC[TRIALS / 2]

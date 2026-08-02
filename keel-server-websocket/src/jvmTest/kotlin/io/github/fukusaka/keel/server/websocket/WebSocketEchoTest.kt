@@ -13,12 +13,12 @@ import java.io.InputStream
 import java.net.Socket
 import java.util.zip.Deflater
 import java.util.zip.Inflater
-import java.net.InetSocketAddress as JavaInetSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
+import java.net.InetSocketAddress as JavaInetSocketAddress
 
 /**
  * Real-engine integration test for the `keelHttpServer { webSockets { } }`
@@ -38,7 +38,10 @@ class WebSocketEchoTest {
         withTimeout(10.seconds) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 webSockets {
                     webSocket("/echo") {
                         for (message in incoming) send(message)
@@ -111,7 +114,10 @@ class WebSocketEchoTest {
         withTimeout(10.seconds) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 webSockets {
                     // A binary message arrives as WsMessage.BinaryChunks (the
                     // decoder's pooled fast path + the aggregator's zero-copy
@@ -167,7 +173,10 @@ class WebSocketEchoTest {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
                 route("/api/v1") {
-                    install { _, next -> events.add("group-mw"); next() }
+                    install { _, next ->
+                        events.add("group-mw")
+                        next()
+                    }
                     webSockets {
                         webSocket("/echo") {
                             for (message in incoming) send(message)
@@ -236,7 +245,10 @@ class WebSocketEchoTest {
         withTimeout(10.seconds) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 webSockets {
                     webSocket("/chat/:room") {
                         // Send the captured :room path parameter, then drain
@@ -302,7 +314,10 @@ class WebSocketEchoTest {
         withTimeout(10.seconds) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 webSockets {
                     webSocket("/chat/:room(int)") {
                         // Reached only when the :room(int) constraint passed;
@@ -391,7 +406,10 @@ class WebSocketEchoTest {
         withTimeout(10.seconds) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 webSockets {
                     webSocket("/echo") {
                         for (message in incoming) send(message)
@@ -441,7 +459,10 @@ class WebSocketEchoTest {
         withTimeout(10.seconds) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 webSockets {
                     webSocket("/echo") {
                         for (message in incoming) send(message)
@@ -486,7 +507,10 @@ class WebSocketEchoTest {
         withTimeout(10.seconds) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 webSockets(DeflateCodec) {
                     deflate { threshold = 0 }
                     webSocket("/echo") {
@@ -555,7 +579,10 @@ class WebSocketEchoTest {
         withTimeout(10.seconds) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 webSockets(DeflateCodec) {
                     deflate { threshold = 1024 }
                     webSocket("/echo") {

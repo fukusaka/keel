@@ -221,5 +221,4 @@ class NioEngineLifecycleTest {
             engine.close()
         }
     }
-
 }

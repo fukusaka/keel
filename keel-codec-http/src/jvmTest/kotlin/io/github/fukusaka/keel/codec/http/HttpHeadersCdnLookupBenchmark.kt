@@ -84,7 +84,7 @@ class HttpHeadersCdnLookupBenchmark {
         // Per-call: total over 5 lookups
         // Per-lookup: total / 5
         println("=== CDN typical 5-lookup latency (iters=$ITERS × $TRIALS) ===")
-        println("  total per request (5 lookups): ${total} ns")
+        println("  total per request (5 lookups): $total ns")
         println("  per-lookup avg              : ${total / 5} ns")
     }
 
@@ -102,7 +102,7 @@ class HttpHeadersCdnLookupBenchmark {
                 timeNs(ITERS) { sink += (h[n]?.length ?: 0) }
             }
             val isHit = h[n] != null
-            println("  ${n.padEnd(28)}  ${if (isHit) "hit" else "miss"}  median=${median} ns")
+            println("  ${n.padEnd(28)}  ${if (isHit) "hit" else "miss"}  median=$median ns")
         }
     }
 

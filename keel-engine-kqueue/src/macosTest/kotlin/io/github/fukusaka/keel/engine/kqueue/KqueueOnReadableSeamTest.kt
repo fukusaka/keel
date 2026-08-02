@@ -10,15 +10,15 @@ import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import platform.posix.close
+import platform.posix.pipe
+import platform.posix.write
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import platform.posix.close
-import platform.posix.pipe
-import platform.posix.write
 
 /**
  * Seam-level unit tests for [KqueueIoTransport.onReadable] — macOS
@@ -99,7 +99,10 @@ class KqueueOnReadableSeamTest {
 
         val closedSignal = CompletableDeferred<Unit>()
         var readFired = 0
-        transport.onRead = { buf -> readFired++; buf.release() }
+        transport.onRead = { buf ->
+            readFired++
+            buf.release()
+        }
         transport.onReadClosed = { closedSignal.complete(Unit) }
         transport.readEnabled = true
         triggerReadiness()
@@ -118,7 +121,10 @@ class KqueueOnReadableSeamTest {
 
         val closedSignal = CompletableDeferred<Unit>()
         var readFired = 0
-        transport.onRead = { buf -> readFired++; buf.release() }
+        transport.onRead = { buf ->
+            readFired++
+            buf.release()
+        }
         transport.onReadClosed = { closedSignal.complete(Unit) }
         transport.readEnabled = true
         triggerReadiness()
@@ -137,7 +143,10 @@ class KqueueOnReadableSeamTest {
 
         val closedSignal = CompletableDeferred<Unit>()
         var readFired = 0
-        transport.onRead = { buf -> readFired++; buf.release() }
+        transport.onRead = { buf ->
+            readFired++
+            buf.release()
+        }
         transport.onReadClosed = { closedSignal.complete(Unit) }
         transport.readEnabled = true
         triggerReadiness()

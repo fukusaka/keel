@@ -8,6 +8,8 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
@@ -20,8 +22,6 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 class KeelEngineTest {
 
@@ -276,7 +276,8 @@ class KeelEngineTest {
                             writer.flush()
                             val response = readHttpResponse(reader)
                             assertEquals(
-                                "HTTP/1.1 200 OK", response.statusLine,
+                                "HTTP/1.1 200 OK",
+                                response.statusLine,
                                 "conn=$connId req=$reqId",
                             )
                             assertEquals("OK", response.body, "conn=$connId req=$reqId")
@@ -390,7 +391,9 @@ class KeelEngineTest {
                 read += n
             }
             String(buf, 0, read)
-        } else ""
+        } else {
+            ""
+        }
         return HttpResponse(statusLine, headers, body)
     }
 
@@ -412,7 +415,8 @@ class KeelEngineTest {
         server.start(wait = false)
         try {
             val port = runBlocking {
-                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                withTimeout(15.seconds) {
+                    server.engine.resolvedConnectors().first().port
                 }
             }
             block(port)
@@ -424,8 +428,11 @@ class KeelEngineTest {
     private fun httpGet(port: Int, path: String): Pair<Int, String> {
         val conn = openConnection(port, path)
         val status = conn.responseCode
-        val body = if (status in 200..299) conn.inputStream.bufferedReader().readText()
-        else conn.errorStream?.bufferedReader()?.readText() ?: ""
+        val body = if (status in 200..299) {
+            conn.inputStream.bufferedReader().readText()
+        } else {
+            conn.errorStream?.bufferedReader()?.readText() ?: ""
+        }
         conn.disconnect()
         return status to body
     }
@@ -438,8 +445,11 @@ class KeelEngineTest {
         conn.setRequestProperty("Content-Length", body.length.toString())
         conn.outputStream.use { it.write(body.toByteArray()) }
         val status = conn.responseCode
-        val responseBody = if (status in 200..299) conn.inputStream.bufferedReader().readText()
-        else conn.errorStream?.bufferedReader()?.readText() ?: ""
+        val responseBody = if (status in 200..299) {
+            conn.inputStream.bufferedReader().readText()
+        } else {
+            conn.errorStream?.bufferedReader()?.readText() ?: ""
+        }
         conn.disconnect()
         return status to responseBody
     }

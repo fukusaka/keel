@@ -63,7 +63,7 @@ class IoBufAsciiTextTest {
         // maps them to chars with the same codepoint. UTF-8 decode
         // would have given replacement chars or combined them into
         // fewer codepoints, breaking the CharSequence contract.
-        val highByte = 0xC3.toByte()              // 0xC3 standalone is not a valid UTF-8 start
+        val highByte = 0xC3.toByte() // 0xC3 standalone is not a valid UTF-8 start
         val anotherHigh = 0xA9.toByte()
         val backing = DefaultAllocator.allocate(2)
         backing.writeByte(highByte)

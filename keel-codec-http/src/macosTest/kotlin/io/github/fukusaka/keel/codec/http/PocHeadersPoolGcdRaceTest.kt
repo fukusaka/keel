@@ -2,19 +2,19 @@ package io.github.fukusaka.keel.codec.http
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
-import kotlin.concurrent.atomics.AtomicInt
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.fail
 import kotlinx.cinterop.ExperimentalForeignApi
+import platform.darwin.DISPATCH_TIME_FOREVER
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_group_create
 import platform.darwin.dispatch_group_enter
 import platform.darwin.dispatch_group_leave
 import platform.darwin.dispatch_group_wait
 import platform.darwin.dispatch_queue_create
-import platform.darwin.DISPATCH_TIME_FOREVER
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.fail
 
 /**
  * Synthetic cross-queue header-pool repro: exercise [HttpHeadersPool.borrow] / [HttpHeaders.release]

@@ -1,10 +1,10 @@
 package io.github.fukusaka.keel.engine.epoll
 
-import kotlin.concurrent.Volatile
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.pthread_self
 import platform.posix.pthread_t
 import platform.posix.usleep
+import kotlin.concurrent.Volatile
 
 /**
  * In-memory [EpollSyscallOps] that lets tests script the outcome of

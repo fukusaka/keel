@@ -95,5 +95,4 @@ class KqueueEngineConnectTest {
             engine.close()
         }
     }
-
 }

@@ -12,6 +12,8 @@ import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.http.HttpClient
@@ -24,8 +26,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 /**
  * Integration tests for WebSocket support via the `KeelCio` factory using the
@@ -56,7 +56,11 @@ class KeelCioWebSocketTest {
                     "/ws",
                     object : WebSocket.Listener {
                         override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
-                        override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
+                        override fun onText(
+                            webSocket: WebSocket,
+                            data: CharSequence,
+                            last: Boolean,
+                        ): CompletionStage<*>? {
                             pendingText.append(data)
                             if (last) {
                                 texts += pendingText.toString()
@@ -100,7 +104,11 @@ class KeelCioWebSocketTest {
                     "/ws-bin",
                     object : WebSocket.Listener {
                         override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
-                        override fun onBinary(webSocket: WebSocket, data: ByteBuffer, last: Boolean): CompletionStage<*>? {
+                        override fun onBinary(
+                            webSocket: WebSocket,
+                            data: ByteBuffer,
+                            last: Boolean,
+                        ): CompletionStage<*>? {
                             if (last) {
                                 val bytes = ByteArray(data.remaining())
                                 data.get(bytes)
@@ -148,7 +156,11 @@ class KeelCioWebSocketTest {
                     "/ws",
                     object : WebSocket.Listener {
                         override fun onOpen(webSocket: WebSocket) = webSocket.request(Long.MAX_VALUE)
-                        override fun onText(webSocket: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
+                        override fun onText(
+                            webSocket: WebSocket,
+                            data: CharSequence,
+                            last: Boolean,
+                        ): CompletionStage<*>? {
                             pendingText.append(data)
                             if (last) {
                                 gotEcho.complete(pendingText.toString())
@@ -192,7 +204,8 @@ class KeelCioWebSocketTest {
         server.start(wait = false)
         try {
             val port = runBlocking {
-                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                withTimeout(15.seconds) {
+                    server.engine.resolvedConnectors().first().port
                 }
             }
             block(port)

@@ -68,7 +68,7 @@ class IoBufAsciiTextBenchmark {
     private fun median(trials: Int, m: () -> Long): Long =
         LongArray(trials) { m() }.also { it.sort() }[trials / 2]
 
-    private var sink = 0   // dead-code-elimination guard
+    private var sink = 0 // dead-code-elimination guard
 
     @Test
     fun `IoBufAsciiText vs String — 7 axes`() {
@@ -159,7 +159,9 @@ class IoBufAsciiTextBenchmark {
             measureNsPerOp(ITERS_NS) { sink += PAYLOAD.hashCode() }
         }
 
-        println("=== IoBufAsciiText vs String (payload='$PAYLOAD', ${payloadBytes.size} bytes, iters=$ITERS × $TRIALS) ===")
+        println(
+            "=== IoBufAsciiText vs String (payload='$PAYLOAD', ${payloadBytes.size} bytes, iters=$ITERS × $TRIALS) ===",
+        )
         println("  C1 construct      view=$c1View B   string(decode)=$c1String B")
         println("  C2 length         view=$c2View ns  string=$c2String ns")
         println("  C3 get(i)         view=$c3View ns  string=$c3String ns")
@@ -175,11 +177,11 @@ class IoBufAsciiTextBenchmark {
         // 16-char payload approximating a typical HTTP header value
         // (`application/json`, `text/event-stream`, etc.)
         private const val PAYLOAD = "application/json"
-        private const val CHAR_INDEX = 5         // arbitrary mid-string index
-        private const val SUB_END = 11           // substring "application"
+        private const val CHAR_INDEX = 5 // arbitrary mid-string index
+        private const val SUB_END = 11 // substring "application"
         private const val WARMUP = 2_000
-        private const val ITERS = 10_000         // for alloc bench (heavier)
-        private const val ITERS_NS = 1_000_000   // for ns/op bench (cheaper)
+        private const val ITERS = 10_000 // for alloc bench (heavier)
+        private const val ITERS_NS = 1_000_000 // for ns/op bench (cheaper)
         private const val TRIALS = 5
     }
 }

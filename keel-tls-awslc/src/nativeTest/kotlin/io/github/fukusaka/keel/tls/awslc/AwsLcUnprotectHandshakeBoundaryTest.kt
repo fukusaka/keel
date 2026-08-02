@@ -13,13 +13,9 @@ import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
-import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.convert
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
-import kotlinx.cinterop.value
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -62,7 +58,8 @@ class AwsLcUnprotectHandshakeBoundaryTest {
 
     private val tlsConfig = TlsConfig(
         certificates = TlsCertificateSource.Pem(
-            TestCertificates.SERVER_CERT, TestCertificates.SERVER_KEY,
+            TestCertificates.SERVER_CERT,
+            TestCertificates.SERVER_KEY,
         ),
         verifyMode = TlsVerifyMode.NONE,
     )
@@ -76,7 +73,8 @@ class AwsLcUnprotectHandshakeBoundaryTest {
             val collected = StringBuilder()
 
             val server = engine.bindPipeline(
-                "127.0.0.1", 0,
+                "127.0.0.1",
+                0,
                 config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory)),
             ) { channel ->
                 channel.pipeline.addLast("capture", FirstByteCaptureHandler(firstByte, collected))
@@ -100,7 +98,8 @@ class AwsLcUnprotectHandshakeBoundaryTest {
             }
 
             assertEquals(
-                'G'.code, seen,
+                'G'.code,
+                seen,
                 "first plaintext byte after AWS-LC TLS 1.3 handshake should be 'G' (HTTP request line " +
                     "start), got 0x${seen.toString(16).padStart(2, '0')}. Collected so far: " +
                     "${collected.take(64)}",

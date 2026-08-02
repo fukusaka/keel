@@ -1,14 +1,13 @@
 package io.github.fukusaka.keel.engine.netty
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-
-import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.BufferAllocatorLifecycleListener
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.PooledDirectAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
 import java.net.Socket
@@ -47,7 +46,8 @@ class NettyEngineResourceTest {
         engine.close()
 
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
@@ -88,7 +88,8 @@ class NettyEngineResourceTest {
         engine.close()
 
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
@@ -133,7 +134,8 @@ class NettyEngineResourceTest {
             "lifecycle listener must observe at least one engine-direct allocate",
         )
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Listener-mode leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
@@ -188,9 +190,9 @@ class NettyEngineResourceTest {
         engine.close()
 
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
-
 }

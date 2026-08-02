@@ -5,12 +5,11 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.io.SuspendSink
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 class SuspendHttpWriterTest {
 
@@ -122,7 +121,7 @@ class SuspendHttpWriterTest {
         assertEquals("text/html", parsed.headers.getString("Content-Type"))
         assertEquals("value", parsed.headers.getString("X-Custom"))
         source.close()
-        }
+    }
 
     /** Creates a SuspendSource that reads from a ByteArray. */
     private fun byteSource(data: ByteArray): io.github.fukusaka.keel.io.SuspendSource =
@@ -135,5 +134,5 @@ class SuspendHttpWriterTest {
                 return n
             }
             override fun close() {}
-    }
+        }
 }

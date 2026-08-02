@@ -39,7 +39,14 @@ class IoUringTransportFlushSnapshotPoolSeamTest {
         block: (FakeIoUringRing, IoUringEventLoop, IoUringIoTransport) -> Unit,
     ) {
         val el = IoUringEventLoop(logger, syscallOps = FakeIoUringSyscallOps(), ioUringRing = fake)
-        val bufRing = ProvidedBufferRing(el, logger, bufferCount = 4, bufferSize = 64, bgid = 0, FakeIoUringBufferRingOps())
+        val bufRing = ProvidedBufferRing(
+            el,
+            logger,
+            bufferCount = 4,
+            bufferSize = 64,
+            bgid = 0,
+            FakeIoUringBufferRingOps(),
+        )
         bufRing.initOnEventLoop()
         val transport = IoUringIoTransport(
             fd = 999,

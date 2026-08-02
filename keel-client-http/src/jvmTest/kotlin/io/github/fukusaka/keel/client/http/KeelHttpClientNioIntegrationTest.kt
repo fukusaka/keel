@@ -30,7 +30,10 @@ class KeelHttpClientNioIntegrationTest {
         withTimeout(budget) {
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 get("/hello") { call -> call.respondText("Hello over TCP") }
                 post("/echo") { call -> call.respondText(call.receiveBytes().decodeToString()) }
             }

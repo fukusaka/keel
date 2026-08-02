@@ -1,7 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
@@ -48,7 +47,8 @@ class KqueueEngineResourceTest {
 
             // Verify: all allocated buffers were released
             assertEquals(
-                0, tracker.outstandingCount,
+                0,
+                tracker.outstandingCount,
                 "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
             )
         }
@@ -88,7 +88,8 @@ class KqueueEngineResourceTest {
             engine.close()
 
             assertEquals(
-                0, tracker.outstandingCount,
+                0,
+                tracker.outstandingCount,
                 "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
             )
         }
@@ -121,7 +122,8 @@ class KqueueEngineResourceTest {
             engine.close()
 
             assertEquals(
-                0, tracker.outstandingCount,
+                0,
+                tracker.outstandingCount,
                 "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
             )
         }
@@ -191,5 +193,4 @@ class KqueueEngineResourceTest {
             engine.close()
         }
     }
-
 }

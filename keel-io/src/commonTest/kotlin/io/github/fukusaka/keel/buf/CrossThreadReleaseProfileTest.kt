@@ -48,12 +48,15 @@ class CrossThreadReleaseProfileTest {
         val alloc = defaultAllocator()
         val small = alloc.allocate(8192)
         val large = alloc.allocate(16384)
-        profile.onAllocated(small); profile.onReleased(small)
-        profile.onAllocated(large); profile.onReleased(large)
+        profile.onAllocated(small)
+        profile.onReleased(small)
+        profile.onAllocated(large)
+        profile.onReleased(large)
         val totals = profile.totalReleasesSnapshot()
         assertEquals(2L, totals.sum(), "two releases total")
         assertEquals(2, totals.count { it == 1L }, "in two distinct size-class slots")
-        small.release(); large.release()
+        small.release()
+        large.release()
     }
 
     @Test
@@ -61,7 +64,8 @@ class CrossThreadReleaseProfileTest {
         val profile = CrossThreadReleaseProfile.forDefaultPool()
         // > CHUNK_SIZE (256 KiB): size2SizeIdx returns the nSizes sentinel = the final slot.
         val huge = defaultAllocator().allocate(300_000)
-        profile.onAllocated(huge); profile.onReleased(huge)
+        profile.onAllocated(huge)
+        profile.onReleased(huge)
         val totals = profile.totalReleasesSnapshot()
         assertEquals(1L, totals.last(), "huge release lands in the final (huge) slot")
         assertTrue(totals.dropLast(1).all { it == 0L }, "no pooled-class slot was touched")
@@ -72,7 +76,8 @@ class CrossThreadReleaseProfileTest {
     fun `reset clears the counters`() {
         val profile = CrossThreadReleaseProfile.forDefaultPool()
         val buf = defaultAllocator().allocate(8192)
-        profile.onAllocated(buf); profile.onReleased(buf)
+        profile.onAllocated(buf)
+        profile.onReleased(buf)
         profile.reset()
         assertEquals(0L, profile.totalReleasesSnapshot().sum())
         assertEquals(0L, profile.crossThreadReleasesSnapshot().sum())

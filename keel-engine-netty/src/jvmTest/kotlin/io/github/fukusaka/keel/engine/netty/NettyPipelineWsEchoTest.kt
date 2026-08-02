@@ -79,11 +79,14 @@ class NettyPipelineWsEchoTest {
                 var echoIdx = 0
 
                 val ws = client.http.newWebSocketBuilder()
-                    .buildAsync(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener {
-                        override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
-                        override fun onText(ws: WebSocket, data: CharSequence, last: Boolean) =
-                            echoes.getOrNull(echoIdx++)?.complete(data.toString()).let { null }
-                    })
+                    .buildAsync(
+                        URI("ws://127.0.0.1:$port/ws-echo"),
+                        object : WebSocket.Listener {
+                            override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
+                            override fun onText(ws: WebSocket, data: CharSequence, last: Boolean) =
+                                echoes.getOrNull(echoIdx++)?.complete(data.toString()).let { null }
+                        },
+                    )
                     .await()
 
                 ws.sendText("hello", true).await()
@@ -127,17 +130,20 @@ class NettyPipelineWsEchoTest {
                     val echoFuture = CompletableFuture<String>()
                     val pending = StringBuilder()
                     val ws = client.http.newWebSocketBuilder()
-                        .buildAsync(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener {
-                            override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
-                            override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): Nothing? {
-                                pending.append(data)
-                                if (last) echoFuture.complete(pending.toString())
-                                return null
-                            }
-                            override fun onError(ws: WebSocket, error: Throwable) {
-                                echoFuture.completeExceptionally(error)
-                            }
-                        })
+                        .buildAsync(
+                            URI("ws://127.0.0.1:$port/ws-echo"),
+                            object : WebSocket.Listener {
+                                override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE)
+                                override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): Nothing? {
+                                    pending.append(data)
+                                    if (last) echoFuture.complete(pending.toString())
+                                    return null
+                                }
+                                override fun onError(ws: WebSocket, error: Throwable) {
+                                    echoFuture.completeExceptionally(error)
+                                }
+                            },
+                        )
                         .await()
                     return ws to echoFuture
                 }

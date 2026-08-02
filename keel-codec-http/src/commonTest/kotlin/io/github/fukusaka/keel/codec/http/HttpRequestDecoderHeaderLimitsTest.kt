@@ -106,7 +106,10 @@ class HttpRequestDecoderHeaderLimitsTest {
         // `onError`; the test pipeline's collector records it.
         assertEquals(1, collector.errors.size, "expected exactly one error")
         val cause = collector.errors.single()
-        assertTrue(cause is HttpHeaderLimitExceededException, "expected HttpHeaderLimitExceededException, got ${cause::class}")
+        assertTrue(
+            cause is HttpHeaderLimitExceededException,
+            "expected HttpHeaderLimitExceededException, got ${cause::class}",
+        )
         assertEquals("maxHeaderCount", cause.limitName)
         assertEquals(cap + 1, cause.actual)
         assertEquals(cap, cause.limit)

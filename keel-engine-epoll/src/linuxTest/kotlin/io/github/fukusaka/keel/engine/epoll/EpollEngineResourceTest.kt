@@ -1,10 +1,9 @@
 package io.github.fukusaka.keel.engine.epoll
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -43,7 +42,6 @@ class EpollEngineResourceTest {
         const val ECHO_CYCLES = 100
     }
 
-
     // --- Resource leak detection ---
 
     @Test
@@ -73,7 +71,8 @@ class EpollEngineResourceTest {
             engine.close()
 
             assertEquals(
-                0, tracker.outstandingCount,
+                0,
+                tracker.outstandingCount,
                 "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
             )
         }
@@ -112,7 +111,8 @@ class EpollEngineResourceTest {
             engine.close()
 
             assertEquals(
-                0, tracker.outstandingCount,
+                0,
+                tracker.outstandingCount,
                 "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
             )
         }
@@ -144,12 +144,12 @@ class EpollEngineResourceTest {
             engine.close()
 
             assertEquals(
-                0, tracker.outstandingCount,
+                0,
+                tracker.outstandingCount,
                 "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
             )
         }
     }
-
 
     @Test
     fun `repeated echo cycles release every buffer`() = runBlocking {
@@ -183,11 +183,11 @@ class EpollEngineResourceTest {
             engine.close()
 
             assertEquals(
-                0, tracker.outstandingCount,
+                0,
+                tracker.outstandingCount,
                 "Buffer leak over $ECHO_CYCLES cycles: " +
                     "allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
             )
         }
     }
-
 }

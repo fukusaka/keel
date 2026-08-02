@@ -8,12 +8,12 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 import platform.posix.pthread_create
 import platform.posix.pthread_join
 import platform.posix.pthread_tVar
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Verifies that [scopeLocal] gives **per-OS-thread isolation** on the raw
@@ -52,7 +52,8 @@ class ScopeLocalNativeIsolationTest {
                 val threadPtr = arena.alloc<pthread_tVar>()
                 val ref = StableRef.create(Slot(local, before, i))
                 val rc = pthread_create(
-                    threadPtr.ptr, null,
+                    threadPtr.ptr,
+                    null,
                     staticCFunction { arg ->
                         val slot = arg!!.asStableRef<Slot>().get()
                         // First read on this pthread: own fresh Box(0), not main's 99.

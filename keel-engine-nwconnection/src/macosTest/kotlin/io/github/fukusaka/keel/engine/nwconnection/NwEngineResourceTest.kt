@@ -2,20 +2,18 @@
 
 package io.github.fukusaka.keel.engine.nwconnection
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-
-import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.SlabAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
-import kotlin.concurrent.atomics.AtomicInt
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
+import kotlin.concurrent.atomics.AtomicInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -50,7 +48,8 @@ class NwEngineResourceTest {
         engine.close()
 
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
@@ -82,7 +81,8 @@ class NwEngineResourceTest {
         engine.close()
 
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
@@ -114,7 +114,8 @@ class NwEngineResourceTest {
         close(clientFd)
 
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
@@ -152,7 +153,11 @@ class NwEngineResourceTest {
         withTimeout(IO_OP_SHORT_TIMEOUT_MS) {
             while (counters.closes.load() < n) delay(5)
         }
-        assertEquals(n, counters.closes.load(), "all per-connection children drain at their own teardown, before engine close")
+        assertEquals(
+            n,
+            counters.closes.load(),
+            "all per-connection children drain at their own teardown, before engine close",
+        )
 
         server.close()
         engine.close()
@@ -160,7 +165,11 @@ class NwEngineResourceTest {
         // Double-close guard: engine.close() closes exactly one more allocator (its
         // own child) and does NOT fan out to re-close the untracked per-connection
         // children — the double-close that crashed under CPU-constrained shutdown.
-        assertEquals(n + 1, counters.closes.load(), "engine close must not re-close the untracked per-connection children")
+        assertEquals(
+            n + 1,
+            counters.closes.load(),
+            "engine close must not re-close the untracked per-connection children",
+        )
     }
 
     @Test
@@ -205,7 +214,8 @@ class NwEngineResourceTest {
             "lifecycle listener must observe at least one engine-direct allocate",
         )
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Listener-mode leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
@@ -271,7 +281,6 @@ class NwEngineResourceTest {
         server.close()
         engine.close()
     }
-
 }
 
 /**
