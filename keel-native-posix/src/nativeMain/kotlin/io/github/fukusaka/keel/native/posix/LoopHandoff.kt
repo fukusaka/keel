@@ -127,12 +127,14 @@ class LoopHandoff(
         // Fully stopped: nothing drains the queue again, so offering buys
         // nothing and pins the task's captures in the dead queue for the loop
         // object's lifetime (the dispatcher itself already declines to write
-        // the wakeup fd once quiescent). This check also filters a caller
-        // whose thread id merely *matches* the dead loop's: the real loop
-        // thread never returns here after quiescence, so a match is a
-        // recycled pthread_t, and running loop-owned teardown on it would
-        // act on a ledger that is swept, closed and no longer this thread's to
-        // touch -- the loop it belonged to is gone. A caller in
+        // the wakeup fd once quiescent). It also keeps loop-owned teardown off
+        // a thread that only *looks* like the loop. The readiness loops release
+        // their thread id as they exit, so a recycled `pthread_t` no longer
+        // reaches [inEventLoop] as a match for them -- but [inEventLoop] is
+        // supplied by the caller, and this gate holds without depending on that
+        // release. Running the teardown on such a thread would act on a ledger
+        // that is swept, closed and no longer that thread's to touch -- the
+        // loop it belonged to is gone. A caller in
         // the narrower window — the loop finished but not yet quiescent —
         // keeps the offer path below: the final drain still picks its task
         // up, on the loop.
