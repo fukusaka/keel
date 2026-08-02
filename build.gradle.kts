@@ -327,6 +327,14 @@ subprojects {
             // means "analyse everything", so a module without one is unaffected.
             val testBaseline = file("detekt-baseline-test.xml")
             if (testBaseline.exists()) baseline.set(testBaseline)
+            // The baseline is this task's input and the other task's output, and
+            // "regenerate, then check" is the obvious thing to type. Without an
+            // ordering Gradle refuses the pair outright -- both tasks fail with
+            // "uses this output of task ... without declaring an explicit or
+            // implicit dependency", which reads as a detekt problem rather than a
+            // wiring one. `mustRunAfter` rather than `dependsOn`: the gate must
+            // not regenerate the baseline it is supposed to be checking against.
+            mustRunAfter("detektTestSourcesBaseline")
             reports {
                 html.required.set(false)
                 xml.required.set(false)
