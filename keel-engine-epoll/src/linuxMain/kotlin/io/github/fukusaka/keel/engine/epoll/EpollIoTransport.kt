@@ -758,6 +758,15 @@ internal class EpollIoTransport(
      * for. The peer learns the connection is over when it is closed.
      */
     private fun reportAbandonedFin() {
+        // Cheapest test first. This runs at the end of every coalesced flush,
+        // and a FIN can only be outstanding once a half-close has happened, so
+        // a plain field read keeps the ordinary flush off the atomic below.
+        if (!outputShutdown) return
+        // A close supersedes the half-close -- its teardown discards the unsent
+        // output, and the caller asked for that. Reporting a FIN the
+        // application deliberately gave up on would be noise, and `close()`
+        // leaves the deferral flag set.
+        if (!opened) return
         if (!eventLoop.isFinishing()) return
         // A coalesced flush is still queued, and the drain that runs it will
         // attempt the write and call sendFinIfDrained itself. Giving up here

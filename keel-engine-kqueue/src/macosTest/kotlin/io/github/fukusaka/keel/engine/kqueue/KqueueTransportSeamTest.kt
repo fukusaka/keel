@@ -93,6 +93,16 @@ class KqueueTransportSeamTest {
         withTimeout(SEAM_TIMEOUT_MS) { marker.await() }
     }
 
+    /**
+     * A test that leaves writes stranded still owns them: `close()` is what
+     * releases the queue, and without it the pooled buffers outlive the test.
+     * The sibling flush tests assert this the same way.
+     */
+    private fun assertStrandedWritesReleased(transport: KqueueIoTransport, tracker: TrackingAllocator) {
+        transport.close()
+        assertEquals(0, tracker.outstandingCount, "the stranded writes must be released on close")
+    }
+
     // --- shutdownOutput ---
 
     @Test
@@ -602,8 +612,9 @@ class KqueueTransportSeamTest {
         val warns = RecordingLogger(LogLevel.WARN)
         val loop = KqueueEventLoop(warns, flushCoalescing = false)
         loop.start()
+        val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+        val transport = KqueueIoTransport(fd, loop, tracker, fake)
 
         // Buffered and stalled, then half-closed -- all on the loop, so the FIN
         // is genuinely deferred rather than refused.
@@ -611,7 +622,7 @@ class KqueueTransportSeamTest {
         loop.dispatch(
             EmptyCoroutineContext,
             Runnable {
-                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                val buf = tracker.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
                 transport.write(buf)
                 transport.shutdownOutput()
                 deferred.complete(Unit)
@@ -627,6 +638,7 @@ class KqueueTransportSeamTest {
             warns.messages.count { "deferred the FIN behind buffered writes" in it },
             "reported exactly once -- both discovery points run, and only one may claim it: ${warns.messages}",
         )
+        assertStrandedWritesReleased(transport, tracker)
     }
 
     @Test
@@ -639,14 +651,15 @@ class KqueueTransportSeamTest {
         val warns = RecordingLogger(LogLevel.WARN)
         val loop = KqueueEventLoop(warns, flushCoalescing = true)
         loop.start()
+        val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+        val transport = KqueueIoTransport(fd, loop, tracker, fake)
 
         val buffered = CompletableDeferred<Unit>()
         loop.dispatch(
             EmptyCoroutineContext,
             Runnable {
-                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                val buf = tracker.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
                 transport.write(buf)
                 buffered.complete(Unit)
             },
@@ -669,6 +682,7 @@ class KqueueTransportSeamTest {
             warns.messages.count { "deferred the FIN behind buffered writes" in it },
             "the queued flush is the last chance, so it must report -- exactly once: ${warns.messages}",
         )
+        assertStrandedWritesReleased(transport, tracker)
     }
 
     @Test
@@ -683,17 +697,18 @@ class KqueueTransportSeamTest {
         val warns = RecordingLogger(LogLevel.WARN)
         val loop = KqueueEventLoop(warns, flushCoalescing = true)
         loop.start()
+        val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply {
             enqueueWrite(fd, WriteResult.Written(PAYLOAD_BYTES))
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+        val transport = KqueueIoTransport(fd, loop, tracker, fake)
 
         val buffered = CompletableDeferred<Unit>()
         loop.dispatch(
             EmptyCoroutineContext,
             Runnable {
-                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                val buf = tracker.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
                 transport.write(buf)
                 buffered.complete(Unit)
             },
@@ -727,15 +742,16 @@ class KqueueTransportSeamTest {
         val warns = RecordingLogger(LogLevel.WARN)
         val loop = KqueueEventLoop(warns, flushCoalescing = false)
         loop.start()
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
+        val transport = KqueueIoTransport(fd, loop, tracker, fake)
         try {
-            val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-            val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
 
             val issued = CompletableDeferred<Unit>()
             loop.dispatch(
                 EmptyCoroutineContext,
                 Runnable {
-                    val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                    val buf = tracker.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
                     transport.write(buf)
                     transport.shutdownOutput()
                     issued.complete(Unit)
@@ -750,6 +766,10 @@ class KqueueTransportSeamTest {
             )
         } finally {
             withTimeout(SEAM_TIMEOUT_MS) { loop.close() }
+            // After the loop, not before: on a live loop close() hands the
+            // teardown to it and returns, so the release would not have
+            // happened yet. Once the loop is quiescent it runs on this thread.
+            assertStrandedWritesReleased(transport, tracker)
         }
     }
 
@@ -763,17 +783,18 @@ class KqueueTransportSeamTest {
         val warns = RecordingLogger(LogLevel.WARN)
         val loop = KqueueEventLoop(warns, flushCoalescing = true)
         loop.start()
+        val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply {
             enqueueWrite(fd, WriteResult.Written(PAYLOAD_BYTES))
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+        val transport = KqueueIoTransport(fd, loop, tracker, fake)
 
         val issued = CompletableDeferred<Unit>()
         loop.dispatch(
             EmptyCoroutineContext,
             Runnable {
-                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                val buf = tracker.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
                 transport.write(buf)
                 transport.shutdownOutput()
                 issued.complete(Unit)
@@ -804,14 +825,15 @@ class KqueueTransportSeamTest {
         val warns = RecordingLogger(LogLevel.WARN)
         val loop = KqueueEventLoop(warns, flushCoalescing = false)
         loop.start()
+        val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+        val transport = KqueueIoTransport(fd, loop, tracker, fake)
 
         val buffered = CompletableDeferred<Unit>()
         loop.dispatch(
             EmptyCoroutineContext,
             Runnable {
-                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                val buf = tracker.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
                 transport.write(buf)
                 buffered.complete(Unit)
             },
