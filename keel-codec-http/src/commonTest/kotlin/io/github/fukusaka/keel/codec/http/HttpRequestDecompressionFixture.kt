@@ -31,8 +31,6 @@ internal abstract class HttpRequestDecompressionFixture {
         registerDecoder(LowerDecoder)
     }
 
-    // -------------------------------------------------------------- passthrough
-
     // ------------------------------------------------------------------ stubs
 
     /** Decodes `update`'s ASCII input by lowercasing it. 1:1 byte ratio. */
@@ -144,6 +142,10 @@ internal abstract class HttpRequestDecompressionFixture {
         }
     }
 
+    /**
+     * Counts open sessions for the multiplier decoder so a leak across
+     * requests is observable.
+     */
     protected class CountingMultiplyDecoder(private val factor: Int) : Decoder {
         var openSessions: Int = 0
             private set

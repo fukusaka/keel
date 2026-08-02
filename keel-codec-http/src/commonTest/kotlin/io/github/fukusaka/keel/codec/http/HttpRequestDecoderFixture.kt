@@ -21,8 +21,8 @@ internal abstract class HttpRequestDecoderFixture {
 
     // --- Test infrastructure ---
 
-    protected val transport = TestIoTransport()
-    protected val channel = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
+    private val transport = TestIoTransport()
+    private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
 
     protected fun createPipeline(vararg handlers: Pair<String, InboundHandler>): Pipeline {
         val pipeline = channel.pipeline
