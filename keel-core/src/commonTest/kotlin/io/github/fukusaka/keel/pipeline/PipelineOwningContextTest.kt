@@ -25,6 +25,15 @@ private object RunImmediately : CoroutineDispatcher() {
 }
 
 /**
+ * Accepts every dispatch and runs none of them — a stopped EventLoop's queue.
+ * Needed where [RunImmediately] would hide the defect by running the very block
+ * a dead loop never would.
+ */
+private object NeverRuns : CoroutineDispatcher() {
+    override fun dispatch(context: CoroutineContext, block: Runnable): Unit = Unit
+}
+
+/**
  * Outbound funnel behaviour, driven through a transport that can be told it is
  * off its owning context.
  */
@@ -127,6 +136,151 @@ class PipelineOwningContextTest {
         assertEquals(1, transport.written.size)
         transport.releaseWritten()
         assertEquals(0, tracker.outstandingCount)
+    }
+
+    @Test
+    fun `requestClose closes the transport when the owning context has stopped`() {
+        // The chain walk ends at HeadHandler, whose only job is to close the
+        // transport. If the walk cannot run, nothing releases the descriptor —
+        // the write side releases its buffer, and before this the close side
+        // did not even do that much.
+        transport.owningContext = false
+        transport.owningContextAlive = false
+
+        channel.pipeline.requestClose()
+
+        assertTrue(transport.isOpen.not(), "the close must still reach the transport")
+        assertTrue(transport.closed, "the descriptor must be released, chain or no chain")
+    }
+
+    @Test
+    fun `propagateClose closes the transport when the owning context has stopped`() {
+        // Same guarantee one layer in: a handler closing after asynchronous
+        // work, on a connection whose loop has since stopped.
+        var ctx: PipelineHandlerContext? = null
+        channel.pipeline.addLast(
+            "emitter",
+            object : OutboundHandler {
+                override fun handlerAdded(c: PipelineHandlerContext) {
+                    ctx = c
+                }
+
+                override fun onWrite(ctx: PipelineHandlerContext, msg: Any) = Unit
+            },
+        )
+        transport.owningContext = false
+        transport.owningContextAlive = false
+
+        checkNotNull(ctx).propagateClose()
+
+        assertTrue(transport.closed, "the descriptor must be released, chain or no chain")
+    }
+
+    @Test
+    fun `a close on a stopped context releases the journalled reads as well as the descriptor`() {
+        // The other way a stopped connection ends. Recovering the descriptor and
+        // leaving the journal holding its buffers would fix half of the same
+        // leak -- and the journal is this pipeline's own state, so the
+        // transport's teardown cannot reach it.
+        val tracker = TrackingAllocator()
+        val stopped = TestIoTransport(tracker).apply { dispatcher = NeverRuns }
+        val stoppedChannel = object : AbstractPipelinedChannel(stopped, logger) {}
+        stoppedChannel.pipeline.notifyRead(tracker.allocate(8).also { it.writerIndex = 4 })
+        assertEquals(1, tracker.outstandingCount, "premise: the read is journalled")
+
+        stopped.owningContext = false
+        stopped.owningContextAlive = false
+        stoppedChannel.pipeline.requestClose()
+
+        assertTrue(stopped.closed, "the descriptor must be released")
+        assertEquals(0, tracker.outstandingCount, "and the journal must not be left holding its buffers")
+    }
+
+    @Test
+    fun `a handler added after the owning context stopped releases the journalled reads`() {
+        // The pipeline's other dispatch site. Reads that arrive before any
+        // inbound handler exists are journalled and replayed on the next
+        // dispatcher tick — but on a stopped loop that tick never comes, and the
+        // journal holds pooled buffers for as long as the pipeline is reachable.
+        //
+        // Driven through a dispatcher that accepts and never runs, because one
+        // that runs inline would perform the very replay a dead loop cannot.
+        val tracker = TrackingAllocator()
+        val stopped = TestIoTransport(tracker).apply { dispatcher = NeverRuns }
+        val stoppedChannel = object : AbstractPipelinedChannel(stopped, logger) {}
+        val buf = tracker.allocate(8).also { it.writerIndex = 4 }
+        stoppedChannel.pipeline.notifyRead(buf)
+        assertEquals(1, tracker.outstandingCount, "premise: the read is journalled, not yet delivered")
+        assertTrue(stopped.isOpen, "premise: open, so the release is not just the closed-transport path")
+
+        // Only `owningContextAlive` matters here: the handler-added path reads
+        // that and never consults `inOwningContext`, so setting the latter
+        // would suggest a coverage this test does not have.
+        stopped.owningContextAlive = false
+        stoppedChannel.pipeline.addLast(
+            "late",
+            object : InboundHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) = Unit
+            },
+        )
+
+        assertEquals(0, tracker.outstandingCount, "the journalled read must be released, not stranded")
+    }
+
+    @Test
+    fun `a handler added after a peer close on a stopped context still receives onInactive`() {
+        // The discard is what ends the journal, so it owes the late handler the
+        // inactivation the drain would have delivered. Without that hand-off the
+        // per-handler replay matches no branch and does nothing at all — and a
+        // bridge installed after a peer close waits for an EOF it already
+        // missed. Pins the guarantee, not the comment claiming it.
+        val tracker = TrackingAllocator()
+        val stopped = TestIoTransport(tracker).apply { dispatcher = NeverRuns }
+        val stoppedChannel = object : AbstractPipelinedChannel(stopped, logger) {}
+        stoppedChannel.pipeline.notifyInactive()
+        // Journalled alongside the lifecycle state, so this also covers the
+        // ordering the discard depends on: promote the flags, then drain the
+        // queues.
+        stoppedChannel.pipeline.notifyRead(tracker.allocate(8).also { it.writerIndex = 4 })
+
+        stopped.owningContextAlive = false
+        var sawInactive = false
+        stoppedChannel.pipeline.addLast(
+            "late",
+            object : InboundHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) = Unit
+                override fun onInactive(ctx: PipelineHandlerContext) {
+                    sawInactive = true
+                }
+            },
+        )
+
+        assertTrue(sawInactive, "the peer close observed before the handler existed must still reach it")
+        assertEquals(0, tracker.outstandingCount, "and the journalled read alongside it must be released")
+    }
+
+    @Test
+    fun `a handler added after activation on a stopped context still receives onActive`() {
+        // The replay's other branch. The discard must leave the lifecycle
+        // bookkeeping exactly where the drain would have — promoting all three
+        // flags, not just the inactive one — or half the replay stays dead.
+        val stopped = TestIoTransport().apply { dispatcher = NeverRuns }
+        val stoppedChannel = object : AbstractPipelinedChannel(stopped, logger) {}
+        stoppedChannel.pipeline.notifyActive()
+
+        stopped.owningContextAlive = false
+        var sawActive = false
+        stoppedChannel.pipeline.addLast(
+            "late",
+            object : InboundHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) = Unit
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    sawActive = true
+                }
+            },
+        )
+
+        assertTrue(sawActive, "the activation observed before the handler existed must still reach it")
     }
 
     @Test

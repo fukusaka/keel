@@ -416,14 +416,86 @@ internal class DefaultPipeline(
     }
 
     override fun requestFlush(): Pipeline {
-        onOwningContext { tail.invokeOnFlush() }
+        if (!onOwningContext { tail.invokeOnFlush() }) reportDroppedFlush()
         return this
     }
 
     override fun requestClose(): Pipeline {
-        onOwningContext { tail.invokeOnClose() }
+        if (!onOwningContext { tail.invokeOnClose() }) closeWithoutChain()
         return this
     }
+
+    /**
+     * Closes the transport when a close could not reach the chain.
+     *
+     * The walk ends at [HeadHandler], whose whole job is to call
+     * `transport.close()` — the only thing that releases the descriptor. When
+     * the walk cannot run, reproducing just that terminus here recovers the
+     * descriptor, which would otherwise stay open for the pipeline's lifetime.
+     * It is **not** a pipeline close: the handlers' `onClose` is genuinely
+     * skipped, and anything a handler releases there — a TLS codec's native
+     * session, for one — is skipped with it. That is why this is reported
+     * rather than done quietly, and why "better" here means the fd, not
+     * everything.
+     *
+     * Silent when the transport is already closed. That is the ordinary
+     * close-after-close, and `close()` is idempotent, so there is nothing to
+     * report and nothing to do.
+     *
+     * **This calls `close()` from whatever thread the caller is on, and that is
+     * only safe while "cannot dispatch" implies the loop is fully quiescent.**
+     * The engines that answer `false` do so on quiescence, so their `close()`
+     * takes its caller-thread teardown branch. An engine that answered `false`
+     * during a shutdown *in progress* would instead send this caller into the
+     * loop hand-off's wait — turning an ordinary `close()` into a spin on an
+     * arbitrary thread, inside application teardown.
+     */
+    private fun closeWithoutChain() {
+        if (transport.isOpen) {
+            logger.warn {
+                "close could not reach the pipeline — the owning context has stopped, so the handlers' " +
+                    "onClose is skipped; closing the transport directly so its descriptor is released"
+            }
+        }
+        // The journal goes with the descriptor. Nothing else releases it — it
+        // is this pipeline's own state, not the transport's, so the teardown
+        // that runs inside close() cannot reach it, and the drain that would
+        // have is exactly what is not going to happen.
+        discardPreAttachJournal()
+        // Invoked rather than re-implemented: the head *is* the terminus, and a
+        // second responsibility added there later has to land on this path too.
+        // No re-entry — the head is a DuplexHandler, so this takes the outbound
+        // branch straight into its own onClose.
+        head.invokeOnClose()
+    }
+
+    /**
+     * Reports a flush that could not reach the chain.
+     *
+     * Nothing is recovered here: a flush carries no ownership, and whatever is
+     * already buffered stays in the transport's queue until its teardown
+     * releases it. What would be wrong is saying nothing — the caller asked for
+     * bytes to go out and they will not.
+     *
+     * Silent on a closed transport, where a dropped flush is expected.
+     */
+    private fun reportDroppedFlush() {
+        if (!transport.isOpen) return
+        // Once per pipeline. A streaming response flushes per frame, and some
+        // callers reach this without the channel's own `isOpen` guard, so an
+        // engine shutdown with responses in flight would otherwise emit a line
+        // per frame per connection. The condition is per-connection, not
+        // per-frame; saying it once says all of it.
+        if (droppedFlushReported) return
+        droppedFlushReported = true
+        logger.warn {
+            "flush could not reach the pipeline — the owning context has stopped; anything already " +
+                "buffered stays queued until the transport is closed (reported once per connection)"
+        }
+    }
+
+    /** Latch for [reportDroppedFlush]; owning-context-confined like the lifecycle flags. */
+    private var droppedFlushReported: Boolean = false
 
     // --- Internal ---
 
@@ -461,18 +533,33 @@ internal class DefaultPipeline(
         var firedDrainInline = false
         if (!preAttachJournalDrained && !drainScheduled && ctx.handler is InboundHandler) {
             drainScheduled = true
-            // Defer drain via the dispatcher so any addX calls remaining
-            // in the current synchronous block (e.g. codec stack setup
-            // adding decoder + aggregator + handler back-to-back) all
-            // accumulate before drain replays through the assembled
-            // chain. Test transports backed by `Dispatchers.Unconfined`
-            // — which throws from `dispatch()` by design (Unconfined is
-            // meant for inline execution) — fall back to inline drain;
-            // unit tests typically add a single handler before
-            // `notifyXxx`, so partial-chain replay does not arise.
-            if (ioDispatcher.isDispatchNeeded(EmptyCoroutineContext)) {
+            if (!transport.canDispatchToOwningContext) {
+                // The dispatcher will not run again, so a deferred drain would
+                // sit in a queue nobody reads, holding the journal's pooled
+                // buffers for as long as this pipeline is reachable. Draining
+                // inline is not the alternative: that runs handler code off the
+                // owning context, on the assembly path every connection takes.
+                // The connection is over and these reads can no longer be
+                // handled by anyone, so they are released instead of stranded.
+                //
+                // [firedDrainInline] stays false deliberately — nothing was
+                // propagated through head, so the lifecycle replay below is
+                // still owed to this handler. The discard hands it the
+                // inactivation flag it needs; without that the replay matches
+                // no branch and silently does nothing.
+                discardPreAttachJournal()
+            } else if (ioDispatcher.isDispatchNeeded(EmptyCoroutineContext)) {
+                // Defer drain via the dispatcher so any addX calls remaining
+                // in the current synchronous block (e.g. codec stack setup
+                // adding decoder + aggregator + handler back-to-back) all
+                // accumulate before drain replays through the assembled chain.
                 ioDispatcher.dispatch(EmptyCoroutineContext, Runnable { drainPreAttachJournal() })
             } else {
+                // Test transports backed by `Dispatchers.Unconfined` — which
+                // throws from `dispatch()` by design (Unconfined is meant for
+                // inline execution) — fall back to inline drain; unit tests
+                // typically add a single handler before `notifyXxx`, so
+                // partial-chain replay does not arise.
                 drainPreAttachJournal()
                 firedDrainInline = true
             }
@@ -638,11 +725,15 @@ internal class DefaultPipeline(
         }
 
         override fun propagateFlush() {
-            pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnFlush() }
+            if (!pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnFlush() }) {
+                pipelineRef.reportDroppedFlush()
+            }
         }
 
         override fun propagateClose() {
-            pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnClose() }
+            if (!pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnClose() }) {
+                pipelineRef.closeWithoutChain()
+            }
         }
 
         // --- Invoke with try-catch (leak prevention) ---
@@ -885,6 +976,83 @@ internal class DefaultPipeline(
             // [callHandlerAdded] replay) processes onInactive.
             inactiveFired = true
             head.invokeOnInactive()
+        }
+    }
+
+    /**
+     * Releases the journalled reads when the owning context has stopped, so
+     * they are not held by a drain that will never run.
+     *
+     * Only the reads are *released*; the queued user events and errors are
+     * dropped without one. The difference is ownership, not type: [notifyRead]
+     * takes over its message — its own overflow path releases what it drops —
+     * whereas [notifyUserEvent] does not, and its overflow drops unreleased.
+     * Releasing a user event here would free something the emitter may still
+     * hold.
+     *
+     * **The lifecycle bookkeeping is exactly [drainPreAttachJournal]'s**, minus
+     * the head invocations. Not because the chain is unassembled — [addLast]
+     * links the new context before calling here, which is why the inline-drain
+     * branch has to set `firedDrainInline` at all — but because a head sweep
+     * now would reach only the handlers added so far, and deferring past that
+     * is the whole reason the drain is dispatched. On a stopped loop there is
+     * no later tick to defer to, so the per-handler replay carries what it can.
+     *
+     * That replay fires on `inactiveObserved && inactiveFired` or on
+     * `activeFired` — flags the drain promotes and this path must promote too.
+     * Leaving them as they are makes it match no branch at all and do nothing,
+     * silently: a bridge installed after a peer close would wait for an EOF it
+     * has already missed. Nothing sets them later, either — [notifyInactive]
+     * returns early once observed, and the drain early-returns once the journal
+     * is marked.
+     *
+     * **What the replay cannot carry** is anything with no branch of its own:
+     * a journalled writability change (the drain delivers it through head
+     * unconditionally; the replay only inside the `activeFired` branch), the
+     * queued user events, and the errors — which is why the errors are at least
+     * reported with their cause below rather than dropped.
+     *
+     * Marking the journal drained stops later reads from re-filling a queue
+     * with the same fate.
+     */
+    private fun discardPreAttachJournal() {
+        // Guarded like [drainPreAttachJournal]: there are two callers now, and
+        // a close after the journal already went would otherwise re-run the
+        // flag promotion below.
+        if (preAttachJournalDrained) return
+        preAttachJournalDrained = true
+        // Promoted before anything below can return early. These are what the
+        // per-handler replay reads, and they are the only delivery left.
+        if (pendingActive) {
+            pendingActive = false
+            activeFired = true
+        }
+        pendingWritability?.let { writable ->
+            pendingWritability = null
+            writabilityCurrent = writable
+        }
+        if (inactiveObserved) inactiveFired = true
+        val reads = pendingReads.size
+        val events = pendingUserEvents.size
+        val errors = pendingErrors.size
+        while (pendingReads.isNotEmpty()) {
+            ReferenceCountUtil.safeRelease(pendingReads.removeFirst())
+        }
+        pendingUserEvents.clear()
+        pendingReadComplete = false
+        // Errors are reported individually, with their cause, the way the
+        // journal's own overflow path reports them. Dropping the only record of
+        // why a connection failed is the silent failure this codebase forbids.
+        while (pendingErrors.isNotEmpty()) {
+            val cause = pendingErrors.removeFirst()
+            logger.warn(cause) { "Discarded a journalled error — this connection's owning context has stopped" }
+        }
+        if (reads > 0 || events > 0 || errors > 0) {
+            logger.warn {
+                "Discarded the pre-attach journal ($reads read(s), $events user event(s), $errors error(s)) " +
+                    "— a handler was added after this connection's owning context stopped, so the deferred " +
+                    "replay would never have run"
+            }
         }
     }
 
