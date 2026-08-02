@@ -75,7 +75,8 @@ jobs:
             detektMetadataLinuxMain \
             detektJvmMain \
             detektLinuxX64Main \
-            detektJsMain
+            detektJsMain \
+            detektTestSources
 
       - name: Assemble (all modules, all host-enabled targets)
         # `assemble` is a Gradle lifecycle task that transitively invokes
@@ -161,7 +162,8 @@ jobs:
             detektMetadataMacosMain \
             detektJvmMain \
             detektMacosArm64Main \
-            detektJsMain
+            detektJsMain \
+            detektTestSources
 
       - name: Assemble (all modules, all host-enabled targets)
         run: ./gradlew -Ptls -Pbenchmark assemble

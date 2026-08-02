@@ -290,24 +290,109 @@ subprojects {
             // incrementally per module and the baseline file is removed once empty.
             baseline = file("detekt-baseline.xml")
         }
-        // engine-netty: lint-only (no type resolution, no custom rules).
-        // detekt type resolution crashes on Netty's external API with NPE
-        // in IgnoredReturnValue → DescriptorUtilKt.findPackage (detekt 1.23.8).
-        // Standard rules still work via the `detekt` task (lint-only).
-        // Custom rules (IoBufLeak etc.) are excluded because they
-        // produce false positives without type resolution.
-        // Type resolution tasks (detektJvmMain etc.) must NOT be run for
-        // this module — use `detekt` task only.
-        if (name != "keel-engine-netty") {
-            dependencies {
-                "detektPlugins"(project(":detekt-rules"))
-                "detektPlugins"(rootProject.libs.detekt.formatting)
+
+        // Test sources need a task of their own: nothing else analyses them.
+        //
+        // detekt's KMP support creates a task per (target, compilation), but only
+        // `main` compilations get one for the *intermediate* source sets —
+        // `detektMetadataNativeMain` and friends exist, `detektMetadata<X>Test`
+        // does not. The per-target `detekt<Target>Test` tasks see only the leaf
+        // source set, and this project has no native test code there: it all
+        // lives in `commonTest` / `nativeTest` / `macosTest` / `linuxTest` /
+        // `appleTest`. Measured before writing this: `detektMacosArm64Test` is
+        // NO-SOURCE in every module, the bare `detekt` task likewise, and
+        // `detektJvmTest` reports `src/jvmTest` only — a 172-character line
+        // planted in `commonTest` was reported by none of them.
+        //
+        // Hence the explicit source. Two limits worth stating rather than
+        // discovering later:
+        //
+        // - Lint-only, with no classpath. The three custom rules are unaffected
+        //   (none consults a `bindingContext`), but the run as a whole is not:
+        //   detekt skips every rule that requires type resolution, so the test
+        //   sources are held to a weaker standard than `jvmMain`, which
+        //   `detektJvmMain` analyses with types. Giving this task a classpath
+        //   means a compilation per target and is a separate decision.
+        // - `src/*Test/kotlin` only. Modules excluded from detekt entirely
+        //   (`benchmark`, `sample`, `detekt-rules`) are still excluded, and
+        //   `detekt-rules` would not match anyway — its tests are a plain-JVM
+        //   `src/test/kotlin`, which the pattern does not cover.
+        tasks.register<io.gitlab.arturbosch.detekt.Detekt>("detektTestSources") {
+            description = "Runs detekt over the KMP test source sets, which no other detekt task covers."
+            group = "verification"
+            setSource(fileTree("src") { include("*Test/kotlin/**/*.kt") })
+            config.setFrom(rootProject.file("detekt.yml"))
+            buildUponDefaultConfig = true
+            // Same grandfathering contract as the main baseline above: absent
+            // means "analyse everything", so a module without one is unaffected.
+            val testBaseline = file("detekt-baseline-test.xml")
+            if (testBaseline.exists()) baseline.set(testBaseline)
+            // The baseline is this task's input and the other task's output, and
+            // "regenerate, then check" is the obvious thing to type. Without an
+            // ordering Gradle refuses the pair outright -- both tasks fail with
+            // "uses this output of task ... without declaring an explicit or
+            // implicit dependency", which reads as a detekt problem rather than a
+            // wiring one. `mustRunAfter` rather than `dependsOn`: the gate must
+            // not regenerate the baseline it is supposed to be checking against.
+            mustRunAfter("detektTestSourcesBaseline")
+            reports {
+                html.required.set(false)
+                xml.required.set(false)
+                txt.required.set(false)
+                sarif.required.set(false)
+                md.required.set(false)
             }
-        } else {
+        }
+
+        // Writes the baseline the task above reads. Separate from detekt's own
+        // `detektBaseline*` tasks, which are generated per (target, compilation)
+        // and so have the same blind spot this pair exists to cover.
+        tasks.register<io.gitlab.arturbosch.detekt.DetektCreateBaselineTask>("detektTestSourcesBaseline") {
+            description = "Regenerates the grandfathered baseline for detektTestSources."
+            group = "verification"
+            setSource(fileTree("src") { include("*Test/kotlin/**/*.kt") })
+            config.setFrom(rootProject.file("detekt.yml"))
+            buildUponDefaultConfig.set(true)
+            baseline.set(file("detekt-baseline-test.xml"))
+        }
+
+        // The rulesets are what make `detekt.yml` valid: it configures
+        // `formatting:` (detekt-formatting) and `keel:` (detekt-rules), and
+        // detekt rejects a config naming a ruleset the run does not have.
+        // engine-netty used to be denied them, which is why it could only ever
+        // run the bare `detekt` task — and that task is NO-SOURCE here, so the
+        // module got no detekt at all.
+        //
+        // Attaching them is safe. What crashes on Netty's external API is *type
+        // resolution* (NPE in IgnoredReturnValue → DescriptorUtilKt.findPackage,
+        // detekt 1.23.8), and the tasks that use it stay disabled below. The
+        // rulesets themselves do not need it: only the `jvm` target's tasks
+        // resolve types (`detektJvmMain` / `detektJvmTest` — their descriptions
+        // carry the "with type resolution" suffix and no others do), while
+        // `detektJsMain`, `detektMetadata*Main` and `detekt<NativeTarget>Main`
+        // are lint-only and already run the custom rules today. Nor can those
+        // rules behave differently without it — none of the three consults a
+        // `bindingContext`; they are purely syntactic. (The former comment here
+        // gave "custom rules produce false positives without type resolution"
+        // as the reason for the exclusion; that is not what the rules do.)
+        //
+        // This does NOT give engine-netty full coverage: `detektJvmMain` stays
+        // disabled, and the bare `detekt` task is NO-SOURCE against a KMP
+        // layout, so the module's 11 `jvmMain` files remain unanalysed. Only
+        // its test sources are reached, by the task above.
+        dependencies {
+            "detektPlugins"(project(":detekt-rules"))
+            "detektPlugins"(rootProject.libs.detekt.formatting)
+        }
+        if (name == "keel-engine-netty") {
             // Disable type resolution tasks to prevent NPE in CI.
-            // Only the lint-only `detekt` task is safe to run.
+            // Only the lint-only tasks are safe to run: the bare `detekt`, and
+            // `detektTestSources`, which is lint-only for the same reason and so
+            // cannot reach the crash. Keeping it enabled is what lets this
+            // module's test sources be analysed at all.
             afterEvaluate {
-                tasks.matching { it.name.startsWith("detekt") && it.name != "detekt" }.configureEach {
+                val lintOnly = setOf("detekt", "detektTestSources", "detektTestSourcesBaseline")
+                tasks.matching { it.name.startsWith("detekt") && it.name !in lintOnly }.configureEach {
                     enabled = false
                 }
             }

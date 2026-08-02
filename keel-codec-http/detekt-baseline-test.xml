@@ -1,0 +1,131 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ArenaLeak:NativeConcurrencyProbeTest.kt$NativeConcurrencyProbeTest$Arena()</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$( HttpMethod.GET, "/", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") }, )</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$("Accept-Encoding", "br;q=1.0")</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$("Accept-Encoding", "upper")</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$("Content-Type", "text/plain")</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$("DOS")</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$(0, encoder.openSessions, "the EncoderSession created before ensureScratch must be closed on the failure path")</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$(200)</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$(HttpMethod.GET, "/", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "br;q=1.0") })</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$(HttpMethod.GET, "/", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") })</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$(HttpMethod.GET, "/x", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") })</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$(HttpStatus(200), headers = HttpHeaders().apply { add("Content-Type", "text/plain") })</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$(ctx, HttpRequestHead(HttpMethod.GET, "/", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "br;q=1.0") }))</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$(ctx, HttpRequestHead(HttpMethod.GET, "/", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") }))</ID>
+    <ID>ArgumentListWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$(secondEncoded.startsWith("DOS"), "second chunk must encode 'dos' (not aliased to the first), got: $secondEncoded")</ID>
+    <ID>ArgumentListWrapping:HttpBodyAggregatorAllocBenchmark.kt$HttpBodyAggregatorAllocBenchmark$( perAggregation, BODY_SIZE, CHUNK_COUNT, CHUNK_SIZE, ITERATIONS, )</ID>
+    <ID>ArgumentListWrapping:HttpHeadersStaticInternBenchmark.kt$HttpHeadersStaticInternBenchmark$("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")</ID>
+    <ID>ArgumentListWrapping:HttpParserTest.kt$HttpParserTest$("POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")</ID>
+    <ID>ArgumentListWrapping:HttpParserTest.kt$HttpParserTest$("POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecoderHeaderBytesLimitTest.kt$HttpRequestDecoderHeaderBytesLimitTest$(cause is HttpHeaderLimitExceededException, "expected HttpHeaderLimitExceededException, got ${cause::class}")</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecoderHeaderLimitsTest.kt$HttpRequestDecoderHeaderLimitsTest$(cause is HttpHeaderLimitExceededException, "expected HttpHeaderLimitExceededException, got ${cause::class}")</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecoderRequestStartedTest.kt$HttpRequestDecoderRequestStartedTest$("start", "head", "start", "head")</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecoderRequestStartedTest.kt$HttpRequestDecoderRequestStartedTest$(listOf("start", "head", "start", "head"), rec.events, "each pipelined request announces its own start")</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionAllocBenchmark.kt$HttpRequestDecompressionAllocBenchmark$( perDecode, INPUT_SIZE, FACTOR, INPUT_SIZE * FACTOR, ITERATIONS, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionAllocBenchmark.kt$HttpRequestDecompressionAllocBenchmark$( registry, DefaultAllocator, decompressionLimit = Long.MAX_VALUE, ratioLimit = Int.MAX_VALUE, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/a", headers = HttpHeaders().apply { add("Content-Encoding", "x200") add("Content-Length", "0") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/a", headers = HttpHeaders().apply { add("Content-Encoding", "x200") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/b", headers = HttpHeaders().apply { add("Content-Encoding", "lower") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/b", headers = HttpHeaders().apply { add("Content-Encoding", "x200") add("Content-Length", "0") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/r1", headers = HttpHeaders().apply { add("Content-Encoding", "x4") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/r2", headers = HttpHeaders().apply { add("Content-Encoding", "x4") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", // "lower" alone is registered; with another token it must be rejected. headers = HttpHeaders().apply { add("Content-Encoding", "lower, gzip") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "br") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "lower") add("Content-Length", "0") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "lower") add("Content-Length", "5") }, body = "HELLO".encodeToByteArray(), )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "lower") add("Content-Length", "999999999") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "lower") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "lower, br") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "x1") add("Content-Length", "100") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "x1") add("Content-Length", "100") }, body = ByteArray(100), )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "x1000") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "x200") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "x4") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "zstd") }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", encoding) }, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( HttpMethod.POST, "/upload", headers = HttpHeaders().apply { add("Content-Encoding", variant) }, body = "HI".encodeToByteArray(), )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( method = HttpMethod.POST, uri = "/upload", headers = HttpHeaders().apply { add("Content-Encoding", "lower") }, body = null, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, decompressionLimit = 10L, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, decompressionLimit = 10L, ratioLimit = Int.MAX_VALUE, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, decompressionLimit = 16L, ratioLimit = Int.MAX_VALUE, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, decompressionLimit = 50L, ratioLimit = 100, ratioBurst = 0, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, decompressionLimit = Long.MAX_VALUE, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, decompressionLimit = Long.MAX_VALUE, ratioLimit = 100, // ratioBurst left at default (= 0). )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, decompressionLimit = Long.MAX_VALUE, ratioLimit = 100, ratioBurst = 0, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, decompressionLimit = Long.MAX_VALUE, ratioLimit = 100, ratioBurst = 2, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, decompressionLimit = Long.MAX_VALUE, ratioLimit = 100, ratioBurst = 3, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, decompressionLimit = Long.MAX_VALUE, ratioLimit = Int.MAX_VALUE, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, DefaultAllocator, ratioLimit = Int.MAX_VALUE, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registry, tracker, decompressionLimit = 10L, ratioLimit = Int.MAX_VALUE, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registryWithLower, DefaultAllocator, unknownEncodingPolicy = UnknownEncodingPolicy.BadRequest, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registryWithLower, DefaultAllocator, unknownEncodingPolicy = UnknownEncodingPolicy.Passthrough, )</ID>
+    <ID>ArgumentListWrapping:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$( registryWithLower, DefaultAllocator, unknownEncodingPolicy = UnknownEncodingPolicy.UnsupportedMediaType, )</ID>
+    <ID>ArgumentListWrapping:NativeConcurrencyProbeTest.kt$NativeConcurrencyProbeTest$( threadPtr.ptr, null, staticCFunction { arg -> SharedState.value = 42 arg!!.asStableRef&lt;Unit>().dispose() null }, ref.asCPointer(), )</ID>
+    <ID>ArgumentListWrapping:NativeConcurrencyProbeTest.kt$NativeConcurrencyProbeTest$( threadPtr.ptr, null, staticCFunction { arg -> val slot = arg!!.asStableRef&lt;IntSlot>().get() val before = IsolatedState.value // own copy, expect 0 IsolatedState.value = 7 + slot.index slot.results[slot.index] = before arg.asStableRef&lt;IntSlot>().dispose() null }, ref.asCPointer(), )</ID>
+    <ID>ComplexCondition:HttpResponseEncoderTest.kt$HttpResponseEncoderTest$allBytes[i] == CR &amp;&amp; allBytes[i + 1] == LF &amp;&amp; allBytes[i + 2] == CR &amp;&amp; allBytes[i + 3] == LF</ID>
+    <ID>ImportOrdering:HttpBodyAggregatorTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.IoBuf import io.github.fukusaka.keel.buf.TrackingAllocator import io.github.fukusaka.keel.logging.PrintLogger import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel import io.github.fukusaka.keel.pipeline.PipelineHandlerContext import io.github.fukusaka.keel.pipeline.InboundHandler import io.github.fukusaka.keel.pipeline.Pipeline import io.github.fukusaka.keel.testing.transport.TestIoTransport import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertIs import kotlin.test.assertNotNull import kotlin.test.assertNull import kotlin.test.assertTrue</ID>
+    <ID>ImportOrdering:HttpRequestDecompressionHandlerTest.kt$import io.github.fukusaka.keel.buf.BufferAllocator import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.IoBuf import io.github.fukusaka.keel.buf.TrackingAllocator import io.github.fukusaka.keel.compression.CodecStatus import io.github.fukusaka.keel.compression.CompressionRegistry import io.github.fukusaka.keel.compression.Decoder import io.github.fukusaka.keel.compression.DecoderOptions import io.github.fukusaka.keel.compression.DecoderSession import io.github.fukusaka.keel.pipeline.PipelineHandler import io.github.fukusaka.keel.pipeline.PipelineHandlerContext import io.github.fukusaka.keel.pipeline.Pipeline as PipelineType import io.github.fukusaka.keel.pipeline.PipelinedChannel import kotlin.test.Test import kotlin.test.assertContentEquals import kotlin.test.assertEquals import kotlin.test.assertFailsWith import kotlin.test.assertFalse import kotlin.test.assertNotNull import kotlin.test.assertNull import kotlin.test.assertSame import kotlin.test.assertTrue</ID>
+    <ID>ImportOrdering:NativeConcurrencyProbeTest.kt$import kotlinx.cinterop.Arena import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.cinterop.StableRef import kotlinx.cinterop.alloc import kotlinx.cinterop.asStableRef import kotlinx.cinterop.get import kotlinx.cinterop.ptr import kotlinx.cinterop.staticCFunction import kotlin.native.concurrent.ThreadLocal import kotlin.test.Test import kotlin.test.assertTrue import platform.posix.pthread_create import platform.posix.pthread_join import platform.posix.pthread_tVar</ID>
+    <ID>ImportOrdering:PocHeadersPoolCoroutineRaceTest.kt$import kotlin.concurrent.atomics.AtomicInt import kotlin.concurrent.atomics.ExperimentalAtomicApi import kotlin.coroutines.CoroutineContext import kotlin.test.Test import kotlin.test.assertEquals import kotlin.time.Duration.Companion.seconds import kotlinx.cinterop.COpaquePointer import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.cinterop.StableRef import kotlinx.coroutines.CompletableDeferred import kotlinx.coroutines.CoroutineDispatcher import kotlinx.coroutines.Job import kotlinx.coroutines.Runnable import kotlinx.coroutines.delay import kotlinx.coroutines.launch import kotlinx.coroutines.runBlocking import kotlinx.coroutines.withTimeout import kotlinx.coroutines.yield import platform.darwin.dispatch_async import platform.darwin.dispatch_get_specific import platform.darwin.dispatch_queue_create import platform.darwin.dispatch_queue_set_specific import platform.darwin.dispatch_queue_t</ID>
+    <ID>ImportOrdering:PocHeadersPoolGcdRaceTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.IoBuf import kotlin.concurrent.atomics.AtomicInt import kotlin.concurrent.atomics.ExperimentalAtomicApi import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.fail import kotlinx.cinterop.ExperimentalForeignApi import platform.darwin.dispatch_async import platform.darwin.dispatch_group_create import platform.darwin.dispatch_group_enter import platform.darwin.dispatch_group_leave import platform.darwin.dispatch_group_wait import platform.darwin.dispatch_queue_create import platform.darwin.DISPATCH_TIME_FOREVER</ID>
+    <ID>ImportOrdering:SuspendHttpParserTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.IoBuf import io.github.fukusaka.keel.io.BufferedSuspendSource import io.github.fukusaka.keel.io.SuspendSource import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFailsWith import kotlin.test.assertNull import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout</ID>
+    <ID>ImportOrdering:SuspendHttpWriterTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.IoBuf import io.github.fukusaka.keel.io.BufferedSuspendSink import io.github.fukusaka.keel.io.BufferedSuspendSource import io.github.fukusaka.keel.io.SuspendSink import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout</ID>
+    <ID>Indentation:HttpBodyAggregatorTest.kt$HttpBodyAggregatorTest$ </ID>
+    <ID>Indentation:HttpParserTest.kt$HttpParserTest$ </ID>
+    <ID>Indentation:HttpPipelineIntegrationTest.kt$HttpPipelineIntegrationTest$ </ID>
+    <ID>Indentation:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$ </ID>
+    <ID>Indentation:RoutingHandlerTest.kt$RoutingHandlerTest$ </ID>
+    <ID>Indentation:SuspendHttpParserTest.kt$SuspendHttpParserTest$ </ID>
+    <ID>Indentation:SuspendHttpWriterTest.kt$SuspendHttpWriterTest$ </ID>
+    <ID>Indentation:SuspendHttpWriterTest.kt$SuspendHttpWriterTest.&lt;no name provided>$ </ID>
+    <ID>LargeClass:HttpRequestDecoderTest.kt$HttpRequestDecoderTest</ID>
+    <ID>LargeClass:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest</ID>
+    <ID>MaxLineLength:CompressionHandlerTest.kt$CompressionHandlerTest$handler.onRead(ctx, HttpRequestHead(HttpMethod.GET, "/", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "br;q=1.0") }))</ID>
+    <ID>MaxLineLength:CompressionHandlerTest.kt$CompressionHandlerTest$handler.onRead(ctx, HttpRequestHead(HttpMethod.GET, "/", HttpVersion.HTTP_1_1, HttpHeaders().apply { add("Accept-Encoding", "upper") }))</ID>
+    <ID>MaxLineLength:HttpHeadersStaticInternBenchmark.kt$HttpHeadersStaticInternBenchmark$h.add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")</ID>
+    <ID>MaximumLineLength:CompressionHandlerTest.kt$CompressionHandlerTest$ </ID>
+    <ID>MaximumLineLength:HttpHeadersStaticInternBenchmark.kt$HttpHeadersStaticInternBenchmark$ </ID>
+    <ID>NoMultipleSpaces:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$ </ID>
+    <ID>NoMultipleSpaces:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$ </ID>
+    <ID>NoMultipleSpaces:HttpRequestEncoderTest.kt$HttpRequestEncoderTest$ </ID>
+    <ID>NoUnusedImports:SuspendHttpParserTest.kt$io.github.fukusaka.keel.codec.http.SuspendHttpParserTest.kt</ID>
+    <ID>NoUnusedImports:SuspendHttpWriterTest.kt$io.github.fukusaka.keel.codec.http.SuspendHttpWriterTest.kt</ID>
+    <ID>PropertyWrapping:CompressionHandlerTest.kt$CompressionHandlerTest$val head = HttpResponseHead(HttpStatus(200), headers = HttpHeaders().apply { add("Content-Type", "text/plain") })</ID>
+    <ID>PropertyWrapping:HttpParserTest.kt$HttpParserTest$val src = buffer("POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")</ID>
+    <ID>PropertyWrapping:HttpParserTest.kt$HttpParserTest$val src = buffer("POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n")</ID>
+    <ID>StringTemplate:HttpHeadersCdnLookupBenchmark.kt$HttpHeadersCdnLookupBenchmark$${median}</ID>
+    <ID>StringTemplate:HttpHeadersCdnLookupBenchmark.kt$HttpHeadersCdnLookupBenchmark$${total}</ID>
+    <ID>StringTemplate:HttpHeadersLookupBenchmark.kt$HttpHeadersLookupBenchmark$${i}</ID>
+    <ID>StringTemplate:HttpHeadersLookupBenchmark.kt$HttpHeadersLookupBenchmark$${nsHit}</ID>
+    <ID>StringTemplate:HttpHeadersLookupBenchmark.kt$HttpHeadersLookupBenchmark$${nsMiss}</ID>
+    <ID>SwallowedException:CompressionHandlerTest.kt$CompressionHandlerTest$e: IllegalStateException</ID>
+    <ID>SwallowedException:HttpRequestDecompressionHandlerTest.kt$HttpRequestDecompressionHandlerTest$e: IllegalStateException</ID>
+    <ID>TrailingCommaOnCallSite:HttpParserTest.kt$HttpParserTest$( "GET /first HTTP/1.1\r\nHost: example.com\r\n\r\n" + "GET /second HTTP/1.1\r\nHost: example.com\r\n\r\n" )</ID>
+    <ID>TrailingCommaOnCallSite:HttpParserTest.kt$HttpParserTest$( "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\nContent-Length: 999\r\n\r\n" + "5\r\nhello\r\n0\r\n\r\n" )</ID>
+    <ID>TrailingCommaOnCallSite:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$( "GET /first HTTP/1.1\r\nHost: example.com\r\n\r\n" + "GET /second HTTP/1.1\r\nHost: example.com\r\n\r\n" )</ID>
+    <ID>TrailingCommaOnCallSite:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$( "POST / HTTP/1.1\r\n" + "Host: example.com\r\n" + "Transfer-Encoding: chunked\r\n" + "Content-Length: 5\r\n" + "\r\n" )</ID>
+    <ID>TrailingCommaOnCallSite:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$( "POST /data HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\nBODY" + "GET /next HTTP/1.1\r\nHost: example.com\r\n\r\n" )</ID>
+    <ID>TrailingCommaOnCallSite:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$( "POST /submit HTTP/1.1\r\n" + "Host: example.com\r\n" + "Content-Length: 5\r\n" + "\r\n" + "hello" )</ID>
+    <ID>TrailingCommaOnCallSite:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$( bufOf( "GET /first HTTP/1.1\r\nHost: example.com\r\n\r\n" + "GET /second HTTP/1.1\r\nHost: example.com\r\n\r\n" ) )</ID>
+    <ID>TrailingCommaOnCallSite:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$( bufOf( "POST / HTTP/1.1\r\n" + "Host: example.com\r\n" + "Transfer-Encoding: chunked\r\n" + "Content-Length: 5\r\n" + "\r\n" ) )</ID>
+    <ID>TrailingCommaOnCallSite:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$( bufOf( "POST /data HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\n\r\nBODY" + "GET /next HTTP/1.1\r\nHost: example.com\r\n\r\n" ) )</ID>
+    <ID>TrailingCommaOnCallSite:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$( bufOf( "POST /submit HTTP/1.1\r\n" + "Host: example.com\r\n" + "Content-Length: 5\r\n" + "\r\n" + "hello" ) )</ID>
+    <ID>TrailingCommaOnCallSite:HttpRequestDecoderTest.kt$HttpRequestDecoderTest$( bufOf("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n") )</ID>
+    <ID>TrailingCommaOnCallSite:HttpResponseEncoderTest.kt$HttpResponseEncoderTest$( HttpResponse(HttpStatus.OK, version = HttpVersion.HTTP_1_0) )</ID>
+    <ID>TrailingCommaOnCallSite:HttpWriterTest.kt$HttpWriterTest$( "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\n", out.readString() )</ID>
+    <ID>TrailingCommaOnCallSite:HttpWriterTest.kt$HttpWriterTest$( "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello", out.readString() )</ID>
+    <ID>TrailingCommaOnCallSite:HttpWriterTest.kt$HttpWriterTest$( "POST /submit HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello", result )</ID>
+    <ID>UnusedPrivateProperty:SuspendHttpParserTest.kt$SuspendHttpParserTest.&lt;no name provided>$i</ID>
+    <ID>Wrapping:CompressionHandlerTest.kt$CompressionHandlerTest$add("Accept-Encoding", "br;q=1.0")</ID>
+    <ID>Wrapping:CompressionHandlerTest.kt$CompressionHandlerTest$add("Accept-Encoding", "upper")</ID>
+    <ID>Wrapping:CompressionHandlerTest.kt$CompressionHandlerTest.CountingUpperEncoder.&lt;no name provided>$;</ID>
+    <ID>Wrapping:HttpHeadersCharSequenceLookupTest.kt$HttpHeadersCharSequenceLookupTest$;</ID>
+    <ID>Wrapping:HttpResponseEncoderTest.kt$HttpResponseEncoderTest$;</ID>
+    <ID>Wrapping:RoutingHandlerTest.kt$RoutingHandlerTest$(</ID>
+    <ID>Wrapping:RoutingHandlerTest.kt$RoutingHandlerTest$;</ID>
+  </CurrentIssues>
+</SmellBaseline>

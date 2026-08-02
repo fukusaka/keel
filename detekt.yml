@@ -55,6 +55,45 @@ empty-blocks:
     active: false
 
 naming:
+  # FunctionNaming: test names are natural-language phrases in backticks, which
+  # is the project's own convention, so the rule must not see test sources.
+  # detekt's default `excludes` already lists commonTest / jvmTest / jsTest.
+  # What it omits is the native-family source sets this project actually uses,
+  # and every one of the five added below carries findings -- measured with
+  # this override removed, on both gate hosts, because the module set differs
+  # between them:
+  #
+  #   macOS host: nativeTest 229, macosTest 192, appleTest 5, opensslPeerTest 3
+  #   Linux host: linuxTest 392, nativeTest 229, appleTest 5, macosTest 4,
+  #               opensslPeerTest 3
+  #
+  # commonTest / jvmTest / jsTest report zero on both, as the default list
+  # implies. linuxTest is the largest single contributor and is invisible from
+  # a macOS host, where engine-epoll and engine-io-uring are not in the build
+  # at all -- so do not prune this list from a one-host run.
+  #
+  # The whole list is repeated because `excludes` is replaced wholesale, not
+  # merged, under buildUponDefaultConfig.
+  #
+  # By source set rather than by `@Test`: an `ignoreAnnotated` entry matches on
+  # simple name from any package, so it would also disable the rule for any
+  # unrelated annotation called `Test` -- including in production code, where
+  # the camelCase requirement should stay.
+  FunctionNaming:
+    excludes:
+      - '**/test/**'
+      - '**/androidTest/**'
+      - '**/commonTest/**'
+      - '**/jvmTest/**'
+      - '**/androidUnitTest/**'
+      - '**/androidInstrumentedTest/**'
+      - '**/jsTest/**'
+      - '**/iosTest/**'
+      - '**/nativeTest/**'
+      - '**/appleTest/**'
+      - '**/macosTest/**'
+      - '**/linuxTest/**'
+      - '**/opensslPeerTest/**'
   # Allow short names in cinterop contexts (fd, ev, rc, n, etc.)
   FunctionParameterNaming:
     parameterPattern: '[a-z][A-Za-z0-9]*'

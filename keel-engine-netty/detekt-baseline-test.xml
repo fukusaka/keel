@@ -1,0 +1,55 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ArgumentListWrapping:NettyByteBufIoBufTest.kt$NettyByteBufIoBufTest$(byteBuf, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = NoOpLifecycleListener)</ID>
+    <ID>ArgumentListWrapping:NettyByteBufIoBufTest.kt$NettyByteBufIoBufTest$(first, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = NoOpLifecycleListener)</ID>
+    <ID>ArgumentListWrapping:NettyByteBufIoBufTest.kt$NettyByteBufIoBufTest$(reused, "expected at least one wrapper object reuse across $BORROW_RELEASE_CYCLES borrow/release cycles on a FastThreadLocalThread")</ID>
+    <ID>ArgumentListWrapping:NettyByteBufIoBufTest.kt$NettyByteBufIoBufTest$(second, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = NoOpLifecycleListener)</ID>
+    <ID>ArgumentListWrapping:NettyEngineReadWriteTest.kt$NettyEngineReadWriteTest$( ch.asSuspendSink(), ch.allocator, )</ID>
+    <ID>ArgumentListWrapping:NettyEngineReadWriteTest.kt$NettyEngineReadWriteTest$( ch.asSuspendSource(), ch.allocator, )</ID>
+    <ID>ArgumentListWrapping:NettyEngineResourceTest.kt$NettyEngineResourceTest$( 0, tracker.outstandingCount, "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}", )</ID>
+    <ID>ArgumentListWrapping:NettyEngineResourceTest.kt$NettyEngineResourceTest$( 0, tracker.outstandingCount, "Listener-mode leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}", )</ID>
+    <ID>ArgumentListWrapping:NettyIoTransportFlushListenerPoolTest.kt$NettyIoTransportFlushListenerPoolTest$(2, completions, "resolving generation 1 afterward must not have been affected by generation 2's completion")</ID>
+    <ID>ArgumentListWrapping:NettyPipelineWsEchoSeamTest.kt$NettyPipelineWsEchoSeamTest$(0)</ID>
+    <ID>ArgumentListWrapping:NettyPipelineWsEchoSeamTest.kt$NettyPipelineWsEchoSeamTest$(WsFrame(fin = true, opcode = WsOpcode.CLOSE, maskKey = 0x55555555, payload = ByteArray(0)))</ID>
+    <ID>ArgumentListWrapping:NettyPipelineWsEchoSeamTest.kt$NettyPipelineWsEchoSeamTest$(WsFrame(fin = true, opcode = WsOpcode.PING, maskKey = 0x44444444, payload = "ping".encodeToByteArray()))</ID>
+    <ID>ArgumentListWrapping:NettyPipelineWsEchoSeamTest.kt$NettyPipelineWsEchoSeamTest$(fin = true, opcode = WsOpcode.CLOSE, maskKey = 0x55555555, payload = ByteArray(0))</ID>
+    <ID>ArgumentListWrapping:NettyPipelineWsEchoSeamTest.kt$NettyPipelineWsEchoSeamTest$(fin = true, opcode = WsOpcode.PING, maskKey = 0x44444444, payload = "ping".encodeToByteArray())</ID>
+    <ID>ComplexCondition:NettyPipelineUploadTest.kt$NettyPipelineUploadTest$prevPrevPrev == '\r'.code &amp;&amp; prevPrev == '\n'.code &amp;&amp; prev == '\r'.code &amp;&amp; b == '\n'.code</ID>
+    <ID>ImportOrdering:NettyEngineConcurrencyTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.buf.DefaultAllocator import kotlinx.coroutines.CancellationException import kotlinx.coroutines.Dispatchers import kotlinx.coroutines.async import kotlinx.coroutines.delay import kotlinx.coroutines.launch import kotlinx.coroutines.runBlocking import kotlinx.coroutines.withTimeout import java.net.Socket import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue</ID>
+    <ID>ImportOrdering:NettyEngineConnectTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertNotNull import kotlin.test.assertTrue</ID>
+    <ID>ImportOrdering:NettyEngineLifecycleTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.core.UnixSocketAddress import io.github.fukusaka.keel.buf.DefaultAllocator import kotlinx.coroutines.withTimeout import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFailsWith import kotlin.test.assertFalse import kotlin.test.assertTrue</ID>
+    <ID>ImportOrdering:NettyEngineReadWriteTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.core.IoEngineConfig import io.github.fukusaka.keel.buf.DefaultAllocator import kotlin.test.Test import kotlin.test.assertEquals</ID>
+    <ID>ImportOrdering:NettyEngineResourceTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.core.IoEngineConfig import io.github.fukusaka.keel.buf.BufferAllocator import io.github.fukusaka.keel.buf.BufferAllocatorLifecycleListener import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.IoBuf import io.github.fukusaka.keel.buf.PooledDirectAllocator import io.github.fukusaka.keel.buf.TrackingAllocator import kotlinx.coroutines.withTimeout import java.net.InetAddress import java.net.Socket import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue</ID>
+    <ID>Indentation:NettyPipelineUploadTest.kt$NettyPipelineUploadTest$ </ID>
+    <ID>Indentation:NettyPipelineWsStressTest.kt$NettyPipelineWsStressTest$ </ID>
+    <ID>Indentation:TestCertificates.kt$TestCertificates$ </ID>
+    <ID>MaxLineLength:NettyByteBufIoBufTest.kt$NettyByteBufIoBufTest$assertTrue(reused, "expected at least one wrapper object reuse across $BORROW_RELEASE_CYCLES borrow/release cycles on a FastThreadLocalThread")</ID>
+    <ID>MaxLineLength:NettyByteBufIoBufTest.kt$NettyByteBufIoBufTest$val buf = NettyByteBufIoBuf.borrow(byteBuf, baseOffset = 0, initialWriterIndex = 0, lifecycleListener = NoOpLifecycleListener)</ID>
+    <ID>MaximumLineLength:NettyByteBufIoBufTest.kt$NettyByteBufIoBufTest$ </ID>
+    <ID>MultiLineIfElse:NettyPipelineUploadTest.kt$NettyPipelineUploadTest$break</ID>
+    <ID>NoBlankLineBeforeRbrace:NettyEngineConcurrencyTest.kt$NettyEngineConcurrencyTest$ </ID>
+    <ID>NoBlankLineBeforeRbrace:NettyEngineConnectTest.kt$NettyEngineConnectTest$ </ID>
+    <ID>NoBlankLineBeforeRbrace:NettyEngineLifecycleTest.kt$NettyEngineLifecycleTest$ </ID>
+    <ID>NoBlankLineBeforeRbrace:NettyEngineReadWriteTest.kt$NettyEngineReadWriteTest$ </ID>
+    <ID>NoBlankLineBeforeRbrace:NettyEngineResourceTest.kt$NettyEngineResourceTest$ </ID>
+    <ID>NoBlankLineBeforeRbrace:NettyPipelineWsEchoSeamTest.kt$NettyPipelineWsEchoSeamTest$ </ID>
+    <ID>NoUnusedImports:NettyEngineConcurrencyTest.kt$io.github.fukusaka.keel.engine.netty.NettyEngineConcurrencyTest.kt</ID>
+    <ID>SwallowedException:NettyEngineIdleTimeoutTest.kt$NettyEngineIdleTimeoutTest$e: IOException</ID>
+    <ID>SwallowedException:NettyEngineIdleTimeoutTest.kt$NettyEngineIdleTimeoutTest$e: SocketTimeoutException</ID>
+    <ID>UnusedPrivateProperty:NettyReadPathAllocationBenchmark.kt$NettyReadPathAllocationBenchmark$i</ID>
+    <ID>UnusedPrivateProperty:NettySslInstallerTlsConfigTest.kt$NettySslInstallerTlsConfigTest$private val clientMTlsCerts = TlsCertificateSource.Pem( TestCertificates.CLIENT_CERT, TestCertificates.CLIENT_KEY, )</ID>
+    <ID>Wrapping:NettyByteBufAllocatorTest.kt$NettyByteBufAllocatorTest$;</ID>
+    <ID>Wrapping:NettyByteBufIoBufTest.kt$NettyByteBufIoBufTest$;</ID>
+    <ID>Wrapping:NettyByteBufIoBufWrapperAllocationBenchmark.kt$NettyByteBufIoBufWrapperAllocationBenchmark$;</ID>
+    <ID>Wrapping:NettyFlushListenerAllocationBenchmark.kt$NettyFlushListenerAllocationBenchmark$;</ID>
+    <ID>Wrapping:NettyPipelineWsEchoTest.kt$NettyPipelineWsEchoTest$(</ID>
+    <ID>Wrapping:NettyPipelineWsEchoTest.kt$NettyPipelineWsEchoTest$(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener { override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE) override fun onText(ws: WebSocket, data: CharSequence, last: Boolean) = echoes.getOrNull(echoIdx++)?.complete(data.toString()).let { null } })</ID>
+    <ID>Wrapping:NettyPipelineWsEchoTest.kt$NettyPipelineWsEchoTest$(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener { override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE) override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): Nothing? { pending.append(data) if (last) echoFuture.complete(pending.toString()) return null } override fun onError(ws: WebSocket, error: Throwable) { echoFuture.completeExceptionally(error) } })</ID>
+    <ID>Wrapping:NettyPipelineWsStressTest.kt$NettyPipelineWsStressTest$(</ID>
+    <ID>Wrapping:NettyPipelineWsStressTest.kt$NettyPipelineWsStressTest$(URI("ws://127.0.0.1:$port/ws-echo"), object : WebSocket.Listener { override fun onOpen(ws: WebSocket) = ws.request(Long.MAX_VALUE) override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): Nothing? { if (last) { synchronized(pending) { pending.removeFirstOrNull()?.complete(data.toString()) } } return null } override fun onError(ws: WebSocket, error: Throwable) { synchronized(pending) { while (pending.isNotEmpty()) { pending.removeFirst().completeExceptionally(error) } } } })</ID>
+    <ID>Wrapping:NettyReadPathAllocationBenchmark.kt$NettyReadPathAllocationBenchmark$;</ID>
+    <ID>Wrapping:NettySslInstallerTlsConfigTest.kt$NettySslInstallerTlsConfigTest$;</ID>
+  </CurrentIssues>
+</SmellBaseline>

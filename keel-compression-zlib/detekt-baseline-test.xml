@@ -1,0 +1,37 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ArgumentListWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.Default)), payload)</ID>
+    <ID>ArgumentListWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.HuffmanOnly)), payload)</ID>
+    <ID>ArgumentListWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = unsupported)), payload)</ID>
+    <ID>ArgumentListWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$(strategy = Strategy.Default)</ID>
+    <ID>ArgumentListWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$(strategy = Strategy.HuffmanOnly)</ID>
+    <ID>ArgumentListWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$(strategy = unsupported)</ID>
+    <ID>ArgumentListWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$(tuning = DeflateTuning(strategy = Strategy.Default))</ID>
+    <ID>ArgumentListWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$(tuning = DeflateTuning(strategy = Strategy.HuffmanOnly))</ID>
+    <ID>ArgumentListWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$(tuning = DeflateTuning(strategy = unsupported))</ID>
+    <ID>ArgumentListWrapping:JsZlibRoundTripTest.kt$JsZlibRoundTripTest$(allocator, EncoderOptions(tuning = DeflateTuning(strategy = strategy)))</ID>
+    <ID>ArgumentListWrapping:JsZlibRoundTripTest.kt$JsZlibRoundTripTest$(payload, DeflateEncoder.newSession(allocator, EncoderOptions(tuning = DeflateTuning(strategy = strategy))))</ID>
+    <ID>ArgumentListWrapping:JsZlibRoundTripTest.kt$JsZlibRoundTripTest$(strategy = strategy)</ID>
+    <ID>ArgumentListWrapping:JsZlibRoundTripTest.kt$JsZlibRoundTripTest$(tuning = DeflateTuning(strategy = strategy))</ID>
+    <ID>ArgumentListWrapping:NativeZlibRoundTripTest.kt$NativeZlibRoundTripTest$(allocator, DecoderOptions())</ID>
+    <ID>ArgumentListWrapping:NativeZlibRoundTripTest.kt$NativeZlibRoundTripTest$(allocator, EncoderOptions(flushMode = FlushMode.NoFlush))</ID>
+    <ID>ArgumentListWrapping:NativeZlibRoundTripTest.kt$NativeZlibRoundTripTest$(compressed, GzipDecoder.newSession(allocator, DecoderOptions()))</ID>
+    <ID>ArgumentListWrapping:NativeZlibRoundTripTest.kt$NativeZlibRoundTripTest$(flushMode = FlushMode.NoFlush)</ID>
+    <ID>ArgumentListWrapping:NativeZlibRoundTripTest.kt$NativeZlibRoundTripTest$(payload, DeflateEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))</ID>
+    <ID>ArgumentListWrapping:NativeZlibRoundTripTest.kt$NativeZlibRoundTripTest$(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))</ID>
+    <ID>ImportOrdering:DeflateContextTakeoverTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.IoBuf import io.github.fukusaka.keel.compression.CodecStatus import io.github.fukusaka.keel.compression.DeflateCapabilities import io.github.fukusaka.keel.compression.DecoderOptions import io.github.fukusaka.keel.compression.DecoderSession import io.github.fukusaka.keel.compression.EncoderOptions import io.github.fukusaka.keel.compression.EncoderSession import io.github.fukusaka.keel.compression.FlushMode import io.github.fukusaka.keel.compression.WrapFormat import kotlin.test.Test import kotlin.test.assertContentEquals import kotlin.test.assertTrue</ID>
+    <ID>NoBlankLineBeforeRbrace:AbstractCompressionCodecContractTest.kt$AbstractCompressionCodecContractTest$ </ID>
+    <ID>NoConsecutiveBlankLines:GzipFinishBoundaryTest.kt$ </ID>
+    <ID>NoUnusedImports:GzipTrailerVerificationTest.kt$io.github.fukusaka.keel.compression.zlib.GzipTrailerVerificationTest.kt</ID>
+    <ID>PropertyWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$val coerced = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = unsupported)), payload)</ID>
+    <ID>PropertyWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$val default = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.Default)), payload)</ID>
+    <ID>PropertyWrapping:DeflateStrategyTest.kt$DeflateStrategyTest$val huffman = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.HuffmanOnly)), payload)</ID>
+    <ID>PropertyWrapping:NativeZlibRoundTripTest.kt$NativeZlibRoundTripTest$val compressed = encodeAll(payload, DeflateEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))</ID>
+    <ID>PropertyWrapping:NativeZlibRoundTripTest.kt$NativeZlibRoundTripTest$val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))</ID>
+    <ID>StringTemplate:RawFlushBoundaryTest.kt$RawFlushBoundaryTest$${outputCap}</ID>
+    <ID>Wrapping:GzipFinishBoundaryTest.kt$GzipFinishBoundaryTest$;</ID>
+    <ID>Wrapping:RawFlushBoundaryTest.kt$RawFlushBoundaryTest$;</ID>
+  </CurrentIssues>
+</SmellBaseline>
