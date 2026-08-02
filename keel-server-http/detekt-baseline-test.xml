@@ -5,35 +5,23 @@
     <ID>ArgumentListWrapping:HelloGcPressureAudit.kt$HelloGcPressureAudit$(" ${gc.name.padEnd(28)} count=${dCount.toString().padStart(6)} time=${dTime.toString().padStart(6)} ms")</ID>
     <ID>ArgumentListWrapping:HelloGcPressureAudit.kt$HelloGcPressureAudit$(28)</ID>
     <ID>ArgumentListWrapping:HelloGcPressureAudit.kt$HelloGcPressureAudit$(6)</ID>
-    <ID>ArgumentListWrapping:HttpServerHandlerTest.kt$HttpServerHandlerTest$( Router(), emptyList(), ErrorHandlers.DEFAULT, QueryParameterConfig.DEFAULT, scope, connections, )</ID>
-    <ID>ArgumentListWrapping:HttpServerHandlerTest.kt$HttpServerHandlerTest$("vary: accept", ignoreCase = true)</ID>
-    <ID>ArgumentListWrapping:HttpServerHandlerTest.kt$HttpServerHandlerTest$(method, path, predicate, produces, handler)</ID>
-    <ID>ArgumentListWrapping:HttpServerHandlerTest.kt$HttpServerHandlerTest$(responseText().contains("vary: accept", ignoreCase = true), "expected Vary: Accept: ${responseText()}")</ID>
-    <ID>ArgumentListWrapping:HttpServerHandlerTest.kt$HttpServerHandlerTest$(responseText().contains("vary: accept", ignoreCase = true), "unexpected Vary: Accept: ${responseText()}")</ID>
-    <ID>ArgumentListWrapping:HttpServerHandlerTest.kt$HttpServerHandlerTest$(timeout = 15.seconds)</ID>
     <ID>ArgumentListWrapping:RequestTimeoutTest.kt$RequestTimeoutTest$("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc".toByteArray())</ID>
     <ID>ArgumentListWrapping:RequestTimeoutTest.kt$RequestTimeoutTest$(client)</ID>
     <ID>ArgumentListWrapping:RequestTimeoutTest.kt$RequestTimeoutTest$(readUntilClosed(client), "the server must force-close a peer that never completes the request body")</ID>
     <ID>ArgumentListWrapping:StaticAssetServeTest.kt$StaticAssetServeTest$( "GET", "/assets/data.txt", "If-Range: Sun, 06 Nov 1994 08:49:37 GMT\r\nRange: bytes=0-3\r\n", )</ID>
     <ID>ArgumentListWrapping:StaticAssetServeTest.kt$StaticAssetServeTest$( router, emptyList(), ErrorHandlers.DEFAULT, QueryParameterConfig.DEFAULT, scope, )</ID>
-    <ID>ImportOrdering:BornParentedDispatchAllocMeasure.kt$import com.sun.management.ThreadMXBean import java.lang.management.ManagementFactory import java.util.concurrent.CompletableFuture import java.util.concurrent.Executors import kotlin.coroutines.Continuation import kotlin.coroutines.CoroutineContext import kotlin.coroutines.intrinsics.startCoroutineUninterceptedOrReturn import kotlin.test.Test import kotlin.test.assertTrue import kotlinx.coroutines.CoroutineScope import kotlinx.coroutines.Job import kotlinx.coroutines.SupervisorJob import kotlinx.coroutines.asCoroutineDispatcher import kotlinx.coroutines.launch</ID>
     <ID>ImportOrdering:ETagGeneratorTest.kt$import kotlinx.io.RawSource import kotlinx.io.Buffer import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertNull import kotlin.test.assertTrue import kotlin.time.Instant</ID>
-    <ID>ImportOrdering:HttpServerHandlerTest.kt$import io.github.fukusaka.keel.buf.DefaultAllocator import io.github.fukusaka.keel.buf.IoBuf import io.github.fukusaka.keel.codec.http.HttpHeaderName import io.github.fukusaka.keel.codec.http.HttpHeaders import io.github.fukusaka.keel.codec.http.HttpMethod import io.github.fukusaka.keel.codec.http.HttpResponse import io.github.fukusaka.keel.codec.http.HttpResponseHead import io.github.fukusaka.keel.codec.http.HttpStatus import io.github.fukusaka.keel.logging.PrintLogger import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel import io.github.fukusaka.keel.pipeline.PipelinedChannel import io.github.fukusaka.keel.server.http.dsl.QueryParameterConfigBuilder import io.github.fukusaka.keel.server.http.dsl.RouteGroupBuilder import io.github.fukusaka.keel.testing.transport.TestIoTransport import kotlin.test.AfterTest import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFalse import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.CancellationException import kotlinx.coroutines.CompletableDeferred import kotlinx.coroutines.CoroutineScope import kotlinx.coroutines.Dispatchers import kotlinx.coroutines.test.runTest import kotlinx.coroutines.withTimeout</ID>
     <ID>ImportOrdering:KeelHttpServerMultiConnectorTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.engine.nio.NioEngine import io.github.fukusaka.keel.server.http.dsl.keelHttpServer import java.net.HttpURLConnection import java.net.URI import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFailsWith import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.runBlocking import kotlinx.coroutines.withTimeout</ID>
     <ID>Indentation:TestCertificates.kt$TestCertificates$ </ID>
-    <ID>LargeClass:HttpServerHandlerTest.kt$HttpServerHandlerTest</ID>
-    <ID>NoUnusedImports:HttpServerHandlerTest.kt$io.github.fukusaka.keel.server.http.HttpServerHandlerTest.kt</ID>
     <ID>SpacingBetweenDeclarationsWithComments:HelloGcPressureAudit.kt$HelloGcPressureAudit.Companion$// 10 seconds is enough to trigger multiple young-gen collections</ID>
     <ID>SwallowedException:BodyRateFloorTest.kt$BodyRateFloorTest$e: SocketTimeoutException</ID>
     <ID>SwallowedException:BodyRateFloorTest.kt$BodyRateFloorTest$e: java.io.IOException</ID>
     <ID>SwallowedException:HeaderTimeoutTest.kt$HeaderTimeoutTest$e: SocketTimeoutException</ID>
     <ID>SwallowedException:HeaderTimeoutTest.kt$HeaderTimeoutTest$e: java.io.IOException</ID>
-    <ID>SwallowedException:HttpServerHandlerTest.kt$HttpServerHandlerTest$e: IllegalStateException</ID>
     <ID>SwallowedException:KeelHttpsTest.kt$KeelHttpsTest$e: SocketTimeoutException</ID>
     <ID>SwallowedException:KeelHttpsTest.kt$KeelHttpsTest$e: java.io.IOException</ID>
     <ID>SwallowedException:RequestTimeoutTest.kt$RequestTimeoutTest$e: SocketTimeoutException</ID>
     <ID>SwallowedException:RequestTimeoutTest.kt$RequestTimeoutTest$e: java.io.IOException</ID>
-    <ID>Wrapping:HttpServerHandlerTest.kt$HttpServerHandlerTest$;</ID>
     <ID>Wrapping:KeelHttpServerMultiConnectorTest.kt$KeelHttpServerMultiConnectorTest$;</ID>
   </CurrentIssues>
 </SmellBaseline>
