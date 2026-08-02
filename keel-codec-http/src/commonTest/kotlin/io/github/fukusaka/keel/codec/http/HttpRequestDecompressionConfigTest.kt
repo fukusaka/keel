@@ -11,7 +11,7 @@ import kotlin.test.assertSame
  */
 internal class HttpRequestDecompressionConfigTest : HttpRequestDecompressionFixture() {
 
-    // --- config validation (5th deep-review, lens G) ---
+    // --- config validation ---
 
     @Test
     fun `rejects a non-positive decompressionLimit at construction`() {
@@ -51,6 +51,8 @@ internal class HttpRequestDecompressionConfigTest : HttpRequestDecompressionFixt
         // Zero burst (single-shot trip) is the documented safe default.
         HttpRequestDecompressionHandler(registryWithLower, DefaultAllocator, ratioBurst = 0)
     }
+
+    // --- passthrough ---
 
     @Test
     fun `no Content-Encoding header passes through`() {

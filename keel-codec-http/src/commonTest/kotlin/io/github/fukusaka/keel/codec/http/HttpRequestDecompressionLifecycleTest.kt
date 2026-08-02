@@ -520,9 +520,4 @@ internal class HttpRequestDecompressionLifecycleTest : HttpRequestDecompressionF
         handler.handlerRemoved(ctx)
         tracker.assertNoLeaks("emit IoBuf leaked on propagateRead throw")
     }
-
-    /**
-     * Counts open sessions for the multiplier decoder so a leak across
-     * requests is observable.
-     */
 }
