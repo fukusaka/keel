@@ -56,13 +56,33 @@ empty-blocks:
 
 naming:
   # FunctionNaming: test names are natural-language phrases in backticks, which
-  # is the project's own convention ("what happens when X" reads better than a
-  # camelCase paraphrase). The rule would otherwise reject every one of them,
-  # and baselining those would put the gate permanently at odds with the
-  # convention -- each new test would trip it too. Scoped to @Test rather than
-  # to test source sets, so production code keeps the camelCase requirement.
+  # is the project's own convention, so the rule must not see test sources.
+  # detekt's default `excludes` already lists commonTest / jvmTest / jsTest --
+  # measured: with this override removed the rule fires only in macosTest (125)
+  # and nativeTest (84), never in commonTest. What it does not list is the
+  # native-family source sets this project actually uses, so they are added
+  # here. The whole list is repeated because `excludes` is replaced wholesale,
+  # not merged, under buildUponDefaultConfig.
+  #
+  # By source set rather than by `@Test`: an `ignoreAnnotated` entry matches on
+  # simple name from any package, so it would also disable the rule for any
+  # unrelated annotation called `Test` -- including in production code, where
+  # the camelCase requirement should stay.
   FunctionNaming:
-    ignoreAnnotated: ['Test']
+    excludes:
+      - '**/test/**'
+      - '**/androidTest/**'
+      - '**/commonTest/**'
+      - '**/jvmTest/**'
+      - '**/androidUnitTest/**'
+      - '**/androidInstrumentedTest/**'
+      - '**/jsTest/**'
+      - '**/iosTest/**'
+      - '**/nativeTest/**'
+      - '**/appleTest/**'
+      - '**/macosTest/**'
+      - '**/linuxTest/**'
+      - '**/opensslPeerTest/**'
   # Allow short names in cinterop contexts (fd, ev, rc, n, etc.)
   FunctionParameterNaming:
     parameterPattern: '[a-z][A-Za-z0-9]*'

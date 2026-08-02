@@ -304,11 +304,21 @@ subprojects {
         // `detektJvmTest` reports `src/jvmTest` only — a 172-character line
         // planted in `commonTest` was reported by none of them.
         //
-        // Hence the explicit source. Lint-only, with no classpath: the three
-        // custom rules are purely syntactic (none consults a `bindingContext`),
-        // so type resolution would not change what they find.
+        // Hence the explicit source. Two limits worth stating rather than
+        // discovering later:
+        //
+        // - Lint-only, with no classpath. The three custom rules are unaffected
+        //   (none consults a `bindingContext`), but the run as a whole is not:
+        //   detekt skips every rule that requires type resolution, so the test
+        //   sources are held to a weaker standard than `jvmMain`, which
+        //   `detektJvmMain` analyses with types. Giving this task a classpath
+        //   means a compilation per target and is a separate decision.
+        // - `src/*Test/kotlin` only. Modules excluded from detekt entirely
+        //   (`benchmark`, `sample`, `detekt-rules`) are still excluded, and
+        //   `detekt-rules` would not match anyway — its tests are a plain-JVM
+        //   `src/test/kotlin`, which the pattern does not cover.
         tasks.register<io.gitlab.arturbosch.detekt.Detekt>("detektTestSources") {
-            description = "Runs detekt over every test source set, including the intermediate ones."
+            description = "Runs detekt over the KMP test source sets, which no other detekt task covers."
             group = "verification"
             setSource(fileTree("src") { include("*Test/kotlin/**/*.kt") })
             config.setFrom(rootProject.file("detekt.yml"))
@@ -348,14 +358,20 @@ subprojects {
         // Attaching them is safe. What crashes on Netty's external API is *type
         // resolution* (NPE in IgnoredReturnValue → DescriptorUtilKt.findPackage,
         // detekt 1.23.8), and the tasks that use it stay disabled below. The
-        // rulesets themselves do not need it: only `detektJvmMain` / `detektJsMain`
-        // are type-resolving (the task descriptions say so), while
-        // `detektMetadata*Main` and `detekt<NativeTarget>Main` are lint-only and
-        // already run the custom rules today. Nor can those rules behave
-        // differently without it — none of the three consults a `bindingContext`;
-        // they are purely syntactic. (The former comment here gave "custom rules
-        // produce false positives without type resolution" as the reason for the
-        // exclusion; that is not what the rules do.)
+        // rulesets themselves do not need it: only the `jvm` target's tasks
+        // resolve types (`detektJvmMain` / `detektJvmTest` — their descriptions
+        // carry the "with type resolution" suffix and no others do), while
+        // `detektJsMain`, `detektMetadata*Main` and `detekt<NativeTarget>Main`
+        // are lint-only and already run the custom rules today. Nor can those
+        // rules behave differently without it — none of the three consults a
+        // `bindingContext`; they are purely syntactic. (The former comment here
+        // gave "custom rules produce false positives without type resolution"
+        // as the reason for the exclusion; that is not what the rules do.)
+        //
+        // This does NOT give engine-netty full coverage: `detektJvmMain` stays
+        // disabled, and the bare `detekt` task is NO-SOURCE against a KMP
+        // layout, so the module's 11 `jvmMain` files remain unanalysed. Only
+        // its test sources are reached, by the task above.
         dependencies {
             "detektPlugins"(project(":detekt-rules"))
             "detektPlugins"(rootProject.libs.detekt.formatting)
