@@ -382,9 +382,10 @@ abstract class AbstractIoTransport(
      * coming, and learns the connection is over only when [close] releases the
      * descriptor. Callers use the `true` to report exactly that.
      *
-     * Returns `true` at most once, so the two places that can discover an
-     * unkeepable deferral — the half-close itself, and the loop's stop
-     * notification — do not both report the same one.
+     * Returns `true` at most once, so the three places that can discover an
+     * unkeepable deferral — the half-close itself, the loop's stop
+     * notification, and the end of a queued flush that could not drain — do not
+     * report the same one more than once between them.
      *
      * **MUST** be invoked from the owning thread, and **MUST NOT** be invoked
      * while any completion path can still run: a deferral given up early is a

@@ -806,12 +806,17 @@ class KqueueTransportSeamTest {
         val drained = CompletableDeferred<Unit>()
         loop.dispatch(EmptyCoroutineContext, Runnable { drained.complete(Unit) })
         withTimeout(SEAM_TIMEOUT_MS) { drained.await() }
+        // Closed before the assertions, and unconditionally: this loop watches
+        // the fixture's fd, which tearDown closes. Leaving it running is the
+        // recycled-fd hazard tearDown exists to avoid.
+        withTimeout(SEAM_TIMEOUT_MS) { loop.close() }
 
         assertEquals(1, fake.shutdownCalls, "the queued flush must still get to send the FIN")
         assertTrue(
             warns.messages.none { "deferred the FIN behind buffered writes" in it },
             "and nothing was abandoned, so nothing should be reported: ${warns.messages}",
         )
+        assertStrandedWritesReleased(transport, tracker)
     }
 
     @Test
@@ -858,6 +863,7 @@ class KqueueTransportSeamTest {
             warns.messages.any { "deferred the FIN behind buffered writes" in it },
             "a half-close taken during the sweep must report too: ${warns.messages}",
         )
+        assertStrandedWritesReleased(transport, tracker)
     }
 
     @Test
