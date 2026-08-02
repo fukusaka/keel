@@ -20,7 +20,6 @@
     <ID>ImportOrdering:FakeEpollSyscallOps.kt$import kotlin.concurrent.Volatile import kotlinx.cinterop.ExperimentalForeignApi import platform.posix.pthread_self import platform.posix.pthread_t import platform.posix.usleep</ID>
     <ID>Indentation:EpollReadResumeAfterFinTest.kt$EpollReadResumeAfterFinTest$ </ID>
     <ID>Indentation:EpollReadResumeAfterFinTest.kt$EpollReadResumeAfterFinTest.Companion$ </ID>
-    <ID>LargeClass:EpollTransportSeamTest.kt$EpollTransportSeamTest</ID>
     <ID>NoBlankLineBeforeRbrace:EpollEngineConcurrencyTest.kt$EpollEngineConcurrencyTest$ </ID>
     <ID>NoBlankLineBeforeRbrace:EpollEngineConnectTest.kt$EpollEngineConnectTest$ </ID>
     <ID>NoBlankLineBeforeRbrace:EpollEngineLifecycleTest.kt$EpollEngineLifecycleTest$ </ID>
@@ -28,9 +27,7 @@
     <ID>NoBlankLineBeforeRbrace:EpollEngineResourceTest.kt$EpollEngineResourceTest$ </ID>
     <ID>NoConsecutiveBlankLines:EpollBindRegistrationTest.kt$EpollBindRegistrationTest$ </ID>
     <ID>NoConsecutiveBlankLines:EpollEngineResourceTest.kt$EpollEngineResourceTest$ </ID>
-    <ID>NoEmptyFirstLineInMethodBlock:EpollTransportSeamTest.kt$EpollTransportSeamTest$ </ID>
     <ID>NoMultipleSpaces:EpollEventLoopSeamTest.kt$EpollEventLoopSeamTest$ </ID>
-    <ID>NoMultipleSpaces:EpollTransportSeamTest.kt$EpollTransportSeamTest$ </ID>
     <ID>NoUnusedImports:EpollEngineConnectTest.kt$io.github.fukusaka.keel.engine.epoll.EpollEngineConnectTest.kt</ID>
     <ID>NoUnusedImports:EpollEngineResourceTest.kt$io.github.fukusaka.keel.engine.epoll.EpollEngineResourceTest.kt</ID>
     <ID>SpacingBetweenDeclarationsWithComments:EpollReadResumeAfterFinTest.kt$EpollReadResumeAfterFinTest.Companion$/** Wall-clock bound for the whole body, not just the await. */</ID>
@@ -44,7 +41,5 @@
     <ID>Wrapping:EpollEventLoopSeamTest.kt$EpollEventLoopSeamTest.&lt;no name provided>$(</ID>
     <ID>Wrapping:EpollEventLoopSeamTest.kt$EpollEventLoopSeamTest.&lt;no name provided>$(fd = 2000, interest = interest, listener = object : FdReadyListener { override fun onReady(interest: Interest) { /* no-op */ } })</ID>
     <ID>Wrapping:EpollOnReadableSeamTest.kt$EpollOnReadableSeamTest$;</ID>
-    <ID>Wrapping:EpollTransportSeamTest.kt$EpollTransportSeamTest$(</ID>
-    <ID>Wrapping:EpollTransportSeamTest.kt$EpollTransportSeamTest$(EmptyCoroutineContext, Runnable { transport.onReady(Interest.WRITE) })</ID>
   </CurrentIssues>
 </SmellBaseline>
