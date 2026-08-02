@@ -372,6 +372,29 @@ abstract class AbstractIoTransport(
     }
 
     /**
+     * Gives up a FIN that [shutdownOutputOwned] deferred, returning `true` if
+     * there was one to give up.
+     *
+     * The deferral is a promise that some later completion path will call
+     * [sendFinIfDrained] — a readiness event, or a flush finishing. An engine
+     * whose loop has stopped has no such path left, so the promise cannot be
+     * kept and the FIN is never sent: the peer waits for an EOF that is not
+     * coming, and learns the connection is over only when [close] releases the
+     * descriptor. Callers use the `true` to report exactly that.
+     *
+     * Returns `true` at most once, so the two places that can discover an
+     * unkeepable deferral — the half-close itself, and the loop's stop
+     * notification — do not both report the same one.
+     *
+     * **MUST** be invoked from the owning thread.
+     */
+    protected fun abandonDeferredFin(): Boolean {
+        if (!finDeferred) return false
+        finDeferred = false
+        return true
+    }
+
+    /**
      * Issues the TCP FIN. Called on the owning thread, at most once per
      * transport, and only while [opened] — implementations do not need their
      * own idempotency guard.

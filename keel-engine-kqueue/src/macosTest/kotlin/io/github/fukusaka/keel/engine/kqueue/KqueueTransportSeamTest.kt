@@ -592,6 +592,85 @@ class KqueueTransportSeamTest {
     // --- entry points a stopped loop used to swallow ---
 
     @Test
+    fun `a FIN deferred behind buffered writes is reported when the loop stops first`() = runBlocking {
+        // The half-close is held back until the writes drain, and the drain
+        // needs a loop that polls. When the loop stops first, nothing calls
+        // sendFinIfDrained again -- the FIN is never sent and, before this,
+        // never mentioned either: the same "no FIN, no error, no log" the
+        // quiescent case was fixed for, surviving in the one window that is
+        // deliberately routed to dispatch.
+        val warns = RecordingLogger(LogLevel.WARN)
+        val loop = KqueueEventLoop(warns, flushCoalescing = false)
+        loop.start()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
+        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+
+        // Buffered and stalled, then half-closed -- all on the loop, so the FIN
+        // is genuinely deferred rather than refused.
+        val deferred = CompletableDeferred<Unit>()
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                transport.write(buf)
+                transport.shutdownOutput()
+                deferred.complete(Unit)
+            },
+        )
+        withTimeout(SEAM_TIMEOUT_MS) { deferred.await() }
+
+        loop.close()
+
+        assertEquals(0, fake.shutdownCalls, "premise: the FIN never went out")
+        assertTrue(
+            warns.messages.any { "deferred the FIN behind buffered writes" in it },
+            "an abandoned half-close must be reported, not left silent: ${warns.messages}",
+        )
+    }
+
+    @Test
+    fun `a half-close taken during the stop sweep reports its abandoned FIN`() = runBlocking {
+        // The other ordering, and the one the sweep cannot catch: the deferral
+        // does not exist yet when the sweep walks this transport, and is created
+        // afterwards -- by a participant closing its own output as it is told
+        // the loop stopped. That runs on the loop thread with the loop already
+        // finishing, so it takes the in-loop branch, which needs the report just
+        // as much as the dispatched one.
+        val warns = RecordingLogger(LogLevel.WARN)
+        val loop = KqueueEventLoop(warns, flushCoalescing = false)
+        loop.start()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
+        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+
+        val buffered = CompletableDeferred<Unit>()
+        loop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = DefaultAllocator.allocate(PAYLOAD_BYTES).also { it.writerIndex = PAYLOAD_BYTES }
+                transport.write(buf)
+                buffered.complete(Unit)
+            },
+        )
+        withTimeout(SEAM_TIMEOUT_MS) { buffered.await() }
+
+        loop.addParticipant(
+            object : LoopParticipant {
+                override fun onLoopStopped() {
+                    transport.shutdownOutput()
+                }
+            },
+        )
+
+        loop.close()
+
+        assertEquals(0, fake.shutdownCalls, "premise: the FIN never went out")
+        assertTrue(
+            warns.messages.any { "deferred the FIN behind buffered writes" in it },
+            "a half-close taken during the sweep must report too: ${warns.messages}",
+        )
+    }
+
+    @Test
     fun `shutdownOutput on a stopped loop is refused with a warning`() = runBlocking {
         // It used to dispatch onto a queue nothing drains: no FIN, no error, no
         // log -- the peer waited for an EOF that was never coming. The FIN still

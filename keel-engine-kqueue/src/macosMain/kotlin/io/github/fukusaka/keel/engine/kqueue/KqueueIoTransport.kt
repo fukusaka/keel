@@ -163,6 +163,10 @@ internal class KqueueIoTransport(
                 eventLoop.logger.warn(t) { "flush waiter's cancellation threw while the EventLoop was stopping" }
             }
         }
+        // The other ordering: a FIN deferred while the loop was still running,
+        // whose drain never came. The sweep runs before the final drain, so it
+        // sees this one and the half-close path above sees the other.
+        reportAbandonedFin()
         onReadClosed?.invoke()
     }
 
@@ -351,13 +355,13 @@ internal class KqueueIoTransport(
                 "shutdownOutput() on a stopped EventLoop: fd=$fd — the FIN is not sent, " +
                     "the peer sees the close when this channel is closed"
             }
-            eventLoop.inEventLoop() -> shutdownOutputOwned()
+            eventLoop.inEventLoop() -> halfCloseAndReport()
             // A plain check rather than the loop hand-off: that one spins out a
             // loop mid-shutdown, and this is a non-suspending call any thread
             // may make per connection, so blocking it would expose every such
             // caller to a wait that runs application teardown. The mid-shutdown
             // window keeps the dispatch, and the final drain still runs it.
-            else -> eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOwned() })
+            else -> eventLoop.dispatch(EmptyCoroutineContext, Runnable { halfCloseAndReport() })
         }
     }
 
@@ -725,6 +729,42 @@ internal class KqueueIoTransport(
      */
     private fun stoppedLoopFlushCause() =
         CancellationException("EventLoop stopped before the pending flush on fd=$fd could drain")
+
+    /**
+     * The half-close, plus the report the deferral may need.
+     *
+     * Both branches go through here, and both need it. The dispatched one may
+     * be run by the final drain — the loop had not published quiescence when
+     * the branch was chosen, so dispatching was right, but by the time it runs
+     * there may be no completion path left. The inline one is reached from the
+     * stop sweep itself, where a participant closing its own output runs on the
+     * loop thread with the loop already finishing.
+     */
+    private fun halfCloseAndReport() {
+        shutdownOutputOwned()
+        reportAbandonedFin()
+    }
+
+    /**
+     * Reports a half-close whose FIN can no longer be sent.
+     *
+     * Only meaningful once the loop has stopped polling: before that a deferred
+     * FIN is ordinary, and a completion path will still send it. After it,
+     * nothing calls `sendFinIfDrained` again — no readiness event, no flush
+     * completion — so the deferral is permanent. Reported rather than
+     * improvised: issuing `shutdown(2)` here would send the FIN with the
+     * buffered bytes still queued, which is the ordering this transport defers
+     * for. The peer learns the connection is over when it is closed.
+     */
+    private fun reportAbandonedFin() {
+        if (!eventLoop.isFinishing()) return
+        if (!abandonDeferredFin()) return
+        eventLoop.logger.warn {
+            "shutdownOutput() deferred the FIN behind buffered writes on fd=$fd and the EventLoop " +
+                "stopped before they drained — the FIN is not sent, the peer sees the close when " +
+                "this channel is closed"
+        }
+    }
 
     /** The other reason a flush wait ends unsatisfied: the transport itself is gone. */
     private fun closedTransportFlushCause() =

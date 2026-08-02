@@ -74,6 +74,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`, `engine-epoll`, `engine-kqueue`: report a half-close whose FIN was deferred behind
+  buffered writes when the EventLoop stops before they drain — the FIN is still not sent, but the
+  peer's wait is no longer unexplained (#1015)
 - `core`: a close routed through the pipeline from off a stopped owning context now releases the
   transport's descriptor instead of doing nothing (#1014)
 - `core`: report a flush that cannot reach the pipeline rather than dropping it silently (#1014)
