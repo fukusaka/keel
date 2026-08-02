@@ -307,6 +307,13 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * must dispatch — a stale `null` there sends loop-thread work through the
      * queue, and a stale non-null sends off-loop work straight at state only
      * the loop may touch.
+     *
+     * **Cleared when the loop exits**, as the last thing that thread does. A
+     * `pthread_t` is only unique among live threads, so holding the value past
+     * the thread's lifetime would let an unrelated thread that inherits the id
+     * answer [inEventLoop] with `true` — the second of the two failures above,
+     * arriving long after the loop is gone. `null` from that point on is not a
+     * loss of information: there is no loop thread to be on.
      */
     @kotlin.concurrent.Volatile
     protected var eventLoopThread: pthread_t? = null
@@ -1122,6 +1129,21 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
                 }
             } finally {
                 handoff.markQuiescent()
+                // Last, and on this thread while it still exists: after it
+                // returns the id can be handed to a new thread, and a stale
+                // non-null here would tell that thread it *is* the loop. It
+                // would then act directly on state only the loop may touch —
+                // walking the outbound chain, mutating pending writes, issuing
+                // syscalls on this fd — off any loop at all, against a teardown
+                // running elsewhere. Every caller that asks reads `null` from
+                // here on and takes its off-loop path, which is the truth.
+                //
+                // After [markQuiescent], not before: the final drain and the
+                // stop sweep run on this thread and assert they are on the
+                // loop. Nothing runs here afterwards but the thread's own
+                // return, so there is no window in which the id is needed and
+                // already gone.
+                eventLoopThread = null
             }
         }
     }

@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.native.posix
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
+import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -21,6 +22,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import platform.posix.EINVAL
 import platform.posix.ENOMEM
+import platform.posix.pthread_t
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
@@ -359,6 +361,14 @@ class AbstractPosixReadinessEventLoopTest {
         /** Counts the wakeups [dispatch] issues, which only an off-loop caller earns. */
         var wakeups: Int = 0
             private set
+
+        /**
+         * The id the base recorded for its loop thread, so a test can see it
+         * released when the loop exits. [inEventLoop] is overridden here, so
+         * nothing else in this double reads it.
+         */
+        @OptIn(ExperimentalForeignApi::class)
+        val recordedLoopThread: pthread_t? get() = eventLoopThread
 
         override fun inEventLoop(): Boolean = onLoopThread
         override fun loopBody() = Unit
@@ -853,6 +863,18 @@ class AbstractPosixReadinessEventLoopTest {
 
         assertTrue(loop.armed.isEmpty(), "a waiter that left the chain must not be armed")
         assertFalse(loop.waiters(FD, Interest.READ))
+    }
+
+    @Test
+    fun `the loop releases its thread id when it exits`() {
+        // A pthread_t is unique only among live threads. Holding it past the
+        // thread's lifetime lets an unrelated thread that inherits the id
+        // answer inEventLoop with true, and act directly on state only the loop
+        // may touch -- long after there is any loop to be on.
+        val loop = RealQueueLoop()
+        loop.loop()
+
+        assertNull(loop.recordedLoopThread, "the id must not outlive the thread that owned it")
     }
 
     @Test

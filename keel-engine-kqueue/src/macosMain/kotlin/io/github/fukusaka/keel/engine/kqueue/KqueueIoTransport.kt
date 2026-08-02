@@ -346,11 +346,13 @@ internal class KqueueIoTransport(
      */
     override fun shutdownOutput() {
         when {
-            // Quiescence first, for the same reason the loop hand-off checks it
-            // first: the loop thread's id is never cleared, so a thread holding
-            // a recycled id would otherwise take the in-loop branch and issue
-            // shutdown(2) plus a flush off the loop -- exactly what this branch
-            // exists to refuse.
+            // Quiescence first, as the loop hand-off orders it. No longer to
+            // catch a recycled thread id -- the loop releases its id as it
+            // exits, so a stopped loop can no longer be mistaken for this
+            // thread -- but this branch is still required, for the reason
+            // spelled out below it: without it an off-loop caller on a
+            // quiescent loop falls to the dispatch arm, nothing drains that
+            // queue again, and the FIN is neither sent nor reported.
             //
             // Refused, not improvised. The half-close is held back until the
             // buffered writes drain, and on a stopped loop they never will;
@@ -708,13 +710,13 @@ internal class KqueueIoTransport(
                 }
             }
             when {
-                // Quiescence first, as the loop hand-off orders it. The loop
-                // thread's id is never cleared, so once it has been joined a
-                // caller whose thread merely *matches* the dead loop's is an
-                // unrelated thread holding a recycled id -- and taking the
-                // in-loop branch there would run performFlush() and mutate the
-                // pending queue off the loop, against a teardown that may be
-                // releasing it on another thread.
+                // Quiescence first, as the loop hand-off orders it. No longer
+                // to catch a recycled thread id -- the loop releases its id as
+                // it exits, so inEventLoop() answers false once it is gone --
+                // but on a quiescent loop this is the only arm that ends the
+                // wait: the middle arm is unreachable there for that same
+                // reason, and the arm below states what dispatching instead
+                // would cost.
                 eventLoop.isStopped() -> cont.cancel(stoppedLoopFlushCause())
                 eventLoop.inEventLoop() -> register.run()
                 // Still running, or shutting down. Nothing else drains the

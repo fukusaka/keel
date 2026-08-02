@@ -74,6 +74,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`, `engine-epoll`, `engine-kqueue`: release the EventLoop's recorded thread id when
+  the loop exits — a `pthread_t` is unique only among live threads, so an unrelated thread that
+  inherited the id answered `inEventLoop()` with `true` and acted directly on loop-owned state (#1017)
 - `core`, `engine-epoll`, `engine-kqueue`: report a half-close whose FIN was deferred behind
   buffered writes when the EventLoop stops before they drain — the FIN is still not sent, but the
   peer's wait is no longer unexplained (#1015)
