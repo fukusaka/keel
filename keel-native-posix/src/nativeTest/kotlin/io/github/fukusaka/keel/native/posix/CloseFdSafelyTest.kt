@@ -2,12 +2,12 @@ package io.github.fukusaka.keel.native.posix
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
+import platform.posix.close
+import platform.posix.dup
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
-import platform.posix.close
-import platform.posix.dup
 
 /**
  * Direct unit tests for [closeFdSafely] — the error-cleanup helper that
