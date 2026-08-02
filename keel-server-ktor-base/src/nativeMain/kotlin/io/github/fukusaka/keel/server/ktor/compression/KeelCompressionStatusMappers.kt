@@ -43,7 +43,7 @@ import io.ktor.server.response.respond
  * exceptions through an installed `StatusPages` plugin — which needs a Ktor
  * test application (`ktor-server-test-host`, not a dependency of this module).
  * The exceptions themselves are unit-tested where they are raised
- * (`keel-codec-http`'s `HttpRequestDecompressionHandlerTest`), and the mapping
+ * (`keel-codec-http`'s `HttpRequestDecompressionLimitsTest`), and the mapping
  * is exercised through the engine integration tests that install this mapper.
  */
 public fun StatusPagesConfig.installKeelCompressionStatusMappers() {
