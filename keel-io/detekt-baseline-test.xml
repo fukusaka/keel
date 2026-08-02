@@ -2,10 +2,6 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>ArenaLeak:ChunkArenaCarveBenchmark.kt$ChunkArenaCarveBenchmark$Arena()</ID>
-    <ID>ArenaLeak:CrossThreadReturnQueueTest.kt$CrossThreadReturnQueueTest$Arena()</ID>
-    <ID>ArenaLeak:PooledAllocatorContendedBenchmark.kt$PooledAllocatorContendedBenchmark$Arena()</ID>
-    <ID>ArenaLeak:ScopeLocalNativeIsolationTest.kt$ScopeLocalNativeIsolationTest$Arena()</ID>
     <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..200L</ID>
     <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..20L</ID>
     <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..20L step 2</ID>

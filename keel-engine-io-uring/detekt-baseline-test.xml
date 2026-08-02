@@ -2,7 +2,6 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>ArenaLeak:FakeIoUringRing.kt$FakeIoUringRing$Arena()</ID>
     <ID>CommentWrapping:IoUringSqeSeamTest.kt$IoUringSqeSeamTest$/* bgid */</ID>
     <ID>CommentWrapping:IoUringSqeSeamTest.kt$IoUringSqeSeamTest$/* fd */</ID>
     <ID>CommentWrapping:IoUringSqeSeamTest.kt$IoUringSqeSeamTest$/* flags */</ID>
