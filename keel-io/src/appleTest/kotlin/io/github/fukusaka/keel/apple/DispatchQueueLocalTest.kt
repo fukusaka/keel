@@ -1,5 +1,16 @@
 package io.github.fukusaka.keel.apple
 
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import platform.darwin.DISPATCH_TIME_FOREVER
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_group_create
+import platform.darwin.dispatch_group_enter
+import platform.darwin.dispatch_group_leave
+import platform.darwin.dispatch_group_wait
+import platform.darwin.dispatch_queue_create
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.test.Test
@@ -7,18 +18,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import kotlin.time.Duration.Companion.seconds
-import platform.darwin.dispatch_async
-import platform.darwin.dispatch_group_create
-import platform.darwin.dispatch_group_enter
-import platform.darwin.dispatch_group_leave
-import platform.darwin.dispatch_group_wait
-import platform.darwin.dispatch_queue_create
-import platform.darwin.DISPATCH_TIME_FOREVER
 
 /**
  * Behavioural tests for [DispatchQueueLocal] — the Apple-platform

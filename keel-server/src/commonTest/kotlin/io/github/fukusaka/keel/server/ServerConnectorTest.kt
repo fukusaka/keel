@@ -2,12 +2,12 @@ package io.github.fukusaka.keel.server
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Channel
-import io.github.fukusaka.keel.server.dsl.connector
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.StreamServer
+import io.github.fukusaka.keel.server.dsl.connector
 import io.github.fukusaka.keel.tls.TlsCodec
 import io.github.fukusaka.keel.tls.TlsCodecFactory
 import io.github.fukusaka.keel.tls.TlsConfig
@@ -94,7 +94,10 @@ class ServerConnectorTest {
     @Test
     fun `resolveBindConfig without TLS yields a plain BindConfig`() {
         val opts = SocketOptions(tcpNoDelay = false)
-        val c = connector { backlog = 64; socketOptions = opts }
+        val c = connector {
+            backlog = 64
+            socketOptions = opts
+        }
         val config = c.resolveBindConfig(FakeEngine())
         assertEquals(BindConfig::class, config::class)
         assertEquals(64, config.backlog)
@@ -107,7 +110,10 @@ class ServerConnectorTest {
         val c = connector {
             backlog = 99
             socketOptions = opts
-            tls { config = TlsConfig(); strategy = ServerTlsStrategy.EngineNative }
+            tls {
+                config = TlsConfig()
+                strategy = ServerTlsStrategy.EngineNative
+            }
         }
         val config = c.resolveBindConfig(FakeNativeTlsEngine())
         assertIs<NativeTlsMarkerConfig>(config)
@@ -117,7 +123,12 @@ class ServerConnectorTest {
 
     @Test
     fun `resolveBindConfig EngineNative rejects an engine without native TLS`() {
-        val c = connector { tls { config = TlsConfig(); strategy = ServerTlsStrategy.EngineNative } }
+        val c = connector {
+            tls {
+                config = TlsConfig()
+                strategy = ServerTlsStrategy.EngineNative
+            }
+        }
         val ex = assertFailsWith<IllegalStateException> { c.resolveBindConfig(FakeEngine()) }
         assertTrue(ex.message?.contains("KeelCodec") == true)
     }
@@ -129,7 +140,10 @@ class ServerConnectorTest {
         val c = connector {
             backlog = 32
             socketOptions = opts
-            tls { config = TlsConfig(); strategy = ServerTlsStrategy.KeelCodec(factory) }
+            tls {
+                config = TlsConfig()
+                strategy = ServerTlsStrategy.KeelCodec(factory)
+            }
         }
         val config = c.resolveBindConfig(FakeEngine())
         assertIs<TlsServerConfig>(config)
@@ -142,7 +156,10 @@ class ServerConnectorTest {
     fun `resolveBindConfig Custom yields a TlsServerConfig with the supplied installer`() {
         val installer = TlsServerInstaller { _, _ -> }
         val c = connector {
-            tls { config = TlsConfig(); strategy = ServerTlsStrategy.Custom(installer) }
+            tls {
+                config = TlsConfig()
+                strategy = ServerTlsStrategy.Custom(installer)
+            }
         }
         val config = c.resolveBindConfig(FakeEngine())
         assertIs<TlsServerConfig>(config)
@@ -151,7 +168,10 @@ class ServerConnectorTest {
 
     @Test
     fun `address reflects host and port`() {
-        val c = connector { host = "127.0.0.1"; port = 8080 }
+        val c = connector {
+            host = "127.0.0.1"
+            port = 8080
+        }
         assertEquals("127.0.0.1:8080", c.address.toString())
     }
 }

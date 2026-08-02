@@ -9,7 +9,6 @@ import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.DuplexHandler
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.Pipeline
-import io.github.fukusaka.keel.pipeline.PipelineHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlin.test.Test
@@ -91,7 +90,9 @@ class TlsHandlerTest {
             if (readable == 0) return TlsCodecResult(TlsResult.NEED_MORE_INPUT, 0, 0)
             var produced = 0
             for (i in 0 until readable) {
-                plaintext.writeByte((ciphertext.getByte(ciphertext.readerIndex + i).toInt() xor xorKey.toInt()).toByte())
+                plaintext.writeByte(
+                    (ciphertext.getByte(ciphertext.readerIndex + i).toInt() xor xorKey.toInt()).toByte(),
+                )
                 produced++
             }
             if (!isHandshakeComplete) isHandshakeComplete = true

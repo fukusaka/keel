@@ -50,7 +50,10 @@ class KeelHttpClientCancellationTest {
         // client's request stays parked in the bridge receive.
         val gate = CompletableDeferred<Unit>()
         val server = keelHttpServer(engine) {
-            connector { host = "127.0.0.1"; port = 0 }
+            connector {
+                host = "127.0.0.1"
+                port = 0
+            }
             get("/hang") { call ->
                 gate.await()
                 call.respondText("unreachable")

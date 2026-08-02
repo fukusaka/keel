@@ -34,8 +34,10 @@ class DeflateStrategyTest {
         // worse. If strategy were ignored (the JVM Deflater not calling
         // setStrategy) the two sizes would match.
         val payload = "ABCD".repeat(500).encodeToByteArray()
-        val default = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.Default)), payload)
-        val huffman = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.HuffmanOnly)), payload)
+        val default =
+            encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.Default)), payload)
+        val huffman =
+            encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.HuffmanOnly)), payload)
         assertTrue(
             huffman > default,
             "HuffmanOnly ($huffman B) must exceed default ($default B) for repetitive data — strategy not honored?",
@@ -53,8 +55,10 @@ class DeflateStrategyTest {
         // output, identical bytes) rather than throw — strategy is advisory and
         // never affects decodability.
         val payload = "the quick brown fox jumps over the lazy dog. ".repeat(64).encodeToByteArray()
-        val coerced = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = unsupported)), payload)
-        val default = encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.Default)), payload)
+        val coerced =
+            encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = unsupported)), payload)
+        val default =
+            encodeSize(DeflateEncoder, EncoderOptions(tuning = DeflateTuning(strategy = Strategy.Default)), payload)
         assertEquals(
             default,
             coerced,

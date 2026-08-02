@@ -5,14 +5,14 @@ package io.github.fukusaka.keel.buf
 import io.github.fukusaka.keel.scope.ScopeLocal
 import io.github.fukusaka.keel.scope.ThreadLocalScopeLocal
 import io.github.fukusaka.keel.scope.scopeLocal
+import platform.posix.pthread_equal
+import platform.posix.pthread_self
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicReference
 import kotlin.native.concurrent.ThreadLocal
 import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.time.TimeSource
-import platform.posix.pthread_equal
-import platform.posix.pthread_self
 
 /**
  * Pooled-allocator per-thread cache front go/no-go micro-bench: per-op cost of

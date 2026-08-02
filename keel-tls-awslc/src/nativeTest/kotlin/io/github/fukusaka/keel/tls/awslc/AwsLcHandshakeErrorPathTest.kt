@@ -87,7 +87,11 @@ class AwsLcHandshakeErrorPathTest {
             TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.NONE, minVersion = TlsVersion.TLS1_3),
         )
         val client = factory.createClientCodec(
-            TlsConfig(trustAnchors = TlsTrustSource.InsecureTrustAll, verifyMode = TlsVerifyMode.NONE, maxVersion = TlsVersion.TLS1_2),
+            TlsConfig(
+                trustAnchors = TlsTrustSource.InsecureTrustAll,
+                verifyMode = TlsVerifyMode.NONE,
+                maxVersion = TlsVersion.TLS1_2,
+            ),
         )
 
         assertFailsWith<TlsException>("non-overlapping version ranges must abort the handshake") {
@@ -152,5 +156,4 @@ class AwsLcHandshakeErrorPathTest {
         client.close()
         server.close()
     }
-
 }

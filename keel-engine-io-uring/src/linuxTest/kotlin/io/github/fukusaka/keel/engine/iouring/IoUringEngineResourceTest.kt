@@ -1,11 +1,10 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-
-import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.SlabAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -86,7 +85,8 @@ class IoUringEngineResourceTest {
             "lifecycle listener must observe at least one engine-direct allocate",
         )
         assertEquals(
-            0, tracker.outstandingCount,
+            0,
+            tracker.outstandingCount,
             "Listener-mode leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}",
         )
     }
@@ -116,5 +116,4 @@ class IoUringEngineResourceTest {
 
         assertEquals(0, tracking.outstandingCount, "IoBuf leak detected")
     }
-
 }

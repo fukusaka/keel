@@ -79,7 +79,10 @@ class IoUringSqeSeamTest {
     fun `submitCallback throws once when the ring is still full after a drain`() {
         // Both getSqe calls (initial + post-drain retry) find the ring full:
         // a wedged kernel. acquireSqe throws after one bounded drain — no spin.
-        val fake = FakeIoUringRing().apply { scriptSqRingFull(); scriptSqRingFull() }
+        val fake = FakeIoUringRing().apply {
+            scriptSqRingFull()
+            scriptSqRingFull()
+        }
         withEventLoop(fake) { el ->
             val ex = assertFailsWith<IllegalStateException> {
                 el.submitCallback(prepare = { }, onCqe = { _, _ -> })

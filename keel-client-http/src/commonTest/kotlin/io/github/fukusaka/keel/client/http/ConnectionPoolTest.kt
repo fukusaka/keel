@@ -55,7 +55,10 @@ class ConnectionPoolTest {
     }
 
     private fun server(engine: InMemoryEngine) = keelHttpServer(engine) {
-        connector { host = "127.0.0.1"; port = 0 }
+        connector {
+            host = "127.0.0.1"
+            port = 0
+        }
         get("/hello") { call -> call.respondText("hi") }
     }
 

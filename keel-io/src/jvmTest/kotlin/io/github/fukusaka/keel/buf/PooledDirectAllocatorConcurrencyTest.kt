@@ -60,7 +60,8 @@ class PooledDirectAllocatorConcurrencyTest {
                 "concurrent allocate/release must not corrupt the freelist (ABA / double-free): ${failure.get()}",
             )
             assertEquals(
-                allocated.get(), released.get(),
+                allocated.get(),
+                released.get(),
                 "every allocated buffer must fire onReleased exactly once — an imbalance signals a lost/double buffer",
             )
         } finally {

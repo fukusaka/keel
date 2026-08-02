@@ -74,7 +74,7 @@ class RawFlushBoundaryTest {
         encoder.close()
         assertTrue(
             framed.size > outputCap,
-            "an incompressible 8 KiB frame must span more than the ${outputCap}-byte output buffer, was ${framed.size}",
+            "an incompressible 8 KiB frame must span more than the $outputCap-byte output buffer, was ${framed.size}",
         )
 
         val decoder = DeflateDecoder.newSession(allocator, DecoderOptions(wrapFormat = WrapFormat.Raw))
@@ -121,7 +121,8 @@ class RawFlushBoundaryTest {
         drain(out, collected)
         while (session.flush(out) != CodecStatus.NEED_INPUT) drain(out, collected)
         drain(out, collected)
-        out.release(); src.release()
+        out.release()
+        src.release()
         return ByteArray(collected.size) { collected[it] }
     }
 
@@ -139,7 +140,8 @@ class RawFlushBoundaryTest {
         drain(out, collected)
         while (session.flush(out) != CodecStatus.NEED_INPUT) drain(out, collected)
         drain(out, collected)
-        out.release(); src.release()
+        out.release()
+        src.release()
         return ByteArray(collected.size) { collected[it] }
     }
 

@@ -157,7 +157,7 @@ class IoUringTransportRecvStarvationSeamTest {
             // Branch 3: returnBuffer fires the deferred rearm callback, which
             // re-arms the multishot recv. recvStarved is cleared inside the
             // callback so a subsequent -ENOBUFS cycle can re-register.
-            bufRing.returnBuffer(bufId =0)
+            bufRing.returnBuffer(bufId = 0)
             assertEquals(
                 afterStarvation + 1,
                 fake.getSqeCalls,
@@ -183,7 +183,7 @@ class IoUringTransportRecvStarvationSeamTest {
                 afterSecondStarvation,
                 "the second -ENOBUFS deferral also does not rearm immediately",
             )
-            bufRing.returnBuffer(bufId =1)
+            bufRing.returnBuffer(bufId = 1)
             assertEquals(
                 afterStarvation + 2,
                 fake.getSqeCalls,

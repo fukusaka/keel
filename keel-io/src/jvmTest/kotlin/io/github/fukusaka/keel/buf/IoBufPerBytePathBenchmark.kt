@@ -64,7 +64,7 @@ class IoBufPerBytePathBenchmark {
         val nsPerByte = nsPerLoop / BYTES_PER_OP
         val loopFmt = (kotlin.math.round(nsPerLoop * 10.0) / 10.0).toString()
         val byteFmt = (kotlin.math.round(nsPerByte * 100.0) / 100.0).toString()
-        println("  $label loop=${loopFmt} ns   per-byte=${byteFmt} ns")
+        println("  $label loop=$loopFmt ns   per-byte=$byteFmt ns")
     }
 
     private fun fillForRead() {

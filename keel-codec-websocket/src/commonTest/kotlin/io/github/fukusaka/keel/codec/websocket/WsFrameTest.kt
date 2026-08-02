@@ -57,7 +57,7 @@ class WsFrameTest {
     @Test
     fun closeFrameWithReason() {
         val f = WsFrame.close(WsCloseCode.GOING_AWAY, "bye")
-        assertEquals(5, f.payload.size)  // 2 bytes code + 3 bytes "bye"
+        assertEquals(5, f.payload.size) // 2 bytes code + 3 bytes "bye"
         assertEquals(0x03.toByte(), f.payload[0])
         assertEquals(0xE9.toByte(), f.payload[1])
         assertContentEquals("bye".encodeToByteArray(), f.payload.copyOfRange(2, 5))

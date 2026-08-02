@@ -15,12 +15,12 @@ import java.io.DataInputStream
 import java.io.InputStream
 import java.net.Socket
 import java.util.zip.Inflater
-import java.net.InetSocketAddress as JavaInetSocketAddress
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.Duration.Companion.seconds
+import java.net.InetSocketAddress as JavaInetSocketAddress
 
 /**
  * M4 regression: [WsSessionImpl.send] must serialise concurrent callers so
@@ -58,7 +58,10 @@ class WsSessionConcurrentSendTest {
             val burstSize = 50
             val engine = NioEngine()
             val server = keelHttpServer(engine) {
-                connector { host = "127.0.0.1"; port = 0 }
+                connector {
+                    host = "127.0.0.1"
+                    port = 0
+                }
                 webSockets(DeflateCodec) {
                     // threshold = 0 forces compression of every payload so
                     // each frame exercises the encoder path under contention.

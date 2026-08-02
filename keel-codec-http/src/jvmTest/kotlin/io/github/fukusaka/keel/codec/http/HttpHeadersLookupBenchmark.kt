@@ -34,7 +34,7 @@ class HttpHeadersLookupBenchmark {
 
     private fun buildHeaders(n: Int): HttpHeaders {
         val h = HttpHeaders()
-        for (i in 0 until n) h.add("X-Header-${i}", "value-${i}")
+        for (i in 0 until n) h.add("X-Header-$i", "value-$i")
         // Append a sentinel at the end so we have a known last-position name.
         h.add("X-Target-Last", "target-value")
         return h
@@ -65,7 +65,7 @@ class HttpHeadersLookupBenchmark {
             val nsMiss = median(TRIALS) {
                 timeNs(ITERS) { if ("X-No-Match-Header" in h) sink++ }
             }
-            println("  N=${n.toString().padStart(2)}  hit (last)=${nsHit} ns   miss=${nsMiss} ns")
+            println("  N=${n.toString().padStart(2)}  hit (last)=$nsHit ns   miss=$nsMiss ns")
         }
     }
 
@@ -80,7 +80,7 @@ class HttpHeadersLookupBenchmark {
             val nsMiss = median(TRIALS) {
                 timeNs(ITERS) { sink += (h["X-No-Match-Header"]?.length ?: 0) }
             }
-            println("  N=${n.toString().padStart(2)}  hit (last)=${nsHit} ns   miss=${nsMiss} ns")
+            println("  N=${n.toString().padStart(2)}  hit (last)=$nsHit ns   miss=$nsMiss ns")
         }
     }
 

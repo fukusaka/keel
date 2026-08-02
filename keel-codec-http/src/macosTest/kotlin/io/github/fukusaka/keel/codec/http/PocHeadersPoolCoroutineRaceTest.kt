@@ -1,11 +1,5 @@
 package io.github.fukusaka.keel.codec.http
 
-import kotlin.concurrent.atomics.AtomicInt
-import kotlin.concurrent.atomics.ExperimentalAtomicApi
-import kotlin.coroutines.CoroutineContext
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
@@ -23,6 +17,12 @@ import platform.darwin.dispatch_get_specific
 import platform.darwin.dispatch_queue_create
 import platform.darwin.dispatch_queue_set_specific
 import platform.darwin.dispatch_queue_t
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.coroutines.CoroutineContext
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Synthetic cross-queue header-pool repro — hypothesis (a)/(f): does a **suspending coroutine**

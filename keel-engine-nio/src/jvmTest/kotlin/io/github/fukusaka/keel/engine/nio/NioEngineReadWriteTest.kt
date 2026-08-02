@@ -231,7 +231,8 @@ class NioEngineReadWriteTest {
         rawWrite(client, "test")
 
         val source = io.github.fukusaka.keel.io.BufferedSuspendSource(
-            ch.asSuspendSource(), ch.allocator,
+            ch.asSuspendSource(),
+            ch.allocator,
         )
         val data = source.readByteArray(4)
         assertEquals("test", data.decodeToString())
@@ -253,7 +254,8 @@ class NioEngineReadWriteTest {
         val ch = server.accept()
 
         val sink = io.github.fukusaka.keel.io.BufferedSuspendSink(
-            ch.asSuspendSink(), ch.allocator,
+            ch.asSuspendSink(),
+            ch.allocator,
         )
         sink.writeString("data")
         sink.flush()
@@ -443,5 +445,4 @@ class NioEngineReadWriteTest {
         server.close()
         engine.close()
     }
-
 }

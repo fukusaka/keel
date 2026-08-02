@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.pipeline
 
-import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlin.reflect.KClass

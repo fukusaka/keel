@@ -119,7 +119,8 @@ class NettyFlushListenerAllocationBenchmark {
             }
         }
 
-        trialsA.sort(); trialsB.sort()
+        trialsA.sort()
+        trialsB.sort()
         val medA = trialsA[TRIALS / 2]
         val medB = trialsB[TRIALS / 2]
 

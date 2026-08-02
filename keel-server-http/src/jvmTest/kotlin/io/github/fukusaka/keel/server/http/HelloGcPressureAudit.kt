@@ -136,7 +136,11 @@ class HelloGcPressureAudit {
             val dTime = gc.collectionTime - (gcTimeBefore[gc.name] ?: 0L)
             totalGcCount += dCount
             totalGcTime += dTime
-            println("    ${gc.name.padEnd(28)}  count=${dCount.toString().padStart(6)}  time=${dTime.toString().padStart(6)} ms")
+            println(
+                "    ${gc.name.padEnd(
+                    28,
+                )}  count=${dCount.toString().padStart(6)}  time=${dTime.toString().padStart(6)} ms",
+            )
         }
         val gcFraction = totalGcTime / durationMs
         println()
@@ -150,6 +154,7 @@ class HelloGcPressureAudit {
 
     companion object {
         private const val WARMUP = 5_000
+
         // 10 seconds is enough to trigger multiple young-gen collections
         // on default G1GC sizing without becoming sensitive to JIT
         // re-compilation tails.

@@ -1,9 +1,8 @@
 package io.github.fukusaka.keel.engine.netty
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.UnixSocketAddress
-
-import io.github.fukusaka.keel.buf.DefaultAllocator
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -191,5 +190,4 @@ class NettyEngineLifecycleTest {
             engine.close()
         }
     }
-
 }

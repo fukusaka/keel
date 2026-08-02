@@ -1,13 +1,5 @@
 package io.github.fukusaka.keel.core
 
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.milliseconds
-import kotlin.time.Duration.Companion.seconds
-import kotlin.time.TestTimeSource
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -16,7 +8,14 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TestTimeSource
 
 class CachingDnsResolverTest {
 
@@ -284,7 +283,7 @@ class CachingDnsResolverTest {
         assertEquals("example.com.", first.canonicalName)
         assertEquals("example.com.", second.canonicalName)
         assertEquals(1, delegate.calls)
-        }
+    }
 
     private class CountingResolver(
         private val addresses: List<IpAddress>,

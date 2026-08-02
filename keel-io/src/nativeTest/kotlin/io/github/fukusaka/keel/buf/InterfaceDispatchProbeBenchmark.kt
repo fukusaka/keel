@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.buf
 
+import platform.posix.getpid
 import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.time.TimeSource
-import platform.posix.getpid
 
 /**
  * Is Kotlin/Native interface dispatch structurally free, or only free when the

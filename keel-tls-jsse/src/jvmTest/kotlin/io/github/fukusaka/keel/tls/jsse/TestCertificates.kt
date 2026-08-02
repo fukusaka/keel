@@ -34,7 +34,7 @@ dA0v0c6TRwAZKuG5BIzAh9r94fM0NzYvaYamE+/WIm6orpjzUELVKjVebvmAWkN0
 DckJ9HFnEw1KPYC/9e7a1JUrkfMgCFcgIdRGQA/qMHISUzQND9Zs/ZnPvhaf+x7N
 wIy8X6kST+S43rMGiQ==
 -----END CERTIFICATE-----
-""".trimIndent() + "\n"
+    """.trimIndent() + "\n"
 
     val SERVER_KEY = """
 -----BEGIN PRIVATE KEY-----
@@ -65,5 +65,5 @@ yGIdCqVeuv9SC0duPplXUVQwuYkLDZaIASA8goes6f5UiFEkE8TXYAKTitNUQqob
 s0/JN9iAF2/A2ct6J46JuRo8bxt+LdZY2znb8weICRpxx7/Sf+lswHA7OiUJT8UG
 XDEgg9dRd2akza/XK5Hj
 -----END PRIVATE KEY-----
-""".trimIndent() + "\n"
+    """.trimIndent() + "\n"
 }

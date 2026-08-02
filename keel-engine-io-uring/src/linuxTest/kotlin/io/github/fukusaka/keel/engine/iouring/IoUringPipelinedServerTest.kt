@@ -1,11 +1,10 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.PrintLogger
@@ -16,10 +15,10 @@ import io_uring.io_uring
 import io_uring.io_uring_queue_exit
 import io_uring.io_uring_queue_init
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.runBlocking
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.coroutines.runBlocking
 import platform.posix.close
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -170,12 +169,14 @@ class IoUringPipelinedServerTest {
             // length assertion rather than blocking the test forever.
             val got = PosixRawClient.rawReadBytes(clientFd, total, 10.seconds)
             assertEquals(
-                total, got.size,
+                total,
+                got.size,
                 "SEND_ZC must deliver every buffer batched into one flush " +
                     "(a short read means the async send chain dropped a later buffer)",
             )
             assertEquals(
-                header, got.decodeToString(0, header.length),
+                header,
+                got.decodeToString(0, header.length),
                 "the header buffer must arrive intact and first",
             )
             assertEquals(bodyByteAt(0), got[header.length], "first body byte")
@@ -189,7 +190,8 @@ class IoUringPipelinedServerTest {
         // completion has fired and released its buffer by now; a buffer the
         // chain dropped would still be outstanding.
         assertEquals(
-            0, tracking.outstandingCount,
+            0,
+            tracking.outstandingCount,
             "SEND_ZC must release every buffer of a multi-write flush (non-zero = leaked drop)",
         )
     }
@@ -522,7 +524,11 @@ class IoUringPipelinedServerTest {
             }
             rawWrite(clientFd, "final")
             val received = rawRead(clientFd, 5)
-            assertEquals("final", received, "receives must outlive $RETAINED_MESSAGES pinned deliveries on a 4-slot ring")
+            assertEquals(
+                "final",
+                received,
+                "receives must outlive $RETAINED_MESSAGES pinned deliveries on a 4-slot ring",
+            )
         } finally {
             close(clientFd)
             server.close()

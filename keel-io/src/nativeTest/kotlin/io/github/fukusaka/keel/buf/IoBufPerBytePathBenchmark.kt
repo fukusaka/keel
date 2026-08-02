@@ -183,7 +183,7 @@ class IoBufPerBytePathBenchmark {
         val nsPerByte = nsPerOp / BYTES_PER_OP
         val nsOpRounded = kotlin.math.round(nsPerOp * 10.0) / 10.0
         val nsByteRounded = kotlin.math.round(nsPerByte * 100.0) / 100.0
-        println("  $label loop=${nsOpRounded} ns   per-byte=${nsByteRounded} ns")
+        println("  $label loop=$nsOpRounded ns   per-byte=$nsByteRounded ns")
     }
 
     companion object {

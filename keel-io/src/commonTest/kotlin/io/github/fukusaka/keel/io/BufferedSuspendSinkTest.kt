@@ -3,13 +3,12 @@ package io.github.fukusaka.keel.io
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 class BufferedSuspendSinkTest {
 
@@ -146,7 +145,7 @@ class BufferedSuspendSinkTest {
         buffered.flush()
         assertEquals(small.decodeToString(), sink.collected())
         buffered.close()
-        }
+    }
 
     // ============================================================
     // deferred flush behavior (buffer hand-off + batched flush)
@@ -208,7 +207,7 @@ class BufferedSuspendSinkTest {
         assertEquals("AAABBB", sink.collected())
         buffered.close()
         assertEquals(0, tracker.outstandingCount)
-        }
+    }
 
     // ============================================================
     // close / resource tests

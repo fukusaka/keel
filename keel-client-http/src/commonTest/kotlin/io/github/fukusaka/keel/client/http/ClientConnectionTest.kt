@@ -48,7 +48,10 @@ class ClientConnectionTest {
         val tracking = TrackingAllocator()
         val engine = InMemoryEngine(IoEngineConfig(allocator = tracking))
         val server = keelHttpServer(engine) {
-            connector { host = "127.0.0.1"; port = 0 }
+            connector {
+                host = "127.0.0.1"
+                port = 0
+            }
             get("/a") { call -> call.respondText("first") }
             get("/b") { call -> call.respondText("second") }
         }
@@ -103,7 +106,11 @@ class ClientConnectionTest {
         assertFalse(ClientConnection.isReusable(response(HttpStatus.OK)))
 
         // Connection: close is never reusable, even framed.
-        assertFalse(ClientConnection.isReusable(response(HttpStatus.OK, headers = close.add(HttpHeaderName.CONTENT_LENGTH, "5"))))
+        assertFalse(
+            ClientConnection.isReusable(
+                response(HttpStatus.OK, headers = close.add(HttpHeaderName.CONTENT_LENGTH, "5")),
+            ),
+        )
 
         // HTTP/1.0 defaults to close; only an explicit keep-alive (with framing) reuses.
         assertFalse(ClientConnection.isReusable(response(HttpStatus.OK, HttpVersion.HTTP_1_0, cl)))

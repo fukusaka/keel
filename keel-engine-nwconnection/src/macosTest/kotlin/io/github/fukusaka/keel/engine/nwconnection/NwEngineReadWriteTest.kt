@@ -1,9 +1,8 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
-
-import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -254,7 +253,8 @@ class NwEngineReadWriteTest {
             rawWrite(clientFd, "test")
 
             val source = io.github.fukusaka.keel.io.BufferedSuspendSource(
-                ch.asSuspendSource(), ch.allocator,
+                ch.asSuspendSource(),
+                ch.allocator,
             )
             val data = source.readByteArray(4)
             assertEquals("test", data.decodeToString())
@@ -278,7 +278,8 @@ class NwEngineReadWriteTest {
             val ch = server.accept()
 
             val sink = io.github.fukusaka.keel.io.BufferedSuspendSink(
-                ch.asSuspendSink(), ch.allocator,
+                ch.asSuspendSink(),
+                ch.allocator,
             )
             sink.writeString("data")
             sink.flush()
@@ -356,7 +357,11 @@ class NwEngineReadWriteTest {
                 ch.close()
 
                 val received = PosixRawClient.rawReadUpTo(clientFd, payload.length)
-                assertEquals(payload, received, "iteration $iteration: data lost on requestFlush+awaitFlushComplete+close")
+                assertEquals(
+                    payload,
+                    received,
+                    "iteration $iteration: data lost on requestFlush+awaitFlushComplete+close",
+                )
 
                 close(clientFd)
                 server.close()
@@ -447,5 +452,4 @@ class NwEngineReadWriteTest {
             engine.close()
         }
     }
-
 }

@@ -38,7 +38,6 @@ class LeakDetectingAllocatorGcTest {
         }
     }
 
-
     /**
      * Allocates and "forgets" [count] buffers in a separate (frame-popping)
      * function: a debug binary may keep a discarded local rooted in the
@@ -162,4 +161,3 @@ class LeakDetectingAllocatorGcTest {
         private val AWAIT_BUDGET = kotlin.time.Duration.parse("5s")
     }
 }
-

@@ -3,9 +3,9 @@ package io.github.fukusaka.keel.compression.zlib
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.compression.CodecStatus
-import io.github.fukusaka.keel.compression.DeflateCapabilities
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
+import io.github.fukusaka.keel.compression.DeflateCapabilities
 import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import io.github.fukusaka.keel.compression.FlushMode

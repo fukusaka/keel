@@ -7,6 +7,9 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.io.PrintWriter
 import java.net.Socket
 import java.net.URI
@@ -19,9 +22,6 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 /**
  * Regression test for `KeelApplicationEngine.stop()` completing within the
@@ -67,7 +67,8 @@ class EngineStopLifecycleTest {
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
         val port = runBlocking {
-            withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+            withTimeout(15.seconds) {
+                server.engine.resolvedConnectors().first().port
             }
         }
 
@@ -91,7 +92,8 @@ class EngineStopLifecycleTest {
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
         val port = runBlocking {
-            withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+            withTimeout(15.seconds) {
+                server.engine.resolvedConnectors().first().port
             }
         }
 
@@ -120,7 +122,8 @@ class EngineStopLifecycleTest {
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
         val port = runBlocking {
-            withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+            withTimeout(15.seconds) {
+                server.engine.resolvedConnectors().first().port
             }
         }
 
@@ -193,7 +196,8 @@ class EngineStopLifecycleTest {
         (server.engine as KeelApplicationEngine).configuration.engine = NioEngine()
         server.start(wait = false)
         val port = runBlocking {
-            withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+            withTimeout(15.seconds) {
+                server.engine.resolvedConnectors().first().port
             }
         }
 

@@ -84,7 +84,9 @@ class NettyPipelineUploadTest {
             // Detect \r\n\r\n (end of headers)
             if (prevPrevPrev == '\r'.code && prevPrev == '\n'.code &&
                 prev == '\r'.code && b == '\n'.code
-            ) break
+            ) {
+                break
+            }
             prevPrevPrev = prevPrev
             prevPrev = prev
             prev = b
@@ -105,11 +107,11 @@ class NettyPipelineUploadTest {
         val body = "hello world from netty"
         val request =
             "POST /upload-stream HTTP/1.1\r\n" +
-            "Host: localhost\r\n" +
-            "Content-Length: ${body.length}\r\n" +
-            "Content-Type: application/octet-stream\r\n" +
-            "\r\n" +
-            body
+                "Host: localhost\r\n" +
+                "Content-Length: ${body.length}\r\n" +
+                "Content-Type: application/octet-stream\r\n" +
+                "\r\n" +
+                body
 
         val client = connectRawClient(port)
         try {
@@ -144,11 +146,11 @@ class NettyPipelineUploadTest {
         val body = "x".repeat(bodySize)
         val request =
             "POST /upload-stream HTTP/1.1\r\n" +
-            "Host: localhost\r\n" +
-            "Content-Length: $bodySize\r\n" +
-            "Content-Type: application/octet-stream\r\n" +
-            "\r\n" +
-            body
+                "Host: localhost\r\n" +
+                "Content-Length: $bodySize\r\n" +
+                "Content-Type: application/octet-stream\r\n" +
+                "\r\n" +
+                body
 
         val client = connectRawClient(port)
         try {

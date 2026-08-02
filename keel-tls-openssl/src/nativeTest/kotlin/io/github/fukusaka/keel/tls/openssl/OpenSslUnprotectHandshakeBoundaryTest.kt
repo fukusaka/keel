@@ -54,7 +54,8 @@ class OpenSslUnprotectHandshakeBoundaryTest {
 
     private val tlsConfig = TlsConfig(
         certificates = TlsCertificateSource.Pem(
-            TestCertificates.SERVER_CERT, TestCertificates.SERVER_KEY,
+            TestCertificates.SERVER_CERT,
+            TestCertificates.SERVER_KEY,
         ),
         verifyMode = TlsVerifyMode.NONE,
     )
@@ -68,7 +69,8 @@ class OpenSslUnprotectHandshakeBoundaryTest {
             val collected = StringBuilder()
 
             val server = engine.bindPipeline(
-                "127.0.0.1", 0,
+                "127.0.0.1",
+                0,
                 config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory)),
             ) { channel ->
                 channel.pipeline.addLast("capture", FirstByteCaptureHandler(firstByte, collected))
@@ -90,7 +92,8 @@ class OpenSslUnprotectHandshakeBoundaryTest {
             }
 
             assertEquals(
-                'G'.code, seen,
+                'G'.code,
+                seen,
                 "first plaintext byte after OpenSSL TLS 1.3 handshake should be 'G' (HTTP request line " +
                     "start), got 0x${seen.toString(16).padStart(2, '0')}. Collected so far: " +
                     "${collected.take(64)}",

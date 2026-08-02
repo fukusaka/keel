@@ -15,7 +15,8 @@ import kotlin.test.assertTrue
  * Uses the keel default size classes (8 KiB page, 256 KiB chunk → 32 pages).
  */
 class PoolChunkTest {
-    private val sizeClasses = SizeClasses(pageSize = 8192, pageShifts = 13, chunkSize = 256 * 1024, directMemoryCacheAlignment = 0)
+    private val sizeClasses =
+        SizeClasses(pageSize = 8192, pageShifts = 13, chunkSize = 256 * 1024, directMemoryCacheAlignment = 0)
     private val pageSize = 8192
     private val chunkPages = 32
 

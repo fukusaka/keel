@@ -1,12 +1,7 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
-
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.seconds
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -15,6 +10,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
 class NwEngineConcurrencyTest {
@@ -187,5 +186,4 @@ class NwEngineConcurrencyTest {
         server.close()
         engine.close()
     }
-
 }

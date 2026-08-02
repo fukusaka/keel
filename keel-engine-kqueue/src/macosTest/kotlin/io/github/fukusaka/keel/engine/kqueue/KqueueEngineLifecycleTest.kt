@@ -444,5 +444,4 @@ class KqueueEngineLifecycleTest {
             engine.close()
         }
     }
-
 }

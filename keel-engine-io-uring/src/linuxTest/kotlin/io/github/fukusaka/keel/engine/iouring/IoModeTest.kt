@@ -1,8 +1,7 @@
 package io.github.fukusaka.keel.engine.iouring
 
-import io.github.fukusaka.keel.core.InetSocketAddress
-
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -317,7 +316,9 @@ class IoModeTest {
         }
     }
 
-    private suspend fun echoWithMode(selector: IoModeSelector, payloadSize: Int = 13) = withTimeout(ECHO_TEST_TIMEOUT_MS) {
+    private suspend fun echoWithMode(selector: IoModeSelector, payloadSize: Int = 13) = withTimeout(
+        ECHO_TEST_TIMEOUT_MS,
+    ) {
         // threads=2: CQE/SEND_ZC flush suspends the EventLoop via
         // awaitPendingFlush. Client and server must be on separate
         // EventLoops to avoid deadlock.

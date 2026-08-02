@@ -99,7 +99,10 @@ class HttpRequestDecoderHeaderBytesLimitTest {
         deliver(request)
         assertEquals(1, collector.errors.size, "expected exactly one error")
         val cause = collector.errors.single()
-        assertTrue(cause is HttpHeaderLimitExceededException, "expected HttpHeaderLimitExceededException, got ${cause::class}")
+        assertTrue(
+            cause is HttpHeaderLimitExceededException,
+            "expected HttpHeaderLimitExceededException, got ${cause::class}",
+        )
         assertEquals("maxHeaderBytes", cause.limitName)
         assertTrue(cause.actual > cap, "actual (${cause.actual}) must be over cap ($cap)")
         assertEquals(cap, cause.limit)
@@ -125,7 +128,10 @@ class HttpRequestDecoderHeaderBytesLimitTest {
         deliver(request)
         assertTrue(collector.errors.isNotEmpty(), "expected over-cap error from the trailer add")
         val cause = collector.errors.last()
-        assertTrue(cause is HttpHeaderLimitExceededException, "expected HttpHeaderLimitExceededException, got ${cause::class}")
+        assertTrue(
+            cause is HttpHeaderLimitExceededException,
+            "expected HttpHeaderLimitExceededException, got ${cause::class}",
+        )
         assertEquals("maxHeaderBytes", cause.limitName)
         // The head must have emitted (Host + Transfer-Encoding under cap)
         // before the trailer-add overshoot — a head emit then a trailer

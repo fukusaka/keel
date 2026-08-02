@@ -11,7 +11,12 @@ class LongPriorityQueueTest {
     fun `poll returns values in ascending order`() {
         val q = LongPriorityQueue()
         listOf(5L, 1L, 3L, 2L, 4L).forEach { q.offer(it) }
-        assertEquals(listOf(1L, 2L, 3L, 4L, 5L), generateSequence { q.poll() }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList())
+        assertEquals(
+            listOf(1L, 2L, 3L, 4L, 5L),
+            generateSequence {
+                q.poll()
+            }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList(),
+        )
     }
 
     @Test
@@ -27,7 +32,12 @@ class LongPriorityQueueTest {
         val q = LongPriorityQueue()
         listOf(10L, 20L, 30L, 40L, 50L).forEach { q.offer(it) }
         q.remove(30L)
-        assertEquals(listOf(10L, 20L, 40L, 50L), generateSequence { q.poll() }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList())
+        assertEquals(
+            listOf(10L, 20L, 40L, 50L),
+            generateSequence {
+                q.poll()
+            }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList(),
+        )
     }
 
     @Test
@@ -56,7 +66,10 @@ class LongPriorityQueueTest {
         listOf(10L, 20L, 30L).forEach { q.offer(it) }
         // The highest leaf in a min-heap of size 3 is at index 2 (= size - 1).
         q.remove(30L)
-        assertEquals(listOf(10L, 20L), generateSequence { q.poll() }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList())
+        assertEquals(
+            listOf(10L, 20L),
+            generateSequence { q.poll() }.takeWhile { it != LongPriorityQueue.NO_VALUE }.toList(),
+        )
     }
 
     @Test
@@ -318,7 +331,9 @@ class LongPriorityQueueTest {
         }
 
         fun offer(v: Long) {
-            q.offer(v); oracle.add(v); expect()
+            q.offer(v)
+            oracle.add(v)
+            expect()
         }
 
         fun poll() {
@@ -341,16 +356,22 @@ class LongPriorityQueueTest {
 
         // Interleaving exercise: build up, drain partly, add more around
         // remove'd holes, drain to empty.
-        offer(5L); offer(1L); offer(10L) // [1, 5, 10]
-        poll()                            // [5, 10]
-        offer(3L); offer(8L)              // [3, 5, 8, 10]
-        remove(5L)                        // [3, 8, 10]
-        remove(99L)                       // missing → no-op
-        offer(2L); offer(4L)              // [2, 3, 4, 8, 10]
-        poll(); poll()                    // [4, 8, 10]
-        remove(8L)                        // [4, 10]
-        offer(7L); offer(1L)              // [1, 4, 7, 10]
-        while (!oracle.isEmpty()) poll()  // drain
+        offer(5L)
+        offer(1L)
+        offer(10L) // [1, 5, 10]
+        poll() // [5, 10]
+        offer(3L)
+        offer(8L) // [3, 5, 8, 10]
+        remove(5L) // [3, 8, 10]
+        remove(99L) // missing → no-op
+        offer(2L)
+        offer(4L) // [2, 3, 4, 8, 10]
+        poll()
+        poll() // [4, 8, 10]
+        remove(8L) // [4, 10]
+        offer(7L)
+        offer(1L) // [1, 4, 7, 10]
+        while (!oracle.isEmpty()) poll() // drain
         assertTrue(q.isEmpty(), "queue not empty after oracle drained")
         assertEquals(LongPriorityQueue.NO_VALUE, q.poll(), "poll on drained queue")
     }

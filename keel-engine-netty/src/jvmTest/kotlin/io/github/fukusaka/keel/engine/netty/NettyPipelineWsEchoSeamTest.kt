@@ -200,7 +200,14 @@ class NettyPipelineWsEchoSeamTest {
         val ctx = WsSeamContext.new()
         try {
             ctx.channel.pipeline.notifyRead(
-                ctx.encodeAsIoBuf(WsFrame(fin = true, opcode = WsOpcode.PING, maskKey = 0x44444444, payload = "ping".encodeToByteArray())),
+                ctx.encodeAsIoBuf(
+                    WsFrame(
+                        fin = true,
+                        opcode = WsOpcode.PING,
+                        maskKey = 0x44444444,
+                        payload = "ping".encodeToByteArray(),
+                    ),
+                ),
             )
             assertEquals(1, ctx.transport.written.size)
             val out = ctx.decodeOutbound(ctx.transport.written[0])
@@ -221,7 +228,9 @@ class NettyPipelineWsEchoSeamTest {
         val ctx = WsSeamContext.new()
         try {
             ctx.channel.pipeline.notifyRead(
-                ctx.encodeAsIoBuf(WsFrame(fin = true, opcode = WsOpcode.CLOSE, maskKey = 0x55555555, payload = ByteArray(0))),
+                ctx.encodeAsIoBuf(
+                    WsFrame(fin = true, opcode = WsOpcode.CLOSE, maskKey = 0x55555555, payload = ByteArray(0)),
+                ),
             )
             assertEquals(1, ctx.transport.written.size)
             val out = ctx.decodeOutbound(ctx.transport.written[0])
@@ -298,5 +307,4 @@ class NettyPipelineWsEchoSeamTest {
                 "release=${tracker.releaseCount}",
         )
     }
-
 }

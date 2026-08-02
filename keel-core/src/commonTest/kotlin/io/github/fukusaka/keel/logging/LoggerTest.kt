@@ -59,16 +59,28 @@ class LoggerTest {
         val logger = RecordingLogger(LogLevel.WARN)
         var evaluated = false
 
-        logger.trace { evaluated = true; "trace" }
+        logger.trace {
+            evaluated = true
+            "trace"
+        }
         assertFalse(evaluated, "trace lambda should not be evaluated when minLevel=WARN")
 
-        logger.debug { evaluated = true; "debug" }
+        logger.debug {
+            evaluated = true
+            "debug"
+        }
         assertFalse(evaluated, "debug lambda should not be evaluated when minLevel=WARN")
 
-        logger.info { evaluated = true; "info" }
+        logger.info {
+            evaluated = true
+            "info"
+        }
         assertFalse(evaluated, "info lambda should not be evaluated when minLevel=WARN")
 
-        logger.warn { evaluated = true; "warn" }
+        logger.warn {
+            evaluated = true
+            "warn"
+        }
         assertTrue(evaluated, "warn lambda should be evaluated when minLevel=WARN")
     }
 

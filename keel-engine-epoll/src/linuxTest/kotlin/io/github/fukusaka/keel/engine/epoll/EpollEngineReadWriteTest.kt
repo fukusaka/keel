@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -392,7 +392,8 @@ class EpollEngineReadWriteTest {
             rawWrite(clientFd, "test")
 
             val source = io.github.fukusaka.keel.io.BufferedSuspendSource(
-                ch.asSuspendSource(), ch.allocator,
+                ch.asSuspendSource(),
+                ch.allocator,
             )
             val data = source.readByteArray(4)
             assertEquals("test", data.decodeToString())
@@ -416,7 +417,8 @@ class EpollEngineReadWriteTest {
             val ch = server.accept()
 
             val sink = io.github.fukusaka.keel.io.BufferedSuspendSink(
-                ch.asSuspendSink(), ch.allocator,
+                ch.asSuspendSink(),
+                ch.allocator,
             )
             sink.writeString("data")
             sink.flush()
@@ -486,5 +488,4 @@ class EpollEngineReadWriteTest {
             engine.close()
         }
     }
-
 }

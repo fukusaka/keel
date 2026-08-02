@@ -5,13 +5,13 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 /**
  * Loopback tests for [InMemoryEngine]: a `bindPipeline` listener plus a
@@ -78,7 +78,7 @@ class InMemoryEngineTest {
                     engine.close()
                 }
             }
-    }
+        }
 
     @Test
     fun `bindPipeline assigns a synthetic ephemeral port when binding to port zero`() = runTest(timeout = 15.seconds) {

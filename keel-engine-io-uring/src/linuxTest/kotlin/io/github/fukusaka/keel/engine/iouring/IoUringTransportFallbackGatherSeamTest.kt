@@ -44,7 +44,8 @@ class IoUringTransportFallbackGatherSeamTest {
     ) {
         val fake = FakeIoUringRing()
         val el = IoUringEventLoop(logger, syscallOps = FakeIoUringSyscallOps(), ioUringRing = fake)
-        val bufRing = ProvidedBufferRing(el, logger, bufferCount = 4, bufferSize = 64, bgid = 0, FakeIoUringBufferRingOps())
+        val bufRing =
+            ProvidedBufferRing(el, logger, bufferCount = 4, bufferSize = 64, bgid = 0, FakeIoUringBufferRingOps())
         bufRing.initOnEventLoop()
         val transport = IoUringIoTransport(
             fd = 999,
@@ -94,7 +95,11 @@ class IoUringTransportFallbackGatherSeamTest {
             // buf0's SEND SQE completes fully → chain advances to buf1.
             fake.enqueueCqe(userData = fake.lastSqeUserData(), res = 16, flags = 0u, hasMore = false)
             assertTrue(el.runIteration(Cqe()))
-            assertEquals(0, flushCompletions, "chain must still be mid-flight after buf0 (pre-fix drops buf1/buf2 here)")
+            assertEquals(
+                0,
+                flushCompletions,
+                "chain must still be mid-flight after buf0 (pre-fix drops buf1/buf2 here)",
+            )
 
             // buf1 completes → chain advances to buf2.
             fake.enqueueCqe(userData = fake.lastSqeUserData(), res = 16, flags = 0u, hasMore = false)

@@ -95,7 +95,9 @@ class RedirectTest {
             assertEquals(HttpStatus.OK, client.get(urlOf(server, "/dir/start")).status)
             assertEquals(listOf("/dir/start", "/dir/next"), log.targets, "relative Location resolves onto the base dir")
         } finally {
-            client.close(); server.close(); engine.close()
+            client.close()
+            server.close()
+            engine.close()
         }
     }
 
@@ -113,7 +115,9 @@ class RedirectTest {
             assertEquals(listOf("POST", "GET"), log.methods, "303 must redirect to GET")
             assertNull(log.requests[1].header("Content-Length"), "the dropped body must not leave a Content-Length")
         } finally {
-            client.close(); server.close(); engine.close()
+            client.close()
+            server.close()
+            engine.close()
         }
     }
 
@@ -126,11 +130,16 @@ class RedirectTest {
         }
         val client = keelHttpClient(engine)
         try {
-            assertEquals(HttpStatus.OK, client.post(urlOf(server, "/submit"), body = "payload".encodeToByteArray()).status)
+            assertEquals(
+                HttpStatus.OK,
+                client.post(urlOf(server, "/submit"), body = "payload".encodeToByteArray()).status,
+            )
             assertEquals(listOf("POST", "POST"), log.methods, "307 exists to preserve the method")
             assertEquals("7", log.requests[1].header("Content-Length"), "the body is re-sent")
         } finally {
-            client.close(); server.close(); engine.close()
+            client.close()
+            server.close()
+            engine.close()
         }
     }
 
@@ -149,7 +158,9 @@ class RedirectTest {
             client.put(urlOf(server, "/a"), body = "x".encodeToByteArray())
             assertEquals(listOf("PUT", "PUT"), log.methods, "302 leaves a non-POST method alone")
         } finally {
-            client.close(); server.close(); engine.close()
+            client.close()
+            server.close()
+            engine.close()
         }
     }
 
@@ -179,7 +190,10 @@ class RedirectTest {
             assertEquals("Bearer secret", sameOriginLog.requests[0].header("Authorization"), "sent to the first origin")
             assertNull(otherLog.requests[0].header("Authorization"), "credentials must not cross origin")
         } finally {
-            client.close(); other.close(); server.close(); engine.close()
+            client.close()
+            other.close()
+            server.close()
+            engine.close()
         }
     }
 
@@ -211,7 +225,10 @@ class RedirectTest {
                 "the new origin gets its own Host, not the previous one's",
             )
         } finally {
-            client.close(); other.close(); server.close(); engine.close()
+            client.close()
+            other.close()
+            server.close()
+            engine.close()
         }
     }
 
@@ -231,7 +248,9 @@ class RedirectTest {
             assertFailsWith<TooManyRedirectsException> { client.get(urlOf(server, "/a")) }
             assertEquals(4, log.requests.size, "the original request plus maxRedirects hops")
         } finally {
-            client.close(); server.close(); engine.close()
+            client.close()
+            server.close()
+            engine.close()
         }
     }
 
@@ -249,7 +268,9 @@ class RedirectTest {
             assertEquals("/b", res.headers.getString("Location"))
             assertEquals(1, log.requests.size, "no second request is made")
         } finally {
-            client.close(); server.close(); engine.close()
+            client.close()
+            server.close()
+            engine.close()
         }
     }
 
@@ -278,7 +299,9 @@ class RedirectTest {
             assertEquals(HttpStatus.FOUND, client.get(urlOf(server, "/a")).status)
             assertEquals(1, log.requests.size, "nothing to follow means no extra request")
         } finally {
-            client.close(); server.close(); engine.close()
+            client.close()
+            server.close()
+            engine.close()
         }
     }
 
@@ -294,7 +317,9 @@ class RedirectTest {
         try {
             assertEquals(HttpStatus.OK, client.get(urlOf(server, "/a")).status)
         } finally {
-            client.close(); server.close(); engine.close()
+            client.close()
+            server.close()
+            engine.close()
         }
         assertEquals(0, tracking.outstandingCount, "the redirect chain leaked pooled buffers")
     }

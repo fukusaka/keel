@@ -4,12 +4,12 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_queue_create
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import platform.darwin.dispatch_async
-import platform.darwin.dispatch_queue_create
 
 /**
  * Pins [NwQueueConfinement]: it reports "owner" exactly when the caller runs on

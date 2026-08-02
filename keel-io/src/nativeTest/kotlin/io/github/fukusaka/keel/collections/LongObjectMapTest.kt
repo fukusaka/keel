@@ -260,14 +260,27 @@ class LongObjectMapTest {
             repeat(2_000) { iter ->
                 val key = keys[next() % keys.size]
                 when {
-                    !ref.containsKey(key) -> { m[key] = iter; ref[key] = iter } // insert
-                    next() % 2 == 0 -> { m.remove(key); ref.remove(key) }       // remove
-                    else -> { m[key] = iter; ref[key] = iter }                  // update (overwrite)
+                    !ref.containsKey(key) -> {
+                        m[key] = iter
+                        ref[key] = iter
+                    } // insert
+                    next() % 2 == 0 -> {
+                        m.remove(key)
+                        ref.remove(key)
+                    } // remove
+                    else -> {
+                        m[key] = iter
+                        ref[key] = iter
+                    } // update (overwrite)
                 }
                 assertEquals(ref.size, m.size, "seed=$seed iter=$iter size drift")
                 for (k in keys) {
                     assertEquals(ref[k], m[k], "seed=$seed iter=$iter key=$k get diverged")
-                    assertEquals(ref.containsKey(k), m.containsKey(k), "seed=$seed iter=$iter key=$k containsKey diverged")
+                    assertEquals(
+                        ref.containsKey(k),
+                        m.containsKey(k),
+                        "seed=$seed iter=$iter key=$k containsKey diverged",
+                    )
                 }
             }
             assertEquals(ref.size, m.size)
@@ -292,8 +305,11 @@ class LongObjectMapTest {
         for (i in 1..n step 2) m.remove(pageSize * i)
         assertEquals(n / 2, m.size)
         for (i in 1..n) {
-            if (i % 2 == 1) assertNull(m[pageSize * i])
-            else assertEquals(i, m[pageSize * i], "survivor ${pageSize * i} stranded after remove")
+            if (i % 2 == 1) {
+                assertNull(m[pageSize * i])
+            } else {
+                assertEquals(i, m[pageSize * i], "survivor ${pageSize * i} stranded after remove")
+            }
         }
     }
 

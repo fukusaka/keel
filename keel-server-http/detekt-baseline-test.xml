@@ -2,18 +2,6 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>ArgumentListWrapping:HelloGcPressureAudit.kt$HelloGcPressureAudit$(" ${gc.name.padEnd(28)} count=${dCount.toString().padStart(6)} time=${dTime.toString().padStart(6)} ms")</ID>
-    <ID>ArgumentListWrapping:HelloGcPressureAudit.kt$HelloGcPressureAudit$(28)</ID>
-    <ID>ArgumentListWrapping:HelloGcPressureAudit.kt$HelloGcPressureAudit$(6)</ID>
-    <ID>ArgumentListWrapping:RequestTimeoutTest.kt$RequestTimeoutTest$("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc".toByteArray())</ID>
-    <ID>ArgumentListWrapping:RequestTimeoutTest.kt$RequestTimeoutTest$(client)</ID>
-    <ID>ArgumentListWrapping:RequestTimeoutTest.kt$RequestTimeoutTest$(readUntilClosed(client), "the server must force-close a peer that never completes the request body")</ID>
-    <ID>ArgumentListWrapping:StaticAssetServeTest.kt$StaticAssetServeTest$( "GET", "/assets/data.txt", "If-Range: Sun, 06 Nov 1994 08:49:37 GMT\r\nRange: bytes=0-3\r\n", )</ID>
-    <ID>ArgumentListWrapping:StaticAssetServeTest.kt$StaticAssetServeTest$( router, emptyList(), ErrorHandlers.DEFAULT, QueryParameterConfig.DEFAULT, scope, )</ID>
-    <ID>ImportOrdering:ETagGeneratorTest.kt$import kotlinx.io.RawSource import kotlinx.io.Buffer import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertNull import kotlin.test.assertTrue import kotlin.time.Instant</ID>
-    <ID>ImportOrdering:KeelHttpServerMultiConnectorTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.engine.nio.NioEngine import io.github.fukusaka.keel.server.http.dsl.keelHttpServer import java.net.HttpURLConnection import java.net.URI import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertFailsWith import kotlin.time.Duration.Companion.seconds import kotlinx.coroutines.runBlocking import kotlinx.coroutines.withTimeout</ID>
-    <ID>Indentation:TestCertificates.kt$TestCertificates$ </ID>
-    <ID>SpacingBetweenDeclarationsWithComments:HelloGcPressureAudit.kt$HelloGcPressureAudit.Companion$// 10 seconds is enough to trigger multiple young-gen collections</ID>
     <ID>SwallowedException:BodyRateFloorTest.kt$BodyRateFloorTest$e: SocketTimeoutException</ID>
     <ID>SwallowedException:BodyRateFloorTest.kt$BodyRateFloorTest$e: java.io.IOException</ID>
     <ID>SwallowedException:HeaderTimeoutTest.kt$HeaderTimeoutTest$e: SocketTimeoutException</ID>
@@ -22,6 +10,5 @@
     <ID>SwallowedException:KeelHttpsTest.kt$KeelHttpsTest$e: java.io.IOException</ID>
     <ID>SwallowedException:RequestTimeoutTest.kt$RequestTimeoutTest$e: SocketTimeoutException</ID>
     <ID>SwallowedException:RequestTimeoutTest.kt$RequestTimeoutTest$e: java.io.IOException</ID>
-    <ID>Wrapping:KeelHttpServerMultiConnectorTest.kt$KeelHttpServerMultiConnectorTest$;</ID>
   </CurrentIssues>
 </SmellBaseline>

@@ -2,20 +2,6 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>ArgumentListWrapping:MbedTlsEchoTest.kt$MbedTlsEchoTest$( "/usr/bin/curl", "curl", "-k", "-s", "https://localhost:$port/hello", null, )</ID>
-    <ID>ArgumentListWrapping:MbedTlsHttpsEchoTest.kt$MbedTlsHttpsEchoTest$( TestCertificates.SERVER_CERT, TestCertificates.SERVER_KEY, )</ID>
-    <ID>ArgumentListWrapping:MbedTlsHttpsEchoTest.kt$MbedTlsHttpsEchoTest$("127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory)))</ID>
-    <ID>ArgumentListWrapping:MbedTlsHttpsEchoTest.kt$MbedTlsHttpsEchoTest$(factory)</ID>
-    <ID>ArgumentListWrapping:MbedTlsHttpsEchoTest.kt$MbedTlsHttpsEchoTest$(tlsConfig, TlsCodecServerInstaller(factory))</ID>
-    <ID>ImportOrdering:MbedTlsConcurrentCodecCreationTest.kt$import io.github.fukusaka.keel.tls.TlsCertificateSource import io.github.fukusaka.keel.tls.TlsConfig import io.github.fukusaka.keel.tls.TlsTrustSource import io.github.fukusaka.keel.tls.TlsVerifyMode import kotlinx.coroutines.Dispatchers import kotlinx.coroutines.async import kotlinx.coroutines.awaitAll import kotlin.concurrent.AtomicInt import kotlinx.coroutines.delay import kotlinx.coroutines.launch import kotlinx.coroutines.yield import kotlinx.coroutines.runBlocking import kotlinx.coroutines.withTimeout import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds</ID>
-    <ID>ImportOrdering:MbedTlsHttpsEchoTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.codec.http.HttpRequestDecoder import io.github.fukusaka.keel.codec.http.HttpResponse import io.github.fukusaka.keel.codec.http.HttpResponseEncoder import io.github.fukusaka.keel.codec.http.RoutingHandler import io.github.fukusaka.keel.server.TlsCodecServerInstaller import io.github.fukusaka.keel.server.TlsServerConfig import io.github.fukusaka.keel.tls.TlsCertificateSource import io.github.fukusaka.keel.tls.TlsConfig import io.github.fukusaka.keel.tls.TlsVerifyMode import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.cinterop.IntVar import kotlinx.cinterop.addressOf import kotlinx.cinterop.alloc import kotlinx.cinterop.allocArray import kotlinx.cinterop.convert import kotlinx.cinterop.get import kotlinx.cinterop.memScoped import kotlinx.cinterop.ptr import kotlinx.cinterop.usePinned import kotlinx.cinterop.value import platform.posix.SIGTERM import platform.posix.STDOUT_FILENO import platform.posix._exit import platform.posix.close import platform.posix.dup2 import platform.posix.execl import platform.posix.fork import platform.posix.kill import platform.posix.pipe import platform.posix.read import platform.posix.usleep import platform.posix.waitpid import kotlinx.coroutines.runBlocking import kotlinx.coroutines.withTimeout import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds</ID>
-    <ID>ImportOrdering:TestEngine.linux.kt$import io.github.fukusaka.keel.core.StreamEngine import io.github.fukusaka.keel.core.IoEngineConfig import io.github.fukusaka.keel.engine.epoll.EpollEngine</ID>
-    <ID>ImportOrdering:TestEngine.macos.kt$import io.github.fukusaka.keel.core.StreamEngine import io.github.fukusaka.keel.core.IoEngineConfig import io.github.fukusaka.keel.engine.kqueue.KqueueEngine</ID>
-    <ID>Indentation:MbedTlsEchoTest.kt$MbedTlsEchoTest$ </ID>
-    <ID>Indentation:TestCertificates.kt$TestCertificates$ </ID>
     <ID>LongMethod:MbedTlsEchoTest.kt$MbedTlsEchoTest$@Test fun `Mbed TLS server handshake and echo succeeds`()</ID>
-    <ID>MaxLineLength:MbedTlsHttpsEchoTest.kt$MbedTlsHttpsEchoTest$val</ID>
-    <ID>MaximumLineLength:MbedTlsHttpsEchoTest.kt$MbedTlsHttpsEchoTest$ </ID>
-    <ID>NoBlankLineBeforeRbrace:MbedTlsHandshakeErrorPathTest.kt$MbedTlsHandshakeErrorPathTest$ </ID>
   </CurrentIssues>
 </SmellBaseline>

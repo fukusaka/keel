@@ -4,26 +4,22 @@ package io.github.fukusaka.keel.engine.nwconnection
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
-import io.github.fukusaka.keel.buf.unsafePointer
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.COpaquePointer
-import kotlinx.cinterop.COpaquePointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.UIntVar
+import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.staticCFunction
-import kotlinx.cinterop.StableRef
-import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.usePinned
 import nwconnection.keel_nw_test_dispatch_handle
 import nwconnection.keel_nw_test_make_data_single
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -97,7 +93,7 @@ class DispatchDataIoBufTest {
         withDispatchHandle(payload) { ptr, len, handle ->
             val buf = DispatchDataIoBuf(ptr, len, handle)
             buf.retain() // refCount 1 → 2, slice-like
-            buf.close()  // escape hatch: bypass refcount, free handle
+            buf.close() // escape hatch: bypass refcount, free handle
             // Subsequent close is a no-op (no crash, no double-release).
             buf.close()
         }
@@ -151,7 +147,12 @@ class DispatchDataIoBufTest {
                     ) { "make_data_single returned null" }
                     try {
                         keel_nw_test_dispatch_handle(
-                            srcHandle, dummyBuf, 64u, 0, captureCallback, ref.asCPointer(),
+                            srcHandle,
+                            dummyBuf,
+                            64u,
+                            0,
+                            captureCallback,
+                            ref.asCPointer(),
                         )
                         val zcPtr = checkNotNull(captured.zcPtr) { "zc_ptr null after dispatch" }
                         val zcHandle = checkNotNull(captured.zcHandle) { "zc_handle null after dispatch" }
@@ -183,7 +184,8 @@ class DispatchDataIoBufTest {
                 zcPtr: COpaquePointer?,
                 len: UInt,
                 _: Int, _: Int,
-                ctx: COpaquePointer? ->
+                ctx: COpaquePointer?,
+            ->
             val c = checkNotNull(ctx) { "ctx null" }.asStableRef<CapturedHandle>().get()
             c.zcHandle = zcHandle
             c.zcPtr = zcPtr?.reinterpret<ByteVar>()

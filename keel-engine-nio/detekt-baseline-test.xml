@@ -2,33 +2,10 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>ArgumentListWrapping:NioEngineReadWriteTest.kt$NioEngineReadWriteTest$( ch.asSuspendSink(), ch.allocator, )</ID>
-    <ID>ArgumentListWrapping:NioEngineReadWriteTest.kt$NioEngineReadWriteTest$( ch.asSuspendSource(), ch.allocator, )</ID>
-    <ID>ArgumentListWrapping:NioEngineResourceTest.kt$NioEngineResourceTest$( 0, tracker.outstandingCount, "Buffer leak: allocated=${tracker.allocateCount}, released=${tracker.releaseCount}", )</ID>
-    <ID>ArgumentListWrapping:NioPauseReadsTest.kt$NioPauseReadsTest$('a'.code.toByte())</ID>
-    <ID>ArgumentListWrapping:NioPauseReadsTest.kt$NioPauseReadsTest$('b'.code.toByte())</ID>
-    <ID>ArgumentListWrapping:NioPauseReadsTest.kt$NioPauseReadsTest$(1)</ID>
-    <ID>ArgumentListWrapping:NioPauseReadsTest.kt$NioPauseReadsTest$(io.github.fukusaka.keel.buf.DefaultAllocator.allocate(1).also { it.writeByte('a'.code.toByte()) })</ID>
-    <ID>ArgumentListWrapping:NioPauseReadsTest.kt$NioPauseReadsTest$(io.github.fukusaka.keel.buf.DefaultAllocator.allocate(1).also { it.writeByte('b'.code.toByte()) })</ID>
     <ID>Filename:NioStreamServerCloseThreadSafetyTest.kt$io.github.fukusaka.keel.engine.nio.NioStreamServerCloseThreadSafetyTest.kt</ID>
-    <ID>ImportOrdering:NioStaleInterestSeamTest.kt$import io.github.fukusaka.keel.logging.LogLevel import io.github.fukusaka.keel.logging.Logger import java.nio.ByteBuffer import java.nio.channels.Pipe import java.nio.channels.SelectionKey import java.util.concurrent.CountDownLatch import java.util.concurrent.TimeUnit import java.util.concurrent.atomic.AtomicInteger import kotlin.coroutines.EmptyCoroutineContext import kotlin.test.AfterTest import kotlin.test.BeforeTest import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue import kotlin.test.fail import kotlinx.coroutines.runBlocking</ID>
     <ID>MatchingDeclarationName:NioStreamServerCloseThreadSafetyTest.kt$NioServerCloseThreadSafetyTest</ID>
-    <ID>NoBlankLineBeforeRbrace:NioEngineConcurrencyTest.kt$NioEngineConcurrencyTest$ </ID>
-    <ID>NoBlankLineBeforeRbrace:NioEngineLifecycleTest.kt$NioEngineLifecycleTest$ </ID>
-    <ID>NoBlankLineBeforeRbrace:NioEngineReadWriteTest.kt$NioEngineReadWriteTest$ </ID>
-    <ID>NoBlankLineBeforeRbrace:NioEngineResourceTest.kt$NioEngineResourceTest$ </ID>
-    <ID>NoUnusedImports:NioEngineConcurrencyTest.kt$io.github.fukusaka.keel.engine.nio.NioEngineConcurrencyTest.kt</ID>
-    <ID>SpacingBetweenDeclarationsWithComments:NioEngineTestSupport.kt$// Longer bound for large-payload flush / accumulate scenarios where</ID>
     <ID>SwallowedException:NioEngineIdleTimeoutTest.kt$NioEngineIdleTimeoutTest$e: IOException</ID>
     <ID>SwallowedException:NioEngineIdleTimeoutTest.kt$NioEngineIdleTimeoutTest$e: SocketTimeoutException</ID>
     <ID>UnusedPrivateProperty:NioPreAttachJournalTest.kt$NioPreAttachJournalTest$i</ID>
-    <ID>Wrapping:NioEventLoopFunnelTest.kt$NioEventLoopFunnelTest$(</ID>
-    <ID>Wrapping:NioEventLoopFunnelTest.kt$NioEventLoopFunnelTest$(EmptyCoroutineContext, Runnable { // Inside a dispatched task we are on the EL thread; the funnel // takes the inline branch. The interest mask must be visible // immediately, before this Runnable returns. loop.setInterestCallback(key, SelectionKey.OP_READ, Runnable { /* no-op */ }) applied.set((key.interestOps() and SelectionKey.OP_READ) != 0) latch.countDown() })</ID>
-    <ID>Wrapping:NioEventLoopFunnelTest.kt$NioEventLoopFunnelTest$(EmptyCoroutineContext, Runnable { loop.removeInterest(key, SelectionKey.OP_READ) removed.set((key.interestOps() and SelectionKey.OP_READ) == 0) latch.countDown() })</ID>
-    <ID>Wrapping:NioEventLoopFunnelTest.kt$NioEventLoopFunnelTest$(EmptyCoroutineContext, Runnable { loop.setInterestCallback(key, SelectionKey.OP_READ, Runnable { /* no-op */ }) armLatch.countDown() })</ID>
-    <ID>Wrapping:NioStaleInterestSeamTest.kt$NioStaleInterestSeamTest$(</ID>
-    <ID>Wrapping:NioStaleInterestSeamTest.kt$NioStaleInterestSeamTest$(EmptyCoroutineContext, Runnable { interestAfter.set(key.interestOps()) readbackLatch.countDown() })</ID>
-    <ID>Wrapping:NioStaleInterestSeamTest.kt$NioStaleInterestSeamTest$(EmptyCoroutineContext, Runnable { loop.setInterestCallback(key, SelectionKey.OP_READ, Runnable { callbackRan.incrementAndGet() }) armLatch.countDown() })</ID>
-    <ID>Wrapping:NioStaleInterestSeamTest.kt$NioStaleInterestSeamTest$(EmptyCoroutineContext, Runnable { val callbacks = key.attachment() as NioEventLoop.KeyCallbacks callbacks.readCallback = null faultLatch.countDown() })</ID>
   </CurrentIssues>
 </SmellBaseline>

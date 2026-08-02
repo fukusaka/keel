@@ -41,7 +41,10 @@ class KeelHttpClientTest {
     fun `GET returns the status body and headers`() = runTest(timeout = asyncBudget) {
         val engine = InMemoryEngine()
         val server = keelHttpServer(engine) {
-            connector { host = "127.0.0.1"; port = 0 }
+            connector {
+                host = "127.0.0.1"
+                port = 0
+            }
             get("/hello") { call -> call.respondText("Hello, keel") }
         }
         server.start()
@@ -62,7 +65,10 @@ class KeelHttpClientTest {
     fun `POST sends the body and Content-Length`() = runTest(timeout = asyncBudget) {
         val engine = InMemoryEngine()
         val server = keelHttpServer(engine) {
-            connector { host = "127.0.0.1"; port = 0 }
+            connector {
+                host = "127.0.0.1"
+                port = 0
+            }
             post("/echo") { call -> call.respondText(call.receiveBytes().decodeToString()) }
         }
         server.start()
@@ -81,7 +87,10 @@ class KeelHttpClientTest {
     fun `a query string reaches the server`() = runTest(timeout = asyncBudget) {
         val engine = InMemoryEngine()
         val server = keelHttpServer(engine) {
-            connector { host = "127.0.0.1"; port = 0 }
+            connector {
+                host = "127.0.0.1"
+                port = 0
+            }
             get("/q") { call -> call.respondText(call.queryParameters["name"] ?: "none") }
         }
         server.start()
@@ -99,7 +108,10 @@ class KeelHttpClientTest {
     fun `an unmatched route returns 404`() = runTest(timeout = asyncBudget) {
         val engine = InMemoryEngine()
         val server = keelHttpServer(engine) {
-            connector { host = "127.0.0.1"; port = 0 }
+            connector {
+                host = "127.0.0.1"
+                port = 0
+            }
             get("/hello") { call -> call.respondText("hi") }
         }
         server.start()
@@ -116,7 +128,10 @@ class KeelHttpClientTest {
     fun `a caller-supplied Host header is preserved`() = runTest(timeout = asyncBudget) {
         val engine = InMemoryEngine()
         val server = keelHttpServer(engine) {
-            connector { host = "127.0.0.1"; port = 0 }
+            connector {
+                host = "127.0.0.1"
+                port = 0
+            }
             get("/host") { call -> call.respondText(call.headers[HttpHeaderName.HOST]?.toString() ?: "none") }
         }
         server.start()
@@ -135,7 +150,10 @@ class KeelHttpClientTest {
         val tracking = TrackingAllocator()
         val engine = InMemoryEngine(IoEngineConfig(allocator = tracking))
         val server = keelHttpServer(engine) {
-            connector { host = "127.0.0.1"; port = 0 }
+            connector {
+                host = "127.0.0.1"
+                port = 0
+            }
             get("/hello") { call -> call.respondText("Hello") }
         }
         server.start()

@@ -67,6 +67,10 @@ class HttpRequestDecoderRequestStartedTest {
         newDecoderWith(rec)
         // Both requests (no body) arrive in one buffer.
         channel.pipeline.notifyRead(buf("GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n"))
-        assertEquals(listOf("start", "head", "start", "head"), rec.events, "each pipelined request announces its own start")
+        assertEquals(
+            listOf("start", "head", "start", "head"),
+            rec.events,
+            "each pipelined request announces its own start",
+        )
     }
 }

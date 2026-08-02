@@ -6,14 +6,14 @@ import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
+import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.usePinned
-import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.reinterpret
 import nwconnection.keel_nw_dispatch_data_release
 import nwconnection.keel_nw_test_dispatch_concat
 import nwconnection.keel_nw_test_dispatch_single
@@ -53,10 +53,13 @@ class NwReadDualPathTest {
         val result = drive { fallbackBuf, fallbackLen, cb, ctx ->
             payload.usePinned { pinned ->
                 keel_nw_test_dispatch_single(
-                    pinned.addressOf(0), payload.size.toUInt(),
-                    fallbackBuf, fallbackLen,
+                    pinned.addressOf(0),
+                    payload.size.toUInt(),
+                    fallbackBuf,
+                    fallbackLen,
                     /* is_complete = */ 0,
-                    cb, ctx,
+                    cb,
+                    ctx,
                 )
             }
         }
@@ -136,8 +139,15 @@ class NwReadDualPathTest {
         val payload = "x".encodeToByteArray()
         val r1 = drive { fb, fbLen, cb, ctx ->
             payload.usePinned { p ->
-                keel_nw_test_dispatch_single(p.addressOf(0), payload.size.toUInt(),
-                    fb, fbLen, /* is_complete = */ 1, cb, ctx)
+                keel_nw_test_dispatch_single(
+                    p.addressOf(0),
+                    payload.size.toUInt(),
+                    fb,
+                    fbLen,
+                    /* is_complete = */ 1,
+                    cb,
+                    ctx,
+                )
             }
         }
         assertTrue(r1.isComplete, "single-region path lost is_complete=true")
@@ -177,9 +187,18 @@ class NwReadDualPathTest {
         invoke: (
             fallbackBuf: COpaquePointer,
             fallbackLen: UInt,
-            cb: kotlinx.cinterop.CPointer<kotlinx.cinterop.CFunction<(
-                COpaquePointer?, COpaquePointer?, UInt, Int, Int, COpaquePointer?,
-            ) -> Unit>>,
+            cb: kotlinx.cinterop.CPointer<
+                kotlinx.cinterop.CFunction<
+                    (
+                        COpaquePointer?,
+                        COpaquePointer?,
+                        UInt,
+                        Int,
+                        Int,
+                        COpaquePointer?,
+                    ) -> Unit,
+                    >,
+                >,
             ctx: COpaquePointer?,
         ) -> Unit,
     ): Captured {
@@ -227,7 +246,8 @@ class NwReadDualPathTest {
                 len: UInt,
                 isComplete: Int,
                 error: Int,
-                ctx: COpaquePointer? ->
+                ctx: COpaquePointer?,
+            ->
             val h = checkNotNull(ctx) { "ctx null" }.asStableRef<Holder>().get()
             h.zcHandle = zcHandle
             h.zcPtr = zcPtr?.reinterpret<ByteVar>()

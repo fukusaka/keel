@@ -14,8 +14,8 @@ class WsFrameWriterTest {
         val buf = Buffer()
         writeFrame(WsFrame.text("hello"), buf)
         val bytes = buf.readByteArray()
-        assertEquals(0x81.b, bytes[0])   // FIN + TEXT
-        assertEquals(0x05, bytes[1])     // len=5, no mask
+        assertEquals(0x81.b, bytes[0]) // FIN + TEXT
+        assertEquals(0x05, bytes[1]) // len=5, no mask
         assertContentEquals("hello".encodeToByteArray(), bytes.copyOfRange(2, 7))
     }
 
@@ -26,7 +26,7 @@ class WsFrameWriterTest {
         writeFrame(WsFrame.text("Hi", maskKey = maskKey), buf)
         val bytes = buf.readByteArray()
         assertEquals(0x81.b, bytes[0])
-        assertEquals(0x82.b, bytes[1])   // MASK bit + len=2
+        assertEquals(0x82.b, bytes[1]) // MASK bit + len=2
         // masking key
         assertEquals(0x12.b, bytes[2])
         assertEquals(0x34.b, bytes[3])
@@ -46,9 +46,9 @@ class WsFrameWriterTest {
         writeFrame(WsFrame.binary(payload), buf)
         val bytes = buf.readByteArray()
         assertEquals(0x82.b, bytes[0])
-        assertEquals(0x7E.b, bytes[1])   // extended payload length indicator
+        assertEquals(0x7E.b, bytes[1]) // extended payload length indicator
         assertEquals(0x00, bytes[2])
-        assertEquals(0x7E.b, bytes[3])   // 126
+        assertEquals(0x7E.b, bytes[3]) // 126
     }
 
     @Test
@@ -58,12 +58,16 @@ class WsFrameWriterTest {
         writeFrame(WsFrame.binary(payload), buf)
         val bytes = buf.readByteArray()
         assertEquals(0x82.b, bytes[0])
-        assertEquals(0x7F.b, bytes[1])   // 64-bit extended payload length
+        assertEquals(0x7F.b, bytes[1]) // 64-bit extended payload length
         // 8-byte big-endian length = 65536 = 0x00010000
-        assertEquals(0x00, bytes[2]); assertEquals(0x00, bytes[3])
-        assertEquals(0x00, bytes[4]); assertEquals(0x00, bytes[5])
-        assertEquals(0x00, bytes[6]); assertEquals(0x01.b, bytes[7])
-        assertEquals(0x00, bytes[8]); assertEquals(0x00, bytes[9])
+        assertEquals(0x00, bytes[2])
+        assertEquals(0x00, bytes[3])
+        assertEquals(0x00, bytes[4])
+        assertEquals(0x00, bytes[5])
+        assertEquals(0x00, bytes[6])
+        assertEquals(0x01.b, bytes[7])
+        assertEquals(0x00, bytes[8])
+        assertEquals(0x00, bytes[9])
     }
 
     @Test
@@ -71,7 +75,7 @@ class WsFrameWriterTest {
         val buf = Buffer()
         writeFrame(WsFrame.continuation("part".encodeToByteArray(), fin = false), buf)
         val bytes = buf.readByteArray()
-        assertEquals(0x00, bytes[0])  // FIN=0 + CONTINUATION opcode
+        assertEquals(0x00, bytes[0]) // FIN=0 + CONTINUATION opcode
     }
 
     @Test
@@ -79,8 +83,8 @@ class WsFrameWriterTest {
         val buf = Buffer()
         writeFrame(WsFrame.ping(), buf)
         val bytes = buf.readByteArray()
-        assertEquals(0x89.b, bytes[0])  // FIN + PING
-        assertEquals(0x00, bytes[1])    // len=0
+        assertEquals(0x89.b, bytes[0]) // FIN + PING
+        assertEquals(0x00, bytes[1]) // len=0
         assertEquals(2, bytes.size)
     }
 
@@ -89,10 +93,10 @@ class WsFrameWriterTest {
         val buf = Buffer()
         writeFrame(WsFrame.close(WsCloseCode.NORMAL_CLOSURE), buf)
         val bytes = buf.readByteArray()
-        assertEquals(0x88.b, bytes[0])  // FIN + CLOSE
-        assertEquals(0x02, bytes[1])    // len=2
-        assertEquals(0x03.b, bytes[2])  // 1000 >> 8
-        assertEquals(0xE8.b, bytes[3])  // 1000 & 0xFF
+        assertEquals(0x88.b, bytes[0]) // FIN + CLOSE
+        assertEquals(0x02, bytes[1]) // len=2
+        assertEquals(0x03.b, bytes[2]) // 1000 >> 8
+        assertEquals(0xE8.b, bytes[3]) // 1000 & 0xFF
     }
 
     @Test

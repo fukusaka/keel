@@ -5,11 +5,10 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 /**
  * End-to-end smoke tests for `ConnectConfig.socketOptions` and

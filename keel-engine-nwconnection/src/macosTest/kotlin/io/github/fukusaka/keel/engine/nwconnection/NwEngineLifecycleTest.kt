@@ -1,9 +1,8 @@
 package io.github.fukusaka.keel.engine.nwconnection
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.UnixSocketAddress
-
-import io.github.fukusaka.keel.buf.DefaultAllocator
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -261,5 +260,4 @@ class NwEngineLifecycleTest {
             }
         }
     }
-
 }

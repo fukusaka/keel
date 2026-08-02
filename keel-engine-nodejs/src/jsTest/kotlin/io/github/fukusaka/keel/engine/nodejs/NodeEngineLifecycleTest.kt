@@ -1,17 +1,15 @@
 package io.github.fukusaka.keel.engine.nodejs
 
-
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 class NodeEngineLifecycleTest {
 
@@ -221,5 +219,4 @@ class NodeEngineLifecycleTest {
             engine.close()
         }
     }
-
 }

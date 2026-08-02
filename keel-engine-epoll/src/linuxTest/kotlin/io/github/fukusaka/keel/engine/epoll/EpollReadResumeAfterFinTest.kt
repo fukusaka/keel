@@ -75,13 +75,14 @@ class EpollReadResumeAfterFinTest {
                 server.close()
                 engine.close()
             }
-            }
         }
+    }
 
-        private companion object {
-            private const val SETTLE_MS = 100L
-            /** Wall-clock bound for the whole body, not just the await. */
-            private const val TEST_BUDGET_S = 15
-            private const val PAYLOAD_BYTES = 1024
-        }
+    private companion object {
+        private const val SETTLE_MS = 100L
+
+        /** Wall-clock bound for the whole body, not just the await. */
+        private const val TEST_BUDGET_S = 15
+        private const val PAYLOAD_BYTES = 1024
+    }
 }

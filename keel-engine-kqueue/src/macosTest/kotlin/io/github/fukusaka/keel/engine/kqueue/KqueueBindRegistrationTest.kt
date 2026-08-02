@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
-import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.logging.LogLevel
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.async
@@ -112,7 +112,6 @@ class KqueueBindRegistrationTest {
             }
         }
     }
-
 
     /**
      * Waits until [port] can be bound again, i.e. until the asynchronous

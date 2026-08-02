@@ -58,7 +58,10 @@ class RequestTimeoutTest {
                     }
                     Thread.sleep(GAP_MS)
                 }
-                assertTrue(readUntilClosed(client), "the server must force-close a peer that never completes the request body")
+                assertTrue(
+                    readUntilClosed(client),
+                    "the server must force-close a peer that never completes the request body",
+                )
             } finally {
                 client.close()
                 server.stop()
@@ -85,7 +88,9 @@ class RequestTimeoutTest {
             client.soTimeout = 5_000
             try {
                 // The whole request (head + body) arrives at once, well within the budget.
-                client.getOutputStream().write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc".toByteArray())
+                client.getOutputStream().write(
+                    "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc".toByteArray(),
+                )
                 client.getOutputStream().flush()
                 val statusLine = client.getInputStream().bufferedReader().readLine()
                 assertEquals("HTTP/1.1 200 OK", statusLine, "a timely request should get a normal response")

@@ -6,7 +6,6 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.ECANCELED
 import platform.posix.ECONNRESET
-import platform.posix.ENOBUFS
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -46,7 +45,14 @@ class IoUringTransportPauseReadsSeamTest {
     ) {
         val fake = FakeIoUringRing()
         val el = IoUringEventLoop(logger, syscallOps = FakeIoUringSyscallOps(), ioUringRing = fake)
-        val bufRing = ProvidedBufferRing(el, logger, bufferCount = 8, bufferSize = 64, bgid = 0, FakeIoUringBufferRingOps())
+        val bufRing = ProvidedBufferRing(
+            el,
+            logger,
+            bufferCount = 8,
+            bufferSize = 64,
+            bgid = 0,
+            FakeIoUringBufferRingOps(),
+        )
         bufRing.initOnEventLoop()
         val transport = IoUringIoTransport(
             fd = 999,

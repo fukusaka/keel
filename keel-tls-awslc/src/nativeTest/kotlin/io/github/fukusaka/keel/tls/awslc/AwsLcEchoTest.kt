@@ -1,15 +1,5 @@
 package io.github.fukusaka.keel.tls.awslc
 
-import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
-import kotlinx.cinterop.ptr
-import kotlinx.cinterop.toKString
-import kotlinx.cinterop.usePinned
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import awslc.BIO_free
 import awslc.BIO_new_mem_buf
 import awslc.EVP_PKEY_free
@@ -36,6 +26,16 @@ import awslc.X509_free
 import awslc.keel_awslc_create_server
 import awslc.keel_awslc_err_string
 import awslc.keel_awslc_get_port
+import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.toKString
+import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.posix.EAGAIN
 import platform.posix.EINTR
 import platform.posix.EWOULDBLOCK
@@ -74,95 +74,99 @@ class AwsLcEchoTest {
             val deadline = TimeSource.Monotonic.markNow() + 30.seconds
             memScoped {
                 // --- Init ---
-        OPENSSL_init_ssl(0u, null)
+                OPENSSL_init_ssl(0u, null)
 
-        // --- Create SSL_CTX ---
-        val method = TLS_server_method()
-        val ctx = SSL_CTX_new(method)
-        check(ctx != null) { "SSL_CTX_new failed: ${keel_awslc_err_string()?.toKString()}" }
+                // --- Create SSL_CTX ---
+                val method = TLS_server_method()
+                val ctx = SSL_CTX_new(method)
+                check(ctx != null) { "SSL_CTX_new failed: ${keel_awslc_err_string()?.toKString()}" }
 
-        // --- Load certificate ---
-        val certBytes = SERVER_CERT.encodeToByteArray()
-        val certBio = certBytes.usePinned { pinned ->
-            BIO_new_mem_buf(pinned.addressOf(0), certBytes.size.toLong())
-        }
-        check(certBio != null) { "BIO_new_mem_buf(cert) failed" }
-        val x509 = PEM_read_bio_X509(certBio, null, null, null)
-        check(x509 != null) { "PEM_read_bio_X509 failed: ${keel_awslc_err_string()?.toKString()}" }
-        SSL_CTX_use_certificate(ctx, x509)
-        X509_free(x509)
-        BIO_free(certBio)
-
-        // --- Load private key ---
-        val keyBytes = SERVER_KEY.encodeToByteArray()
-        val keyBio = keyBytes.usePinned { pinned ->
-            BIO_new_mem_buf(pinned.addressOf(0), keyBytes.size.toLong())
-        }
-        check(keyBio != null) { "BIO_new_mem_buf(key) failed" }
-        val pkey = PEM_read_bio_PrivateKey(keyBio, null, null, null)
-        check(pkey != null) { "PEM_read_bio_PrivateKey failed: ${keel_awslc_err_string()?.toKString()}" }
-        SSL_CTX_use_PrivateKey(ctx, pkey)
-        EVP_PKEY_free(pkey)
-        BIO_free(keyBio)
-
-        // --- Server socket ---
-        val serverFd = keel_awslc_create_server(0)
-        check(serverFd >= 0) { "create_server failed: $serverFd" }
-        val port = keel_awslc_get_port(serverFd)
-        check(port > 0) { "failed to get assigned port" }
-        setNonBlocking(serverFd)
-
-        // --- curl client ---
-        val pid = platform.posix.fork()
-        if (pid == 0) {
-            platform.posix.usleep(300_000u)
-            platform.posix.execl(
-                "/usr/bin/curl", "curl", "-k", "-s",
-                "https://localhost:$port/hello", null,
-            )
-            platform.posix._exit(1)
-        }
-
-        // --- Accept (deadline-aware) + handshake ---
-        val clientFd = acceptWithDeadline(serverFd, deadline)
-        setNonBlocking(clientFd)
-
-        try {
-            val ssl = SSL_new(ctx)
-            check(ssl != null) { "SSL_new failed" }
-            SSL_set_fd(ssl, clientFd)
-
-            sslOpWithDeadline("SSL_accept", ssl, clientFd, deadline) { SSL_accept(ssl) }
-
-            // --- Read request, send response ---
-            val buf = ByteArray(4096)
-            val n = buf.usePinned { pinned ->
-                sslOpWithDeadline("SSL_read", ssl, clientFd, deadline) {
-                    SSL_read(ssl, pinned.addressOf(0), buf.size)
+                // --- Load certificate ---
+                val certBytes = SERVER_CERT.encodeToByteArray()
+                val certBio = certBytes.usePinned { pinned ->
+                    BIO_new_mem_buf(pinned.addressOf(0), certBytes.size.toLong())
                 }
-            }
-            println("Server received $n bytes: ${buf.decodeToString(0, n).lines().first()}")
+                check(certBio != null) { "BIO_new_mem_buf(cert) failed" }
+                val x509 = PEM_read_bio_X509(certBio, null, null, null)
+                check(x509 != null) { "PEM_read_bio_X509 failed: ${keel_awslc_err_string()?.toKString()}" }
+                SSL_CTX_use_certificate(ctx, x509)
+                X509_free(x509)
+                BIO_free(certBio)
 
-            val body = "Hello, AWS-LC TLS!"
-            val response = "HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
-            val responseBytes = response.encodeToByteArray()
-            responseBytes.usePinned { pinned ->
-                sslOpWithDeadline("SSL_write", ssl, clientFd, deadline) {
-                    SSL_write(ssl, pinned.addressOf(0), responseBytes.size)
+                // --- Load private key ---
+                val keyBytes = SERVER_KEY.encodeToByteArray()
+                val keyBio = keyBytes.usePinned { pinned ->
+                    BIO_new_mem_buf(pinned.addressOf(0), keyBytes.size.toLong())
                 }
-            }
+                check(keyBio != null) { "BIO_new_mem_buf(key) failed" }
+                val pkey = PEM_read_bio_PrivateKey(keyBio, null, null, null)
+                check(pkey != null) { "PEM_read_bio_PrivateKey failed: ${keel_awslc_err_string()?.toKString()}" }
+                SSL_CTX_use_PrivateKey(ctx, pkey)
+                EVP_PKEY_free(pkey)
+                BIO_free(keyBio)
 
-            // --- Cleanup ---
-            SSL_shutdown(ssl)
-            SSL_free(ssl)
-        } finally {
-            platform.posix.close(clientFd)
-            platform.posix.close(serverFd)
-            SSL_CTX_free(ctx)
+                // --- Server socket ---
+                val serverFd = keel_awslc_create_server(0)
+                check(serverFd >= 0) { "create_server failed: $serverFd" }
+                val port = keel_awslc_get_port(serverFd)
+                check(port > 0) { "failed to get assigned port" }
+                setNonBlocking(serverFd)
 
-            platform.posix.kill(pid, platform.posix.SIGTERM)
-            platform.posix.waitpid(pid, null, 0)
-        }
+                // --- curl client ---
+                val pid = platform.posix.fork()
+                if (pid == 0) {
+                    platform.posix.usleep(300_000u)
+                    platform.posix.execl(
+                        "/usr/bin/curl",
+                        "curl",
+                        "-k",
+                        "-s",
+                        "https://localhost:$port/hello",
+                        null,
+                    )
+                    platform.posix._exit(1)
+                }
+
+                // --- Accept (deadline-aware) + handshake ---
+                val clientFd = acceptWithDeadline(serverFd, deadline)
+                setNonBlocking(clientFd)
+
+                try {
+                    val ssl = SSL_new(ctx)
+                    check(ssl != null) { "SSL_new failed" }
+                    SSL_set_fd(ssl, clientFd)
+
+                    sslOpWithDeadline("SSL_accept", ssl, clientFd, deadline) { SSL_accept(ssl) }
+
+                    // --- Read request, send response ---
+                    val buf = ByteArray(4096)
+                    val n = buf.usePinned { pinned ->
+                        sslOpWithDeadline("SSL_read", ssl, clientFd, deadline) {
+                            SSL_read(ssl, pinned.addressOf(0), buf.size)
+                        }
+                    }
+                    println("Server received $n bytes: ${buf.decodeToString(0, n).lines().first()}")
+
+                    val body = "Hello, AWS-LC TLS!"
+                    val response = "HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
+                    val responseBytes = response.encodeToByteArray()
+                    responseBytes.usePinned { pinned ->
+                        sslOpWithDeadline("SSL_write", ssl, clientFd, deadline) {
+                            SSL_write(ssl, pinned.addressOf(0), responseBytes.size)
+                        }
+                    }
+
+                    // --- Cleanup ---
+                    SSL_shutdown(ssl)
+                    SSL_free(ssl)
+                } finally {
+                    platform.posix.close(clientFd)
+                    platform.posix.close(serverFd)
+                    SSL_CTX_free(ctx)
+
+                    platform.posix.kill(pid, platform.posix.SIGTERM)
+                    platform.posix.waitpid(pid, null, 0)
+                }
                 Unit
             }
         }

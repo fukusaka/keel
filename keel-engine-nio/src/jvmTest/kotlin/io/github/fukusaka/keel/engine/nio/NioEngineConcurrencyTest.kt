@@ -6,9 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import java.net.Socket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -203,5 +201,4 @@ class NioEngineConcurrencyTest {
 
         engine.close()
     }
-
 }

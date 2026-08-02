@@ -2,8 +2,8 @@ package io.github.fukusaka.keel.buf
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class IoBufTest {
@@ -76,7 +76,7 @@ class IoBufTest {
         val buf = createDefaultIoBuf(4)
         buf.retain() // refCount = 2
         assertFalse(buf.release()) // refCount = 1
-        assertTrue(buf.release())  // refCount = 0
+        assertTrue(buf.release()) // refCount = 0
     }
 
     @Test

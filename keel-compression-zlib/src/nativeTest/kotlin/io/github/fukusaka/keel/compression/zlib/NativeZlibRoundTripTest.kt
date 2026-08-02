@@ -32,7 +32,10 @@ class NativeZlibRoundTripTest {
     @Test
     fun `gzip round-trip`() {
         val payload = "Hello, native compression. ".repeat(64).encodeToByteArray()
-        val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
+        val compressed = encodeAll(
+            payload,
+            GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)),
+        )
 
         // gzip magic
         assertEquals(0x1F.toByte(), compressed[0])
@@ -45,7 +48,10 @@ class NativeZlibRoundTripTest {
     @Test
     fun `deflate round-trip`() {
         val payload = "x".repeat(4096).encodeToByteArray()
-        val compressed = encodeAll(payload, DeflateEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
+        val compressed = encodeAll(
+            payload,
+            DeflateEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)),
+        )
         val decoded = decodeAll(compressed, DeflateDecoder.newSession(allocator, DecoderOptions()))
         assertContentEquals(payload, decoded)
     }
@@ -63,8 +69,14 @@ class NativeZlibRoundTripTest {
     @Test
     fun `streaming high-ratio decompression yields multiple bounded chunks`() {
         val payload = "x".repeat(100_000).encodeToByteArray()
-        val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
-        val (decoded, chunkCount) = decodeAllWithChunkCount(compressed, GzipDecoder.newSession(allocator, DecoderOptions()))
+        val compressed = encodeAll(
+            payload,
+            GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)),
+        )
+        val (decoded, chunkCount) = decodeAllWithChunkCount(
+            compressed,
+            GzipDecoder.newSession(allocator, DecoderOptions()),
+        )
         assertContentEquals(payload, decoded)
         assertTrue(chunkCount >= 100_000 / outputCap - 5, "expected many bounded chunks (got $chunkCount)")
     }
@@ -72,7 +84,10 @@ class NativeZlibRoundTripTest {
     @Test
     fun `decoder rejects oversize via maxOutputSize`() {
         val payload = "x".repeat(10_000).encodeToByteArray()
-        val compressed = encodeAll(payload, GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)))
+        val compressed = encodeAll(
+            payload,
+            GzipEncoder.newSession(allocator, EncoderOptions(flushMode = FlushMode.NoFlush)),
+        )
 
         val session = GzipDecoder.newSession(allocator, DecoderOptions(maxOutputSize = 100L))
         val src = allocator.allocate(compressed.size).apply { writeByteArray(compressed, 0, compressed.size) }

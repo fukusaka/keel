@@ -69,9 +69,11 @@ class RoutingHandlerTest {
 
     @Test
     fun `path with query string routes on path only`() {
-        val pipeline = createPipeline(mapOf(
-            "/search" to { req -> HttpResponse.ok("path=${req.path}") },
-        ))
+        val pipeline = createPipeline(
+            mapOf(
+                "/search" to { req -> HttpResponse.ok("path=${req.path}") },
+            ),
+        )
         pipeline.feed("GET /search?q=keel&page=2 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
 
         val text = transport.written[0].readString()
@@ -98,18 +100,20 @@ class RoutingHandlerTest {
 
     @Test
     fun `full pipeline produces correct HTTP wire format`() {
-        val pipeline = createPipeline(mapOf(
-            "/hello" to { _ ->
-                HttpResponse(
-                    status = HttpStatus.OK,
-                    headers = HttpHeaders.of(
-                        "Content-Type" to "text/plain",
-                        "Content-Length" to "5",
-                    ),
-                    body = "hello".encodeToByteArray(),
-                )
-            },
-        ))
+        val pipeline = createPipeline(
+            mapOf(
+                "/hello" to { _ ->
+                    HttpResponse(
+                        status = HttpStatus.OK,
+                        headers = HttpHeaders.of(
+                            "Content-Type" to "text/plain",
+                            "Content-Length" to "5",
+                        ),
+                        body = "hello".encodeToByteArray(),
+                    )
+                },
+            ),
+        )
         pipeline.feed("GET /hello HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
 
         val expected = "HTTP/1.1 200 OK\r\n" +
@@ -125,9 +129,14 @@ class RoutingHandlerTest {
     @Test
     fun `handler receives correct HttpRequestHead`() {
         var capturedHead: HttpRequestHead? = null
-        val pipeline = createPipeline(mapOf(
-            "/api" to { req -> capturedHead = req; HttpResponse.ok() },
-        ))
+        val pipeline = createPipeline(
+            mapOf(
+                "/api" to { req ->
+                    capturedHead = req
+                    HttpResponse.ok()
+                },
+            ),
+        )
         pipeline.feed("POST /api?key=val HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n")
 
         val head = capturedHead!!
@@ -160,8 +169,8 @@ class RoutingHandlerTest {
         val pipeline = createPipeline(mapOf("/chunked" to { _ -> HttpResponse.ok("ok") }))
         pipeline.feed(
             "POST /chunked HTTP/1.1\r\nHost: localhost\r\n" +
-            "Transfer-Encoding: chunked\r\n\r\n" +
-            "3\r\nabc\r\n0\r\n\r\n",
+                "Transfer-Encoding: chunked\r\n\r\n" +
+                "3\r\nabc\r\n0\r\n\r\n",
         )
 
         assertTrue(transport.written.isNotEmpty())

@@ -81,8 +81,14 @@ class ConnectorDslTest {
         val firstFactory = StubFactory()
         val secondFactory = StubFactory()
         val c = connector {
-            tls { config = TlsConfig(); strategy = ServerTlsStrategy.KeelCodec(firstFactory) }
-            tls { config = TlsConfig(); strategy = ServerTlsStrategy.KeelCodec(secondFactory) }
+            tls {
+                config = TlsConfig()
+                strategy = ServerTlsStrategy.KeelCodec(firstFactory)
+            }
+            tls {
+                config = TlsConfig()
+                strategy = ServerTlsStrategy.KeelCodec(secondFactory)
+            }
         }
 
         val strategy = c.tls?.strategy

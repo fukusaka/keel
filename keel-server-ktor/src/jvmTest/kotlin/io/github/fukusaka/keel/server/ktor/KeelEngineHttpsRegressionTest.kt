@@ -11,12 +11,12 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 /**
  * Regression tests for bench infra JSSE TLS path failures.
@@ -47,7 +47,10 @@ class KeelEngineHttpsRegressionTest {
 
         val server = embeddedServer(Keel, configure = {
             engine = NioEngine()
-            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { host = "127.0.0.1"; port = 0 }
+            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) {
+                host = "127.0.0.1"
+                port = 0
+            }
         }) {
             routing {
                 get("/large") { call.respondText(largeBody) }
@@ -57,7 +60,8 @@ class KeelEngineHttpsRegressionTest {
 
         try {
             val port = runBlocking {
-                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                withTimeout(15.seconds) {
+                    server.engine.resolvedConnectors().first().port
                 }
             }
             val (exitCode, output) = curlHttps(port, "/large")
@@ -67,7 +71,11 @@ class KeelEngineHttpsRegressionTest {
             assertTrue(lines.size >= 2, "expected body + status code, got output of ${output.length} chars")
             assertEquals("200", lines.last(), "expected HTTP 200 (output: ${output.take(200)})")
             val body = lines.dropLast(1).joinToString("\n")
-            assertEquals(largeBody.length, body.length, "body length mismatch: got ${body.length}, want $LARGE_PAYLOAD_BYTES")
+            assertEquals(
+                largeBody.length,
+                body.length,
+                "body length mismatch: got ${body.length}, want $LARGE_PAYLOAD_BYTES",
+            )
             assertEquals(largeBody, body, "body content mismatch")
         } finally {
             factory.close()
@@ -89,7 +97,10 @@ class KeelEngineHttpsRegressionTest {
 
         val server = embeddedServer(Keel, configure = {
             engine = NettyEngine()
-            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { host = "127.0.0.1"; port = 0 }
+            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) {
+                host = "127.0.0.1"
+                port = 0
+            }
         }) {
             routing {
                 get("/hello") { call.respondText("Hello, Netty HTTPS!") }
@@ -99,7 +110,8 @@ class KeelEngineHttpsRegressionTest {
 
         try {
             val port = runBlocking {
-                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                withTimeout(15.seconds) {
+                    server.engine.resolvedConnectors().first().port
                 }
             }
             val (exitCode, output) = curlHttps(port, "/hello")
@@ -127,7 +139,10 @@ class KeelEngineHttpsRegressionTest {
 
         val server = embeddedServer(Keel, configure = {
             engine = NettyEngine()
-            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) { host = "127.0.0.1"; port = 0 }
+            sslConnector(tlsConfig, TlsCodecServerInstaller(factory)) {
+                host = "127.0.0.1"
+                port = 0
+            }
         }) {
             routing {
                 get("/hello") { call.respondText("Hello, Netty HTTPS!") }
@@ -137,7 +152,8 @@ class KeelEngineHttpsRegressionTest {
 
         try {
             val port = runBlocking {
-                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                withTimeout(15.seconds) {
+                    server.engine.resolvedConnectors().first().port
                 }
             }
             repeat(KEEPALIVE_REQUEST_COUNT) { i ->
@@ -194,7 +210,7 @@ dA0v0c6TRwAZKuG5BIzAh9r94fM0NzYvaYamE+/WIm6orpjzUELVKjVebvmAWkN0
 DckJ9HFnEw1KPYC/9e7a1JUrkfMgCFcgIdRGQA/qMHISUzQND9Zs/ZnPvhaf+x7N
 wIy8X6kST+S43rMGiQ==
 -----END CERTIFICATE-----
-""".trimIndent() + "\n"
+        """.trimIndent() + "\n"
 
         private val SERVER_KEY = """
 -----BEGIN PRIVATE KEY-----
@@ -225,6 +241,6 @@ yGIdCqVeuv9SC0duPplXUVQwuYkLDZaIASA8goes6f5UiFEkE8TXYAKTitNUQqob
 s0/JN9iAF2/A2ct6J46JuRo8bxt+LdZY2znb8weICRpxx7/Sf+lswHA7OiUJT8UG
 XDEgg9dRd2akza/XK5Hj
 -----END PRIVATE KEY-----
-""".trimIndent() + "\n"
+        """.trimIndent() + "\n"
     }
 }

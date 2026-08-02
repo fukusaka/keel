@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.kqueue
 
-import kotlin.concurrent.Volatile
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.pthread_self
 import platform.posix.usleep
+import kotlin.concurrent.Volatile
 
 /**
  * In-memory [KqueueSyscallOps] that lets tests script the outcome of

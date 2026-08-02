@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.engine.epoll
 
-import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import kotlinx.coroutines.CompletableDeferred
@@ -216,7 +216,11 @@ class EpollLoopStopNotifiesTransportTest {
 
             val client = engine.connect(LOOPBACK_HOST, port)
             val serverCh = server.accept()
-            assertEquals(2, engine.workerParticipants(), "both live transports (connect side and accepted side) are in the registry")
+            assertEquals(
+                2,
+                engine.workerParticipants(),
+                "both live transports (connect side and accepted side) are in the registry",
+            )
 
             client.close()
             serverCh.close()

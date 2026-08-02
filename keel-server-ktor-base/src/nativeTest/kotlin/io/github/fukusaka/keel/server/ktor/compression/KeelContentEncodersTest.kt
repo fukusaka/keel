@@ -2,14 +2,13 @@ package io.github.fukusaka.keel.server.ktor.compression
 
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.readRemaining
+import kotlinx.coroutines.test.runTest
+import kotlinx.io.readByteArray
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
-import kotlinx.io.readByteArray
 
 /**
  * Unit tests for the Native [ContentEncoder] adapters backed by
@@ -79,7 +78,7 @@ class KeelContentEncodersTest {
         val original = ByteArray(100 * 1024) { (it and 0xff).toByte() }
         val roundTripped = roundTrip(KeelGZipEncoder, original)
         assertContentEquals(original, roundTripped)
-        }
+    }
 
     private suspend fun roundTrip(
         encoder: KeelContentEncoder,

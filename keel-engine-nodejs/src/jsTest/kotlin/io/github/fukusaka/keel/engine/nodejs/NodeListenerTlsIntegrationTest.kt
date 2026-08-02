@@ -41,8 +41,12 @@ class NodeListenerTlsIntegrationTest {
     @Test
     fun default_TLS_config_completes_an_HTTPS_request_via_curl(): Promise<Unit> {
         return withTlsServer(TlsConfig(certificates = serverCerts, verifyMode = TlsVerifyMode.NONE)) { port ->
-            curl(arrayOf("-k", "-s", "--max-time", "5", "--connect-timeout", "3",
-                "-w", "\n%{http_code}", "https://localhost:$port/hello"))
+            curl(
+                arrayOf(
+                    "-k", "-s", "--max-time", "5", "--connect-timeout", "3",
+                    "-w", "\n%{http_code}", "https://localhost:$port/hello",
+                ),
+            )
         }.then { (exit, out) ->
             assertEquals(0, exit, "curl must succeed against the default TLS server (output=$out)")
             assertTrue(out.contains("200"), "response must be 200 (output=$out)")
@@ -60,8 +64,12 @@ class NodeListenerTlsIntegrationTest {
                 minVersion = TlsVersion.TLS1_3,
             ),
         ) { port ->
-            curl(arrayOf("-k", "-s", "--max-time", "5", "--connect-timeout", "3",
-                "--tls-max", "1.2", "--tlsv1.2", "https://localhost:$port/hello"))
+            curl(
+                arrayOf(
+                    "-k", "-s", "--max-time", "5", "--connect-timeout", "3",
+                    "--tls-max", "1.2", "--tlsv1.2", "https://localhost:$port/hello",
+                ),
+            )
         }.then { (exit, _) ->
             assertNotEquals(0, exit, "TLS 1.3 server must reject a TLS 1.2-only client")
         }
@@ -78,8 +86,12 @@ class NodeListenerTlsIntegrationTest {
                 alpnProtocols = listOf("http/1.1"),
             ),
         ) { port ->
-            curl(arrayOf("-k", "-s", "-v", "--http1.1", "--max-time", "5", "--connect-timeout", "3",
-                "https://localhost:$port/hello"))
+            curl(
+                arrayOf(
+                    "-k", "-s", "-v", "--http1.1", "--max-time", "5", "--connect-timeout", "3",
+                    "https://localhost:$port/hello",
+                ),
+            )
         }.then { (exit, out) ->
             assertEquals(0, exit, "curl must succeed (output=$out)")
             assertTrue(
@@ -100,8 +112,17 @@ class NodeListenerTlsIntegrationTest {
                 trustAnchors = TlsTrustSource.Pem(NodeTestCertificates.CLIENT_CA_CERT),
             ),
         ) { port ->
-            curl(arrayOf("-k", "-s", "--max-time", "5", "--connect-timeout", "3",
-                "https://localhost:$port/hello"))
+            curl(
+                arrayOf(
+                    "-k",
+                    "-s",
+                    "--max-time",
+                    "5",
+                    "--connect-timeout",
+                    "3",
+                    "https://localhost:$port/hello",
+                ),
+            )
         }.then { (exit, _) ->
             assertNotEquals(0, exit, "REQUIRED server must reject an anonymous curl client")
         }
@@ -118,11 +139,16 @@ class NodeListenerTlsIntegrationTest {
                 trustAnchors = TlsTrustSource.Pem(NodeTestCertificates.CLIENT_CA_CERT),
             ),
         ) { port ->
-            curl(arrayOf("-k", "-s", "--max-time", "5", "--connect-timeout", "3",
-                "--cert", certPath, "--key", keyPath,
-                "-w", "\n%{http_code}", "https://localhost:$port/hello"))
+            curl(
+                arrayOf(
+                    "-k", "-s", "--max-time", "5", "--connect-timeout", "3",
+                    "--cert", certPath, "--key", keyPath,
+                    "-w", "\n%{http_code}", "https://localhost:$port/hello",
+                ),
+            )
         }.then { (exit, out) ->
-            unlink(certPath); unlink(keyPath)
+            unlink(certPath)
+            unlink(keyPath)
             assertEquals(0, exit, "REQUIRED server must accept a matching client cert (output=$out)")
             assertTrue(out.contains("200"), "response must be 200 (output=$out)")
         }

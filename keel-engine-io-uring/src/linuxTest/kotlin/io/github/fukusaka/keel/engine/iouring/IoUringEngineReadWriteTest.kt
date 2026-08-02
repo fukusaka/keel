@@ -1,10 +1,9 @@
 package io.github.fukusaka.keel.engine.iouring
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
-
 import io.github.fukusaka.keel.io.BufferedSuspendSink
 import io.github.fukusaka.keel.io.BufferedSuspendSource
-import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -169,7 +168,10 @@ class IoUringEngineReadWriteTest {
         while (totalRead < payloadSize) {
             val buf = DefaultAllocator.allocate(payloadSize)
             val n = withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
-            if (n <= 0) { buf.release(); break }
+            if (n <= 0) {
+                buf.release()
+                break
+            }
             for (i in 0 until n) received[totalRead + i] = buf.readByte()
             totalRead += n
             buf.release()
@@ -202,7 +204,10 @@ class IoUringEngineReadWriteTest {
         while (totalRead < payloadSize) {
             val buf = DefaultAllocator.allocate(payloadSize)
             val n = withTimeout(IO_OP_TIMEOUT_MS) { ch.read(buf) }
-            if (n <= 0) { buf.release(); break }
+            if (n <= 0) {
+                buf.release()
+                break
+            }
             for (i in 0 until n) received[totalRead + i] = buf.readByte()
             totalRead += n
             buf.release()
@@ -473,5 +478,4 @@ class IoUringEngineReadWriteTest {
         server.close()
         engine.close()
     }
-
 }

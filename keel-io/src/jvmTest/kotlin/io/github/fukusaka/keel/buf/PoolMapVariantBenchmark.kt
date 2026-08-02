@@ -120,7 +120,10 @@ class PoolMapVariantBenchmark {
                 lock.set(false)
             }
         }
-        override fun put(key: Int, value: String) = withSpinLock { map[key] = value; Unit }
+        override fun put(key: Int, value: String) = withSpinLock {
+            map[key] = value
+            Unit
+        }
         override fun get(key: Int): String? = withSpinLock { map[key] }
     }
 
@@ -149,7 +152,10 @@ class PoolMapVariantBenchmark {
         override fun put(key: Int, value: String) {
             val cur = table
             val idx = cur.sizes.indexOf(key)
-            if (idx >= 0) { cur.pools[idx] = value; return }
+            if (idx >= 0) {
+                cur.pools[idx] = value
+                return
+            }
             val n = cur.sizes.size
             val sizes = cur.sizes.copyOf(n + 1)
             val pools = cur.pools.copyOf(n + 1)

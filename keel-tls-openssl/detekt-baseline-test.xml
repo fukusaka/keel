@@ -2,24 +2,6 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>ArgumentListWrapping:OpenSslEchoTest.kt$OpenSslEchoTest$( "/usr/bin/curl", "curl", "-k", "-s", "https://localhost:$port/hello", null, )</ID>
-    <ID>ArgumentListWrapping:OpenSslHandshakeErrorPathTest.kt$OpenSslHandshakeErrorPathTest$(trustAnchors = TlsTrustSource.InsecureTrustAll, verifyMode = TlsVerifyMode.NONE, maxVersion = TlsVersion.TLS1_2)</ID>
-    <ID>ArgumentListWrapping:OpenSslHttpsEchoTest.kt$OpenSslHttpsEchoTest$( TestCertificates.SERVER_CERT, TestCertificates.SERVER_KEY, )</ID>
-    <ID>ArgumentListWrapping:OpenSslHttpsEchoTest.kt$OpenSslHttpsEchoTest$("127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory)))</ID>
-    <ID>ArgumentListWrapping:OpenSslHttpsEchoTest.kt$OpenSslHttpsEchoTest$(factory)</ID>
-    <ID>ArgumentListWrapping:OpenSslHttpsEchoTest.kt$OpenSslHttpsEchoTest$(tlsConfig, TlsCodecServerInstaller(factory))</ID>
-    <ID>ArgumentListWrapping:OpenSslUnprotectHandshakeBoundaryTest.kt$OpenSslUnprotectHandshakeBoundaryTest$( "127.0.0.1", 0, config = TlsServerConfig(tlsConfig, TlsCodecServerInstaller(factory)), )</ID>
-    <ID>ArgumentListWrapping:OpenSslUnprotectHandshakeBoundaryTest.kt$OpenSslUnprotectHandshakeBoundaryTest$( 'G'.code, seen, "first plaintext byte after OpenSSL TLS 1.3 handshake should be 'G' (HTTP request line " + "start), got 0x${seen.toString(16).padStart(2, '0')}. Collected so far: " + "${collected.take(64)}", )</ID>
-    <ID>ArgumentListWrapping:OpenSslUnprotectHandshakeBoundaryTest.kt$OpenSslUnprotectHandshakeBoundaryTest$( TestCertificates.SERVER_CERT, TestCertificates.SERVER_KEY, )</ID>
-    <ID>ImportOrdering:OpenSslHttpsEchoTest.kt$import io.github.fukusaka.keel.core.InetSocketAddress import io.github.fukusaka.keel.codec.http.HttpRequestDecoder import io.github.fukusaka.keel.codec.http.HttpResponse import io.github.fukusaka.keel.codec.http.HttpResponseEncoder import io.github.fukusaka.keel.codec.http.RoutingHandler import io.github.fukusaka.keel.server.TlsCodecServerInstaller import io.github.fukusaka.keel.server.TlsServerConfig import io.github.fukusaka.keel.tls.TlsCertificateSource import io.github.fukusaka.keel.tls.TlsConfig import io.github.fukusaka.keel.tls.TlsVerifyMode import kotlinx.cinterop.ExperimentalForeignApi import kotlinx.cinterop.IntVar import kotlinx.cinterop.addressOf import kotlinx.cinterop.alloc import kotlinx.cinterop.allocArray import kotlinx.cinterop.convert import kotlinx.cinterop.get import kotlinx.cinterop.memScoped import kotlinx.cinterop.ptr import kotlinx.cinterop.usePinned import kotlinx.cinterop.value import platform.posix.SIGTERM import platform.posix.STDOUT_FILENO import platform.posix._exit import platform.posix.close import platform.posix.dup2 import platform.posix.execl import platform.posix.fork import platform.posix.kill import platform.posix.pipe import platform.posix.read import platform.posix.usleep import platform.posix.waitpid import kotlinx.coroutines.runBlocking import kotlinx.coroutines.withTimeout import kotlin.test.Test import kotlin.test.assertEquals import kotlin.test.assertTrue import kotlin.time.Duration.Companion.seconds</ID>
-    <ID>ImportOrdering:TestEngine.linux.kt$import io.github.fukusaka.keel.core.StreamEngine import io.github.fukusaka.keel.core.IoEngineConfig import io.github.fukusaka.keel.engine.epoll.EpollEngine</ID>
-    <ID>ImportOrdering:TestEngine.macos.kt$import io.github.fukusaka.keel.core.StreamEngine import io.github.fukusaka.keel.core.IoEngineConfig import io.github.fukusaka.keel.engine.kqueue.KqueueEngine</ID>
-    <ID>Indentation:OpenSslEchoTest.kt$OpenSslEchoTest$ </ID>
-    <ID>Indentation:TestCertificates.kt$TestCertificates$ </ID>
     <ID>LongMethod:OpenSslEchoTest.kt$OpenSslEchoTest$@Test fun `OpenSSL server handshake and echo succeeds`()</ID>
-    <ID>MaxLineLength:OpenSslHttpsEchoTest.kt$OpenSslHttpsEchoTest$val</ID>
-    <ID>MaximumLineLength:OpenSslHttpsEchoTest.kt$OpenSslHttpsEchoTest$ </ID>
-    <ID>NoBlankLineBeforeRbrace:OpenSslHandshakeErrorPathTest.kt$OpenSslHandshakeErrorPathTest$ </ID>
-    <ID>NoUnusedImports:OpenSslEchoTest.kt$io.github.fukusaka.keel.tls.openssl.OpenSslEchoTest.kt</ID>
   </CurrentIssues>
 </SmellBaseline>

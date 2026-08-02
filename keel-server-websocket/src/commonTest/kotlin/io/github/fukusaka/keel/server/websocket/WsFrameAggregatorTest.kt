@@ -338,7 +338,10 @@ class WsFrameAggregatorTest {
         // Operator-facing log carries the cause (M1) and the failing ordinal (M2).
         val warn = log.entries.single { it.level == LogLevel.WARN }
         assertSame(boom, warn.throwable, "the inflate cause must be logged, not swallowed")
-        assertTrue(warn.message?.toString()?.contains("#1") == true, "log must name the message ordinal: ${warn.message}")
+        assertTrue(
+            warn.message?.toString()?.contains("#1") == true,
+            "log must name the message ordinal: ${warn.message}",
+        )
     }
 
     private class CapturingLogger : Logger {

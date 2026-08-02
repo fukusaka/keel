@@ -319,7 +319,10 @@ class HttpResponseEncoderTest {
     fun `non-HttpResponse message passes through unchanged`() {
         val pipeline = createPipeline("encoder" to HttpResponseEncoder())
         val rawBuf = DefaultAllocator.allocate(4)
-        rawBuf.writeByte(1); rawBuf.writeByte(2); rawBuf.writeByte(3); rawBuf.writeByte(4)
+        rawBuf.writeByte(1)
+        rawBuf.writeByte(2)
+        rawBuf.writeByte(3)
+        rawBuf.writeByte(4)
 
         pipeline.requestWrite(rawBuf)
 
@@ -346,7 +349,7 @@ class HttpResponseEncoderTest {
     fun `HTTP 1_0 response uses HTTP_1_0 status line`() {
         val pipeline = createPipeline("encoder" to HttpResponseEncoder())
         pipeline.requestWrite(
-            HttpResponse(HttpStatus.OK, version = HttpVersion.HTTP_1_0)
+            HttpResponse(HttpStatus.OK, version = HttpVersion.HTTP_1_0),
         )
 
         val text = transport.written[0].readString()

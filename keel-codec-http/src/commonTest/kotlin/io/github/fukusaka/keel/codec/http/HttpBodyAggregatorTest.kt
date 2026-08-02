@@ -5,9 +5,9 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
-import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -82,10 +82,10 @@ class HttpBodyAggregatorTest {
         pipeline.notifyRead(
             bufOf(
                 "POST /data HTTP/1.1\r\n" +
-                "Host: example.com\r\n" +
-                "Content-Length: 11\r\n" +
-                "\r\n" +
-                "hello",
+                    "Host: example.com\r\n" +
+                    "Content-Length: 11\r\n" +
+                    "\r\n" +
+                    "hello",
             ),
         )
         // First IoBuf delivers 5 body bytes; 6 remaining.
@@ -120,10 +120,10 @@ class HttpBodyAggregatorTest {
         pipeline.notifyRead(
             bufOf(
                 "POST /big HTTP/1.1\r\n" +
-                "Host: example.com\r\n" +
-                "Content-Length: 10\r\n" +
-                "\r\n" +
-                "0123456789",
+                    "Host: example.com\r\n" +
+                    "Content-Length: 10\r\n" +
+                    "\r\n" +
+                    "0123456789",
             ),
         )
 
@@ -142,10 +142,10 @@ class HttpBodyAggregatorTest {
         pipeline.notifyRead(
             bufOf(
                 "POST /big HTTP/1.1\r\n" +
-                "Host: example.com\r\n" +
-                "Content-Length: 11\r\n" +
-                "\r\n" +
-                "hello",
+                    "Host: example.com\r\n" +
+                    "Content-Length: 11\r\n" +
+                    "\r\n" +
+                    "hello",
             ),
         )
         pipeline.notifyRead(bufOf(" world"))
@@ -164,13 +164,13 @@ class HttpBodyAggregatorTest {
         pipeline.notifyRead(
             bufOf(
                 "POST /chunked HTTP/1.1\r\n" +
-                "Host: example.com\r\n" +
-                "Transfer-Encoding: chunked\r\n" +
-                "\r\n" +
-                "5\r\nhello\r\n" +
-                "0\r\n" +
-                "Trailer-Key: trailer-value\r\n" +
-                "\r\n",
+                    "Host: example.com\r\n" +
+                    "Transfer-Encoding: chunked\r\n" +
+                    "\r\n" +
+                    "5\r\nhello\r\n" +
+                    "0\r\n" +
+                    "Trailer-Key: trailer-value\r\n" +
+                    "\r\n",
             ),
         )
 
@@ -190,10 +190,10 @@ class HttpBodyAggregatorTest {
         pipeline.notifyRead(
             bufOf(
                 "POST /rel HTTP/1.1\r\n" +
-                "Host: example.com\r\n" +
-                "Content-Length: 6\r\n" +
-                "\r\n" +
-                "abc",
+                    "Host: example.com\r\n" +
+                    "Content-Length: 6\r\n" +
+                    "\r\n" +
+                    "abc",
             ),
         )
         pipeline.notifyRead(bufOf("def"))

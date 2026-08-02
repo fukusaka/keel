@@ -95,11 +95,17 @@ class SharedChunkArenaConcurrencyTest {
             // under test) would otherwise block these joins forever. Cap the wait
             // and fail on any surviving thread instead of hanging the suite.
             producers.forEach { it.join(JOIN_BUDGET_MS) }
-            assertTrue(producers.none { it.isAlive }, "all producers completed within budget (ArenaLock deadlock guard)")
+            assertTrue(
+                producers.none { it.isAlive },
+                "all producers completed within budget (ArenaLock deadlock guard)",
+            )
             // All work enqueued: stop each consumer with one sentinel.
             repeat(CONSUMERS) { queue.put(sentinel) }
             consumers.forEach { it.join(JOIN_BUDGET_MS) }
-            assertTrue(consumers.none { it.isAlive }, "all consumers completed within budget (ArenaLock deadlock guard)")
+            assertTrue(
+                consumers.none { it.isAlive },
+                "all consumers completed within budget (ArenaLock deadlock guard)",
+            )
 
             assertEquals(
                 0,

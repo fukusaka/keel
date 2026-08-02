@@ -9,13 +9,13 @@ import io.ktor.server.response.respondBytes
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.discard
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.net.HttpURLConnection
 import java.net.URI
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 
 /**
  * Regression tests for request body streaming via call.receiveChannel().
@@ -84,7 +84,8 @@ class KeelEngineUploadStreamTest {
         server.start(wait = false)
         try {
             val port = runBlocking {
-                withTimeout(15.seconds) { server.engine.resolvedConnectors().first().port 
+                withTimeout(15.seconds) {
+                    server.engine.resolvedConnectors().first().port
                 }
             }
             block(port)

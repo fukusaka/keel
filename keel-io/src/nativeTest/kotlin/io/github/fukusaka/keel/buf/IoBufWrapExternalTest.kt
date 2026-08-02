@@ -68,7 +68,10 @@ class IoBufWrapExternalTest {
             var released = false
             val owner = ExternalWrapOwner { released = true }
             val buf = NativeIoBuf.wrapExternal(
-                ptr, capacity = 4, bytesWritten = 1, owner = owner,
+                ptr,
+                capacity = 4,
+                bytesWritten = 1,
+                owner = owner,
             )
             assertFalse(released)
             buf.release()
@@ -85,7 +88,10 @@ class IoBufWrapExternalTest {
             var releaseCount = 0
             val owner = ExternalWrapOwner { releaseCount++ }
             val buf = NativeIoBuf.wrapExternal(
-                ptr, capacity = 4, bytesWritten = 0, owner = owner,
+                ptr,
+                capacity = 4,
+                bytesWritten = 0,
+                owner = owner,
             )
 
             buf.retain()

@@ -4,14 +4,11 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.io.SuspendSource
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 class SuspendHttpParserTest {
 
@@ -71,7 +68,7 @@ class SuspendHttpParserTest {
         assertEquals(HttpVersion.HTTP_1_1, head.version)
         assertEquals("2", head.headers.getString("Content-Length"))
         source.close()
-        }
+    }
 
     // --- Error handling ---
 
@@ -119,7 +116,7 @@ class SuspendHttpParserTest {
         val source = BufferedSuspendSource(sourceOf(raw), DefaultAllocator)
         assertFailsWith<HttpParseException> { parseResponseHead(source) }
         source.close()
-        }
+    }
 
     // --- Partial reads ---
 
@@ -148,7 +145,7 @@ class SuspendHttpParserTest {
         assertEquals(404, head.status.code)
         assertEquals("0", head.headers.getString("Content-Length"))
         source.close()
-        }
+    }
 
     // --- Helpers ---
 

@@ -122,7 +122,8 @@ class HttpRequestDecompressionAllocBenchmark {
         pipeline.addLast(
             "decompress",
             HttpRequestDecompressionHandler(
-                registry, DefaultAllocator,
+                registry,
+                DefaultAllocator,
                 decompressionLimit = Long.MAX_VALUE,
                 ratioLimit = Int.MAX_VALUE,
             ),
@@ -156,7 +157,11 @@ class HttpRequestDecompressionAllocBenchmark {
 
         println(
             "HRD-ALLOC perDecode=%.0f heap-bytes (in=%dB x%d -> %dB decoded, iters=%d)".format(
-                perDecode, INPUT_SIZE, FACTOR, INPUT_SIZE * FACTOR, ITERATIONS,
+                perDecode,
+                INPUT_SIZE,
+                FACTOR,
+                INPUT_SIZE * FACTOR,
+                ITERATIONS,
             ),
         )
     }

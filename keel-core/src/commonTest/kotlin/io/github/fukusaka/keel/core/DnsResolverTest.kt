@@ -1,13 +1,12 @@
 package io.github.fukusaka.keel.core
 
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 
 class DnsResolverTest {
 
@@ -169,7 +168,7 @@ class DnsResolverTest {
         val address = InetSocketAddress("127.0.0.1", 80)
         val result = address.connectWithFallback(throwingResolver) { ip -> "ok-$ip" }
         assertEquals("ok-127.0.0.1", result)
-        }
+    }
 
     private class StubResolver(private val addresses: List<IpAddress>) : DnsResolver {
         var lastHostname: String? = null

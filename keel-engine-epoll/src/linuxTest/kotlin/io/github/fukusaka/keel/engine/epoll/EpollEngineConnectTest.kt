@@ -1,10 +1,9 @@
 package io.github.fukusaka.keel.engine.epoll
 
-import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.core.InetSocketAddress
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
@@ -140,5 +139,4 @@ class EpollEngineConnectTest {
 
         engine.close()
     }
-
 }

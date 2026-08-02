@@ -8,12 +8,12 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
-import kotlin.native.concurrent.ThreadLocal
-import kotlin.test.Test
-import kotlin.test.assertTrue
 import platform.posix.pthread_create
 import platform.posix.pthread_join
 import platform.posix.pthread_tVar
+import kotlin.native.concurrent.ThreadLocal
+import kotlin.test.Test
+import kotlin.test.assertTrue
 
 /**
  * Pins down Kotlin/Native concurrency semantics behind the
@@ -65,7 +65,8 @@ class NativeConcurrencyProbeTest {
             val threadPtr = arena.alloc<pthread_tVar>()
             val ref = StableRef.create(Unit)
             val rc = pthread_create(
-                threadPtr.ptr, null,
+                threadPtr.ptr,
+                null,
                 staticCFunction { arg ->
                     SharedState.value = 42
                     arg!!.asStableRef<Unit>().dispose()
@@ -103,7 +104,8 @@ class NativeConcurrencyProbeTest {
                 val threadPtr = arena.alloc<pthread_tVar>()
                 val ref = StableRef.create(IntSlot(results, i))
                 val rc = pthread_create(
-                    threadPtr.ptr, null,
+                    threadPtr.ptr,
+                    null,
                     staticCFunction { arg ->
                         val slot = arg!!.asStableRef<IntSlot>().get()
                         val before = IsolatedState.value // own copy, expect 0

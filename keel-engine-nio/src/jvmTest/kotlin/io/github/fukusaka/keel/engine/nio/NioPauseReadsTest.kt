@@ -50,7 +50,9 @@ class NioPauseReadsTest {
             transport.readEnabled = true
 
             // Flowing baseline: one delivery arrives normally.
-            serverCh.write(io.github.fukusaka.keel.buf.DefaultAllocator.allocate(1).also { it.writeByte('a'.code.toByte()) })
+            serverCh.write(
+                io.github.fukusaka.keel.buf.DefaultAllocator.allocate(1).also { it.writeByte('a'.code.toByte()) },
+            )
             serverCh.flush()
             withTimeout(IO_TIMEOUT_S.seconds) { firstDelivery.await() }
             assertEquals("a", received.toString())
@@ -60,7 +62,9 @@ class NioPauseReadsTest {
             // one-shot OP_READ interest is consumed without a re-arm).
             transport.pauseReads()
             firstDelivery = CompletableDeferred()
-            serverCh.write(io.github.fukusaka.keel.buf.DefaultAllocator.allocate(1).also { it.writeByte('b'.code.toByte()) })
+            serverCh.write(
+                io.github.fukusaka.keel.buf.DefaultAllocator.allocate(1).also { it.writeByte('b'.code.toByte()) },
+            )
             serverCh.flush()
             delay(PAUSE_WINDOW_MS)
             assertEquals("a", received.toString(), "a paused transport must not deliver under DETECT_PEER_CLOSE")
