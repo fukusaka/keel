@@ -8,7 +8,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 /**
  * Cross-thread seam test for the shared [ChunkArena] — a thread-safe arena
@@ -52,60 +51,56 @@ class SharedChunkArenaConcurrencyTest {
         // to exhaust the JVM's 512 MiB direct-buffer limit (a flaky OOM under a full
         // build that shares that limit across tests) — not an ArenaLock fault.
         val queue = LinkedBlockingQueue<IoBuf>(QUEUE_CAPACITY)
+        val start = CountDownLatch(1)
+
+        // Built outside the try so the finally can ask whether they have stopped.
+        val producers = Array(PRODUCERS) { tid ->
+            workerThread("producer-$tid") {
+                try {
+                    start.awaitWithin("producer start")
+                    val child = children[tid % CHILDREN]
+                    repeat(OPS_PER_PRODUCER) {
+                        val buf = child.allocate(CLASS_SIZE)
+                        buf.writeByte(0) // touch the carved region
+                        queue.put(buf)
+                        allocated.incrementAndGet()
+                    }
+                } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+                    firstError.compareAndSet(null, t)
+                    errors.incrementAndGet()
+                }
+            }
+        }
+        val consumers = Array(CONSUMERS) { tid ->
+            workerThread("consumer-$tid") {
+                try {
+                    while (true) {
+                        val buf = queue.take()
+                        if (buf === sentinel) break
+                        buf.release() // cross-thread: returns the run to the shared arena
+                        released.incrementAndGet()
+                    }
+                } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+                    firstError.compareAndSet(null, t)
+                    errors.incrementAndGet()
+                }
+            }
+        }
+
         try {
-            val start = CountDownLatch(1)
-
-            val producers = Array(PRODUCERS) { tid ->
-                Thread {
-                    try {
-                        start.await()
-                        val child = children[tid % CHILDREN]
-                        repeat(OPS_PER_PRODUCER) {
-                            val buf = child.allocate(CLASS_SIZE)
-                            buf.writeByte(0) // touch the carved region
-                            queue.put(buf)
-                            allocated.incrementAndGet()
-                        }
-                    } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
-                        firstError.compareAndSet(null, t)
-                        errors.incrementAndGet()
-                    }
-                }
-            }
-            val consumers = Array(CONSUMERS) {
-                Thread {
-                    try {
-                        while (true) {
-                            val buf = queue.take()
-                            if (buf === sentinel) break
-                            buf.release() // cross-thread: returns the run to the shared arena
-                            released.incrementAndGet()
-                        }
-                    } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
-                        firstError.compareAndSet(null, t)
-                        errors.incrementAndGet()
-                    }
-                }
-            }
-
             producers.forEach { it.start() }
             consumers.forEach { it.start() }
             start.countDown()
             // Bounded joins: a deadlock in the shared ArenaLock (the failure class
             // under test) would otherwise block these joins forever. Cap the wait
             // and fail on any surviving thread instead of hanging the suite.
-            producers.forEach { it.join(JOIN_BUDGET_MS) }
-            assertTrue(
-                producers.none { it.isAlive },
-                "all producers completed within budget (ArenaLock deadlock guard)",
-            )
-            // All work enqueued: stop each consumer with one sentinel.
-            repeat(CONSUMERS) { queue.put(sentinel) }
-            consumers.forEach { it.join(JOIN_BUDGET_MS) }
-            assertTrue(
-                consumers.none { it.isAlive },
-                "all consumers completed within budget (ArenaLock deadlock guard)",
-            )
+            producers.asList().joinAllWithin("producers (ArenaLock deadlock guard)")
+            // All work enqueued: stop each consumer with one sentinel. Bounded, because
+            // this runs on the test thread: if the consumers have died the queue stays
+            // full and an unbounded put() hangs the test itself, ahead of every
+            // assertion that would have named the real failure.
+            queue.offerAllWithin(List(CONSUMERS) { sentinel }, "sentinel handoff")
+            consumers.asList().joinAllWithin("consumers (ArenaLock deadlock guard)")
 
             assertEquals(
                 0,
@@ -119,8 +114,13 @@ class SharedChunkArenaConcurrencyTest {
             )
             assertEquals(PRODUCERS * OPS_PER_PRODUCER, allocated.get(), "all producers completed")
         } finally {
-            children.forEach { it.close() }
-            root.close()
+            // Only once every worker has stopped: PooledAllocator.close() documents a
+            // single-threaded teardown, and the bounded joins reach this finally with a
+            // worker possibly still carving from the arena under test.
+            (producers.asList() + consumers.asList()).tearDownWhenStopped {
+                children.forEach { it.close() }
+                root.close()
+            }
         }
     }
 
@@ -129,10 +129,6 @@ class SharedChunkArenaConcurrencyTest {
         const val PRODUCERS = 8
         const val CONSUMERS = 8
         const val OPS_PER_PRODUCER = 20_000
-
-        // Wall-clock cap per join. The whole run is ~8×20k carves on a shared lock,
-        // well under a second uncontended; 30 s is a generous deadlock guard.
-        const val JOIN_BUDGET_MS = 30_000L
 
         // Backpressure bound on in-flight buffers (×CLASS_SIZE ≈ 2 MiB), keeping the
         // test well within the JVM direct-buffer limit regardless of producer speed.

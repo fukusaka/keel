@@ -4,9 +4,11 @@ package io.github.fukusaka.keel.buf
 
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 
 /**
  * Concurrency regression for the [IoBuf] lifecycle contract (atomic retain
@@ -53,19 +55,24 @@ class IoBufLifecycleConcurrencyTest {
             val start = CountDownLatch(1)
             val workers = ArrayList<Thread>(threads * 2)
             val errors = AtomicInteger(0)
+            // Keep the throwable, not just a count: awaitWithin / awaitCondition report
+            // which wait timed out, and that message is raised *inside* a worker where
+            // this catch would otherwise discard it.
+            val firstError = AtomicReference<Throwable?>(null)
 
-            repeat(threads) {
-                workers += Thread {
+            repeat(threads) { tid ->
+                workers += workerThread("retainer-$tid") {
                     try {
-                        start.await()
+                        start.awaitWithin("retainer start")
                         repeat(opsPerThread) { buf.retain() }
                     } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+                        firstError.compareAndSet(null, t)
                         errors.incrementAndGet()
                     }
                 }
-                workers += Thread {
+                workers += workerThread("releaser-$tid") {
                     try {
-                        start.await()
+                        start.awaitWithin("releaser start")
                         // Releasers start a beat behind, so the early releases see
                         // the bumps from the retainers above and never drive the
                         // refcount below 1 (caller still holds the original 1).
@@ -74,22 +81,24 @@ class IoBufLifecycleConcurrencyTest {
                             // positive backlog; in practice the JVM scheduler is
                             // already enough but a small yield keeps the test stable
                             // under heavy CPU contention.
-                            while (true) {
-                                val cur = readRefCount(buf)
-                                if (cur > 1) break
-                                Thread.yield()
+                            // Bounded: if a retainer died early the backlog never
+                            // arrives, and this spin — not the dead thread — is what
+                            // would hang the JVM.
+                            awaitCondition("releaser waiting for a retain backlog") {
+                                readRefCount(buf) > 1
                             }
                             buf.release()
                         }
                     } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+                        firstError.compareAndSet(null, t)
                         errors.incrementAndGet()
                     }
                 }
             }
             workers.forEach { it.start() }
             start.countDown()
-            workers.forEach { it.join() }
-            assertEquals(0, errors.get(), "concurrent retain/release encountered unexpected exceptions")
+            workers.joinAllWithin("concurrent retain/release")
+            assertEquals(0, errors.get(), "concurrent retain/release failed: ${firstError.get()}")
             // Buffer still alive at the original refcount of 1 — drop it once to
             // free it cleanly via the allocator's normal path.
             assertEquals(true, buf.release(), "final release must drive refcount to zero")
@@ -109,22 +118,24 @@ class IoBufLifecycleConcurrencyTest {
         val start = CountDownLatch(1)
         val workers = ArrayList<Thread>(threads)
         val errors = AtomicInteger(0)
+        val firstError = AtomicReference<Throwable?>(null)
 
-        repeat(threads) {
-            workers += Thread {
+        repeat(threads) { tid ->
+            workers += workerThread("closer-$tid") {
                 try {
-                    start.await()
+                    start.awaitWithin("closer start")
                     buf.close()
                 } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+                    firstError.compareAndSet(null, t)
                     errors.incrementAndGet()
                 }
             }
         }
         workers.forEach { it.start() }
         start.countDown()
-        workers.forEach { it.join() }
+        workers.joinAllWithin("concurrent close")
 
-        assertEquals(0, errors.get(), "concurrent close encountered unexpected exceptions")
+        assertEquals(0, errors.get(), "concurrent close failed: ${firstError.get()}")
         // After close, retain must throw — the buffer is gone.
         assertFailsWith<IllegalStateException> { buf.retain() }
     }
@@ -142,19 +153,27 @@ class IoBufLifecycleConcurrencyTest {
             val start = CountDownLatch(1)
             val releaseError = AtomicInteger(0)
             val closeError = AtomicInteger(0)
+            // Separate from the two counters below: those carry a meaning the
+            // assertions read off ("close() never throws"), and a harness timeout
+            // from awaitWithin is not that.
+            val harnessError = AtomicReference<Throwable?>(null)
 
-            val releaser = Thread {
+            val releaser = workerThread("releaser") {
                 try {
-                    start.await()
+                    start.awaitWithin("releaser start")
                     buf.release()
+                } catch (e: AssertionError) {
+                    harnessError.compareAndSet(null, e)
                 } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
                     releaseError.incrementAndGet()
                 }
             }
-            val closer = Thread {
+            val closer = workerThread("closer") {
                 try {
-                    start.await()
+                    start.awaitWithin("closer start")
                     buf.close()
+                } catch (e: AssertionError) {
+                    harnessError.compareAndSet(null, e)
                 } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
                     closeError.incrementAndGet()
                 }
@@ -162,8 +181,8 @@ class IoBufLifecycleConcurrencyTest {
             releaser.start()
             closer.start()
             start.countDown()
-            releaser.join()
-            closer.join()
+            listOf(releaser, closer).joinAllWithin("close racing release")
+            assertNull(harnessError.get(), "the harness itself failed: ${harnessError.get()}")
 
             // After both ops complete, exactly one of them must have driven the
             // refcount to zero (close always does so, release only if close hasn't

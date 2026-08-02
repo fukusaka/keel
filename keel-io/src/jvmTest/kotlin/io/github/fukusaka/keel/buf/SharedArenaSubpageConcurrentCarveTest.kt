@@ -49,11 +49,11 @@ class SharedArenaSubpageConcurrentCarveTest {
         val start = CountDownLatch(1)
 
         val workers = Array(WORKERS) { tid ->
-            Thread {
+            workerThread("carver-$tid") {
                 val child = children[tid]
                 val held = ArrayList<IoBuf>(BATCH)
                 try {
-                    start.await()
+                    start.awaitWithin("carver start")
                     repeat(ITERATIONS) {
                         // Hold a batch larger than the subpage class's freelist slot
                         // cap so the overflow forces concurrent carveSubpage on the
@@ -71,12 +71,19 @@ class SharedArenaSubpageConcurrentCarveTest {
             }
         }
 
-        workers.forEach { it.start() }
-        start.countDown()
-        workers.forEach { it.join(JOIN_BUDGET_MS) }
-        root.close()
-
-        assertEquals(0, errors.get(), "a worker observed an exception: ${firstError.get()}")
+        try {
+            workers.forEach { it.start() }
+            start.countDown()
+            // Join before asserting on errors, so a stuck worker is reported as itself
+            // rather than as whatever the assertion below happens to see.
+            workers.asList().joinAllWithin("concurrent subpage carve")
+            assertEquals(0, errors.get(), "a worker observed an exception: ${firstError.get()}")
+        } finally {
+            // In a finally because the join now throws, but only once the carvers have
+            // stopped: closing under a live one would tear down the very arena this test
+            // exists to check for corruption.
+            workers.asList().tearDownWhenStopped { root.close() }
+        }
     }
 
     private companion object {
@@ -95,8 +102,5 @@ class SharedArenaSubpageConcurrentCarveTest {
 
         /** Iterations per worker — enough to drive sustained concurrent carving. */
         const val ITERATIONS = 5_000
-
-        /** Per-worker join budget (wall-clock upper bound). */
-        const val JOIN_BUDGET_MS = 30_000L
     }
 }
