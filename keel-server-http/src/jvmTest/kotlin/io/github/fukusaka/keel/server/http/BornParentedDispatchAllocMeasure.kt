@@ -1,6 +1,11 @@
 package io.github.fukusaka.keel.server.http
 
 import com.sun.management.ThreadMXBean
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import java.lang.management.ManagementFactory
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
@@ -9,11 +14,6 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.intrinsics.startCoroutineUninterceptedOrReturn
 import kotlin.test.Test
 import kotlin.test.assertTrue
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.launch
 
 /**
  * Regression guard for the born-parented inline dispatch technique used by
@@ -27,7 +27,7 @@ import kotlinx.coroutines.launch
  * NIO EventLoop dispatcher measured the `launch` path allocating a
  * `StandaloneCoroutine` + `DispatchedContinuation` + `ChildHandleNode` + the
  * EventLoop task-queue node that the born-parented path avoids (~111 B/req). The
- * `Dispatchers.Unconfined` harness [HttpServerHandlerTest] uses runs inline and
+ * `Dispatchers.Unconfined` harness [HttpServerHandlerFixture] uses runs inline and
  * hides that dispatch-task cost, so this guard uses a single-thread executor
  * dispatcher — which enqueues a real dispatch task like an EventLoop — and reads
  * allocation on that thread with the extended [ThreadMXBean]. Driver and

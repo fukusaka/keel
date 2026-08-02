@@ -26,7 +26,7 @@ import kotlin.time.Duration.Companion.seconds
  * (they all pull from the same `bodyWaiter`), so fixing it covers all three.
  *
  * A [StandardTestDispatcher] makes the resume-then-cancel window deterministic:
- * a real dispatcher (and the [HttpServerHandlerTest] harness's
+ * a real dispatcher (and the [HttpServerHandlerFixture] harness's
  * `Dispatchers.Unconfined`) resumes the continuation inline, leaving no window
  * to cancel inside. Here the resumed continuation is queued, cancelled, then
  * run — reproducing the leak exactly.
