@@ -215,8 +215,10 @@ class IoUringTransportPeerFinSeamTest {
         private const val POLLERR_BIT: UInt = 0x0008u
         private const val POLLRDHUP_BIT: UInt = 0x2000u
 
-        // 0x2000 | 0x0010 | 0x0008 — precomputed because `const val`
-        // initializers cannot use `or`.
-        private const val EXPECTED_MASK: UInt = 0x2018u
+        // A plain `val`, not `const`: a const initializer may not call `or`, and
+        // spelling the mask out of its named bits is worth more than constness here —
+        // the previous literal 0x2018u was correct only as long as the comment
+        // beside it stayed in step with the bits above.
+        private val EXPECTED_MASK: UInt = POLLRDHUP_BIT or POLLHUP_BIT or POLLERR_BIT
     }
 }
