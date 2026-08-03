@@ -55,10 +55,10 @@ class NettyReadPathAllocationBenchmark {
 
     private fun measure(iterations: Int, path: (ByteArray) -> Unit): Long {
         val payload = ByteArray(PAYLOAD) { it.toByte() }
-        for (i in 0 until WARMUP) path(payload)
+        repeat(WARMUP) { path(payload) }
 
         val start = tmx.getThreadAllocatedBytes(Thread.currentThread().threadId())
-        for (i in 0 until iterations) path(payload)
+        repeat(iterations) { path(payload) }
         val end = tmx.getThreadAllocatedBytes(Thread.currentThread().threadId())
         return (end - start) / iterations
     }
