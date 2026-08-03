@@ -14,9 +14,11 @@ import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
 import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CArrayPointer
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
+import kotlinx.cinterop.MemScope
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
@@ -238,6 +240,11 @@ class NwListenerTlsIntegrationTest {
     }
 
     private fun curl(vararg args: String): Pair<Int, String> = memScoped {
+        // Built before fork(): only async-signal-safe calls belong between fork() and
+        // exec, and every step of this — the UTF-8 encode, the arena, the per-argument
+        // malloc — takes a lock another thread may hold at the moment we fork.
+        val cArgv = allocArgv(listOf("curl") + args)
+
         val pipeFds = allocArray<IntVar>(2)
         check(pipe(pipeFds) == 0) { "pipe() failed" }
         val readFd = pipeFds[0]
@@ -249,8 +256,7 @@ class NwListenerTlsIntegrationTest {
             dup2(writeFd, STDOUT_FILENO)
             dup2(writeFd, STDERR_FILENO)
             close(writeFd)
-            val argv = mutableListOf("curl") + args.toList()
-            executeCurl(argv)
+            execv(CURL_PATH, cArgv)
             _exit(1)
         }
 
@@ -269,19 +275,22 @@ class NwListenerTlsIntegrationTest {
     }
 
     /**
-     * Replaces this (forked) process with curl.
+     * Allocates a NULL-terminated `argv` for [execv] in this scope.
      *
-     * `execv` rather than `execl`: `execl` is variadic, which cinterop cannot call
-     * generically, so this used to be a `when` over `argv.size` with one hand-written
-     * overload per arity — fifteen branches, eight of them past the line limit, and an
-     * `error()` branch that fired when a caller passed one flag too many. `execv` takes
-     * the vector directly, so the arity stops mattering.
+     * `execv` rather than `execl`: `execl` is variadic, and cinterop only accepts a
+     * spread of a literal `arrayOf(...)` for those, so a runtime-built list cannot be
+     * passed. This used to be a `when` over the argument count with one hand-written
+     * call per arity — fifteen branches, eight of them past the line limit, and an
+     * `else` that called `error()`. That `error()` ran *in the forked child*: it would
+     * have unwound past the `_exit(1)` below it and returned into the test body, leaving
+     * a second process running the suite and writing into the pipe the parent reads.
+     * `execv` takes the vector directly, so neither the arity nor that branch remains.
      */
-    private fun executeCurl(argv: List<String>): Int = memScoped {
-        val cArgv = allocArray<CPointerVar<ByteVar>>(argv.size + 1)
-        argv.forEachIndexed { index, arg -> cArgv[index] = arg.cstr.ptr }
-        cArgv[argv.size] = null
-        execv("/usr/bin/curl", cArgv)
+    private fun MemScope.allocArgv(args: List<String>): CArrayPointer<CPointerVar<ByteVar>> {
+        val cArgv = allocArray<CPointerVar<ByteVar>>(args.size + 1)
+        args.forEachIndexed { index, arg -> cArgv[index] = arg.cstr.ptr }
+        cArgv[args.size] = null
+        return cArgv
     }
 
     private fun readAllFromFd(fd: Int): String {
@@ -327,6 +336,7 @@ class NwListenerTlsIntegrationTest {
     }
 
     companion object {
+        private const val CURL_PATH = "/usr/bin/curl"
         private const val READ_BUF_SIZE = 4096
         private const val SERVER_START_DELAY_US = 200_000u
         private val BUDGET = 15.seconds
