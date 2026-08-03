@@ -2,13 +2,6 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>TooGenericExceptionThrown:CachingDnsResolverTest.kt$CachingDnsResolverTest.FlakyResolver$throw RuntimeException("simulated transient failure")</ID>
-    <ID>TooGenericExceptionThrown:DefaultPipelineTest.kt$DefaultPipelineTest.&lt;no name provided>$throw RuntimeException("event error")</ID>
-    <ID>TooGenericExceptionThrown:DefaultPipelineTest.kt$DefaultPipelineTest.&lt;no name provided>$throw RuntimeException("parse error")</ID>
-    <ID>TooGenericExceptionThrown:DefaultPipelineTest.kt$DefaultPipelineTest.&lt;no name provided>$throw RuntimeException("replay error")</ID>
-    <ID>TooGenericExceptionThrown:DnsResolverTest.kt$DnsResolverTest$throw RuntimeException("fail-$ip")</ID>
-    <ID>TooGenericExceptionThrown:DnsResolverTest.kt$DnsResolverTest$throw RuntimeException("first fails")</ID>
-    <ID>TooGenericExceptionThrown:TypedInboundHandlerTest.kt$TypedInboundHandlerTest.&lt;no name provided>$throw RuntimeException("handler error")</ID>
     <ID>UnusedPrivateProperty:TypedInboundHandlerTest.kt$TypedInboundHandlerTest$val released = mutableListOf&lt;Any>()</ID>
   </CurrentIssues>
 </SmellBaseline>
