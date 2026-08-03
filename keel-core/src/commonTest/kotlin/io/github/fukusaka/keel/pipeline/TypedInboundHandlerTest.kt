@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -212,7 +213,7 @@ class TypedInboundHandlerTest {
 
         val failing = object : TypedInboundHandler<String>(String::class, autoRelease = false) {
             override fun onReadTyped(ctx: PipelineHandlerContext, msg: String) {
-                throw RuntimeException("handler error")
+                throw InjectedFault("handler error")
             }
         }
         val errorCatcher = object : InboundHandler {

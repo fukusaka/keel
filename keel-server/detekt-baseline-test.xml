@@ -3,6 +3,5 @@
   <ManuallySuppressedIssues/>
   <CurrentIssues>
     <ID>CommentWrapping:ServerTlsTest.kt$ServerTlsTest$/* no-op */</ID>
-    <ID>TooGenericExceptionThrown:AcceptLoopTest.kt$AcceptLoopTest.&lt;no name provided>$throw RuntimeException("server shutting down")</ID>
   </CurrentIssues>
 </SmellBaseline>

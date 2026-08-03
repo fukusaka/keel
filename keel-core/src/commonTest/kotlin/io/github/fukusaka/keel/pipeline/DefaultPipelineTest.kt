@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlin.reflect.KClass
 import kotlin.test.Test
@@ -226,7 +227,7 @@ class DefaultPipelineTest {
         val pipeline = createPipeline()
         val handler = RecordingInboundHandler()
         pipeline.addLast("h1", handler)
-        pipeline.notifyError(RuntimeException("test"))
+        pipeline.notifyError(InjectedFault("test"))
         assertEquals(listOf("error:test"), handler.events)
     }
 
@@ -320,7 +321,7 @@ class DefaultPipelineTest {
         val pipeline = createPipeline()
         val failing = object : InboundHandler {
             override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
-                throw RuntimeException("parse error")
+                throw InjectedFault("parse error")
             }
         }
         val errorHandler = RecordingInboundHandler()
@@ -491,7 +492,7 @@ class DefaultPipelineTest {
         val pipeline = createPipeline()
         val failing = object : InboundHandler {
             override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
-                throw RuntimeException("event error")
+                throw InjectedFault("event error")
             }
         }
         val errorHandler = RecordingInboundHandler()
@@ -580,7 +581,7 @@ class DefaultPipelineTest {
 
         val failing = object : InboundHandler {
             override fun onInactive(ctx: PipelineHandlerContext) {
-                throw RuntimeException("replay error")
+                throw InjectedFault("replay error")
             }
         }
         // Must not throw — logger swallows the replay exception and pipeline
@@ -728,7 +729,7 @@ class DefaultPipelineTest {
     @Test
     fun `pre-attach journal replays notifyError`() {
         val pipeline = createPipeline()
-        pipeline.notifyError(RuntimeException("boom"))
+        pipeline.notifyError(InjectedFault("boom"))
 
         val handler = RecordingInboundHandler()
         pipeline.addLast("h", handler)

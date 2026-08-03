@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.compression.EncoderOptions
 import io.github.fukusaka.keel.compression.EncoderSession
 import io.github.fukusaka.keel.compression.Strategy
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -564,8 +565,11 @@ class WsPermessageDeflateTest {
         )
         val payload = ByteArray(64) { it.toByte() }
         try {
-            // First compress drives the encoder, which throws — poisons.
-            assertFailsWith<RuntimeException> { engine.compress(payload) }
+            // First compress drives the encoder, which throws — poisons. The
+            // injected type, not RuntimeException: IllegalStateException is one too,
+            // so the generic form could not tell the pre-fix path from the post-fix
+            // one this test exists to distinguish.
+            assertFailsWith<InjectedFault> { engine.compress(payload) }
             // Second compress must fail fast with the poison, not re-run the encoder.
             val ex = assertFailsWith<IllegalStateException> { engine.compress(payload) }
             assertTrue(
@@ -591,7 +595,7 @@ class WsPermessageDeflateTest {
                 val delegate = inner.encoder.newSession(allocator, options)
                 return object : EncoderSession {
                     override fun update(input: IoBuf, output: IoBuf): CodecStatus =
-                        throw RuntimeException("simulated encoder backend fault")
+                        throw InjectedFault("simulated encoder backend fault")
                     override fun flush(output: IoBuf): CodecStatus = delegate.flush(output)
                     override fun finish(output: IoBuf): CodecStatus = delegate.finish(output)
                     override fun reset() = delegate.reset()
