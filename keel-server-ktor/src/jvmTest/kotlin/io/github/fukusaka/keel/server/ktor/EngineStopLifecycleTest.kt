@@ -187,8 +187,13 @@ class EngineStopLifecycleTest {
                     // never expect a frame in this test — the goal is to keep
                     // the server-side coroutine parked exactly the way a
                     // long-lived idle WS conn would.
-                    for (frame in incoming) {
-                        // discard
+                    // receiveCatching, not consumeEach: the latter ends in
+                    // `consume`'s finally, which cancels the channel. The session
+                    // documents the opposite contract — messages the handler never
+                    // takes are reclaimed after it returns, and a cancelled channel
+                    // has nothing left to reclaim.
+                    while (incoming.receiveCatching().isSuccess) {
+                        // discard: no frame is expected, the point is to stay parked
                     }
                 }
             }

@@ -18,7 +18,7 @@ class SuspendHttpParserTest {
         override suspend fun read(buf: IoBuf): Int {
             if (pos >= bytes.size) return -1
             val n = minOf(bytes.size - pos, buf.writableBytes)
-            for (i in 0 until n) buf.writeByte(bytes[pos++])
+            repeat(n) { buf.writeByte(bytes[pos++]) }
             return n
         }
         override fun close() {}
@@ -156,7 +156,7 @@ class SuspendHttpParserTest {
         override suspend fun read(buf: IoBuf): Int {
             if (pos >= bytes.size) return -1
             val n = minOf(chunkSize, bytes.size - pos, buf.writableBytes)
-            for (i in 0 until n) buf.writeByte(bytes[pos++])
+            repeat(n) { buf.writeByte(bytes[pos++]) }
             return n
         }
         override fun close() {}

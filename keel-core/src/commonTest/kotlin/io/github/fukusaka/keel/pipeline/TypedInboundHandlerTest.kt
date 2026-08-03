@@ -89,9 +89,8 @@ class TypedInboundHandlerTest {
 
     // --- autoRelease + propagate tracking ---
 
-    private class TrackableMessage {
-        var released = false
-    }
+    /** A distinct type for the typed-handler tests to match on; carries no state. */
+    private class TrackableMessage
 
     @Test
     fun `autoRelease does not release when message is propagated`() {
@@ -127,11 +126,11 @@ class TypedInboundHandlerTest {
         // auto-released — it was NOT handed to the next handler, only the transformed
         // output was.
         val pipeline = createPipeline()
-        val released = mutableListOf<Any>()
 
-        // A trackable string wrapper that records release calls via ReferenceCountUtil.
-        // We use a plain wrapper + a side channel since String isn't ref-counted.
-        // The test verifies identity via the released list.
+        // Plain strings, not ref-counted: this test pins the propagation shape (only
+        // the transformed object reaches the next handler). It does not verify the
+        // release, and neither does the sibling below — that one asserts propagation
+        // too. The closing comment names where the release is actually exercised.
         val original = "original-input"
         val transformed = "transformed-output"
 

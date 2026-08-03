@@ -7,7 +7,5 @@
     <ID>CommentWrapping:IoUringSqeSeamTest.kt$IoUringSqeSeamTest$/* flags */</ID>
     <ID>CommentWrapping:IoUringSqeSeamTest.kt$IoUringSqeSeamTest$/* pollMask */</ID>
     <ID>MaxLineLength:IoUringEngineTestSupport.kt$*</ID>
-    <ID>UnusedPrivateProperty:IoUringTransportPeerFinSeamTest.kt$IoUringTransportPeerFinSeamTest.Companion$private const val POLLERR_BIT: UInt = 0x0008u</ID>
-    <ID>UnusedPrivateProperty:IoUringTransportPeerFinSeamTest.kt$IoUringTransportPeerFinSeamTest.Companion$private const val POLLHUP_BIT: UInt = 0x0010u</ID>
   </CurrentIssues>
 </SmellBaseline>

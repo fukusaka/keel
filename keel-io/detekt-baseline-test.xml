@@ -6,6 +6,5 @@
     <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..20L</ID>
     <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..20L step 2</ID>
     <ID>FunctionOnlyReturningConstant:InterfaceDispatchProbeBenchmark.kt$InterfaceDispatchProbeBenchmark.Concrete$fun v(): Int</ID>
-    <ID>UnusedPrivateProperty:BufferedSuspendSourceTest.kt$BufferedSuspendSourceTest.&lt;no name provided>$i</ID>
   </CurrentIssues>
 </SmellBaseline>

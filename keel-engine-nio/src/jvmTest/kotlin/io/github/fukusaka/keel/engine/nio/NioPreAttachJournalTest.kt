@@ -94,7 +94,7 @@ class NioPreAttachJournalTest {
             assertEquals(
                 payload,
                 buildString {
-                    for (i in 0 until n) append(readBuf.readByte().toInt().toChar())
+                    repeat(n) { append(readBuf.readByte().toInt().toChar()) }
                 },
             )
             readBuf.release()
