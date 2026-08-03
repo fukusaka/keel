@@ -43,18 +43,18 @@ class PooledDirectAllocatorConcurrencyTest {
         }
         val allocator = PooledDirectAllocator(lifecycleListener = listener)
         val failure = AtomicReference<Throwable?>(null)
-        try {
-            val threads = (0 until WORKERS).map {
-                Thread {
-                    try {
-                        repeat(ITERS) { allocator.allocate(CLASS).release() }
-                    } catch (t: Throwable) {
-                        failure.compareAndSet(null, t)
-                    }
+        // Declared outside the try so the finally can ask whether they have stopped.
+        val threads = (0 until WORKERS).map { tid ->
+            workerThread("churn-$tid") {
+                try {
+                    repeat(ITERS) { allocator.allocate(CLASS).release() }
+                } catch (t: Throwable) {
+                    failure.compareAndSet(null, t)
                 }
             }
-            threads.forEach { it.start() }
-            threads.forEach { it.join() }
+        }
+        try {
+            threads.startAndJoinWithin("concurrent allocate/release churn")
             assertNull(
                 failure.get(),
                 "concurrent allocate/release must not corrupt the freelist (ABA / double-free): ${failure.get()}",
@@ -65,7 +65,10 @@ class PooledDirectAllocatorConcurrencyTest {
                 "every allocated buffer must fire onReleased exactly once — an imbalance signals a lost/double buffer",
             )
         } finally {
-            allocator.close()
+            // Only once the churn threads have stopped: PooledAllocator.close() documents
+            // a single-threaded teardown, and the bounded join reaches this finally with a
+            // worker still inside allocate().
+            threads.tearDownWhenStopped { allocator.close() }
         }
     }
 }
