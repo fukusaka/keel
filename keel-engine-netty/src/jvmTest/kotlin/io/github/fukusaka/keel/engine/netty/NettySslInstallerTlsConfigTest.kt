@@ -63,11 +63,6 @@ class NettySslInstallerTlsConfigTest {
         TestCertificates.SERVER_KEY,
     )
 
-    private val clientMTlsCerts = TlsCertificateSource.Pem(
-        TestCertificates.CLIENT_CERT,
-        TestCertificates.CLIENT_KEY,
-    )
-
     // --- happy path (control) ---
 
     @Test
