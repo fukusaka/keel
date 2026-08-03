@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.codec.websocket.WsOpcode
 import io.github.fukusaka.keel.compression.zlib.DeflateCodec
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -323,7 +324,7 @@ class WsFrameAggregatorTest {
         // must not leak codec internals), so the actual cause and which message
         // failed are recorded on the connection logger for the operator.
         val log = CapturingLogger()
-        val boom = RuntimeException("simulated Z_DATA_ERROR")
+        val boom = InjectedFault("simulated Z_DATA_ERROR")
         val aggregator = WsFrameAggregator(
             inflater = WsMessageInflater { throw boom },
             logger = log,

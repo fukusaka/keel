@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.Pipeline
+import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -74,7 +75,7 @@ class KtorCioInboundBridgeTest {
     @Test
     fun `onError closes the channel with cause`() = runTest(timeout = 15.seconds) {
         val (pipeline, bridge) = installBridge()
-        val error = RuntimeException("boom")
+        val error = InjectedFault("boom")
         pipeline.notifyError(error)
 
         val received = bridge.receiveCatching()

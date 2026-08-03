@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.core
 
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -131,7 +132,9 @@ class CachingDnsResolverTest {
         val delegate = FlakyResolver()
         val cache = CachingDnsResolver(delegate, ttl = 30.seconds)
 
-        assertFailsWith<RuntimeException> { cache.resolve("example.com") }
+        // The injected type: RuntimeException would also be satisfied by one the
+        // cache itself threw before ever reaching the delegate.
+        assertFailsWith<InjectedFault> { cache.resolve("example.com") }
         // Second call also hits the delegate because failures are not
         // cached (positive-only caching policy).
         val ok = cache.resolve("example.com")
@@ -182,11 +185,11 @@ class CachingDnsResolverTest {
         coroutineScope {
             val joiners = (1..4).map {
                 async {
-                    assertFailsWith<RuntimeException> { cache.resolve("example.com") }
+                    assertFailsWith<InjectedFault> { cache.resolve("example.com") }
                 }
             }
             delegate.waitForFirstCall()
-            delegate.fail(RuntimeException("upstream failure"))
+            delegate.fail(InjectedFault("upstream failure"))
             joiners.awaitAll()
         }
 
@@ -340,7 +343,7 @@ class CachingDnsResolverTest {
         override suspend fun resolve(hostname: String, hints: ResolveHints): ResolverResult {
             calls++
             return if (calls == 1) {
-                throw RuntimeException("simulated transient failure")
+                throw InjectedFault("simulated transient failure")
             } else {
                 ResolverResult(listOf(IpAddress.V4.LOOPBACK))
             }

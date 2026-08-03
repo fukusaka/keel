@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
+import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -96,8 +97,8 @@ class AcceptLoopTest {
         val ch = fakeChannel()
         val outcomes = ArrayDeque(
             listOf<Result<PipelinedChannel>>(
-                Result.failure(RuntimeException("boom-1")),
-                Result.failure(RuntimeException("boom-2")),
+                Result.failure(InjectedFault("boom-1")),
+                Result.failure(InjectedFault("boom-2")),
                 Result.success(ch),
             ),
         )
@@ -119,9 +120,9 @@ class AcceptLoopTest {
         val ch = fakeChannel()
         val outcomes = ArrayDeque(
             listOf<Result<PipelinedChannel>>(
-                Result.failure(RuntimeException("boom-1")),
-                Result.failure(RuntimeException("boom-2")),
-                Result.failure(RuntimeException("boom-3")),
+                Result.failure(InjectedFault("boom-1")),
+                Result.failure(InjectedFault("boom-2")),
+                Result.failure(InjectedFault("boom-3")),
                 Result.success(ch),
             ),
         )
@@ -143,10 +144,10 @@ class AcceptLoopTest {
         val ch = fakeChannel()
         val outcomes = ArrayDeque(
             listOf<Result<PipelinedChannel>>(
-                Result.failure(RuntimeException("f1")),
-                Result.failure(RuntimeException("f2")),
-                Result.failure(RuntimeException("f3")),
-                Result.failure(RuntimeException("f4")),
+                Result.failure(InjectedFault("f1")),
+                Result.failure(InjectedFault("f2")),
+                Result.failure(InjectedFault("f3")),
+                Result.failure(InjectedFault("f4")),
                 Result.success(ch),
             ),
         )
@@ -167,10 +168,10 @@ class AcceptLoopTest {
     fun `Exponential backoff resets to initialMs after a successful accept`() = runLoopTest {
         val outcomes = ArrayDeque(
             listOf<Result<PipelinedChannel>>(
-                Result.failure(RuntimeException("f1")),
-                Result.failure(RuntimeException("f2")),
+                Result.failure(InjectedFault("f1")),
+                Result.failure(InjectedFault("f2")),
                 Result.success(fakeChannel()),
-                Result.failure(RuntimeException("f3")),
+                Result.failure(InjectedFault("f3")),
                 Result.success(fakeChannel()),
             ),
         )
@@ -212,7 +213,7 @@ class AcceptLoopTest {
             override suspend fun accept(): PipelinedChannel {
                 attempt++
                 activeFlag = false
-                throw RuntimeException("server shutting down")
+                throw InjectedFault("server shutting down")
             }
         }
 

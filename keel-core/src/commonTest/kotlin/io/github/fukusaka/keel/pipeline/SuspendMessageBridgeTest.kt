@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.logging.PrintLogger
+import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
@@ -76,7 +77,7 @@ class SuspendMessageBridgeTest {
             val bridge = SuspendMessageBridge(TestMessage::class)
             val pipeline = createPipeline(bridge)
 
-            val error = RuntimeException("parse failed")
+            val error = InjectedFault("parse failed")
             pipeline.notifyError(error)
 
             val result = bridge.receiveCatching()

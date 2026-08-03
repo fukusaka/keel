@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.core
 
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -121,7 +122,7 @@ class DnsResolverTest {
 
         val result = address.connectWithFallback(resolver) { ip ->
             tried += ip
-            if (ip == IpAddress.V4(0x01020304)) throw RuntimeException("first fails")
+            if (ip == IpAddress.V4(0x01020304)) throw InjectedFault("first fails")
             "ok-$ip"
         }
 
@@ -134,9 +135,12 @@ class DnsResolverTest {
         val resolver = StubResolver(listOf(IpAddress.V4(0x01020304), IpAddress.V4.LOOPBACK))
         val address = InetSocketAddress("example.com", 80)
 
-        val error = assertFailsWith<RuntimeException> {
+        // InjectedFault, not RuntimeException: the latter is satisfied by any
+        // RuntimeException, including one connectWithFallback might throw for its
+        // own reasons before ever reaching the lambda.
+        val error = assertFailsWith<InjectedFault> {
             address.connectWithFallback(resolver) { ip ->
-                throw RuntimeException("fail-$ip")
+                throw InjectedFault("fail-$ip")
             }
         }
         assertEquals("fail-127.0.0.1", error.message)
