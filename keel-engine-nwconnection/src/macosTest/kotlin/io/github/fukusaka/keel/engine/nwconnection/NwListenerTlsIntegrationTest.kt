@@ -13,15 +13,21 @@ import io.github.fukusaka.keel.tls.TlsConfig
 import io.github.fukusaka.keel.tls.TlsTrustSource
 import io.github.fukusaka.keel.tls.TlsVerifyMode
 import io.github.fukusaka.keel.tls.TlsVersion
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CArrayPointer
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.IntVar
+import kotlinx.cinterop.MemScope
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.convert
+import kotlinx.cinterop.cstr
 import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.set
 import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
 import kotlinx.coroutines.runBlocking
@@ -32,7 +38,7 @@ import platform.posix.STDOUT_FILENO
 import platform.posix._exit
 import platform.posix.close
 import platform.posix.dup2
-import platform.posix.execl
+import platform.posix.execv
 import platform.posix.fork
 import platform.posix.kill
 import platform.posix.pipe
@@ -234,6 +240,11 @@ class NwListenerTlsIntegrationTest {
     }
 
     private fun curl(vararg args: String): Pair<Int, String> = memScoped {
+        // Built before fork(): only async-signal-safe calls belong between fork() and
+        // exec, and every step of this — the UTF-8 encode, the arena, the per-argument
+        // malloc — takes a lock another thread may hold at the moment we fork.
+        val cArgv = allocArgv(listOf("curl") + args)
+
         val pipeFds = allocArray<IntVar>(2)
         check(pipe(pipeFds) == 0) { "pipe() failed" }
         val readFd = pipeFds[0]
@@ -245,9 +256,7 @@ class NwListenerTlsIntegrationTest {
             dup2(writeFd, STDOUT_FILENO)
             dup2(writeFd, STDERR_FILENO)
             close(writeFd)
-            val argv = mutableListOf("curl") + args.toList()
-            // execl-style forwarder: convert to execv via memScoped alloc.
-            executeCurl(argv)
+            execv(CURL_PATH, cArgv)
             _exit(1)
         }
 
@@ -265,27 +274,23 @@ class NwListenerTlsIntegrationTest {
         Pair(exitCode, output)
     }
 
-    private fun executeCurl(argv: List<String>): Int {
-        // Fall back to execl with a small fixed maximum — sufficient for
-        // the flag counts we use above. Argument list ends with null.
-        return when (argv.size) {
-            2 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], null)
-            3 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], null)
-            4 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], null)
-            5 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], null)
-            6 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], null)
-            7 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], null)
-            8 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], null)
-            9 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], null)
-            10 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], null)
-            11 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], null)
-            12 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], null)
-            13 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], null)
-            14 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], null)
-            15 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], argv[14], null)
-            16 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], argv[14], argv[15], null)
-            else -> error("increase execl overload count in NwListenerTlsIntegrationTest (argv=${argv.size})")
-        }
+    /**
+     * Allocates a NULL-terminated `argv` for [execv] in this scope.
+     *
+     * `execv` rather than `execl`: `execl` is variadic, and cinterop only accepts a
+     * spread of a literal `arrayOf(...)` for those, so a runtime-built list cannot be
+     * passed. This used to be a `when` over the argument count with one hand-written
+     * call per arity — fifteen branches, eight of them past the line limit, and an
+     * `else` that called `error()`. That `error()` ran *in the forked child*: it would
+     * have unwound past the `_exit(1)` below it and returned into the test body, leaving
+     * a second process running the suite and writing into the pipe the parent reads.
+     * `execv` takes the vector directly, so neither the arity nor that branch remains.
+     */
+    private fun MemScope.allocArgv(args: List<String>): CArrayPointer<CPointerVar<ByteVar>> {
+        val cArgv = allocArray<CPointerVar<ByteVar>>(args.size + 1)
+        args.forEachIndexed { index, arg -> cArgv[index] = arg.cstr.ptr }
+        cArgv[args.size] = null
+        return cArgv
     }
 
     private fun readAllFromFd(fd: Int): String {
@@ -331,6 +336,7 @@ class NwListenerTlsIntegrationTest {
     }
 
     companion object {
+        private const val CURL_PATH = "/usr/bin/curl"
         private const val READ_BUF_SIZE = 4096
         private const val SERVER_START_DELAY_US = 200_000u
         private val BUDGET = 15.seconds

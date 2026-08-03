@@ -353,8 +353,8 @@ class LongObjectMapTest {
         // Removal back-shifts within the probe cluster, so a naive scan that
         // trusted stale keys would hand back a value that is no longer there.
         val map = LongObjectMap<String>()
-        (1L..20L).forEach { map[it] = "v$it" }
-        (1L..20L step 2).forEach { map.remove(it) }
+        for (k in 1L..20L) map[k] = "v$k"
+        for (k in 1L..20L step 2) map.remove(k)
 
         val seen = mutableListOf<String>()
         map.forEachValue { seen.add(it) }
@@ -373,7 +373,7 @@ class LongObjectMapTest {
     @Test
     fun `forEachValue visits entries that survived a resize`() {
         val map = LongObjectMap<String>(initialCapacity = 4)
-        (1L..200L).forEach { map[it] = "v$it" }
+        for (k in 1L..200L) map[k] = "v$k"
 
         var count = 0
         map.forEachValue { count++ }

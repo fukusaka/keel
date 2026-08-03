@@ -13,11 +13,11 @@ import kotlin.concurrent.AtomicReference
  *
  * | file | scope |
  * |---|---|
- * | [IoUringEngineLifecycleTest] | engine create/close, server bind/close, error paths, double close, UDS / IPv6 binding, write-zero edge case |
+ * | [IoUringEngineLifecycleTest] | create/close, bind/close, error paths, double close, UDS / IPv6, write-zero |
  * | [IoUringEngineReadWriteTest] | echo, large payload, multi-write, half-close, `asSuspendSource` (multishot recv) / `asSuspendSink` |
  * | [IoUringEngineConnectTest]   | client `connect()` flows (refused / hostname / round-trip) |
  * | [IoUringEngineResourceTest]  | `IoBuf` leak detection (closed channel with pending writes / echo) |
- * | [IoUringEngineUringSpecificTest] | io_uring-specific: wakeup SQE retry, ASYNC_CANCEL, multishot accept flows, round-robin EventLoop assignment, close-while-armed |
+ * | [IoUringEngineUringSpecificTest] | wakeup SQE retry, ASYNC_CANCEL, multishot accept, EventLoop round-robin, close-while-armed |
  *
  * Mirrors the same category split applied to the other engine test
  * suites (kqueue / epoll / io_uring / nio / netty / nwconnection /
