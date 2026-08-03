@@ -3,6 +3,5 @@
   <ManuallySuppressedIssues/>
   <CurrentIssues>
     <ID>CommentWrapping:KeelByteWriteChannelTest.kt$KeelByteWriteChannelTest$/* keepAlive = */</ID>
-    <ID>UnusedPrivateProperty:EngineStopLifecycleTest.kt$EngineStopLifecycleTest$frame</ID>
   </CurrentIssues>
 </SmellBaseline>

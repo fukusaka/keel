@@ -4,6 +4,5 @@
   <CurrentIssues>
     <ID>Filename:NioStreamServerCloseThreadSafetyTest.kt$io.github.fukusaka.keel.engine.nio.NioStreamServerCloseThreadSafetyTest.kt</ID>
     <ID>MatchingDeclarationName:NioStreamServerCloseThreadSafetyTest.kt$NioServerCloseThreadSafetyTest</ID>
-    <ID>UnusedPrivateProperty:NioPreAttachJournalTest.kt$NioPreAttachJournalTest$i</ID>
   </CurrentIssues>
 </SmellBaseline>

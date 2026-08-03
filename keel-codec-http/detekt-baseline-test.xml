@@ -3,6 +3,5 @@
   <ManuallySuppressedIssues/>
   <CurrentIssues>
     <ID>ComplexCondition:HttpResponseEncoderTest.kt$HttpResponseEncoderTest$allBytes[i] == CR &amp;&amp; allBytes[i + 1] == LF &amp;&amp; allBytes[i + 2] == CR &amp;&amp; allBytes[i + 3] == LF</ID>
-    <ID>UnusedPrivateProperty:SuspendHttpParserTest.kt$SuspendHttpParserTest.&lt;no name provided>$i</ID>
   </CurrentIssues>
 </SmellBaseline>
