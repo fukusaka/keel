@@ -436,13 +436,9 @@ class CompressionHandlerTest {
 
         handler.onRead(ctx, reqUpper("/a"))
         handler.onWrite(ctx, head200())
-        var aborted = false
-        try {
+        assertFailsWith<IllegalStateException>("expected the injected downstream rejection to abort response A") {
             handler.onWrite(ctx, HttpBody(bufOf("hello")))
-        } catch (e: IllegalStateException) {
-            aborted = true
         }
-        assertTrue(aborted, "expected the injected downstream rejection to abort response A")
 
         // Response B completes normally on the same handler (keep-alive reuse).
         handler.onRead(ctx, reqUpper("/b"))
@@ -469,13 +465,9 @@ class CompressionHandlerTest {
 
         handler.onRead(ctx, reqUpper("/a"))
         handler.onWrite(ctx, head200()) // ensureWorking allocates the working buffer
-        var aborted = false
-        try {
+        assertFailsWith<IllegalStateException>("expected the encoder update failure to abort the response") {
             handler.onWrite(ctx, HttpBody(bufOf("hello")))
-        } catch (e: IllegalStateException) {
-            aborted = true
         }
-        assertTrue(aborted, "expected the encoder update failure to abort the response")
         // The working buffer acquired in handleResponseHead must have been
         // released by discardPendingResponse — nothing left outstanding.
         tracker.assertNoLeaks("working buffer leaked on mid-update abort")
@@ -500,13 +492,9 @@ class CompressionHandlerTest {
 
         handler.onRead(ctx, reqUpper("/a"))
         handler.onWrite(ctx, head200())
-        var aborted = false
-        try {
+        assertFailsWith<IllegalStateException>("expected the propagateWrite throw to surface from onWrite") {
             handler.onWrite(ctx, HttpBody(bufOf("hello")))
-        } catch (e: IllegalStateException) {
-            aborted = true
         }
-        assertTrue(aborted, "expected the propagateWrite throw to surface from onWrite")
         // handlerRemoved releases any state the handler still owns; the
         // only outstanding allocation that could remain is the working
         // buffer if the fix were absent.
@@ -530,13 +518,9 @@ class CompressionHandlerTest {
 
         handler.onRead(ctx, reqUpper("/a"))
         handler.onWrite(ctx, head200())
-        var aborted = false
-        try {
+        assertFailsWith<IllegalStateException>("expected response A to abort") {
             handler.onWrite(ctx, HttpBody(bufOf("hello")))
-        } catch (e: IllegalStateException) {
-            aborted = true
         }
-        assertTrue(aborted, "expected response A to abort")
 
         handler.onRead(ctx, reqUpper("/b"))
         handler.onWrite(ctx, head200())
@@ -566,8 +550,8 @@ class CompressionHandlerTest {
         val ctx = TestCtx(state)
 
         handler.onRead(ctx, reqUpper("/a"))
-        var aborted = false
-        try {
+        val message = "scratch allocation failure must propagate out of handleAggregatedResponse"
+        assertFailsWith<IllegalStateException>(message) {
             handler.onWrite(
                 ctx,
                 HttpResponse(
@@ -579,10 +563,7 @@ class CompressionHandlerTest {
                     body = "hello".encodeToByteArray(),
                 ),
             )
-        } catch (e: IllegalStateException) {
-            aborted = true
         }
-        assertTrue(aborted, "scratch allocation failure must propagate out of handleAggregatedResponse")
         assertEquals(
             0,
             encoder.openSessions,
@@ -603,13 +584,9 @@ class CompressionHandlerTest {
         val ctx = TestCtx(state)
 
         handler.onRead(ctx, reqUpper("/a"))
-        var aborted = false
-        try {
+        assertFailsWith<IllegalStateException>("scratch allocation failure must propagate out of handleResponseHead") {
             handler.onWrite(ctx, head200())
-        } catch (e: IllegalStateException) {
-            aborted = true
         }
-        assertTrue(aborted, "scratch allocation failure must propagate out of handleResponseHead")
         assertEquals(
             0,
             encoder.openSessions,
