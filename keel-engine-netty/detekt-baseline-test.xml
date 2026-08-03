@@ -3,8 +3,6 @@
   <ManuallySuppressedIssues/>
   <CurrentIssues>
     <ID>ComplexCondition:NettyPipelineUploadTest.kt$NettyPipelineUploadTest$prevPrevPrev == '\r'.code &amp;&amp; prevPrev == '\n'.code &amp;&amp; prev == '\r'.code &amp;&amp; b == '\n'.code</ID>
-    <ID>SwallowedException:NettyEngineIdleTimeoutTest.kt$NettyEngineIdleTimeoutTest$e: IOException</ID>
-    <ID>SwallowedException:NettyEngineIdleTimeoutTest.kt$NettyEngineIdleTimeoutTest$e: SocketTimeoutException</ID>
     <ID>UnusedPrivateProperty:NettyReadPathAllocationBenchmark.kt$NettyReadPathAllocationBenchmark$i</ID>
     <ID>UnusedPrivateProperty:NettySslInstallerTlsConfigTest.kt$NettySslInstallerTlsConfigTest$private val clientMTlsCerts = TlsCertificateSource.Pem( TestCertificates.CLIENT_CERT, TestCertificates.CLIENT_KEY, )</ID>
   </CurrentIssues>
