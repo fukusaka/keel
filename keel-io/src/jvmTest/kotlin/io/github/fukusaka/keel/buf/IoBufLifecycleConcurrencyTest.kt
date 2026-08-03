@@ -144,8 +144,9 @@ class IoBufLifecycleConcurrencyTest {
     fun `close racing release prevents both double-free and stuck refcount`() {
         val allocator = DefaultAllocator
         val rounds = 5_000
-        var doubleFrees = 0
         var stuckCount = 0
+        var firstCloseFailure: Throwable? = null
+        var unexpectedRelease: Throwable? = null
 
         repeat(rounds) {
             val buf = allocator.allocate(16)
@@ -153,6 +154,12 @@ class IoBufLifecycleConcurrencyTest {
             val start = CountDownLatch(1)
             val releaseError = AtomicInteger(0)
             val closeError = AtomicInteger(0)
+            // The counters drive the tallies; the throwables are what the assertions
+            // after the loop name, and `releaseFailure` is what one of them checks the
+            // type of ("release() at most throws IllegalStateException, anything else
+            // is a real bug"), so keep both rather than counting alone.
+            val releaseFailure = AtomicReference<Throwable?>(null)
+            val closeFailure = AtomicReference<Throwable?>(null)
             // Separate from the two counters below: those carry a meaning the
             // assertions read off ("close() never throws"), and a harness timeout
             // from awaitWithin is not that.
@@ -165,6 +172,7 @@ class IoBufLifecycleConcurrencyTest {
                 } catch (e: AssertionError) {
                     harnessError.compareAndSet(null, e)
                 } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+                    releaseFailure.compareAndSet(null, t)
                     releaseError.incrementAndGet()
                 }
             }
@@ -175,6 +183,7 @@ class IoBufLifecycleConcurrencyTest {
                 } catch (e: AssertionError) {
                     harnessError.compareAndSet(null, e)
                 } catch (@Suppress("TooGenericExceptionCaught") t: Throwable) {
+                    closeFailure.compareAndSet(null, t)
                     closeError.incrementAndGet()
                 }
             }
@@ -197,17 +206,31 @@ class IoBufLifecycleConcurrencyTest {
             // IllegalStateException, not something else.
             assertFailsWith<IllegalStateException> { buf.retain() }
             assertFailsWith<IllegalStateException> { buf.release() }
-            if (releaseError.get() > 0 && closeError.get() > 0) doubleFrees++
             // close() never throws (idempotent), and release() at most throws
             // IllegalStateException on its CAS retry if close drove the refcount
             // to zero first. Track both — anything else is a real bug.
-            if (closeError.get() != 0) stuckCount++
+            if (closeError.get() != 0) {
+                stuckCount++
+                if (firstCloseFailure == null) firstCloseFailure = closeFailure.get()
+            }
+            val released = releaseFailure.get()
+            if (released != null && released !is IllegalStateException && unexpectedRelease == null) {
+                unexpectedRelease = released
+            }
         }
-        assertEquals(0, stuckCount, "close() must never throw under any race")
-        // doubleFrees == 0 doesn't prove the absence of double-free in the
-        // allocator layer, only that the IoBuf surface didn't trip an unexpected
-        // exception combination. The strong post-conditions above (retain /
-        // release throw after the race) catch refcount-corruption bugs.
+        // Tallied rather than asserted per round, like the counter above: across 5,000
+        // rounds "one of them" and "most of them" call for different investigations,
+        // and failing inside the loop would report the first and hide the rest.
+        assertNull(
+            unexpectedRelease,
+            "release() may only fail with IllegalStateException on this race, got $unexpectedRelease",
+        )
+        assertEquals(0, stuckCount, "close() must never throw under any race: $firstCloseFailure")
+        // No separate double-free tally: incrementing one needed closeError > 0, which
+        // is exactly what stuckCount counts, so it could only ever be non-zero in a run
+        // the assertion above already fails. The real double-free guard is the pair of
+        // post-conditions inside the loop — retain and release must both throw once the
+        // race has driven the refcount to zero.
     }
 
     /**
