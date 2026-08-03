@@ -2,9 +2,6 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..200L</ID>
-    <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..20L</ID>
-    <ID>ForEachOnRange:LongObjectMapTest.kt$LongObjectMapTest$1L..20L step 2</ID>
     <ID>FunctionOnlyReturningConstant:InterfaceDispatchProbeBenchmark.kt$InterfaceDispatchProbeBenchmark.Concrete$fun v(): Int</ID>
   </CurrentIssues>
 </SmellBaseline>

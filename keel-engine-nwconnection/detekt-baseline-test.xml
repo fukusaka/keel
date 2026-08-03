@@ -5,14 +5,5 @@
     <ID>CommentWrapping:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$/* 0600 */</ID>
     <ID>CommentWrapping:NwReadDualPathTest.kt$NwReadDualPathTest$/* is_complete = */</ID>
     <ID>EmptyFinallyBlock:NwEngineConcurrencyTest.kt$NwEngineConcurrencyTest${ }</ID>
-    <ID>MaxLineLength:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$10 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], null)</ID>
-    <ID>MaxLineLength:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$11 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], null)</ID>
-    <ID>MaxLineLength:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$12 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], null)</ID>
-    <ID>MaxLineLength:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$13 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], null)</ID>
-    <ID>MaxLineLength:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$14 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], null)</ID>
-    <ID>MaxLineLength:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$15 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], argv[14], null)</ID>
-    <ID>MaxLineLength:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$16 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9], argv[10], argv[11], argv[12], argv[13], argv[14], argv[15], null)</ID>
-    <ID>MaxLineLength:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$9 -> platform.posix.execl("/usr/bin/curl", argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], null)</ID>
-    <ID>MaximumLineLength:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$ </ID>
   </CurrentIssues>
 </SmellBaseline>
