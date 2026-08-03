@@ -71,7 +71,7 @@ class NettyEngineIdleTimeoutTest {
                 client.getInputStream().read() != -1,
                 "connection was idle-closed despite read activity (got EOF)",
             )
-        } catch (e: SocketTimeoutException) {
+        } catch (_: SocketTimeoutException) {
             // expected: connection open, just no data to read
         }
         client.close()
@@ -107,9 +107,9 @@ class NettyEngineIdleTimeoutTest {
             reads++
             try {
                 if (ins.read(buf) == -1) closed = true
-            } catch (e: SocketTimeoutException) {
+            } catch (_: SocketTimeoutException) {
                 break // no data and not closed within the read timeout
-            } catch (e: IOException) {
+            } catch (_: IOException) {
                 closed = true // connection reset
             }
         }

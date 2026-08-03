@@ -115,9 +115,9 @@ class BodyRateFloorTest {
             reads++
             try {
                 if (ins.read(buf) == -1) return true
-            } catch (e: SocketTimeoutException) {
+            } catch (_: SocketTimeoutException) {
                 return false
-            } catch (e: java.io.IOException) {
+            } catch (_: java.io.IOException) {
                 return true // connection reset = closed
             }
         }
