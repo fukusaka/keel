@@ -74,22 +74,11 @@ class NettyPipelineUploadTest {
      */
     private fun readHttpResponseHeaders(input: InputStream): String {
         val sb = StringBuilder()
-        var prev = -1
-        var prevPrev = -1
-        var prevPrevPrev = -1
         while (true) {
             val b = input.read()
             if (b == -1) break
             sb.append(b.toChar())
-            // Detect \r\n\r\n (end of headers)
-            if (prevPrevPrev == '\r'.code && prevPrev == '\n'.code &&
-                prev == '\r'.code && b == '\n'.code
-            ) {
-                break
-            }
-            prevPrevPrev = prevPrev
-            prevPrev = prev
-            prev = b
+            if (sb.endsWith(HEADER_TERMINATOR)) break
         }
         return sb.toString()
     }
@@ -169,5 +158,10 @@ class NettyPipelineUploadTest {
             server.close()
             engine.close()
         }
+    }
+
+    private companion object {
+        /** The blank line that ends an HTTP header block. */
+        const val HEADER_TERMINATOR = "\r\n\r\n"
     }
 }
