@@ -340,8 +340,20 @@ class KeelByteWriteChannelTest {
         slowReaderBackpressureScenario(::withKeelNettyServer, label = "NettyEngine")
     }
 
+    /**
+     * The two server starters this scenario runs against.
+     *
+     * A `fun interface` rather than a function type, because Kotlin prohibits named
+     * arguments on a function type: its parameters are `p1`, `p2`, `p3`, so the only
+     * way to say which `Boolean` is being passed was a block comment that nothing
+     * checks. Named here, the compiler checks it.
+     */
+    private fun interface ServerRunner {
+        fun run(module: suspend Application.() -> Unit, keepAlive: Boolean, block: (port: Int) -> Unit)
+    }
+
     private fun slowReaderBackpressureScenario(
-        serverRunner: (suspend Application.() -> Unit, Boolean, (Int) -> Unit) -> Unit,
+        serverRunner: ServerRunner,
         label: String,
     ) {
         val writerStarted = CompletableDeferred<Unit>()
@@ -379,7 +391,7 @@ class KeelByteWriteChannelTest {
             }
         }
 
-        serverRunner(module, /* keepAlive = */ false) { port ->
+        serverRunner.run(module, keepAlive = false) { port ->
             Socket().use { socket ->
                 // Pin the client receive buffer small so the test does not depend on
                 // platform SO_RCVBUF defaults. Linux auto-tunes rcvbuf into the multi-MB

@@ -155,7 +155,7 @@ class IoUringSqeSeamTest {
         val fake = FakeIoUringRing()
         withEventLoop(fake) { el ->
             el.submitCallback(
-                prepare = { sqe -> io_uring_prep_accept(sqe, /* fd */ 3, null, null, /* flags */ 0) },
+                prepare = { sqe -> io_uring_prep_accept(sqe, fd = 3, addr = null, addrlen = null, flags = 0) },
                 onCqe = { _, _ -> },
             )
             assertEquals(IORING_OP_ACCEPT, fake.lastSqeOp(), "opcode after accept prep")
@@ -167,7 +167,7 @@ class IoUringSqeSeamTest {
         val fake = FakeIoUringRing()
         withEventLoop(fake) { el ->
             el.submitMultishot(
-                prepare = { sqe -> keel_prep_recv_multishot(sqe, /* fd */ 4, /* bgid */ 1u.toUShort()) },
+                prepare = { sqe -> keel_prep_recv_multishot(sqe, sockfd = 4, bgid = 1u.toUShort()) },
                 onCqe = { _, _ -> },
             )
             assertEquals(IORING_OP_RECV, fake.lastSqeOp(), "opcode after multishot recv prep")
@@ -179,7 +179,7 @@ class IoUringSqeSeamTest {
         val fake = FakeIoUringRing()
         withEventLoop(fake) { el ->
             el.submitCallback(
-                prepare = { sqe -> keel_prep_poll_add(sqe, /* fd */ 5, /* pollMask */ 0x2000u) },
+                prepare = { sqe -> keel_prep_poll_add(sqe, fd = 5, poll_mask = 0x2000u) },
                 onCqe = { _, _ -> },
             )
             assertEquals(IORING_OP_POLL_ADD, fake.lastSqeOp(), "opcode after poll prep")
@@ -195,7 +195,7 @@ class IoUringSqeSeamTest {
             // Representative peer-FIN watch mask.
             val mask: UInt = 0x2000u or 0x0010u or 0x0008u // POLLRDHUP | POLLHUP | POLLERR
             el.submitCallback(
-                prepare = { sqe -> keel_prep_poll_add(sqe, /* fd */ 5, mask) },
+                prepare = { sqe -> keel_prep_poll_add(sqe, fd = 5, poll_mask = mask) },
                 onCqe = { _, _ -> },
             )
             assertEquals(IORING_OP_POLL_ADD, fake.lastSqeOp())

@@ -313,7 +313,7 @@ class KeelCioEngineTest {
                     }
                 }
             }
-        }, /* keepAlive = */ false) { port ->
+        }, keepAlive = false) { port ->
             Socket().use { socket ->
                 // Pin client SO_RCVBUF small to keep the test independent of platform
                 // auto-tuning (Linux can otherwise grow rcvbuf into the multi-MB range

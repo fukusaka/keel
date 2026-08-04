@@ -65,7 +65,9 @@ class KqueueEngineLifecycleSeamTest {
     )
 
     /** Immediate-resume fake: returns normally from `awaitWriteReady`. */
-    private val immediateSuspendRegister = KqueueSuspendRegister { _, _ -> /* no-op */ }
+    private val immediateSuspendRegister = KqueueSuspendRegister { _, _ ->
+        // Deliberately empty: resume immediately.
+    }
 
     // --- connect Inet: Failed branch ---
 

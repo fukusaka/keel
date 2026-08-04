@@ -311,7 +311,7 @@ class NwListenerTlsIntegrationTest {
         val fd = platform.posix.open(
             path,
             platform.posix.O_WRONLY or platform.posix.O_CREAT or platform.posix.O_TRUNC,
-            0x180u, /* 0600 */
+            (platform.posix.S_IRUSR or platform.posix.S_IWUSR).toUInt(),
         )
         check(fd >= 0) { "open($path) failed" }
         try {

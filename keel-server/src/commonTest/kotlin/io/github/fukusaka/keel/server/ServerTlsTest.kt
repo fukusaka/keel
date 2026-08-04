@@ -99,7 +99,9 @@ class ServerTlsTest {
 
     @Test
     fun `Custom exposes the wrapped TlsServerInstaller`() {
-        val installer = TlsServerInstaller { _, _ -> /* no-op */ }
+        val installer = TlsServerInstaller { _, _ ->
+            // Deliberately empty: the test only checks that this instance is the one exposed.
+        }
         val strategy = ServerTlsStrategy.Custom(installer)
         assertSame(installer, strategy.installer)
     }
