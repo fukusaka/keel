@@ -179,6 +179,7 @@ class IoUringRegisteredBufferStrategySeamTest {
             assertEquals(1, el.sendZcRegularCount, "the dispatch must count as a regular SEND_ZC")
         } finally {
             el.close()
+            fake.dispose()
         }
     }
 
@@ -215,6 +216,7 @@ class IoUringRegisteredBufferStrategySeamTest {
         } finally {
             registry.close()
             el.close()
+            fake.dispose()
         }
     }
 
