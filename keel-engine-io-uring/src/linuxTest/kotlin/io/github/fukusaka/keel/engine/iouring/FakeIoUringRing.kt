@@ -37,8 +37,9 @@ import kotlinx.cinterop.value
  * this class is correct in isolation and the omission is in the callers, one
  * file away.
  *
- * Every call site now constructs the fake inside a helper whose `finally`
- * disposes it, alongside closing the EventLoop and buffer ring:
+ * What every call site has in common is not where the fake is built — most build
+ * it in the `@Test` — but that it reaches a `finally` which disposes it, usually
+ * a helper's:
  *
  * ```
  * private fun withTransport(fake: FakeIoUringRing = FakeIoUringRing(), …) {
@@ -51,15 +52,22 @@ import kotlinx.cinterop.value
  * }
  * ```
  *
- * Copy that shape rather than constructing one directly in a `@Test`: the
- * two sites that did so are the two that had no `finally` to attach to.
+ * That helper takes ownership of whatever it is given: it disposes the `fake`
+ * parameter unconditionally, so pass it a fresh instance or omit the argument —
+ * never one the caller disposes itself.
  *
- * **There is no automated guard, and both obvious ones were tried.** A rule that
+ * **Open the `try` as early as the declarations allow.** Anything between the
+ * construction and the `try` runs unguarded, so a throw there — an assertion, a
+ * `check` in a constructor, an `initOnEventLoop` under fd exhaustion — leaks the
+ * arena and skips the other teardown too.
+ *
+ * **There is no automated guard, and both candidates were tried.** A rule that
  * resolves the arena's owner passes this class, correctly — the omission is in a
- * caller. A test asserting a global constructed-minus-disposed balance passes
- * too: `kotlin.test` gives Native no suite-level teardown, so such a test runs at
- * an arbitrary point and sees only the leaks that happened before it. Removing a
- * `dispose()` and running the suite left it green. The shape above is the guard.
+ * caller. A global constructed-minus-disposed balance test does not work either:
+ * `kotlin.test` gives Native no suite-level teardown, so it runs at an arbitrary
+ * point in the suite and observes only the leaks that happened before it. To see
+ * that for yourself, add the counter, delete one `fake.dispose()`, and run
+ * `linuxX64Test` — it stays green. The shape above is the guard.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class FakeIoUringRing : IoUringRing {
