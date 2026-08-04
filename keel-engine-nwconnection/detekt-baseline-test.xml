@@ -2,8 +2,6 @@
 <SmellBaseline>
   <ManuallySuppressedIssues/>
   <CurrentIssues>
-    <ID>CommentWrapping:NwListenerTlsIntegrationTest.kt$NwListenerTlsIntegrationTest$/* 0600 */</ID>
-    <ID>CommentWrapping:NwReadDualPathTest.kt$NwReadDualPathTest$/* is_complete = */</ID>
     <ID>EmptyFinallyBlock:NwEngineConcurrencyTest.kt$NwEngineConcurrencyTest${ }</ID>
   </CurrentIssues>
 </SmellBaseline>

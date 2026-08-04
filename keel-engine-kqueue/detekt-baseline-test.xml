@@ -1,7 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<SmellBaseline>
-  <ManuallySuppressedIssues/>
-  <CurrentIssues>
-    <ID>CommentWrapping:KqueueEngineLifecycleSeamTest.kt$KqueueEngineLifecycleSeamTest$/* no-op */</ID>
-  </CurrentIssues>
-</SmellBaseline>
