@@ -68,7 +68,9 @@ class EpollEngineLifecycleSeamTest {
     )
 
     /** Immediate-resume fake: returns normally from `awaitWriteReady`. */
-    private val immediateSuspendRegister = EpollSuspendRegister { _, _ -> /* no-op */ }
+    private val immediateSuspendRegister = EpollSuspendRegister { _, _ ->
+        // Deliberately empty: resume immediately.
+    }
 
     // --- connect Inet: Failed branch ---
 
