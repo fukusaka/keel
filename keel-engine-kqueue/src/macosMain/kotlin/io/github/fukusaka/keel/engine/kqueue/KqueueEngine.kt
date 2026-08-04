@@ -33,6 +33,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
 import platform.posix.errno
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -101,6 +102,18 @@ class KqueueEngine(
         config.idleTimeoutMillis,
         config.flushCoalescing,
     )
+
+    /**
+     * Set once by [close]; read by every entry point's `check(!closed)`.
+     *
+     * Volatile so a thread that has never synchronised with [close] still sees
+     * it: the plain read could go on returning `false` indefinitely, letting
+     * `connect()` open sockets on an engine that is gone. This narrows that
+     * window — it does not close it, and is not what makes the result safe. A
+     * loop can sweep after any check here passes, which is why the transport's
+     * `joinedLoop` is the guard that actually decides.
+     */
+    @Volatile
     private var closed = false
 
     /** Whether a worker loop still holds a callback for [fd] + [interest]; see the group's property. */
