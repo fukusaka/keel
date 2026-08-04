@@ -33,7 +33,7 @@ import kotlin.time.Duration.Companion.seconds
  *    unwinds cleanly (CancellationException surfaces via accept()) and
  *    does not fire an uncaught exception into Dispatchers.Default.
  */
-class NioServerCloseThreadSafetyTest {
+class NioStreamServerCloseThreadSafetyTest {
 
     private val testTimeout = 10.seconds
 

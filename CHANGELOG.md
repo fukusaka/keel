@@ -45,9 +45,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `build`, `ci`: add a `detektTestSources` task and run it in the gate — no detekt task
   analysed `commonTest` / `nativeTest` / `macosTest` / `linuxTest` / `appleTest` before, and
-  `engine-netty` reached no test sources at all. Pre-existing findings are grandfathered per
-  module in `detekt-baseline-test.xml`; `FunctionNaming` now excludes the native-family test
-  source sets, as it already did for `commonTest` / `jvmTest` / `jsTest` (#1018)
+  `engine-netty` reached no test sources at all. Pre-existing findings were grandfathered per
+  module while they were worked through, and the last baseline is now gone; `FunctionNaming`
+  excludes the native-family test source sets, as it already did for `commonTest` / `jvmTest` /
+  `jsTest` (#1018, #1033)
 - **BREAKING** (`native-posix`): `LoopHandoff` now requires opting in to
   `@InternalPosixEventLoopApi` (#1002)
 - `core`: the pipeline's non-suspend outbound entry points (`requestWrite` / `requestFlush` /

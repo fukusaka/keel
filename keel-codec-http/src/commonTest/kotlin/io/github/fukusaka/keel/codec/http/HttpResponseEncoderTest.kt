@@ -26,8 +26,21 @@ class HttpResponseEncoderTest {
     }
 
     private companion object {
-        val CR: Byte = '\r'.code.toByte()
-        val LF: Byte = '\n'.code.toByte()
+        /** The blank line that ends an HTTP header block. */
+        val HEADER_TERMINATOR = "\r\n\r\n".encodeToByteArray()
+    }
+
+    /**
+     * Index just past the first occurrence of [marker], or -1 if it does not occur.
+     *
+     * Spelling the search out inline needs one comparison per marker byte joined by
+     * `&&`, which says "four bytes in a row" only if you count them.
+     */
+    private fun ByteArray.indexAfter(marker: ByteArray): Int {
+        for (i in 0..size - marker.size) {
+            if (marker.indices.all { this[i + it] == marker[it] }) return i + marker.size
+        }
+        return -1
     }
 
     /** Reads the content of [buf] from readerIndex to writerIndex as a String. */
@@ -144,14 +157,7 @@ class HttpResponseEncoderTest {
         // Read raw bytes directly — avoid String round-trip which corrupts bytes > 0x7F.
         val allBytes = ByteArray(buf.readableBytes)
         buf.readByteArray(allBytes, 0, allBytes.size)
-        // Find end of headers: "\r\n\r\n"
-        var headerEnd = -1
-        for (i in 0..allBytes.size - 4) {
-            if (allBytes[i] == CR && allBytes[i + 1] == LF && allBytes[i + 2] == CR && allBytes[i + 3] == LF) {
-                headerEnd = i + 4
-                break
-            }
-        }
+        val headerEnd = allBytes.indexAfter(HEADER_TERMINATOR)
         assertTrue(headerEnd >= 0, "header terminator not found")
         assertEquals(body.size, allBytes.size - headerEnd, "body size mismatch")
         for (i in body.indices) {

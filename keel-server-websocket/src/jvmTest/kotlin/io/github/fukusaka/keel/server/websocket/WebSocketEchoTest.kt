@@ -654,15 +654,17 @@ class WebSocketEchoTest {
         // Drop the trailing 00 00 FF FF emitted by finish() so the bytes
         // match what an RFC 7692 sender puts on the wire.
         val full = ByteArray(out.size) { out[it] }
-        return if (full.size >= 4 &&
-            full[full.size - 1] == 0xFF.toByte() && full[full.size - 2] == 0xFF.toByte() &&
-            full[full.size - 3] == 0x00.toByte() && full[full.size - 4] == 0x00.toByte()
-        ) {
-            full.copyOf(full.size - 4)
-        } else {
-            full
-        }
+        return if (full.endsWith(SYNC_FLUSH_TAIL)) full.copyOf(full.size - SYNC_FLUSH_TAIL.size) else full
     }
+
+    /**
+     * Whether this array's last bytes are [suffix].
+     *
+     * Written out inline, the four-byte case reads as a length guard plus four
+     * index arithmetic terms joined by `&&`, in descending index order.
+     */
+    private fun ByteArray.endsWith(suffix: ByteArray): Boolean =
+        size >= suffix.size && suffix.indices.all { this[size - suffix.size + it] == suffix[it] }
 
     /** Raw-DEFLATE inflates [data], re-appending the `00 00 FF FF` sync tail. */
     private fun rawInflate(data: ByteArray): ByteArray {
@@ -720,5 +722,13 @@ class WebSocketEchoTest {
             sb.append(b.toChar())
         }
         return sb.toString()
+    }
+
+    private companion object {
+        /**
+         * The `Z_SYNC_FLUSH` marker a raw-DEFLATE stream ends with, which an
+         * RFC 7692 §7.2.1 sender strips before putting the payload on the wire.
+         */
+        val SYNC_FLUSH_TAIL = byteArrayOf(0x00, 0x00, 0xFF.toByte(), 0xFF.toByte())
     }
 }

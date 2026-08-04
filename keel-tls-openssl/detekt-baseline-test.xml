@@ -1,7 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<SmellBaseline>
-  <ManuallySuppressedIssues/>
-  <CurrentIssues>
-    <ID>LongMethod:OpenSslEchoTest.kt$OpenSslEchoTest$@Test fun `OpenSSL server handshake and echo succeeds`()</ID>
-  </CurrentIssues>
-</SmellBaseline>

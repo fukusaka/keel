@@ -66,6 +66,13 @@ class InterfaceDispatchProbeBenchmark {
     }
 
     private class Concrete {
+        /**
+         * Returning a constant is the measurement, not an oversight: this is the
+         * zero-indirection floor the other two trials are compared against, so the
+         * body has to be the cheapest thing a call can do. [ImplA.v] and [ImplB.v]
+         * return constants too — they are only unflagged because they are overrides.
+         */
+        @Suppress("FunctionOnlyReturningConstant")
         fun v(): Int = 1
     }
 

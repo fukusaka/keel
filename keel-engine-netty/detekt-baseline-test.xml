@@ -1,7 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<SmellBaseline>
-  <ManuallySuppressedIssues/>
-  <CurrentIssues>
-    <ID>ComplexCondition:NettyPipelineUploadTest.kt$NettyPipelineUploadTest$prevPrevPrev == '\r'.code &amp;&amp; prevPrev == '\n'.code &amp;&amp; prev == '\r'.code &amp;&amp; b == '\n'.code</ID>
-  </CurrentIssues>
-</SmellBaseline>
