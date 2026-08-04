@@ -243,6 +243,15 @@ class EpollEngine(
         val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
         val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
         val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        if (!transport.joinedLoop) {
+            // The loop swept between this call's check at the top and the
+            // registration inside the constructor. Closing the transport rather
+            // than the descriptor: close() is idempotent and releases the fd
+            // itself, so nothing here can close a number the loop might still
+            // hold or that a later close would close twice.
+            transport.close()
+            error("connect(address) failed: the EventLoop stopped during connect")
+        }
         return EpollPipelinedChannel(transport, logger, address, null)
     }
 
@@ -293,6 +302,15 @@ class EpollEngine(
         val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
         val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
         val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        if (!transport.joinedLoop) {
+            // The loop swept between this call's check at the top and the
+            // registration inside the constructor. Closing the transport rather
+            // than the descriptor: close() is idempotent and releases the fd
+            // itself, so nothing here can close a number the loop might still
+            // hold or that a later close would close twice.
+            transport.close()
+            error("connect(remoteAddr) failed: the EventLoop stopped during connect")
+        }
         return EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 

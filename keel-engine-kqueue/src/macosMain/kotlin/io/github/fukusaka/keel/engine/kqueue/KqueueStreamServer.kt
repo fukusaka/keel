@@ -111,6 +111,10 @@ internal class KqueueStreamServer(
                         rbs,
                         ito,
                     )
+                    if (!transport.joinedLoop) {
+                        transport.close()
+                        error("accept() failed: the EventLoop stopped during accept")
+                    }
                     val channel = KqueuePipelinedChannel(
                         transport,
                         logger,

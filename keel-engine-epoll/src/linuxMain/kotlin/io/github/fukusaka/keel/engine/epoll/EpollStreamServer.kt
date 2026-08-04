@@ -96,6 +96,10 @@ internal class EpollStreamServer(
                     val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
                     val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
                     val transport = EpollIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+                    if (!transport.joinedLoop) {
+                        transport.close()
+                        error("accept() failed: the EventLoop stopped during accept")
+                    }
                     val channel = EpollPipelinedChannel(
                         transport,
                         logger,

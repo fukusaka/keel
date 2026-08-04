@@ -251,6 +251,15 @@ class KqueueEngine(
         val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
         val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
         val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        if (!transport.joinedLoop) {
+            // The loop swept between this call's check at the top and the
+            // registration inside the constructor. Closing the transport rather
+            // than the descriptor: close() is idempotent and releases the fd
+            // itself, so nothing here can close a number the loop might still
+            // hold or that a later close would close twice.
+            transport.close()
+            error("connect(address) failed: the EventLoop stopped during connect")
+        }
         return KqueuePipelinedChannel(transport, logger, address, null)
     }
 
@@ -301,6 +310,15 @@ class KqueueEngine(
         val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
         val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
         val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        if (!transport.joinedLoop) {
+            // The loop swept between this call's check at the top and the
+            // registration inside the constructor. Closing the transport rather
+            // than the descriptor: close() is idempotent and releases the fd
+            // itself, so nothing here can close a number the loop might still
+            // hold or that a later close would close twice.
+            transport.close()
+            error("connect(remoteAddr) failed: the EventLoop stopped during connect")
+        }
         return KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
     }
 
