@@ -28,8 +28,46 @@ import kotlinx.cinterop.value
  * only, no auto-generation of CQEs from submitted SQEs.
  *
  * The native `ring` argument is accepted to satisfy the interface but
- * ignored. The fake owns a native [Arena] for the scratch SQE; the test
- * must call [dispose] when finished.
+ * ignored.
+ *
+ * **Lifecycle.** The fake owns a native [Arena] for the scratch SQE, so an
+ * instance that is never [dispose]d leaks that arena for the run. Ten of the
+ * nineteen files that construct it used to miss the call, which is the shape
+ * to avoid rather than a rule to restate: nothing checks it. detekt cannot —
+ * this class is correct in isolation and the omission is in the callers, one
+ * file away.
+ *
+ * What every call site has in common is not where the fake is built — most build
+ * it in the `@Test` — but that it reaches a `finally` which disposes it, usually
+ * a helper's:
+ *
+ * ```
+ * private fun withTransport(fake: FakeIoUringRing = FakeIoUringRing(), …) {
+ *     …
+ *     try { block(fake, el, transport) } finally {
+ *         bufRing.close()
+ *         el.close()
+ *         fake.dispose()
+ *     }
+ * }
+ * ```
+ *
+ * That helper takes ownership of whatever it is given: it disposes the `fake`
+ * parameter unconditionally, so pass it a fresh instance or omit the argument —
+ * never one the caller disposes itself.
+ *
+ * **Open the `try` as early as the declarations allow.** Anything between the
+ * construction and the `try` runs unguarded, so a throw there — an assertion, a
+ * `check` in a constructor, an `initOnEventLoop` under fd exhaustion — leaks the
+ * arena and skips the other teardown too.
+ *
+ * **There is no automated guard, and both candidates were tried.** A rule that
+ * resolves the arena's owner passes this class, correctly — the omission is in a
+ * caller. A global constructed-minus-disposed balance test does not work either:
+ * `kotlin.test` gives Native no suite-level teardown, so it runs at an arbitrary
+ * point in the suite and observes only the leaks that happened before it. To see
+ * that for yourself, add the counter, delete one `fake.dispose()`, and run
+ * `linuxX64Test` — it stays green. The shape above is the guard.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class FakeIoUringRing : IoUringRing {

@@ -179,6 +179,7 @@ class IoUringRegisteredBufferStrategySeamTest {
             assertEquals(1, el.sendZcRegularCount, "the dispatch must count as a regular SEND_ZC")
         } finally {
             el.close()
+            fake.dispose()
         }
     }
 
@@ -197,7 +198,6 @@ class IoUringRegisteredBufferStrategySeamTest {
             FakeIoUringRegisteredBufferOps(),
         )
         registry.initOnEventLoop()
-        assertTrue(registry.isActive, "fake-backed registration succeeds")
         val transport = IoUringIoTransport(
             fd = 999,
             eventLoop = el,
@@ -207,6 +207,10 @@ class IoUringRegisteredBufferStrategySeamTest {
             registeredBufferTable = registry,
         )
         try {
+            // Inside the try: a failure here used to skip registry.close(), el.close()
+            // and the disposal below, so the one assertion that can fail before the
+            // cleanup is installed was also the one that defeated it.
+            assertTrue(registry.isActive, "fake-backed registration succeeds")
             transport.write(buf)
             transport.flush()
 
@@ -215,6 +219,7 @@ class IoUringRegisteredBufferStrategySeamTest {
         } finally {
             registry.close()
             el.close()
+            fake.dispose()
         }
     }
 

@@ -81,6 +81,7 @@ class IoUringTransportRecvStarvationSeamTest {
         } finally {
             bufRing.close()
             el.close()
+            fake.dispose()
         }
     }
 

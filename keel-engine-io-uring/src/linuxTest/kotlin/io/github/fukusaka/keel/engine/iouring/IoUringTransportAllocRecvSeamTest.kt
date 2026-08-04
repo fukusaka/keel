@@ -92,6 +92,7 @@ class IoUringTransportAllocRecvSeamTest {
             block(fake, el, allocator, transport)
         } finally {
             el.close()
+            fake.dispose()
         }
     }
 

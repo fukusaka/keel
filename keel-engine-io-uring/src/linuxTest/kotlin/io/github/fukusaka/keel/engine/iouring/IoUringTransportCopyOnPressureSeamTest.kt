@@ -62,6 +62,7 @@ class IoUringTransportCopyOnPressureSeamTest {
         } finally {
             bufRing.close()
             el.close()
+            fake.dispose()
         }
     }
 

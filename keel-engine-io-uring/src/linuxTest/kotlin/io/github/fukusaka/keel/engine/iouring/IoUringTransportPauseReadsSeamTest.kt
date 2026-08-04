@@ -70,6 +70,7 @@ class IoUringTransportPauseReadsSeamTest {
         } finally {
             bufRing.close()
             el.close()
+            fake.dispose()
         }
     }
 
