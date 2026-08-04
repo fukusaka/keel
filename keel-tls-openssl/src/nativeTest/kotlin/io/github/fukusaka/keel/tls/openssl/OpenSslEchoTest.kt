@@ -17,6 +17,7 @@ import openssl.OPENSSL_init_ssl
 import openssl.PEM_read_bio_PrivateKey
 import openssl.PEM_read_bio_X509
 import openssl.SSL
+import openssl.SSL_CTX
 import openssl.SSL_CTX_free
 import openssl.SSL_CTX_new
 import openssl.SSL_CTX_use_PrivateKey
@@ -78,39 +79,7 @@ class OpenSslEchoTest {
         withTimeout(30.seconds) {
             val deadline = TimeSource.Monotonic.markNow() + 30.seconds
             memScoped {
-                // --- Init OpenSSL ---
-                OPENSSL_init_ssl(0u, null)
-
-                // --- Create SSL_CTX ---
-                val method = TLS_server_method()
-                val ctx = SSL_CTX_new(method)
-                check(ctx != null) { "SSL_CTX_new failed: ${keel_openssl_err_string()?.toKString()}" }
-
-                // --- Load certificate from PEM buffer via BIO ---
-                val certBytes = SERVER_CERT.encodeToByteArray()
-                val certBio = certBytes.usePinned { pinned ->
-                    BIO_new_mem_buf(pinned.addressOf(0), certBytes.size)
-                }
-                check(certBio != null) { "BIO_new_mem_buf(cert) failed" }
-                val x509 = PEM_read_bio_X509(certBio, null, null, null)
-                check(x509 != null) { "PEM_read_bio_X509 failed: ${keel_openssl_err_string()?.toKString()}" }
-                val certRet = SSL_CTX_use_certificate(ctx, x509)
-                check(certRet == 1) { "SSL_CTX_use_certificate failed: ${keel_openssl_err_string()?.toKString()}" }
-                X509_free(x509)
-                BIO_free(certBio)
-
-                // --- Load private key from PEM buffer via BIO ---
-                val keyBytes = SERVER_KEY.encodeToByteArray()
-                val keyBio = keyBytes.usePinned { pinned ->
-                    BIO_new_mem_buf(pinned.addressOf(0), keyBytes.size)
-                }
-                check(keyBio != null) { "BIO_new_mem_buf(key) failed" }
-                val pkey = PEM_read_bio_PrivateKey(keyBio, null, null, null)
-                check(pkey != null) { "PEM_read_bio_PrivateKey failed: ${keel_openssl_err_string()?.toKString()}" }
-                val keyRet = SSL_CTX_use_PrivateKey(ctx, pkey)
-                check(keyRet == 1) { "SSL_CTX_use_PrivateKey failed: ${keel_openssl_err_string()?.toKString()}" }
-                EVP_PKEY_free(pkey)
-                BIO_free(keyBio)
+                val ctx = newServerContext()
 
                 // --- Create server socket (port 0 = OS assigns ephemeral port) ---
                 val serverFd = keel_openssl_create_server(0)
@@ -119,20 +88,7 @@ class OpenSslEchoTest {
                 check(port > 0) { "failed to get assigned port" }
                 setNonBlocking(serverFd)
 
-                // --- Start curl client in background ---
-                val pid = platform.posix.fork()
-                if (pid == 0) {
-                    platform.posix.usleep(300_000u)
-                    platform.posix.execl(
-                        "/usr/bin/curl",
-                        "curl",
-                        "-k",
-                        "-s",
-                        "https://localhost:$port/hello",
-                        null,
-                    )
-                    platform.posix._exit(1)
-                }
+                val pid = forkCurl(port)
 
                 // --- Accept client (deadline-aware) ---
                 val clientFd = acceptWithDeadline(serverFd, deadline)
@@ -180,6 +136,70 @@ class OpenSslEchoTest {
                 Unit
             }
         }
+    }
+
+    /**
+     * Builds a server `SSL_CTX` carrying [SERVER_CERT] and [SERVER_KEY].
+     *
+     * The caller owns the returned context and must `SSL_CTX_free` it. Each PEM is
+     * loaded through a memory BIO, which is freed here along with the parsed X509 and
+     * EVP_PKEY — those are copied into the context by the `use_*` calls.
+     */
+    private fun newServerContext(): CPointer<SSL_CTX> {
+        OPENSSL_init_ssl(0u, null)
+
+        val method = TLS_server_method()
+        val ctx = SSL_CTX_new(method)
+        check(ctx != null) { "SSL_CTX_new failed: ${keel_openssl_err_string()?.toKString()}" }
+
+        val certBytes = SERVER_CERT.encodeToByteArray()
+        val certBio = certBytes.usePinned { pinned ->
+            BIO_new_mem_buf(pinned.addressOf(0), certBytes.size)
+        }
+        check(certBio != null) { "BIO_new_mem_buf(cert) failed" }
+        val x509 = PEM_read_bio_X509(certBio, null, null, null)
+        check(x509 != null) { "PEM_read_bio_X509 failed: ${keel_openssl_err_string()?.toKString()}" }
+        val certRet = SSL_CTX_use_certificate(ctx, x509)
+        check(certRet == 1) { "SSL_CTX_use_certificate failed: ${keel_openssl_err_string()?.toKString()}" }
+        X509_free(x509)
+        BIO_free(certBio)
+
+        val keyBytes = SERVER_KEY.encodeToByteArray()
+        val keyBio = keyBytes.usePinned { pinned ->
+            BIO_new_mem_buf(pinned.addressOf(0), keyBytes.size)
+        }
+        check(keyBio != null) { "BIO_new_mem_buf(key) failed" }
+        val pkey = PEM_read_bio_PrivateKey(keyBio, null, null, null)
+        check(pkey != null) { "PEM_read_bio_PrivateKey failed: ${keel_openssl_err_string()?.toKString()}" }
+        val keyRet = SSL_CTX_use_PrivateKey(ctx, pkey)
+        check(keyRet == 1) { "SSL_CTX_use_PrivateKey failed: ${keel_openssl_err_string()?.toKString()}" }
+        EVP_PKEY_free(pkey)
+        BIO_free(keyBio)
+
+        return ctx
+    }
+
+    /**
+     * Forks a curl that fetches `/hello` from [port] over TLS, and returns its pid.
+     *
+     * The sleep lets the parent reach `accept` first; the child never returns, so the
+     * `_exit` is only reached if `execl` itself fails.
+     */
+    private fun forkCurl(port: Int): Int {
+        val pid = platform.posix.fork()
+        if (pid == 0) {
+            platform.posix.usleep(CURL_START_DELAY_US)
+            platform.posix.execl(
+                "/usr/bin/curl",
+                "curl",
+                "-k",
+                "-s",
+                "https://localhost:$port/hello",
+                null,
+            )
+            platform.posix._exit(1)
+        }
+        return pid
     }
 
     /**
@@ -265,5 +285,8 @@ class OpenSslEchoTest {
     companion object {
         private val SERVER_CERT = TestCertificates.SERVER_CERT
         private val SERVER_KEY = TestCertificates.SERVER_KEY
+
+        /** Head start for the parent to reach `accept` before curl connects. */
+        private const val CURL_START_DELAY_US = 300_000u
     }
 }

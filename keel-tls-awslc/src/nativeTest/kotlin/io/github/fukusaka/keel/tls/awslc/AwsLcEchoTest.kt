@@ -7,6 +7,7 @@ import awslc.OPENSSL_init_ssl
 import awslc.PEM_read_bio_PrivateKey
 import awslc.PEM_read_bio_X509
 import awslc.SSL
+import awslc.SSL_CTX
 import awslc.SSL_CTX_free
 import awslc.SSL_CTX_new
 import awslc.SSL_CTX_use_PrivateKey
@@ -73,37 +74,7 @@ class AwsLcEchoTest {
         withTimeout(30.seconds) {
             val deadline = TimeSource.Monotonic.markNow() + 30.seconds
             memScoped {
-                // --- Init ---
-                OPENSSL_init_ssl(0u, null)
-
-                // --- Create SSL_CTX ---
-                val method = TLS_server_method()
-                val ctx = SSL_CTX_new(method)
-                check(ctx != null) { "SSL_CTX_new failed: ${keel_awslc_err_string()?.toKString()}" }
-
-                // --- Load certificate ---
-                val certBytes = SERVER_CERT.encodeToByteArray()
-                val certBio = certBytes.usePinned { pinned ->
-                    BIO_new_mem_buf(pinned.addressOf(0), certBytes.size.toLong())
-                }
-                check(certBio != null) { "BIO_new_mem_buf(cert) failed" }
-                val x509 = PEM_read_bio_X509(certBio, null, null, null)
-                check(x509 != null) { "PEM_read_bio_X509 failed: ${keel_awslc_err_string()?.toKString()}" }
-                SSL_CTX_use_certificate(ctx, x509)
-                X509_free(x509)
-                BIO_free(certBio)
-
-                // --- Load private key ---
-                val keyBytes = SERVER_KEY.encodeToByteArray()
-                val keyBio = keyBytes.usePinned { pinned ->
-                    BIO_new_mem_buf(pinned.addressOf(0), keyBytes.size.toLong())
-                }
-                check(keyBio != null) { "BIO_new_mem_buf(key) failed" }
-                val pkey = PEM_read_bio_PrivateKey(keyBio, null, null, null)
-                check(pkey != null) { "PEM_read_bio_PrivateKey failed: ${keel_awslc_err_string()?.toKString()}" }
-                SSL_CTX_use_PrivateKey(ctx, pkey)
-                EVP_PKEY_free(pkey)
-                BIO_free(keyBio)
+                val ctx = newServerContext()
 
                 // --- Server socket ---
                 val serverFd = keel_awslc_create_server(0)
@@ -112,20 +83,7 @@ class AwsLcEchoTest {
                 check(port > 0) { "failed to get assigned port" }
                 setNonBlocking(serverFd)
 
-                // --- curl client ---
-                val pid = platform.posix.fork()
-                if (pid == 0) {
-                    platform.posix.usleep(300_000u)
-                    platform.posix.execl(
-                        "/usr/bin/curl",
-                        "curl",
-                        "-k",
-                        "-s",
-                        "https://localhost:$port/hello",
-                        null,
-                    )
-                    platform.posix._exit(1)
-                }
+                val pid = forkCurl(port)
 
                 // --- Accept (deadline-aware) + handshake ---
                 val clientFd = acceptWithDeadline(serverFd, deadline)
@@ -170,6 +128,68 @@ class AwsLcEchoTest {
                 Unit
             }
         }
+    }
+
+    /**
+     * Builds a server `SSL_CTX` carrying [SERVER_CERT] and [SERVER_KEY].
+     *
+     * The caller owns the returned context and must `SSL_CTX_free` it. Each PEM is
+     * loaded through a memory BIO, which is freed here along with the parsed X509 and
+     * EVP_PKEY — those are copied into the context by the `use_*` calls.
+     */
+    private fun newServerContext(): CPointer<SSL_CTX> {
+        OPENSSL_init_ssl(0u, null)
+
+        val method = TLS_server_method()
+        val ctx = SSL_CTX_new(method)
+        check(ctx != null) { "SSL_CTX_new failed: ${keel_awslc_err_string()?.toKString()}" }
+
+        val certBytes = SERVER_CERT.encodeToByteArray()
+        val certBio = certBytes.usePinned { pinned ->
+            BIO_new_mem_buf(pinned.addressOf(0), certBytes.size.toLong())
+        }
+        check(certBio != null) { "BIO_new_mem_buf(cert) failed" }
+        val x509 = PEM_read_bio_X509(certBio, null, null, null)
+        check(x509 != null) { "PEM_read_bio_X509 failed: ${keel_awslc_err_string()?.toKString()}" }
+        SSL_CTX_use_certificate(ctx, x509)
+        X509_free(x509)
+        BIO_free(certBio)
+
+        val keyBytes = SERVER_KEY.encodeToByteArray()
+        val keyBio = keyBytes.usePinned { pinned ->
+            BIO_new_mem_buf(pinned.addressOf(0), keyBytes.size.toLong())
+        }
+        check(keyBio != null) { "BIO_new_mem_buf(key) failed" }
+        val pkey = PEM_read_bio_PrivateKey(keyBio, null, null, null)
+        check(pkey != null) { "PEM_read_bio_PrivateKey failed: ${keel_awslc_err_string()?.toKString()}" }
+        SSL_CTX_use_PrivateKey(ctx, pkey)
+        EVP_PKEY_free(pkey)
+        BIO_free(keyBio)
+
+        return ctx
+    }
+
+    /**
+     * Forks a curl that fetches `/hello` from [port] over TLS, and returns its pid.
+     *
+     * The sleep lets the parent reach `accept` first; the child never returns, so the
+     * `_exit` is only reached if `execl` itself fails.
+     */
+    private fun forkCurl(port: Int): Int {
+        val pid = platform.posix.fork()
+        if (pid == 0) {
+            platform.posix.usleep(CURL_START_DELAY_US)
+            platform.posix.execl(
+                "/usr/bin/curl",
+                "curl",
+                "-k",
+                "-s",
+                "https://localhost:$port/hello",
+                null,
+            )
+            platform.posix._exit(1)
+        }
+        return pid
     }
 
     /**
@@ -254,5 +274,8 @@ class AwsLcEchoTest {
     companion object {
         private val SERVER_CERT = TestCertificates.SERVER_CERT
         private val SERVER_KEY = TestCertificates.SERVER_KEY
+
+        /** Head start for the parent to reach `accept` before curl connects. */
+        private const val CURL_START_DELAY_US = 300_000u
     }
 }
