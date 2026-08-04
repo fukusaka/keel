@@ -28,8 +28,38 @@ import kotlinx.cinterop.value
  * only, no auto-generation of CQEs from submitted SQEs.
  *
  * The native `ring` argument is accepted to satisfy the interface but
- * ignored. The fake owns a native [Arena] for the scratch SQE; the test
- * must call [dispose] when finished.
+ * ignored.
+ *
+ * **Lifecycle.** The fake owns a native [Arena] for the scratch SQE, so an
+ * instance that is never [dispose]d leaks that arena for the run. Ten of the
+ * nineteen files that construct it used to miss the call, which is the shape
+ * to avoid rather than a rule to restate: nothing checks it. detekt cannot —
+ * this class is correct in isolation and the omission is in the callers, one
+ * file away.
+ *
+ * Every call site now constructs the fake inside a helper whose `finally`
+ * disposes it, alongside closing the EventLoop and buffer ring:
+ *
+ * ```
+ * private fun withTransport(fake: FakeIoUringRing = FakeIoUringRing(), …) {
+ *     …
+ *     try { block(fake, el, transport) } finally {
+ *         bufRing.close()
+ *         el.close()
+ *         fake.dispose()
+ *     }
+ * }
+ * ```
+ *
+ * Copy that shape rather than constructing one directly in a `@Test`: the
+ * two sites that did so are the two that had no `finally` to attach to.
+ *
+ * **There is no automated guard, and both obvious ones were tried.** A rule that
+ * resolves the arena's owner passes this class, correctly — the omission is in a
+ * caller. A test asserting a global constructed-minus-disposed balance passes
+ * too: `kotlin.test` gives Native no suite-level teardown, so such a test runs at
+ * an arbitrary point and sees only the leaks that happened before it. Removing a
+ * `dispose()` and running the suite left it green. The shape above is the guard.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class FakeIoUringRing : IoUringRing {
