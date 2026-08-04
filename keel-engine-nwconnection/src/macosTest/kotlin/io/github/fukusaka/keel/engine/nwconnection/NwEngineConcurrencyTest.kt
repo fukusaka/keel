@@ -165,10 +165,13 @@ class NwEngineConcurrencyTest {
         val ch = server.accept()
 
         val writeJob = launch {
-            // No release here, unlike the read test above: `write` takes ownership of
-            // the buffer and the transport releases it after `flush` completes or on
-            // teardown, so releasing it here would be a second release. The empty
-            // `finally` this replaces recorded that decision only by being empty.
+            // No release here, unlike the read test above: `write` takes ownership once
+            // it hands the buffer to the pipeline, and the transport releases it after
+            // `flush` completes or on teardown — releasing it here would be a second
+            // release. The transfer is not unconditional: `write` returns early without
+            // taking ownership if the buffer is empty or the channel is closed. Neither
+            // is reachable here, which writes 64 bytes to an open channel. The empty
+            // `finally` this replaces recorded the decision only by being empty.
             val buf = DefaultAllocator.allocate(64)
             buf.writerIndex = 64
             ch.write(buf)
