@@ -57,7 +57,7 @@ class NwReadDualPathTest {
                     payload.size.toUInt(),
                     fallbackBuf,
                     fallbackLen,
-                    /* is_complete = */ 0,
+                    is_complete = 0,
                     cb,
                     ctx,
                 )
@@ -85,7 +85,7 @@ class NwReadDualPathTest {
                         p1.addressOf(0), part1.size.toUInt(),
                         p2.addressOf(0), part2.size.toUInt(),
                         fallbackBuf, fallbackLen,
-                        /* is_complete = */ 0,
+                        is_complete = 0,
                         cb, ctx,
                     )
                 }
@@ -115,7 +115,7 @@ class NwReadDualPathTest {
                         p1.addressOf(0), part1.size.toUInt(),
                         p2.addressOf(0), part2.size.toUInt(),
                         fallbackBuf, fallbackLen,
-                        /* is_complete = */ 0,
+                        is_complete = 0,
                         cb, ctx,
                     )
                 }
@@ -144,7 +144,7 @@ class NwReadDualPathTest {
                     payload.size.toUInt(),
                     fb,
                     fbLen,
-                    /* is_complete = */ 1,
+                    is_complete = 1,
                     cb,
                     ctx,
                 )
@@ -162,7 +162,7 @@ class NwReadDualPathTest {
                     keel_nw_test_dispatch_concat(
                         pa.addressOf(0), a.size.toUInt(),
                         pb.addressOf(0), b.size.toUInt(),
-                        fb, fbLen, /* is_complete = */ 1, cb, ctx,
+                        fb, fbLen, is_complete = 1, cb, ctx,
                     )
                 }
             }
