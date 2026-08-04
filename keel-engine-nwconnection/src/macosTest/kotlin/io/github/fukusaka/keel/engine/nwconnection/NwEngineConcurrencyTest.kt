@@ -165,14 +165,15 @@ class NwEngineConcurrencyTest {
         val ch = server.accept()
 
         val writeJob = launch {
+            // No release here, unlike the read test above: `write` takes ownership of
+            // the buffer and the transport releases it after `flush` completes or on
+            // teardown, so releasing it here would be a second release. The empty
+            // `finally` this replaces recorded that decision only by being empty.
             val buf = DefaultAllocator.allocate(64)
-            try {
-                buf.writerIndex = 64
-                ch.write(buf)
-                // flush suspends on keel_nw_write_async callback
-                ch.flush()
-            } finally {
-            }
+            buf.writerIndex = 64
+            ch.write(buf)
+            // flush suspends on keel_nw_write_async callback
+            ch.flush()
         }
 
         delay(100)
