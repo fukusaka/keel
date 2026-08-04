@@ -1,7 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<SmellBaseline>
-  <ManuallySuppressedIssues/>
-  <CurrentIssues>
-    <ID>ComplexCondition:WebSocketEchoTest.kt$WebSocketEchoTest$full.size >= 4 &amp;&amp; full[full.size - 1] == 0xFF.toByte() &amp;&amp; full[full.size - 2] == 0xFF.toByte() &amp;&amp; full[full.size - 3] == 0x00.toByte() &amp;&amp; full[full.size - 4] == 0x00.toByte()</ID>
-  </CurrentIssues>
-</SmellBaseline>

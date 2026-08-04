@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<SmellBaseline>
-  <ManuallySuppressedIssues/>
-  <CurrentIssues>
-    <ID>Filename:NioStreamServerCloseThreadSafetyTest.kt$io.github.fukusaka.keel.engine.nio.NioStreamServerCloseThreadSafetyTest.kt</ID>
-    <ID>MatchingDeclarationName:NioStreamServerCloseThreadSafetyTest.kt$NioServerCloseThreadSafetyTest</ID>
-  </CurrentIssues>
-</SmellBaseline>

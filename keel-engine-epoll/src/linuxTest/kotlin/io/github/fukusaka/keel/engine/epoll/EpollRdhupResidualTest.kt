@@ -38,9 +38,6 @@ class EpollRdhupResidualTest {
 
     private val logger = NoopLoggerFactory.logger("EpollRdhupResidualTest")
 
-    /** What `registerCallback` arms for [Interest.READ]; the disarm must take all of it back. */
-    private val EPOLL_READ_ARMED = EPOLLIN or EPOLLRDHUP
-
     /** Declines to re-arm, exactly as the transport does with read disabled. */
     private class DecliningListener : FdReadyListener {
         var readyCount = 0
@@ -188,5 +185,10 @@ class EpollRdhupResidualTest {
                 "stop EPOLLERR / EPOLLHUP being reported, so a peer reset spins the loop on a fd " +
                 "whose one-shot callback is already consumed.",
         )
+    }
+
+    private companion object {
+        /** What `registerCallback` arms for [Interest.READ]; the disarm must take all of it back. */
+        private val EPOLL_READ_ARMED = EPOLLIN or EPOLLRDHUP
     }
 }
