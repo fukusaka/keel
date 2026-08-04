@@ -69,6 +69,7 @@ class IoUringTransportPeerFinSeamTest {
         } finally {
             bufRing.close()
             el.close()
+            fake.dispose()
         }
     }
 

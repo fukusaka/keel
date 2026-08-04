@@ -87,6 +87,7 @@ class IoUringStreamServerSeamTest {
         } finally {
             workerGroup.close()
             bossLoop.close()
+            fake.dispose()
         }
     }
 

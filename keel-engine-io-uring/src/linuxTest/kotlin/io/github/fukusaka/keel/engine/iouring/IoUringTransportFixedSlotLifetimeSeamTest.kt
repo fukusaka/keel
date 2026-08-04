@@ -64,6 +64,7 @@ class IoUringTransportFixedSlotLifetimeSeamTest {
             block(fake, fileOps, el, transport)
         } finally {
             el.close()
+            fake.dispose()
         }
     }
 
