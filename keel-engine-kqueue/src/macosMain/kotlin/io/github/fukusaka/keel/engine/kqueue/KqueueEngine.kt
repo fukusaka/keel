@@ -264,16 +264,20 @@ class KqueueEngine(
         val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
         val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
         val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        // Built before the check: the transport joins the loop when the channel
+        // attaches, so that this connection is in the registry only once there
+        // is something to deliver a stop notification to.
+        val channel = KqueuePipelinedChannel(transport, logger, address, null)
         if (!transport.joinedLoop) {
-            // The loop swept between this call's check at the top and the
-            // registration inside the constructor. Closing the transport rather
-            // than the descriptor: close() is idempotent and releases the fd
-            // itself, so nothing here can close a number the loop might still
-            // hold or that a later close would close twice.
+            // The loop swept between this call's check at the top and that join.
+            // Closing the transport rather than the descriptor: close() is
+            // idempotent and releases the fd itself, so nothing here can close a
+            // number the loop might still hold or that a later close would close
+            // twice. The channel is discarded unreturned.
             transport.close()
             error("connect(address) failed: the EventLoop stopped during connect")
         }
-        return KqueuePipelinedChannel(transport, logger, address, null)
+        return channel
     }
 
     private suspend fun connectInet(
@@ -323,16 +327,18 @@ class KqueueEngine(
         val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
         val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
         val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        // Built before the check; see the sibling connect path.
+        val channel = KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
         if (!transport.joinedLoop) {
-            // The loop swept between this call's check at the top and the
-            // registration inside the constructor. Closing the transport rather
-            // than the descriptor: close() is idempotent and releases the fd
-            // itself, so nothing here can close a number the loop might still
-            // hold or that a later close would close twice.
+            // The loop swept between this call's check at the top and that join.
+            // Closing the transport rather than the descriptor: close() is
+            // idempotent and releases the fd itself, so nothing here can close a
+            // number the loop might still hold or that a later close would close
+            // twice. The channel is discarded unreturned.
             transport.close()
             error("connect(remoteAddr) failed: the EventLoop stopped during connect")
         }
-        return KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
+        return channel
     }
 
     /**

@@ -1474,16 +1474,15 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * Refused with a WARN once the loop has swept — the same shape as
      * [registerCallback]'s refusal, and for the same reason: nothing arrives
      * after the sweep that the sweep will ever read. Refusal rather than a
-     * throw, deliberately: every transport constructor calls this, and none of
-     * the construction sites guards the constructor with a close of the fd it
-     * just accepted or connected, so a throw here would leak that fd mid-unwind
-     * at eight call sites. What the refusal keeps is the report, not the
-     * descriptor: nothing after the sweep guarantees the refused channel's
-     * teardown ever runs — a `close()` may still be picked up by the sweep's
-     * own final drain, or land after it and never execute — so the fd can stay
-     * open until the process exits. Freeing it deterministically, like making
-     * a stopped engine's `connect()` fail fast, is fd-ownership work at those
-     * sites, not a flag here.
+     * throw, deliberately: a throw would unwind through the caller that had
+     * just accepted or connected the descriptor, leaking it. The construction
+     * sites act on the refusal instead, releasing the fd themselves — which is
+     * why [joinLoop], the form the transports use, reports it rather than
+     * hiding it.
+     *
+     * The POSIX transports do not call this directly; they call [joinLoop],
+     * which takes the participant slot and the read callback in one acquisition
+     * of the lock. Direct callers are the tests that need a bare participant.
      *
      * **Thread safety**: safe from any thread; takes the registration lock.
      */

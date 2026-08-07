@@ -76,6 +76,38 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         assertEquals(0, tracker.outstandingCount, "the stranded pending write must be released")
     }
 
+    @Test
+    fun `a transport whose channel attaches after the sweep is refused rather than silently unheard`() = runBlocking {
+        // The construction window: the transport object exists while the loop is
+        // still running, and the callbacks it would be told through are wired a
+        // moment later. Joining in the constructor put it in the registry for
+        // that whole gap, so a sweep landing inside delivered the one and only
+        // stop notification into a null `onReadClosed` and the connection was
+        // never told -- while its construction site saw a joined transport and
+        // handed the caller a channel that would stay silent.
+        //
+        // Joining when the channel attaches turns that into a refusal the site
+        // can act on. This drives the window deliberately: build, sweep, attach.
+        eventLoop.start()
+        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+        eventLoop.close()
+
+        transport.onChannelAttached()
+
+        assertFalse(
+            transport.joinedLoop,
+            "a sweep between construction and attach must refuse the join, not swallow the notification",
+        )
+
+        transport.close()
+
+        val closedFd = fd
+        fd = -1 // the transport closed it; tearDown must not close the number again
+        val probe = dup(closedFd)
+        if (probe >= 0) close(probe)
+        assertEquals(EBADF, errno, "closing the refused transport must release its fd")
+    }
+
     // --- entry points a stopped loop used to swallow ---
 
     @Test
@@ -92,6 +124,9 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
         val transport = EpollIoTransport(fd, loop, tracker, fake)
+        // Joins the loop, as a real channel does: the stop notification goes
+        // to participants, and a transport joins when its channel attaches.
+        transport.onChannelAttached()
 
         // Buffered and stalled, then half-closed -- all on the loop, so the FIN
         // is genuinely deferred rather than refused.
@@ -408,6 +443,9 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         eventLoop.start()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
         val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        // Joins the loop, as a real channel does: the stop notification goes
+        // to participants, and a transport joins when its channel attaches.
+        transport.onChannelAttached()
         val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
         transport.write(buf)
         transport.flush()
