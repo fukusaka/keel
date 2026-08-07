@@ -25,6 +25,7 @@ import platform.posix.EMFILE
 import platform.posix.ENOSPC
 import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
+import platform.posix.close
 import platform.posix.fcntl
 import platform.posix.socket
 import platform.posix.usleep
@@ -118,6 +119,38 @@ class EpollEventLoopSeamTest {
         assertEquals(1, fake.ctlCalls.size)
         assertEquals(FakeEpollSyscallOps.CtlOp.ADD, fake.ctlCalls[0].op)
         assertEquals(1001, fake.ctlCalls[0].fd)
+    }
+
+    @Test
+    fun `a failed arm releases the connect socket the waiter was given`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD (wakeupFd) succeeds
+            scriptAddResult(ENOSPC) // the arm driven below fails
+        }
+        fake.liveMode = true
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        el.start()
+        // A real descriptor, because whether it was released is the whole
+        // assertion. `connect()` holds no other handle on it: the transport
+        // that would own it is built after this wait returns, so an fd left
+        // open here is unreachable for the life of the process.
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        assertTrue(fd >= 0, "could not open a socket to wait on")
+        try {
+            assertFailsWith<IllegalStateException> {
+                runBlocking { withTimeout(DRAIN_BUDGET) { el.awaitWriteReady(fd, logger) } }
+            }
+            assertEquals(
+                -1,
+                fcntl(fd, F_GETFD),
+                "a waiter resumed with an exception must still release the fd it owned",
+            )
+        } finally {
+            if (fcntl(fd, F_GETFD) != -1) close(fd)
+            el.close()
+        }
     }
 
     // --- wakeup branch ---
