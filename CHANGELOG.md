@@ -80,6 +80,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll`, `engine-kqueue`: join the EventLoop when the channel attaches rather than in the
+  transport constructor, so a loop stopping in between cannot spend the connection's one stop
+  notification on callbacks that are not wired yet (#1037)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: release the connect socket when the wait for
   write-readiness fails, not only when it is cancelled (#1036)
 - `native-posix`, `engine-epoll`: drop the loop's recorded event mask for a released connect

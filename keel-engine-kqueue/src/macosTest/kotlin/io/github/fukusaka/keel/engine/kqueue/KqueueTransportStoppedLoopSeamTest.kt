@@ -79,20 +79,26 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
     // --- registration refused by a swept loop ---
 
     @Test
-    fun `a transport built after the loop swept reports it did not join and closing it releases the fd`() = runBlocking {
-        // The construction sites own the descriptor when the loop refuses to
-        // watch it, and joinedLoop is the only thing that tells them so. Before
-        // the pair became atomic this could also come out half-registered — a
-        // participant with no callback — and the site would close an fd the
-        // sweep was still holding a reference to.
+    fun `a transport whose channel attaches after the sweep is refused rather than silently unheard`() = runBlocking {
+        // The construction window: the transport object exists while the loop is
+        // still running, and the callbacks it would be told through are wired a
+        // moment later. Joining in the constructor put it in the registry for
+        // that whole gap, so a sweep landing inside delivered the one and only
+        // stop notification into a null `onReadClosed` and the connection was
+        // never told -- while its construction site saw a joined transport and
+        // handed the caller a channel that would stay silent.
+        //
+        // Joining when the channel attaches turns that into a refusal the site
+        // can act on. This drives the window deliberately: build, sweep, attach.
         eventLoop.start()
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
         eventLoop.close()
 
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+        transport.onChannelAttached()
 
         assertFalse(
             transport.joinedLoop,
-            "a loop that has swept holds no ledger, so the constructor's registration must be refused",
+            "a sweep between construction and attach must refuse the join, not swallow the notification",
         )
 
         transport.close()
@@ -120,6 +126,9 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
         val transport = KqueueIoTransport(fd, loop, tracker, fake)
+        // Joins the loop, as a real channel does: the stop notification goes
+        // to participants, and a transport joins when its channel attaches.
+        transport.onChannelAttached()
 
         // Buffered and stalled, then half-closed -- all on the loop, so the FIN
         // is genuinely deferred rather than refused.
@@ -159,6 +168,9 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
         val transport = KqueueIoTransport(fd, loop, tracker, fake)
+        // Joins the loop, as a real channel does -- this test turns on the
+        // transport being in the registry alongside the participant below.
+        transport.onChannelAttached()
 
         val buffered = CompletableDeferred<Unit>()
         loop.dispatch(
@@ -337,6 +349,9 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
         val transport = KqueueIoTransport(fd, loop, tracker, fake)
+        // Joins the loop, as a real channel does -- this test turns on the
+        // transport being in the registry alongside the participant below.
+        transport.onChannelAttached()
 
         val buffered = CompletableDeferred<Unit>()
         loop.dispatch(
@@ -349,9 +364,11 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         )
         withTimeout(SEAM_TIMEOUT_MS) { buffered.await() }
 
-        // Added after the transport, which registers itself in its constructor,
-        // so the sweep reaches the transport first -- while no deferral exists
-        // yet. That order is what leaves this one for the half-close path.
+        // Added after the transport joined (its channel attaches above), so the
+        // sweep reaches the transport first -- while no deferral exists yet.
+        // That order is what leaves this one for the half-close path, and it is
+        // the whole point of the test: without the transport in the registry it
+        // would pass through the half-close path unconditionally.
         loop.addParticipant(
             object : LoopParticipant {
                 override fun onLoopStopped() {
@@ -436,6 +453,9 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         eventLoop.start()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
         val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        // Joins the loop, as a real channel does: the stop notification goes
+        // to participants, and a transport joins when its channel attaches.
+        transport.onChannelAttached()
         val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
         transport.write(buf)
         transport.flush()

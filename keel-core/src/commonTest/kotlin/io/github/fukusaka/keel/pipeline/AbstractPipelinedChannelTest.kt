@@ -39,6 +39,61 @@ internal class AbstractPipelinedChannelTest {
     private fun makeChannel(transport: CountingTransport = CountingTransport()) =
         Pair(transport, object : AbstractPipelinedChannel(transport, logger) {})
 
+    /**
+     * Records what was already wired the **first** time the attach hook ran.
+     *
+     * First, not last: a hook called once too early and again in the right
+     * place would look correct to a recorder that keeps overwriting, and the
+     * engines act on the first call — a transport that joined its loop on that
+     * call is already in the registry, whatever happens afterwards. [attachCount]
+     * pins the arity for the same reason.
+     */
+    private class AttachRecordingTransport : TestIoTransport() {
+        var attachCount: Int = 0
+        var readWiredAtAttach: Boolean? = null
+        var readClosedWiredAtAttach: Boolean? = null
+        var writabilityWiredAtAttach: Boolean? = null
+
+        override fun onChannelAttached() {
+            attachCount++
+            if (attachCount > 1) return
+            readWiredAtAttach = onRead != null
+            readClosedWiredAtAttach = onReadClosed != null
+            writabilityWiredAtAttach = onWritabilityChanged != null
+        }
+    }
+
+    @Test
+    fun `the attach hook runs only once every callback is wired`() {
+        // Engines act on this hook: the POSIX ones join their loop's participant
+        // registry from it, which is what decides whether they are told the loop
+        // stopped -- and that notification is delivered once, straight into
+        // `onReadClosed`. Called before the wiring, it would be spent on a null
+        // and the connection would never learn, while its construction site saw
+        // a registered transport and handed the caller a channel that would stay
+        // silent for good. The same hook is where two engines arm their read
+        // primitive, and a byte arriving through a null `onRead` is dropped.
+        //
+        // Nothing else pins the order: it is the position of one statement at
+        // the end of this class's `init`, and moving it up is the kind of edit
+        // that looks like tidying.
+        val transport = AttachRecordingTransport()
+        object : AbstractPipelinedChannel(transport, logger) {}
+
+        assertEquals(1, transport.attachCount, "the attach hook must run exactly once")
+        assertEquals(true, transport.readWiredAtAttach, "onRead must be wired before the attach hook")
+        assertEquals(
+            true,
+            transport.readClosedWiredAtAttach,
+            "onReadClosed must be wired before the attach hook",
+        )
+        assertEquals(
+            true,
+            transport.writabilityWiredAtAttach,
+            "onWritabilityChanged must be wired before the attach hook",
+        )
+    }
+
     // --- Peer-FIN close: Pipeline mode only ---
 
     @Test

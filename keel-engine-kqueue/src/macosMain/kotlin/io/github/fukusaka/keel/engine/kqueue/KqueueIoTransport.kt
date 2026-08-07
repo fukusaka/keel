@@ -124,19 +124,25 @@ internal class KqueueIoTransport(
      * same: it is over.
      *
      * **Reached whether or not this transport holds a registration.** The stop
-     * notification is keyed on the participant registry this transport joins in
-     * its `init`, not on the readiness ledger — so a paused connection whose
-     * one-shot entry was consumed and whose back-pressured re-arm declined (the
-     * `!readEnabled` return in `onReadable`, on a *later* readiness event) is
-     * told all the same, and a transport registered on both interests is told
-     * once, not once per entry. An earlier revision keyed the notification on
-     * the ledger and walked straight past exactly that paused connection.
+     * notification is keyed on the participant registry this transport joins
+     * when its channel attaches, not on the readiness ledger — so a paused
+     * connection whose one-shot entry was consumed and whose back-pressured
+     * re-arm declined (the `!readEnabled` return in `onReadable`, on a *later*
+     * readiness event) is told all the same, and a transport registered on both
+     * interests is told once, not once per entry. An earlier revision keyed the
+     * notification on the ledger and walked straight past exactly that paused
+     * connection.
      *
-     * One gap remains at the front: the registry knows this transport from its
-     * constructor, but the channel wires [onReadClosed] only after the
-     * constructor returns, so a sweep landing inside that construction window
-     * is delivered here and forwarded to nobody — and the wiring write carries
-     * no happens-before edge to the sweep's read of it.
+     * **Never reached before there is somewhere to forward it.** Joining at
+     * attach rather than in the constructor is what makes that true: a sweep
+     * landing in the construction window used to spend this transport's one
+     * notification on a null [onReadClosed], leaving the connection silent for
+     * good, and the wiring write carried no happens-before edge to the sweep's
+     * read of it either. Both follow from the join now taking the registration
+     * lock after the wiring, so such a sweep refuses the join instead. The
+     * construction site acts on that: the `connect` and `accept` paths raise,
+     * and the worker-accept paths release the descriptor and drop the
+     * connection without one to raise to.
      */
     override fun onLoopStopped() {
         if (!opened) return
@@ -208,9 +214,10 @@ internal class KqueueIoTransport(
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            // Read is armed at construction for peer-close detection (see
-            // [init]). The setter only needs to re-arm if the dispatch path
-            // stopped re-registering due to back-pressure (data arrived while
+            // Read is armed by [onChannelAttached] for peer-close detection,
+            // so it is already armed before any caller can reach this setter.
+            // The setter only needs to re-arm if the dispatch path stopped
+            // re-registering due to back-pressure (data arrived while
             // readEnabled was false).
             if (value && opened) {
                 // Connection is now waiting to read → the read-side idle timeout
@@ -228,19 +235,30 @@ internal class KqueueIoTransport(
     /**
      * Whether this transport is registered with its EventLoop.
      *
-     * `false` means the loop had already swept when the constructor ran, so it
-     * holds neither the participant slot nor the read callback — no readiness
-     * will arrive and no stop notification will. **The construction site owns
-     * [fd] in that case**, as `joinLoop`'s KDoc says, and releases it by closing
-     * this transport: [close] is idempotent and does the release itself, which
-     * closing the descriptor behind the object's back would not be.
+     * `false` means the loop had already swept by the time the channel attached,
+     * so this transport holds neither the participant slot nor the read callback
+     * — no readiness will arrive and no stop notification will. **The
+     * construction site owns [fd] in that case**, as `joinLoop`'s KDoc says, and
+     * releases it by closing this transport: [close] is idempotent and does the
+     * release itself, which closing the descriptor behind the object's back
+     * would not be.
+     *
+     * Only meaningful once [onChannelAttached] has run — before that it is
+     * `false` because nothing has been attempted, not because anything was
+     * refused. Construction sites read it after building the channel.
+     *
+     * Plain rather than `@Volatile` because it is confined to one thread: the
+     * only write is [onChannelAttached], which the channel constructor makes,
+     * and the only reads are the construction sites on that same thread,
+     * after that constructor returns. The loop thread never touches it.
      *
      * `true` says the ledgers were open, not that the loop will run: a loop that
      * was built and closed without ever entering its poll never sweeps, so it
      * never refuses either, and work handed to it waits forever. That is a
      * separate hole in the same close path.
      */
-    internal val joinedLoop: Boolean
+    internal var joinedLoop: Boolean = false
+        private set
 
     init {
         // Arm EVFILT_READ at construction so peer-FIN is surfaced via
@@ -262,12 +280,36 @@ internal class KqueueIoTransport(
         // it only once it reads. Closing that gap needs a close-only interest,
         // which EVFILT_READ cannot express: it wakes on data too, so leaving it
         // armed under back-pressure is a busy loop.
-        // Joined before the first arm, so a stopping loop finds this transport
-        // from the moment it can hold a registration -- and after it no longer
-        // holds one, which the ledger-keyed notification missed for a paused
-        // connection. Found is not yet heard: the close bridge is wired only
-        // after this constructor returns (see onLoopStopped's KDoc).
-        @Suppress("LeakingThis")
+        // Joined and armed by [onChannelAttached], not here: the registry
+        // decides who is told when the loop stops, and until the channel has
+        // wired the callbacks there is nobody to tell.
+    }
+
+    /**
+     * Joins the loop and arms READ, now that the channel has wired every
+     * callback.
+     *
+     * Both belong here rather than in the constructor. Being in the registry is
+     * what makes a stop notification arrive, and a transport that is in it
+     * before its channel wired [onReadClosed] is told into a null — once,
+     * because the notification is once per participant, so that connection is
+     * never told at all. Joining afterwards also supplies the edge that makes
+     * the wiring visible to the sweep: those writes precede this call, this
+     * call takes the loop's registration lock, and the sweep reads the registry
+     * under that same lock.
+     *
+     * Arming has the same requirement. This engine arms eagerly rather than on
+     * the first `readEnabled = true`, so that a peer FIN is surfaced without the
+     * caller ever enabling reads — which means the arm can fire before anything
+     * asked it to, and a byte or an EOF reaching a null callback is dropped.
+     * Eager is still the right choice; it just has to start here.
+     *
+     * A sweep landing before this call now refuses the join rather than
+     * delivering into a null, which the construction site sees as
+     * [joinedLoop] `== false` and reports.
+     */
+    override fun onChannelAttached() {
+        if (joinedLoop) return
         joinedLoop = eventLoop.joinLoop(this, fd, Interest.READ, this)
     }
 
