@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.StreamServer
+import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.server.AcceptBackoff
 import io.github.fukusaka.keel.server.TlsServerConfig
@@ -212,7 +213,12 @@ public class KeelApplicationEngine(
      * reconstructing its own [KtorLoggerFactory].
      */
     public val logger: io.github.fukusaka.keel.logging.Logger =
-        KtorLoggerFactory(environment.log).logger("KeelApplicationEngine")
+        // Guarded like the engines guard the factory they are configured with:
+        // this is Ktor's logger, so a statement made through it is a call into
+        // the application's logging setup. Handlers use it to report failures
+        // they have already caught, and a throw there would abandon whatever
+        // the catch was protecting.
+        KtorLoggerFactory(environment.log).guarded().logger("KeelApplicationEngine")
     private val startupJob = CompletableDeferred<Unit>()
     private val stopRequest: CompletableJob = Job()
     private var serverJob: Job = Job()
