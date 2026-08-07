@@ -112,8 +112,15 @@ internal class KqueueStreamServer(
                         ito,
                     )
                     if (!transport.joinedLoop) {
+                        // Same cause as the null-registration branch below, so the
+                        // same exception: AcceptLoop rethrows only
+                        // CancellationException and otherwise logs and retries with
+                        // backoff, and `_active` is still true here because the
+                        // server was never closed — the loop stopped under it.
                         transport.close()
-                        error("accept() failed: the EventLoop stopped during accept")
+                        throw CancellationException(
+                            "accept unavailable: the EventLoop stopped while accepting",
+                        )
                     }
                     val channel = KqueuePipelinedChannel(
                         transport,
