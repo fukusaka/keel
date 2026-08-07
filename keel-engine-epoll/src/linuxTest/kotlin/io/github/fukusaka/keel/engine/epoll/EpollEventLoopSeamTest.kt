@@ -9,6 +9,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -25,7 +26,6 @@ import platform.posix.EMFILE
 import platform.posix.ENOSPC
 import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
-import platform.posix.close
 import platform.posix.fcntl
 import platform.posix.socket
 import platform.posix.usleep
@@ -121,6 +121,8 @@ class EpollEventLoopSeamTest {
         assertEquals(1001, fake.ctlCalls[0].fd)
     }
 
+    // --- register() failure paths ---
+
     @Test
     fun `a failed arm releases the connect socket the waiter was given`() {
         val fake = FakeEpollSyscallOps().apply {
@@ -148,7 +150,62 @@ class EpollEventLoopSeamTest {
                 "a waiter resumed with an exception must still release the fd it owned",
             )
         } finally {
-            if (fcntl(fd, F_GETFD) != -1) close(fd)
+            // No close here on purpose: if the assertion above failed, the fd
+            // is open and leaks one descriptor in a test process that is about
+            // to report a failure. Closing it would mean re-testing the number
+            // first, and acting on that answer is the recycling hazard this
+            // whole change is about.
+            el.close()
+        }
+    }
+
+    @Test
+    fun `releasing a cancelled connect socket lets the same fd number be armed again`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD (wakeupFd)
+            scriptAddResult(0) // the connect wait's arm succeeds
+            scriptAddResult(0) // the re-arm this test is about
+        }
+        fake.liveMode = true
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        el.start()
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        assertTrue(fd >= 0, "could not open a socket to wait on")
+        // The fake publishes its counter only when the watched fd is the one
+        // being armed, but the value it publishes is the total number of calls
+        // — so the wakeup fd's ADD at init is included in the figures below.
+        fake.watchedFd = fd
+        try {
+            runBlocking {
+                withTimeout(DRAIN_BUDGET) {
+                    val waiter = launch { el.awaitWriteReady(fd, logger) }
+                    // Let it register and hand the arm to the loop before this
+                    // thread blocks polling — they share the runBlocking
+                    // dispatcher, so blocking first would starve the launch.
+                    yield()
+                    // Init's ADD plus this arm. Once it lands, the loop's
+                    // mask for fd says EPOLLOUT.
+                    awaitCtlCalls(fake, expected = 2)
+                    waiter.cancelAndJoin()
+                }
+            }
+            // The handler closed fd, so the kernel may hand this number to the
+            // next socket. Arming that number for WRITE has to reach epoll_ctl:
+            // if the loop still believes EPOLLOUT is set, addOrModifyEpoll sees
+            // no change and skips the syscall, and the new socket's waiter
+            // parks with nothing watching it.
+            el.registerCallback(fd = fd, interest = Interest.WRITE, listener = NoOpListener)
+            awaitCtlCalls(fake, expected = 3)
+            val reArm = fake.ctlCalls.last()
+            assertEquals(
+                FakeEpollSyscallOps.CtlOp.ADD,
+                reArm.op,
+                "the re-arm must be an ADD, not a skipped call: ${fake.ctlCalls}",
+            )
+            assertEquals(fd, reArm.fd)
+        } finally {
             el.close()
         }
     }

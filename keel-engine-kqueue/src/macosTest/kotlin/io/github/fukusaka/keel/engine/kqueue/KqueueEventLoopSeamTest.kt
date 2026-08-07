@@ -23,7 +23,6 @@ import platform.posix.ENFILE
 import platform.posix.ENOMEM
 import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
-import platform.posix.close
 import platform.posix.fcntl
 import platform.posix.socket
 import kotlin.coroutines.EmptyCoroutineContext
@@ -124,12 +123,17 @@ class KqueueEventLoopSeamTest {
         fake.liveMode = true
         val el = KqueueEventLoop(logger, syscallOps = fake)
         el.start()
+        // A real descriptor: the failure path closes the fd it was given, so a
+        // fabricated number would be a close(2) on whatever this process
+        // happens to have open at that number.
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        assertTrue(fd >= 0, "could not open a socket to wait on")
         try {
             val ex = assertFailsWith<IllegalStateException> {
-                runBlocking { withTimeout(15.seconds) { el.awaitWriteReady(fd = 5000, logger = logger) } }
+                runBlocking { withTimeout(15.seconds) { el.awaitWriteReady(fd, logger = logger) } }
             }
             assertTrue(ex.message!!.contains("kevent"))
-            assertTrue(ex.message!!.contains("5000"))
+            assertTrue(ex.message!!.contains("$fd"))
         } finally {
             el.close()
         }
@@ -162,7 +166,11 @@ class KqueueEventLoopSeamTest {
                 "a waiter resumed with an exception must still release the fd it owned",
             )
         } finally {
-            if (fcntl(fd, F_GETFD) != -1) close(fd)
+            // No close here on purpose: if the assertion above failed, the fd
+            // is open and leaks one descriptor in a test process that is about
+            // to report a failure. Closing it would mean re-testing the number
+            // first, and acting on that answer is the recycling hazard this
+            // whole change is about.
             el.close()
         }
     }

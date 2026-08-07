@@ -32,9 +32,14 @@ import io.github.fukusaka.keel.logging.Logger
  * ## Ownership contract
  *
  * The implementation owns [fd] while it waits. Any end other than
- * readiness — cancellation *or* failure — MUST unregister the fd's
- * WRITE interest from kqueue and close the fd via
+ * readiness — cancellation *or* failure — MUST drop the waiter and
+ * close the fd via
  * [io.github.fukusaka.keel.native.posix.closeFdSafely].
+ *
+ * No explicit `EV_DELETE` is owed: a knote ends with the descriptor
+ * it was set on, and kqueue keeps nothing in user space that could
+ * outlive it. epoll's counterpart does owe one more step for exactly
+ * that reason, so the two contracts are not identical here.
  *
  * Naming only cancellation, as this contract once did, left the
  * reachable half out: `kevent(EV_ADD)` failing resumes the waiter

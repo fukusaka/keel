@@ -35,10 +35,15 @@ import io.github.fukusaka.keel.logging.Logger
  * ## Ownership contract
  *
  * The implementation owns [fd] while it waits. Any end other than
- * readiness — cancellation *or* failure — MUST unregister the fd
- * from epoll interest and close it (via
+ * readiness — cancellation *or* failure — MUST drop the waiter, drop
+ * whatever the loop records about the fd, and close it (via
  * [io.github.fukusaka.keel.native.posix.closeFdSafely]). Both
  * production and fake impls are required to honour this.
+ *
+ * Closing is what takes the fd out of the kernel's interest list, so
+ * no `epoll_ctl(DEL)` is owed. What *is* owed is the loop's own
+ * user-space mask for the fd: left behind, it makes the next socket
+ * handed that number look already-armed, and its arm is skipped.
  *
  * Naming only cancellation, as this contract once did, left the
  * reachable half out: `epoll_ctl(EPOLL_CTL_ADD)` failing resumes the

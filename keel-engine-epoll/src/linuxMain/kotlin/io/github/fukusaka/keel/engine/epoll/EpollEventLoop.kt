@@ -341,6 +341,12 @@ internal class EpollEventLoop(
         }
     }
 
+    /**
+     * epoll keeps the mask in [fdEvents], so it has one to forget; the base
+     * class's default does nothing because kqueue does not.
+     */
+    override fun forgetInterests(fd: Int) = cleanupFd(fd)
+
     // --- Wakeup ---
 
     /**

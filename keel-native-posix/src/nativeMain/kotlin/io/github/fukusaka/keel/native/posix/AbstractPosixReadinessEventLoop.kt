@@ -393,6 +393,27 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     protected abstract fun removeInterest(fd: Int, interest: Interest)
 
     /**
+     * Drops whatever this loop records about [fd]'s interests, for a caller that
+     * is about to close it. No syscall: closing a descriptor takes it out of the
+     * kernel's interest list on its own, and issuing a disarm from a thread that
+     * is not the loop's would reorder against the loop's own arms.
+     *
+     * Distinct from [removeInterest], which takes one interest back from a
+     * descriptor that goes on living. This is the whole record, and only because
+     * the descriptor is ending.
+     *
+     * Default is nothing, which is right for an engine that keeps no such
+     * record: kqueue's filters live in the kernel and end with the descriptor.
+     * epoll has to mirror the mask in user space to compute `EPOLL_CTL_MOD`, and
+     * a mirror outliving its descriptor is worse than no mirror — the next
+     * socket to be handed that number looks already-armed, so its arm is skipped
+     * and its waiter parks with nothing watching it.
+     */
+    protected open fun forgetInterests(fd: Int) {
+        // Nothing to forget by default; see the KDoc.
+    }
+
+    /**
      * Arms [fd] + [interest] for the pipeline path, on the loop thread.
      *
      * The callback counterpart of [submitArm]: same thread, same one differing
@@ -781,6 +802,16 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * land where nothing pops it, and the check costs a lock on a path taken
      * once per failed connect.
      *
+     * **[forgetInterests] before the close, and it is not the same clean-up as
+     * [unregister].** That one drops this waiter from the ledger of coroutines
+     * to resume; this one drops whatever the loop records about the descriptor
+     * itself. On the cancellation path the arm had already succeeded, so a loop
+     * that keeps such a record is left holding one for a number the kernel is
+     * free to hand to the next socket — and the loop would then skip the arming
+     * syscall for that new socket, believing the interest already set, leaving
+     * its waiter parked with nothing watching it. Every other site that closes
+     * an fd this loop armed does the same thing first.
+     *
      * The counter and the captured handle are two allocations per in-progress
      * connect — not a hot path (at most once per outbound connection, and only
      * when the connect did not complete immediately), and nothing here runs per
@@ -795,12 +826,18 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
                 reg = own
                 cont.invokeOnCancellation {
                     unregister(own)
-                    if (released.compareAndSet(0, 1)) closeFdSafely(fd, logger, "connect cancellation")
+                    if (released.compareAndSet(0, 1)) {
+                        forgetInterests(fd)
+                        closeFdSafely(fd, logger, "connect cancellation")
+                    }
                 }
             }
         } catch (t: Throwable) {
             reg?.let { unregister(it) }
-            if (released.compareAndSet(0, 1)) closeFdSafely(fd, logger, "connect wait failed")
+            if (released.compareAndSet(0, 1)) {
+                forgetInterests(fd)
+                closeFdSafely(fd, logger, "connect wait failed")
+            }
             throw t
         }
     }
@@ -1019,9 +1056,13 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      *
      * **Cancels rather than resuming with the failure.** Only a cancelled
      * continuation runs its `invokeOnCancellation` handler; a continuation
-     * resumed with an exception does not. On the connect path that handler is
-     * what closes the socket, so resuming here would end the wait and leak the
-     * descriptor. Measured on this target rather than assumed.
+     * resumed with an exception does not. Measured on this target rather than
+     * assumed. That asymmetry used to be the whole reason for the choice — the
+     * connect path's handler was the only thing closing the socket, so resuming
+     * here leaked it. [awaitWritableOwningFd] now releases on both endings, so
+     * that consequence is gone and this stands on the reason below instead. The
+     * asymmetry itself is unchanged, and a handler is still the only thing a
+     * caller can hang clean-up on without wrapping the wait.
      *
      * **And cancels with a `CancellationException`,** the same shape [cancelAll]
      * hands a waiter when its server closes. A cause that is *not* one completes
