@@ -76,6 +76,34 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         assertEquals(0, tracker.outstandingCount, "the stranded pending write must be released")
     }
 
+    // --- registration refused by a swept loop ---
+
+    @Test
+    fun `a transport built after the loop swept reports it did not join and closing it releases the fd`() = runBlocking {
+        // The construction sites own the descriptor when the loop refuses to
+        // watch it, and joinedLoop is the only thing that tells them so. Before
+        // the pair became atomic this could also come out half-registered — a
+        // participant with no callback — and the site would close an fd the
+        // sweep was still holding a reference to.
+        eventLoop.start()
+        eventLoop.close()
+
+        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+
+        assertFalse(
+            transport.joinedLoop,
+            "a loop that has swept holds no ledger, so the constructor's registration must be refused",
+        )
+
+        transport.close()
+
+        val closedFd = fd
+        fd = -1 // the transport closed it; tearDown must not close the number again
+        val probe = dup(closedFd)
+        if (probe >= 0) close(probe)
+        assertEquals(EBADF, errno, "closing the refused transport must release its fd")
+    }
+
     // --- entry points a stopped loop used to swallow ---
 
     @Test

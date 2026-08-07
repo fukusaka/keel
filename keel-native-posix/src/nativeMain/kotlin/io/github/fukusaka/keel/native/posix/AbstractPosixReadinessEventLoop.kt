@@ -1207,22 +1207,89 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             }
             return
         }
-        // The funnel spelled out rather than [submitOnLoop], because the two
-        // branches genuinely need different things and this one is the
-        // per-readiness-event re-arm.
-        //
-        // Queued from off the loop, the arm outlives the call: a teardown can
-        // withdraw [listener] and close the fd before it runs, and by then the
-        // number may be somebody else's. The check is by identity, not presence
-        // -- the ledger holds one entry per key, so a replacement would pass a
-        // presence test and then be what an arm failure withdraws.
-        //
-        // On the loop thread there is nothing to check. Withdrawal is
-        // loop-confined -- both in-tree teardowns run on the loop, and that is
-        // what makes this path sound rather than the check, which does not close
-        // its own window either way -- so nothing can withdraw between the append
-        // above and the arm below. A check here would be a lock acquisition every
-        // connection pays on every wake to prove something already true.
+        armRegisteredCallback(fd, interest, key, listener)
+    }
+
+    /**
+     * Joins [participant] to the registry and registers [listener] for
+     * [fd] + [interest] **as one step**, reporting whether it took.
+     *
+     * For the caller that owns a descriptor and needs both halves or neither.
+     * Calling [addParticipant] and then [registerCallback] does not give that:
+     * each takes the registration lock on its own, so the stop sweep — which sets
+     * `ledgersClosed` under that same lock — fits between them. The transport
+     * that did so could end up a participant with no callback, and then be told
+     * `onLoopStopped` after its owner had given up on it and closed the fd, by
+     * which time the number may be somebody else's. Reading `ledgersClosed` once,
+     * inside one acquisition, is what makes "both or neither" true rather than
+     * merely likely — as far as the lock holds. [withRegLock] runs its block even
+     * when the acquire failed, and on that path this reads and mutates the
+     * ledgers unguarded and can still answer `true`; the failure is reported and
+     * treated as fatal to the loop elsewhere, so the atomicity here is exactly as
+     * good as that contract and no better.
+     *
+     * The arm happens after the lock is released, exactly as in
+     * [registerCallback] — holding the registration lock across a syscall is what
+     * the rest of this class is careful not to do.
+     *
+     * A refusal means the loop has swept: **the descriptor is the caller's to
+     * release**, and the caller can do that through the transport's own teardown
+     * rather than closing the fd behind its back. See [addParticipant]'s KDoc for
+     * why the refusal is not a throw.
+     *
+     * @return `true` if both registrations took, `false` if the loop refused —
+     *   in which case neither was made.
+     */
+    fun joinLoop(
+        participant: LoopParticipant,
+        fd: Int,
+        interest: Interest,
+        listener: FdReadyListener,
+    ): Boolean {
+        val key = registrationKey(fd, interest)
+        val joined = withRegLock {
+            if (ledgersClosed) {
+                false
+            } else {
+                participants.add(participant)
+                putCallback(key, listener)
+                true
+            }
+        }
+        if (!joined) {
+            logger.warn {
+                "${this::class.simpleName}.joinLoop: EventLoop stopped — refusing fd=$fd " +
+                    "${interest.name}; ${participant::class.simpleName} will not be told and " +
+                    "this listener will not fire"
+            }
+            return false
+        }
+        armRegisteredCallback(fd, interest, key, listener)
+        return true
+    }
+
+    /**
+     * Arms the kernel interest for a callback that is already in the ledger.
+     *
+     * The funnel spelled out rather than [submitOnLoop], because the two branches
+     * genuinely need different things and this one is the per-readiness-event
+     * re-arm. Shared by [registerCallback] and [joinLoop], which differ only in
+     * what they put in the ledger first.
+     *
+     * Queued from off the loop, the arm outlives the call: a teardown can
+     * withdraw `listener` and close the fd before it runs, and by then the number
+     * may be somebody else's. The check is by identity, not presence -- the
+     * ledger holds one entry per key, so a replacement would pass a presence test
+     * and then be what an arm failure withdraws.
+     *
+     * On the loop thread there is nothing to check. Withdrawal is loop-confined
+     * -- both in-tree teardowns run on the loop, and that is what makes this path
+     * sound rather than the check, which does not close its own window either way
+     * -- so nothing can withdraw between the append and the arm. A check there
+     * would be a lock acquisition every connection pays on every wake to prove
+     * something already true.
+     */
+    private fun armRegisteredCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
         if (inEventLoop()) {
             submitArmCallback(fd, interest, key, listener)
         } else {

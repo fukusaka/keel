@@ -130,6 +130,13 @@ internal class KqueuePipelinedStreamServer(
         val rbs = listener.config.readBufferSize ?: loop.readBufferSize
         val ito = listener.config.idleTimeoutMillis ?: loop.idleTimeoutMillis
         val transport = KqueueIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
+        if (!transport.joinedLoop) {
+            // Reached when the sweep's own final drain runs this queued accept.
+            // On the loop thread, so close() tears down synchronously; there is
+            // nobody to raise to, and the connection was never handed on.
+            transport.close()
+            return
+        }
         // The accepted socket's own local endpoint: for a specific-address
         // listener it equals the listener address; for a wildcard bind it is
         // the concrete interface address with the listener's port. Lets the

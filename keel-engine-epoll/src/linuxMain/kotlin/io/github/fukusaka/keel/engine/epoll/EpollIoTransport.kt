@@ -220,6 +220,23 @@ internal class EpollIoTransport(
             }
         }
 
+    /**
+     * Whether this transport is registered with its EventLoop.
+     *
+     * `false` means the loop had already swept when the constructor ran, so it
+     * holds neither the participant slot nor the read callback — no readiness
+     * will arrive and no stop notification will. **The construction site owns
+     * [fd] in that case**, as `joinLoop`'s KDoc says, and releases it by closing
+     * this transport: [close] is idempotent and does the release itself, which
+     * closing the descriptor behind the object's back would not be.
+     *
+     * `true` says the ledgers were open, not that the loop will run: a loop that
+     * was built and closed without ever entering its poll never sweeps, so it
+     * never refuses either, and work handed to it waits forever. That is a
+     * separate hole in the same close path.
+     */
+    internal val joinedLoop: Boolean
+
     init {
         // Arm READ (EPOLLIN|EPOLLRDHUP) at construction so peer-FIN / peer-RST is
         // surfaced via EPOLLHUP / EPOLLRDHUP / EPOLLERR without the user ever
@@ -244,9 +261,7 @@ internal class EpollIoTransport(
         // connection. Found is not yet heard: the close bridge is wired only
         // after this constructor returns (see onLoopStopped's KDoc).
         @Suppress("LeakingThis")
-        eventLoop.addParticipant(this)
-        @Suppress("LeakingThis")
-        eventLoop.registerCallback(fd, Interest.READ, this)
+        joinedLoop = eventLoop.joinLoop(this, fd, Interest.READ, this)
     }
 
     private fun armRead() {
