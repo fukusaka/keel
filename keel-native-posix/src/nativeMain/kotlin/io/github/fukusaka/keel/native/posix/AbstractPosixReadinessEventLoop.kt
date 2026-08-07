@@ -1179,6 +1179,37 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * `armRead()` registers again on every wake — so the ledger holds one
      * listener per key by design, not one per registrant.
      */
+    fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
+        val key = registrationKey(fd, interest)
+        val appended = withRegLock {
+            if (ledgersClosed) {
+                false
+            } else {
+                putCallback(key, listener)
+                true
+            }
+        }
+        if (!appended) {
+            // Refused, and reported rather than dropped: a listener that will
+            // never fire is not something to drop in silence. What is *not*
+            // done is calling a hook from the refusal --
+            // a listener registering from inside its own `onLoopStopped` would
+            // then be refused, told, and re-register without bound, which is the
+            // recursion an arm-failure hook produced in an earlier change.
+            //
+            // Whether anyone was told is the registry's business: a
+            // [LoopParticipant] was told once at the sweep, whatever it held in
+            // this ledger. A bare listener that never joined gets only this
+            // WARN, which is why the refusal is not silent.
+            logger.warn {
+                "${this::class.simpleName}.registerCallback: EventLoop stopped — refusing " +
+                    "fd=$fd ${interest.name}; this listener will not fire"
+            }
+            return
+        }
+        armRegisteredCallback(fd, interest, key, listener)
+    }
+
     /**
      * Joins [participant] to the registry and registers [listener] for
      * [fd] + [interest] **as one step**, reporting whether it took.
@@ -1191,7 +1222,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * `onLoopStopped` after its owner had given up on it and closed the fd, by
      * which time the number may be somebody else's. Reading `ledgersClosed` once,
      * inside one acquisition, is what makes "both or neither" true rather than
-     * merely likely.
+     * merely likely — as far as the lock holds. [withRegLock] runs its block even
+     * when the acquire failed, and on that path this reads and mutates the
+     * ledgers unguarded and can still answer `true`; the failure is reported and
+     * treated as fatal to the loop elsewhere, so the atomicity here is exactly as
+     * good as that contract and no better.
      *
      * The arm happens after the lock is released, exactly as in
      * [registerCallback] — holding the registration lock across a syscall is what
@@ -1231,37 +1266,6 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
         }
         armRegisteredCallback(fd, interest, key, listener)
         return true
-    }
-
-    fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
-        val key = registrationKey(fd, interest)
-        val appended = withRegLock {
-            if (ledgersClosed) {
-                false
-            } else {
-                putCallback(key, listener)
-                true
-            }
-        }
-        if (!appended) {
-            // Refused, and reported rather than dropped: a listener that will
-            // never fire is not something to drop in silence. What is *not*
-            // done is calling a hook from the refusal --
-            // a listener registering from inside its own `onLoopStopped` would
-            // then be refused, told, and re-register without bound, which is the
-            // recursion an arm-failure hook produced in an earlier change.
-            //
-            // Whether anyone was told is the registry's business: a
-            // [LoopParticipant] was told once at the sweep, whatever it held in
-            // this ledger. A bare listener that never joined gets only this
-            // WARN, which is why the refusal is not silent.
-            logger.warn {
-                "${this::class.simpleName}.registerCallback: EventLoop stopped — refusing " +
-                    "fd=$fd ${interest.name}; this listener will not fire"
-            }
-            return
-        }
-        armRegisteredCallback(fd, interest, key, listener)
     }
 
     /**
