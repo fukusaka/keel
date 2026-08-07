@@ -17,6 +17,7 @@ import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.server.ServerTlsProvider
@@ -112,7 +113,13 @@ class NwEngine(
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
-    private val logger = config.loggerFactory.logger("NwEngine")
+    /**
+     * The configured factory, wrapped so no log statement in this engine can
+     * throw. Read once here rather than at each use; see `guarded`.
+     */
+    private val guardedLoggerFactory = config.loggerFactory.guarded()
+
+    private val logger = guardedLoggerFactory.logger("NwEngine")
     private var listener: nw_listener_t = null
     private var closed = false
 
@@ -178,7 +185,7 @@ class NwEngine(
                 InetSocketAddress(host, 0),
                 allocator,
                 bindConfig,
-                config.loggerFactory,
+                guardedLoggerFactory,
                 config.idleReadPolicy,
                 config.idleTimeoutMillis,
                 config.flushCoalescing,
@@ -515,7 +522,7 @@ class NwEngine(
         )
 
         logger.debug { "Connected to $remoteAddr" }
-        val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
+        val channelLogger = guardedLoggerFactory.logger("NwPipelinedChannel")
         val transport = NwIoTransport(
             conn,
             connQueue,
@@ -567,7 +574,7 @@ class NwEngine(
                 address,
                 allocator,
                 bindConfig,
-                config.loggerFactory,
+                guardedLoggerFactory,
                 this@NwEngine.config.idleReadPolicy,
                 this@NwEngine.config.idleTimeoutMillis,
                 this@NwEngine.config.flushCoalescing,
@@ -637,7 +644,7 @@ class NwEngine(
         check(rc == 0) { "connect to UDS ${address.path} failed (errno=$rc)" }
 
         logger.debug { "Connected to UDS ${address.path}" }
-        val channelLogger = config.loggerFactory.logger("NwPipelinedChannel")
+        val channelLogger = guardedLoggerFactory.logger("NwPipelinedChannel")
         val transport = NwIoTransport(
             conn,
             connQueue,

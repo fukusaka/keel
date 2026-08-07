@@ -17,6 +17,7 @@ import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
@@ -90,12 +91,18 @@ class EpollEngine(
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
-    private val logger = config.loggerFactory.logger("EpollEngine")
+    /**
+     * The configured factory, wrapped so no log statement in this engine can
+     * throw. Read once here rather than at each use; see `guarded`.
+     */
+    private val guardedLoggerFactory = config.loggerFactory.guarded()
+
+    private val logger = guardedLoggerFactory.logger("EpollEngine")
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
-    private val bossLoop = EpollEventLoop(config.loggerFactory.logger("EpollEventLoop"))
+    private val bossLoop = EpollEventLoop(guardedLoggerFactory.logger("EpollEventLoop"))
     private val workerGroup = EpollEventLoopGroup(
         resolveThreads(config),
-        config.loggerFactory.logger("EpollEventLoop"),
+        guardedLoggerFactory.logger("EpollEventLoop"),
         config.allocator,
         config.readBufferSize,
         config.idleTimeoutMillis,

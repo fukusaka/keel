@@ -17,6 +17,7 @@ import io.github.fukusaka.keel.core.connectWithFallback
 import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.logging.info
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.NativeSocket
@@ -156,7 +157,13 @@ class IoUringEngine(
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
-    private val logger = config.loggerFactory.logger("IoUringEngine")
+    /**
+     * The configured factory, wrapped so no log statement in this engine can
+     * throw. Read once here rather than at each use; see `guarded`.
+     */
+    private val guardedLoggerFactory = config.loggerFactory.guarded()
+
+    private val logger = guardedLoggerFactory.logger("IoUringEngine")
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
     private val resolvedCapabilities: IoUringCapabilities
     private val bossLoop: IoUringEventLoop
@@ -195,7 +202,7 @@ class IoUringEngine(
             )
         }
 
-        bossLoop = IoUringEventLoop(config.loggerFactory.logger("IoUringEventLoop"), defaultCaps, ringSize, cqSize)
+        bossLoop = IoUringEventLoop(guardedLoggerFactory.logger("IoUringEventLoop"), defaultCaps, ringSize, cqSize)
 
         // Refine sendZc via opcode probe if auto-detecting.
         val refinedCaps = if (capabilities != null) {
@@ -225,7 +232,7 @@ class IoUringEngine(
 
         workerGroup = IoUringEventLoopGroup(
             size = resolveThreads(config),
-            logger = config.loggerFactory.logger("IoUringEventLoop"),
+            logger = guardedLoggerFactory.logger("IoUringEventLoop"),
             allocator = config.allocator,
             capabilities = resolvedCapabilities,
             ringSize = ringSize,

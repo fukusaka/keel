@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `LoggerFactory.guarded()` — wraps a factory so its loggers cannot throw, and is applied to
+  the configured factory by every engine (#1038)
 - `core`: `IoTransport.canDispatchToOwningContext` — whether work handed to the transport's
   dispatcher will still run, so the pipeline can release rather than strand it (#1013)
 - `io`: `LongObjectMap.forEachValue` — inline walk over the values, for callers that have to
@@ -80,6 +82,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`, `engine-*`: a `Logger` that throws no longer escapes the `catch` that reported to it —
+  it could end an EventLoop thread, abandon a bind rollback, or kill the process (#1038)
 - `engine-epoll`, `engine-kqueue`: join the EventLoop when the channel attaches rather than in the
   transport constructor, so a loop stopping in between cannot spend the connection's one stop
   notification on callbacks that are not wired yet (#1037)
