@@ -13,6 +13,7 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
@@ -392,6 +393,27 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     protected abstract fun removeInterest(fd: Int, interest: Interest)
 
     /**
+     * Drops whatever this loop records about [fd]'s interests, for a caller that
+     * is about to close it. No syscall: closing a descriptor takes it out of the
+     * kernel's interest list on its own, and issuing a disarm from a thread that
+     * is not the loop's would reorder against the loop's own arms.
+     *
+     * Distinct from [removeInterest], which takes one interest back from a
+     * descriptor that goes on living. This is the whole record, and only because
+     * the descriptor is ending.
+     *
+     * Default is nothing, which is right for an engine that keeps no such
+     * record: kqueue's filters live in the kernel and end with the descriptor.
+     * epoll has to mirror the mask in user space to compute `EPOLL_CTL_MOD`, and
+     * a mirror outliving its descriptor is worse than no mirror — the next
+     * socket to be handed that number looks already-armed, so its arm is skipped
+     * and its waiter parks with nothing watching it.
+     */
+    protected open fun forgetInterests(fd: Int) {
+        // Nothing to forget by default; see the KDoc.
+    }
+
+    /**
      * Arms [fd] + [interest] for the pipeline path, on the loop thread.
      *
      * The callback counterpart of [submitArm]: same thread, same one differing
@@ -746,6 +768,115 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     }
 
     /**
+     * Suspends until [fd] is write-ready, **owning [fd] for the duration**: if
+     * the wait ends any way other than readiness, this closes it.
+     *
+     * The `connect()` paths of both engines wait here on `EINPROGRESS`. The
+     * descriptor exists but belongs to nobody yet — no transport has been built
+     * around it — so an abnormal exit that leaves it open leaks it for the life
+     * of the process, with no handle left to close it by.
+     *
+     * Cancellation was already covered by the handler below. **Failure was not**,
+     * and it is the reachable one: [submitArm] resumes this continuation with an
+     * exception when the arming syscall fails, and `invokeOnCancellation` does
+     * not run for an exceptional resume — so before this function existed, an
+     * `epoll_ctl` / `kevent` that failed with `ENFILE` left the connect socket
+     * open and unreferenced. When the loop's own thread is the caller, the arm
+     * runs inline inside [register] and fails *before* the handler is even
+     * installed.
+     *
+     * **The one-shot is the mechanism, not a belief about ordering.** The two
+     * release paths are reached by different means — one by cancellation, one by
+     * a thrown value — and nothing here orders them against each other. Rather
+     * than argue that a run of one excludes the other, the compare-and-set makes
+     * that true: whichever arrives first closes, the other returns. Closing a
+     * descriptor twice is not a harmless repeat once the kernel has handed the
+     * number to somebody else.
+     *
+     * [unregister] runs on both paths too, and is documented as a no-op when the
+     * node is already gone — which it is on the [submitArm] path, which removes
+     * it before resuming. Keeping it on the failure path is defensive: the only
+     * other way to fail a waiter is [cancelAll], whose two callers pass
+     * `Interest.READ` on a server fd, so nothing reaches here with a node still
+     * in the chain today. It stays because a stale node makes a later append
+     * land where nothing pops it, and the check costs a lock on a path taken
+     * once per failed connect.
+     *
+     * **The release runs on the loop, and that ordering is the point.** Both
+     * endings can be reached from a thread that is not the loop's, while the
+     * loop still has this fd's arm queued or in flight — [submitArm] checks
+     * that the waiter is registered and then arms in a *second* acquisition of
+     * the registration lock, so a release landing between the two closes the
+     * descriptor and then lets the arm run. What follows is the recycled-fd
+     * hazard: an `epoll_ctl` against a number the kernel may already have
+     * handed to somebody else, and a mask recorded for it that nothing will
+     * ever clear. Handing the release to the loop puts it after that arm.
+     * `StreamServer.close()` reaches the same conclusion for the listening fd
+     * and says so; this is the same shape for the connect fd.
+     *
+     * So the release is *claimed* here and *performed* there: the caller sees
+     * the wait end before the descriptor is necessarily gone. Nothing on this
+     * path needs it back — the transport that would own it is built only after
+     * a normal return.
+     *
+     * [forgetInterests] is not the same clean-up as [unregister]. That one
+     * drops this waiter from the ledger of coroutines to resume; this one drops
+     * whatever the loop records about the descriptor itself, which on epoll is
+     * the mask it uses to decide whether an arm needs a syscall at all. It is
+     * skipped when the loop has stopped, for the reason its own teardown gives:
+     * that bookkeeping belongs to a loop that will never read it again.
+     *
+     * The counter and the captured handle are two allocations per in-progress
+     * connect — not a hot path (at most once per outbound connection, and only
+     * when the connect did not complete immediately), and nothing here runs per
+     * readiness event.
+     */
+    protected suspend fun awaitWritableOwningFd(fd: Int, logger: Logger) {
+        val released = AtomicInt(0)
+        var reg: Registration? = null
+        try {
+            suspendCancellableCoroutine<Unit> { cont ->
+                val own = register(fd, Interest.WRITE, cont)
+                reg = own
+                cont.invokeOnCancellation {
+                    unregister(own)
+                    releaseOwnedFd(fd, logger, released, "connect cancellation")
+                }
+            }
+        } catch (t: Throwable) {
+            reg?.let { unregister(it) }
+            releaseOwnedFd(fd, logger, released, "connect wait failed")
+            throw t
+        }
+    }
+
+    /**
+     * Claims [fd] for release once, then hands the release to the loop.
+     *
+     * The claim is a compare-and-set rather than an argument about which of
+     * [awaitWritableOwningFd]'s two endings can follow the other: they are
+     * reached by different means — a cancellation, a thrown value — and nothing
+     * orders them. Closing a descriptor twice stops being a harmless repeat the
+     * moment the kernel has handed the number to somebody else.
+     *
+     * On the loop because of what may still be queued for this fd; see
+     * [awaitWritableOwningFd]. When the loop is already gone there is nothing
+     * to order against and nothing left to forget, so the fallback only closes.
+     */
+    private fun releaseOwnedFd(fd: Int, logger: Logger, released: AtomicInt, context: String) {
+        if (!released.compareAndSet(0, 1)) return
+        handoff.runOnLoop(
+            onLoop = {
+                forgetInterests(fd)
+                closeFdSafely(fd, logger, context)
+            },
+            ifStopped = {
+                closeFdSafely(fd, logger, context)
+            },
+        )
+    }
+
+    /**
      * Runs [block] on the loop thread — inline when already there, queued
      * otherwise.
      *
@@ -959,9 +1090,13 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      *
      * **Cancels rather than resuming with the failure.** Only a cancelled
      * continuation runs its `invokeOnCancellation` handler; a continuation
-     * resumed with an exception does not. On the connect path that handler is
-     * what closes the socket, so resuming here would end the wait and leak the
-     * descriptor. Measured on this target rather than assumed.
+     * resumed with an exception does not. Measured on this target rather than
+     * assumed. That asymmetry used to be the whole reason for the choice — the
+     * connect path's handler was the only thing closing the socket, so resuming
+     * here leaked it. [awaitWritableOwningFd] now releases on both endings, so
+     * that consequence is gone and this stands on the reason below instead. The
+     * asymmetry itself is unchanged, and a handler is still the only thing a
+     * caller can hang clean-up on without wrapping the wait.
      *
      * **And cancels with a `CancellationException`,** the same shape [cancelAll]
      * hands a waiter when its server closes. A cause that is *not* one completes

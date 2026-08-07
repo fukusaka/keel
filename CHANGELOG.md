@@ -80,6 +80,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`, `engine-epoll`, `engine-kqueue`: release the connect socket when the wait for
+  write-readiness fails, not only when it is cancelled (#1036)
+- `native-posix`, `engine-epoll`: drop the loop's recorded event mask for a released connect
+  socket, and release it on the loop so a queued arm cannot outlive the close (#1036)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: release the EventLoop's recorded thread id when
   the loop exits — a `pthread_t` is unique only among live threads, so an unrelated thread that
   inherited the id answered `inEventLoop()` with `true` and acted directly on loop-owned state (#1017)

@@ -9,6 +9,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -118,6 +119,99 @@ class EpollEventLoopSeamTest {
         assertEquals(1, fake.ctlCalls.size)
         assertEquals(FakeEpollSyscallOps.CtlOp.ADD, fake.ctlCalls[0].op)
         assertEquals(1001, fake.ctlCalls[0].fd)
+    }
+
+    // --- register() failure paths ---
+
+    @Test
+    fun `a failed arm releases the connect socket the waiter was given`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD (wakeupFd) succeeds
+            scriptAddResult(ENOSPC) // the arm driven below fails
+        }
+        fake.liveMode = true
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        el.start()
+        // A real descriptor, because whether it was released is the whole
+        // assertion. `connect()` holds no other handle on it: the transport
+        // that would own it is built after this wait returns, so an fd left
+        // open here is unreachable for the life of the process.
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        assertTrue(fd >= 0, "could not open a socket to wait on")
+        try {
+            assertFailsWith<IllegalStateException> {
+                runBlocking { withTimeout(DRAIN_BUDGET) { el.awaitWriteReady(fd, logger) } }
+            }
+            // Polled, not asserted outright: the release is claimed on this
+            // thread and performed on the loop, so it is ordered after any arm
+            // still queued for this fd rather than immediate.
+            awaitFdClosed(fd)
+        } finally {
+            // No close here on purpose: if the assertion above failed, the fd
+            // is open and leaks one descriptor in a test process that is about
+            // to report a failure. Closing it would mean re-testing the number
+            // first, and acting on that answer is the recycling hazard this
+            // whole change is about.
+            el.close()
+        }
+    }
+
+    @Test
+    fun `releasing a cancelled connect socket lets the same fd number be armed again`() {
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD (wakeupFd)
+            scriptAddResult(0) // the connect wait's arm succeeds
+            scriptAddResult(0) // the re-arm this test is about
+        }
+        fake.liveMode = true
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        el.start()
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        assertTrue(fd >= 0, "could not open a socket to wait on")
+        // The fake publishes its counter only when the watched fd is the one
+        // being armed, but the value it publishes is the total number of calls
+        // — so the wakeup fd's ADD at init is included in the figures below.
+        fake.watchedFd = fd
+        try {
+            runBlocking {
+                withTimeout(DRAIN_BUDGET) {
+                    val waiter = launch { el.awaitWriteReady(fd, logger) }
+                    // Let it register and hand the arm to the loop before this
+                    // thread blocks polling — they share the runBlocking
+                    // dispatcher, so blocking first would starve the launch.
+                    yield()
+                    // Init's ADD plus this arm. Once it lands, the loop's
+                    // mask for fd says EPOLLOUT.
+                    awaitCtlCalls(fake, expected = 2)
+                    waiter.cancelAndJoin()
+                }
+            }
+            // The release closed fd, so the kernel may hand this number to the
+            // next socket. Arming that number for WRITE has to reach epoll_ctl:
+            // if the loop still believes EPOLLOUT is set, addOrModifyEpoll sees
+            // no change and skips the syscall, and the new socket's waiter
+            // parks with nothing watching it.
+            //
+            // Arming a number this process has closed is only legal because the
+            // syscalls are faked — against the real ops this would be the very
+            // hazard under test. The release is queued to the loop ahead of this
+            // registration, so the loop performs them in that order.
+            el.registerCallback(fd = fd, interest = Interest.WRITE, listener = NoOpListener)
+            awaitCtlCalls(fake, expected = 3)
+            val reArm = fake.ctlCalls.last()
+            assertEquals(
+                FakeEpollSyscallOps.CtlOp.ADD,
+                reArm.op,
+                "the re-arm must be an ADD, not a skipped call: ${fake.ctlCalls}",
+            )
+            assertEquals(fd, reArm.fd)
+        } finally {
+            el.close()
+        }
     }
 
     // --- wakeup branch ---
@@ -685,6 +779,24 @@ class EpollEventLoopSeamTest {
             check(deadline.hasNotPassedNow()) {
                 "the EventLoop recorded ${fake.ctlCallCount} of $expected epoll_ctl calls within $DRAIN_BUDGET"
             }
+            usleep(POLL_US)
+        }
+    }
+
+    /**
+     * Waits until [fd] is closed, bounded by wall clock.
+     *
+     * The release is handed to the loop, so it is not observable the instant
+     * the wait throws. A deadline rather than a bare spin: a fix that stopped
+     * releasing must fail this test, not hang it.
+     */
+    private fun awaitFdClosed(fd: Int) {
+        val deadline = TimeSource.Monotonic.markNow() + DRAIN_BUDGET
+        while (fcntl(fd, F_GETFD) != -1) {
+            assertTrue(
+                deadline.hasNotPassedNow(),
+                "the fd the waiter owned was still open $DRAIN_BUDGET after the wait ended",
+            )
             usleep(POLL_US)
         }
     }

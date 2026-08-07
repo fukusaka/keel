@@ -31,7 +31,6 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.linux.EPOLLERR
 import platform.linux.EPOLLHUP
 import platform.linux.EPOLLIN
@@ -341,6 +340,12 @@ internal class EpollEventLoop(
             fdEvents.remove(fd)
         }
     }
+
+    /**
+     * epoll keeps the mask in [fdEvents], so it has one to forget; the base
+     * class's default does nothing because kqueue does not.
+     */
+    override fun forgetInterests(fd: Int) = cleanupFd(fd)
 
     // --- Wakeup ---
 
@@ -657,15 +662,7 @@ internal class EpollEventLoop(
 
     // --- EpollSuspendRegister impl (seam for connect InProgress) ---
 
-    override suspend fun awaitWriteReady(fd: Int, logger: Logger) {
-        suspendCancellableCoroutine<Unit> { cont ->
-            val reg = register(fd, Interest.WRITE, cont)
-            cont.invokeOnCancellation {
-                unregister(reg)
-                closeFdSafely(fd, logger, "connect cancellation")
-            }
-        }
-    }
+    override suspend fun awaitWriteReady(fd: Int, logger: Logger) = awaitWritableOwningFd(fd, logger)
 
     companion object {
 

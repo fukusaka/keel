@@ -32,26 +32,41 @@ import io.github.fukusaka.keel.logging.Logger
  * indirection. Tests override via
  * [EpollEngine]'s `suspendRegisterOverride` constructor parameter.
  *
- * ## Cancellation contract
+ * ## Ownership contract
  *
- * Cancellation during suspend MUST unregister the fd from epoll
- * interest and close the fd (via
- * [io.github.fukusaka.keel.native.posix.closeFdSafely]) — otherwise
- * a cancelled connect leaks an open fd plus a stale epoll
- * registration. Both production and fake impls are required to
- * honour this contract.
+ * The implementation owns [fd] while it waits. Any end other than
+ * readiness — cancellation *or* failure — MUST drop the waiter, drop
+ * whatever the loop records about the fd, and close it (via
+ * [io.github.fukusaka.keel.native.posix.closeFdSafely]). Both
+ * production and fake impls are required to honour this.
+ *
+ * No `epoll_ctl(DEL)` is owed for the descriptors this path is given:
+ * epoll registers the open *file description*, and closing the last
+ * descriptor referring to it removes the entry (`epoll(7)`, Q6/A6).
+ * The connect fd is the only one — nothing dups it. A caller that did
+ * hand over a duplicate would owe the `DEL`, and could not issue it
+ * afterwards, so do not.
+ *
+ * What *is* owed either way is the loop's own user-space mask for the
+ * fd: left behind, it makes the next socket handed that number look
+ * already-armed, and its arm is skipped.
+ *
+ * Naming only cancellation, as this contract once did, left the
+ * reachable half out: `epoll_ctl(EPOLL_CTL_ADD)` failing resumes the
+ * waiter with an exception, and an exceptional resume does not run a
+ * cancellation handler. The connect socket was then open with no
+ * reference left to close it by.
  */
 public fun interface EpollSuspendRegister {
 
     /**
      * Suspends until [fd] is write-ready. Returns normally on
-     * readiness; on coroutine cancellation, MUST unregister WRITE
-     * interest and close [fd] (see class KDoc's Cancellation
-     * contract).
+     * readiness; on any other outcome MUST unregister WRITE interest
+     * and close [fd] (see the class KDoc's Ownership contract).
      *
      * @param fd The fd to await write-readiness on.
-     * @param logger Used by the cancellation path to log
-     *   `close(fd)` failure context.
+     * @param logger Used by the release paths to log `close(fd)`
+     *   failure context.
      */
     public suspend fun awaitWriteReady(fd: Int, logger: Logger)
 }
