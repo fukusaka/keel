@@ -18,6 +18,7 @@ import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
@@ -91,12 +92,18 @@ class KqueueEngine(
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
-    private val logger = config.loggerFactory.logger("KqueueEngine")
+    /**
+     * The configured factory, wrapped so no log statement in this engine can
+     * throw. Read once here rather than at each use; see `guarded`.
+     */
+    private val guardedLoggerFactory = config.loggerFactory.guarded()
+
+    private val logger = guardedLoggerFactory.logger("KqueueEngine")
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
-    private val bossLoop = KqueueEventLoop(config.loggerFactory.logger("KqueueEventLoop"))
+    private val bossLoop = KqueueEventLoop(guardedLoggerFactory.logger("KqueueEventLoop"))
     private val workerGroup = KqueueEventLoopGroup(
         resolveThreads(config),
-        config.loggerFactory.logger("KqueueEventLoop"),
+        guardedLoggerFactory.logger("KqueueEventLoop"),
         config.allocator,
         config.readBufferSize,
         config.idleTimeoutMillis,

@@ -17,6 +17,7 @@ import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.coroutines.SupervisorJob
@@ -83,8 +84,14 @@ class NioEngine(
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
-    private val logger = config.loggerFactory.logger("NioEngine")
-    private val eventLoopLogger = config.loggerFactory.logger("NioEventLoop")
+    /**
+     * The configured factory, wrapped so no log statement in this engine can
+     * throw. Read once here rather than at each use; see `guarded`.
+     */
+    private val guardedLoggerFactory = config.loggerFactory.guarded()
+
+    private val logger = guardedLoggerFactory.logger("NioEngine")
+    private val eventLoopLogger = guardedLoggerFactory.logger("NioEventLoop")
     private val bossLoop = NioEventLoop("keel-nio-boss", eventLoopLogger)
     private val workerGroup =
         NioEventLoopGroup(

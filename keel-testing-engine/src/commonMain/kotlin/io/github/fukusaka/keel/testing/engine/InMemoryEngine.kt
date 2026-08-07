@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.bindAllOrRollback
+import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.coroutines.SupervisorJob
@@ -54,7 +55,13 @@ public class InMemoryEngine(
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
-    private val logger = config.loggerFactory.logger("InMemoryEngine")
+    /**
+     * The configured factory, wrapped so no log statement in this engine can
+     * throw. Read once here rather than at each use; see `guarded`.
+     */
+    private val guardedLoggerFactory = config.loggerFactory.guarded()
+
+    private val logger = guardedLoggerFactory.logger("InMemoryEngine")
 
     /** Registered listeners keyed by their resolved bind address. */
     private val listeners = mutableMapOf<SocketAddress, InMemoryPipelinedStreamServer>()

@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.core.bindAllOrRollback
 import io.github.fukusaka.keel.core.requireIpLiteral
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
+import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import io.github.fukusaka.keel.server.ServerTlsProvider
@@ -77,8 +78,14 @@ class NodeEngine(
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 
-    private val logger = config.loggerFactory.logger("NodeEngine")
-    private val channelLogger = config.loggerFactory.logger("NodePipelinedChannel")
+    /**
+     * The configured factory, wrapped so no log statement in this engine can
+     * throw. Read once here rather than at each use; see `guarded`.
+     */
+    private val guardedLoggerFactory = config.loggerFactory.guarded()
+
+    private val logger = guardedLoggerFactory.logger("NodeEngine")
+    private val channelLogger = guardedLoggerFactory.logger("NodePipelinedChannel")
     private var closed = false
 
     /**
