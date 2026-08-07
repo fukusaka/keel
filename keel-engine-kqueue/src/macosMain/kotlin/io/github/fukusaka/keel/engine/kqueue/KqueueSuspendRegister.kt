@@ -36,10 +36,12 @@ import io.github.fukusaka.keel.logging.Logger
  * close the fd via
  * [io.github.fukusaka.keel.native.posix.closeFdSafely].
  *
- * No explicit `EV_DELETE` is owed: a knote ends with the descriptor
- * it was set on, and kqueue keeps nothing in user space that could
- * outlive it. epoll's counterpart does owe one more step for exactly
- * that reason, so the two contracts are not identical here.
+ * No explicit `EV_DELETE` is owed: a knote is keyed on the descriptor
+ * itself and closing that descriptor removes it (`kqueue(2)`), so this
+ * holds even for a duplicate. kqueue also keeps nothing in user space
+ * that could outlive the fd. epoll's counterpart is weaker on both
+ * counts — it registers the open file description, and it mirrors the
+ * mask — so the two contracts are not identical here.
  *
  * Naming only cancellation, as this contract once did, left the
  * reachable half out: `kevent(EV_ADD)` failing resumes the waiter

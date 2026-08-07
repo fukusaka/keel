@@ -40,10 +40,16 @@ import io.github.fukusaka.keel.logging.Logger
  * [io.github.fukusaka.keel.native.posix.closeFdSafely]). Both
  * production and fake impls are required to honour this.
  *
- * Closing is what takes the fd out of the kernel's interest list, so
- * no `epoll_ctl(DEL)` is owed. What *is* owed is the loop's own
- * user-space mask for the fd: left behind, it makes the next socket
- * handed that number look already-armed, and its arm is skipped.
+ * No `epoll_ctl(DEL)` is owed for the descriptors this path is given:
+ * epoll registers the open *file description*, and closing the last
+ * descriptor referring to it removes the entry (`epoll(7)`, Q6/A6).
+ * The connect fd is the only one — nothing dups it. A caller that did
+ * hand over a duplicate would owe the `DEL`, and could not issue it
+ * afterwards, so do not.
+ *
+ * What *is* owed either way is the loop's own user-space mask for the
+ * fd: left behind, it makes the next socket handed that number look
+ * already-armed, and its arm is skipped.
  *
  * Naming only cancellation, as this contract once did, left the
  * reachable half out: `epoll_ctl(EPOLL_CTL_ADD)` failing resumes the

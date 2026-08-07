@@ -802,17 +802,29 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * land where nothing pops it, and the check costs a lock on a path taken
      * once per failed connect.
      *
-     * **[forgetInterests] before the close, and it is not the same clean-up as
-     * [unregister].** That one drops this waiter from the ledger of coroutines
-     * to resume; this one drops whatever the loop records about the descriptor
-     * itself. On the cancellation path the arm had already succeeded, so a loop
-     * that keeps such a record is left holding one for a number the kernel is
-     * free to hand to the next socket — and the loop would then skip the arming
-     * syscall for that new socket, believing the interest already set, leaving
-     * its waiter parked with nothing watching it. The transport and server
-     * teardowns do this before their own close, for that reason. The one that
-     * does not is the teardown for a loop that has already stopped, and it says
-     * why: the bookkeeping belongs to a loop that will never read it again.
+     * **The release runs on the loop, and that ordering is the point.** Both
+     * endings can be reached from a thread that is not the loop's, while the
+     * loop still has this fd's arm queued or in flight — [submitArm] checks
+     * that the waiter is registered and then arms in a *second* acquisition of
+     * the registration lock, so a release landing between the two closes the
+     * descriptor and then lets the arm run. What follows is the recycled-fd
+     * hazard: an `epoll_ctl` against a number the kernel may already have
+     * handed to somebody else, and a mask recorded for it that nothing will
+     * ever clear. Handing the release to the loop puts it after that arm.
+     * `StreamServer.close()` reaches the same conclusion for the listening fd
+     * and says so; this is the same shape for the connect fd.
+     *
+     * So the release is *claimed* here and *performed* there: the caller sees
+     * the wait end before the descriptor is necessarily gone. Nothing on this
+     * path needs it back — the transport that would own it is built only after
+     * a normal return.
+     *
+     * [forgetInterests] is not the same clean-up as [unregister]. That one
+     * drops this waiter from the ledger of coroutines to resume; this one drops
+     * whatever the loop records about the descriptor itself, which on epoll is
+     * the mask it uses to decide whether an arm needs a syscall at all. It is
+     * skipped when the loop has stopped, for the reason its own teardown gives:
+     * that bookkeeping belongs to a loop that will never read it again.
      *
      * The counter and the captured handle are two allocations per in-progress
      * connect — not a hot path (at most once per outbound connection, and only
@@ -828,20 +840,40 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
                 reg = own
                 cont.invokeOnCancellation {
                     unregister(own)
-                    if (released.compareAndSet(0, 1)) {
-                        forgetInterests(fd)
-                        closeFdSafely(fd, logger, "connect cancellation")
-                    }
+                    releaseOwnedFd(fd, logger, released, "connect cancellation")
                 }
             }
         } catch (t: Throwable) {
             reg?.let { unregister(it) }
-            if (released.compareAndSet(0, 1)) {
-                forgetInterests(fd)
-                closeFdSafely(fd, logger, "connect wait failed")
-            }
+            releaseOwnedFd(fd, logger, released, "connect wait failed")
             throw t
         }
+    }
+
+    /**
+     * Claims [fd] for release once, then hands the release to the loop.
+     *
+     * The claim is a compare-and-set rather than an argument about which of
+     * [awaitWritableOwningFd]'s two endings can follow the other: they are
+     * reached by different means — a cancellation, a thrown value — and nothing
+     * orders them. Closing a descriptor twice stops being a harmless repeat the
+     * moment the kernel has handed the number to somebody else.
+     *
+     * On the loop because of what may still be queued for this fd; see
+     * [awaitWritableOwningFd]. When the loop is already gone there is nothing
+     * to order against and nothing left to forget, so the fallback only closes.
+     */
+    private fun releaseOwnedFd(fd: Int, logger: Logger, released: AtomicInt, context: String) {
+        if (!released.compareAndSet(0, 1)) return
+        handoff.runOnLoop(
+            onLoop = {
+                forgetInterests(fd)
+                closeFdSafely(fd, logger, context)
+            },
+            ifStopped = {
+                closeFdSafely(fd, logger, context)
+            },
+        )
     }
 
     /**

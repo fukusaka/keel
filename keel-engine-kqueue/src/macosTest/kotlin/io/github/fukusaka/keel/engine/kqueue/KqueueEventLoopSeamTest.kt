@@ -25,6 +25,7 @@ import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
 import platform.posix.fcntl
 import platform.posix.socket
+import platform.posix.usleep
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -32,6 +33,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Seam-level unit tests for `KqueueEventLoop` syscall error branches
@@ -162,11 +164,10 @@ class KqueueEventLoopSeamTest {
             assertFailsWith<IllegalStateException> {
                 runBlocking { withTimeout(15.seconds) { el.awaitWriteReady(fd, logger) } }
             }
-            assertEquals(
-                -1,
-                fcntl(fd, F_GETFD),
-                "a waiter resumed with an exception must still release the fd it owned",
-            )
+            // Polled, not asserted outright: the release is claimed on this
+            // thread and performed on the loop, so it is ordered after any arm
+            // still queued for this fd rather than immediate.
+            awaitFdClosed(fd)
         } finally {
             // No close here on purpose: if the assertion above failed, the fd
             // is open and leaks one descriptor in a test process that is about
@@ -439,10 +440,36 @@ class KqueueEventLoopSeamTest {
         }
     }
 
+    /**
+     * Waits until [fd] is closed, bounded by wall clock.
+     *
+     * The release is handed to the loop, so it is not observable the instant
+     * the wait throws. A deadline rather than a bare spin: a fix that stopped
+     * releasing must fail this test, not hang it.
+     */
+    private fun awaitFdClosed(fd: Int) {
+        val deadline = TimeSource.Monotonic.markNow() + FD_CLOSE_BUDGET
+        while (fcntl(fd, F_GETFD) != -1) {
+            assertTrue(
+                deadline.hasNotPassedNow(),
+                "the fd the waiter owned was still open $FD_CLOSE_BUDGET after the wait ended",
+            )
+            usleep(FD_CLOSE_POLL_US)
+        }
+    }
+
     private fun levelRecordingLogger(captured: LogLevel, sink: MutableList<String>): Logger = object : Logger {
         override fun isLoggable(level: LogLevel): Boolean = level == captured
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
             if (level == captured) sink.add(message.toString())
         }
+    }
+
+    private companion object {
+        /** Poll step while waiting for the loop to perform a claimed release. */
+        const val FD_CLOSE_POLL_US = 2_000u
+
+        /** Wall-clock bound on that wait; generous, since it only has to exclude a hang. */
+        val FD_CLOSE_BUDGET = 15.seconds
     }
 }

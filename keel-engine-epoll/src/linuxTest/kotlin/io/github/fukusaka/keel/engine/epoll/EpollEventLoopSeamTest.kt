@@ -144,11 +144,10 @@ class EpollEventLoopSeamTest {
             assertFailsWith<IllegalStateException> {
                 runBlocking { withTimeout(DRAIN_BUDGET) { el.awaitWriteReady(fd, logger) } }
             }
-            assertEquals(
-                -1,
-                fcntl(fd, F_GETFD),
-                "a waiter resumed with an exception must still release the fd it owned",
-            )
+            // Polled, not asserted outright: the release is claimed on this
+            // thread and performed on the loop, so it is ordered after any arm
+            // still queued for this fd rather than immediate.
+            awaitFdClosed(fd)
         } finally {
             // No close here on purpose: if the assertion above failed, the fd
             // is open and leaks one descriptor in a test process that is about
@@ -191,11 +190,16 @@ class EpollEventLoopSeamTest {
                     waiter.cancelAndJoin()
                 }
             }
-            // The handler closed fd, so the kernel may hand this number to the
+            // The release closed fd, so the kernel may hand this number to the
             // next socket. Arming that number for WRITE has to reach epoll_ctl:
             // if the loop still believes EPOLLOUT is set, addOrModifyEpoll sees
             // no change and skips the syscall, and the new socket's waiter
             // parks with nothing watching it.
+            //
+            // Arming a number this process has closed is only legal because the
+            // syscalls are faked — against the real ops this would be the very
+            // hazard under test. The release is queued to the loop ahead of this
+            // registration, so the loop performs them in that order.
             el.registerCallback(fd = fd, interest = Interest.WRITE, listener = NoOpListener)
             awaitCtlCalls(fake, expected = 3)
             val reArm = fake.ctlCalls.last()
@@ -775,6 +779,24 @@ class EpollEventLoopSeamTest {
             check(deadline.hasNotPassedNow()) {
                 "the EventLoop recorded ${fake.ctlCallCount} of $expected epoll_ctl calls within $DRAIN_BUDGET"
             }
+            usleep(POLL_US)
+        }
+    }
+
+    /**
+     * Waits until [fd] is closed, bounded by wall clock.
+     *
+     * The release is handed to the loop, so it is not observable the instant
+     * the wait throws. A deadline rather than a bare spin: a fix that stopped
+     * releasing must fail this test, not hang it.
+     */
+    private fun awaitFdClosed(fd: Int) {
+        val deadline = TimeSource.Monotonic.markNow() + DRAIN_BUDGET
+        while (fcntl(fd, F_GETFD) != -1) {
+            assertTrue(
+                deadline.hasNotPassedNow(),
+                "the fd the waiter owned was still open $DRAIN_BUDGET after the wait ended",
+            )
             usleep(POLL_US)
         }
     }
