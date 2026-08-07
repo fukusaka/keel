@@ -85,7 +85,9 @@ abstract class AbstractPipelinedChannel(
         // that pre-arm their read primitive (IdleReadPolicy.DETECT_PEER_CLOSE)
         // arm here instead of in their own init { } block — arming earlier
         // races with the channel-construction sequence and can deliver
-        // bytes through a still-null [onRead].
+        // bytes through a still-null [onRead]. The POSIX engines join their
+        // loop's participant registry here for the same reason, so this call
+        // must stay last; `AbstractPipelinedChannelTest` pins that.
         transport.onChannelAttached()
     }
 

@@ -166,6 +166,9 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
         val transport = EpollIoTransport(fd, loop, tracker, fake)
+        // Joins the loop, as a real channel does -- this test turns on the
+        // transport being in the registry alongside the participant below.
+        transport.onChannelAttached()
 
         val buffered = CompletableDeferred<Unit>()
         loop.dispatch(
@@ -344,6 +347,9 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
         val transport = EpollIoTransport(fd, loop, tracker, fake)
+        // Joins the loop, as a real channel does -- this test turns on the
+        // transport being in the registry alongside the participant below.
+        transport.onChannelAttached()
 
         val buffered = CompletableDeferred<Unit>()
         loop.dispatch(
@@ -356,9 +362,11 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         )
         withTimeout(SEAM_TIMEOUT_MS) { buffered.await() }
 
-        // Added after the transport, which registers itself in its constructor,
-        // so the sweep reaches the transport first -- while no deferral exists
-        // yet. That order is what leaves this one for the half-close path.
+        // Added after the transport joined (its channel attaches above), so the
+        // sweep reaches the transport first -- while no deferral exists yet.
+        // That order is what leaves this one for the half-close path, and it is
+        // the whole point of the test: without the transport in the registry it
+        // would pass through the half-close path unconditionally.
         loop.addParticipant(
             object : LoopParticipant {
                 override fun onLoopStopped() {

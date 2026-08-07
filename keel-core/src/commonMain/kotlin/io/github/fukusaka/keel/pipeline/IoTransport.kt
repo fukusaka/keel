@@ -116,11 +116,16 @@ interface IoTransport {
      * first read event before the channel constructor has finished
      * setting the callbacks.
      *
+     * Also where the POSIX engines join their EventLoop's participant
+     * registry. That registry decides who is told the loop stopped, and each
+     * participant is told once — so joining before the callbacks exist spends
+     * that one notification on a null and the connection never learns. For
+     * those engines this hook is load-bearing, not optional.
+     *
      * Default no-op for engines that arm read lazily on `readEnabled =
      * true` (the [io.github.fukusaka.keel.core.IdleReadPolicy.PRESERVE_BACKPRESSURE]
      * path) or that already deliver `onReadClosed` through a separate
-     * channel (engine-nodejs / engine-kqueue / engine-epoll / native
-     * netty transports).
+     * channel (engine-nodejs / native netty transports).
      */
     fun onChannelAttached() {}
 

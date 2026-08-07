@@ -134,8 +134,10 @@ internal class EpollIoTransport(
      * notification on a null [onReadClosed], leaving the connection silent for
      * good, and the wiring write carried no happens-before edge to the sweep's
      * read of it either. Both follow from the join now taking the registration
-     * lock after the wiring, so such a sweep refuses the join instead — which
-     * the construction site sees and reports.
+     * lock after the wiring, so such a sweep refuses the join instead. The
+     * construction site acts on that: the `connect` and `accept` paths raise,
+     * and the worker-accept paths release the descriptor and drop the
+     * connection without one to raise to.
      */
     override fun onLoopStopped() {
         if (!opened) return
@@ -207,9 +209,10 @@ internal class EpollIoTransport(
     override var readEnabled: Boolean = false
         set(value) {
             field = value
-            // Read is armed at construction for EOF detection. The setter
-            // only re-arms if the dispatch path stopped re-registering due to
-            // back-pressure (data arrived while readEnabled was false).
+            // Read is armed by [onChannelAttached] for EOF detection, so it
+            // is already armed before any caller can reach this setter. The
+            // setter only re-arms if the dispatch path stopped re-registering
+            // due to back-pressure (data arrived while readEnabled was false).
             if (value && opened) {
                 // The connection is now waiting to read, so the read-side idle
                 // timeout applies (covers accept-to-first-byte, slowloris, and
@@ -238,6 +241,11 @@ internal class EpollIoTransport(
      * Only meaningful once [onChannelAttached] has run — before that it is
      * `false` because nothing has been attempted, not because anything was
      * refused. Construction sites read it after building the channel.
+     *
+     * Plain rather than `@Volatile` because it is confined to one thread: the
+     * only write is [onChannelAttached], which the channel constructor makes,
+     * and the only reads are the construction sites on that same thread,
+     * after that constructor returns. The loop thread never touches it.
      *
      * `true` says the ledgers were open, not that the loop will run: a loop that
      * was built and closed without ever entering its poll never sweeps, so it
@@ -283,10 +291,11 @@ internal class EpollIoTransport(
      * call takes the loop's registration lock, and the sweep reads the registry
      * under that same lock.
      *
-     * Arming has the same requirement. The read primitive is armed at
-     * construction so a peer FIN is surfaced without the caller ever enabling
-     * reads; armed before the callbacks exist, a byte or an EOF arriving in
-     * that window is delivered through a null and dropped.
+     * Arming has the same requirement. This engine arms eagerly rather than on
+     * the first `readEnabled = true`, so that a peer FIN is surfaced without the
+     * caller ever enabling reads — which means the arm can fire before anything
+     * asked it to, and a byte or an EOF reaching a null callback is dropped.
+     * Eager is still the right choice; it just has to start here.
      *
      * A sweep landing before this call now refuses the join rather than
      * delivering into a null, which the construction site sees as
