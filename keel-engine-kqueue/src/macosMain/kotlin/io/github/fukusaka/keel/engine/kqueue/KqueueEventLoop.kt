@@ -31,7 +31,6 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
 import platform.darwin.EV_EOF
@@ -529,15 +528,7 @@ internal class KqueueEventLoop(
 
     // --- KqueueSuspendRegister impl (seam for connect InProgress) ---
 
-    override suspend fun awaitWriteReady(fd: Int, logger: Logger) {
-        suspendCancellableCoroutine<Unit> { cont ->
-            val reg = register(fd, Interest.WRITE, cont)
-            cont.invokeOnCancellation {
-                unregister(reg)
-                closeFdSafely(fd, logger, "connect cancellation")
-            }
-        }
-    }
+    override suspend fun awaitWriteReady(fd: Int, logger: Logger) = awaitWritableOwningFd(fd, logger)
 
     companion object {
 

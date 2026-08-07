@@ -13,6 +13,7 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.pthread_mutex_init
 import platform.posix.pthread_mutex_lock
 import platform.posix.pthread_mutex_t
@@ -743,6 +744,55 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
 
         submitOnLoop { submitArm(fd, interest, key, newReg, cont) }
         return newReg
+    }
+
+    /**
+     * Suspends until [fd] is write-ready, **owning [fd] for the duration**: if
+     * the wait ends any way other than readiness, this closes it.
+     *
+     * The `connect()` paths of both engines wait here on `EINPROGRESS`. The
+     * descriptor exists but belongs to nobody yet — no transport has been built
+     * around it — so an abnormal exit that leaves it open leaks it for the life
+     * of the process, with no handle left to close it by.
+     *
+     * Cancellation was already covered by the handler below. **Failure was not**,
+     * and it is the reachable one: [submitArm] resumes this continuation with an
+     * exception when the arming syscall fails, and `invokeOnCancellation` does
+     * not run for an exceptional resume — so before this function existed, an
+     * `epoll_ctl` / `kevent` that failed with `ENFILE` left the connect socket
+     * open and unreferenced. When the loop's own thread is the caller, the arm
+     * runs inline inside [register] and fails *before* the handler is even
+     * installed.
+     *
+     * **The one-shot is the mechanism, not a belief about ordering.** The two
+     * release paths are reached by different means — one by cancellation, one by
+     * a thrown value — and nothing here orders them against each other. Rather
+     * than argue that a run of one excludes the other, the compare-and-set makes
+     * that true: whichever arrives first closes, the other returns. Closing a
+     * descriptor twice is not a harmless repeat once the kernel has handed the
+     * number to somebody else.
+     *
+     * [unregister] runs on both paths too, and is documented as a no-op when the
+     * node is already gone — which it is on the [submitArm] path, which removes
+     * it before resuming.
+     */
+    protected suspend fun awaitWritableOwningFd(fd: Int, logger: Logger) {
+        val released = AtomicInt(0)
+        var reg: Registration? = null
+        try {
+            suspendCancellableCoroutine<Unit> { cont ->
+                val own = register(fd, Interest.WRITE, cont)
+                reg = own
+                cont.invokeOnCancellation {
+                    unregister(own)
+                    if (released.compareAndSet(0, 1)) closeFdSafely(fd, logger, "connect cancellation")
+                }
+            }
+        } catch (t: Throwable) {
+            reg?.let { unregister(it) }
+            if (released.compareAndSet(0, 1)) closeFdSafely(fd, logger, "connect wait failed")
+            throw t
+        }
     }
 
     /**
