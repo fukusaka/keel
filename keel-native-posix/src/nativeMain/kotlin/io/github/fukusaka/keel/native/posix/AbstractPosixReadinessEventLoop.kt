@@ -774,7 +774,17 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      *
      * [unregister] runs on both paths too, and is documented as a no-op when the
      * node is already gone — which it is on the [submitArm] path, which removes
-     * it before resuming.
+     * it before resuming. Keeping it on the failure path is defensive: the only
+     * other way to fail a waiter is [cancelAll], whose two callers pass
+     * `Interest.READ` on a server fd, so nothing reaches here with a node still
+     * in the chain today. It stays because a stale node makes a later append
+     * land where nothing pops it, and the check costs a lock on a path taken
+     * once per failed connect.
+     *
+     * The counter and the captured handle are two allocations per in-progress
+     * connect — not a hot path (at most once per outbound connection, and only
+     * when the connect did not complete immediately), and nothing here runs per
+     * readiness event.
      */
     protected suspend fun awaitWritableOwningFd(fd: Int, logger: Logger) {
         val released = AtomicInt(0)
