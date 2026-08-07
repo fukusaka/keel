@@ -809,8 +809,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * that keeps such a record is left holding one for a number the kernel is
      * free to hand to the next socket — and the loop would then skip the arming
      * syscall for that new socket, believing the interest already set, leaving
-     * its waiter parked with nothing watching it. Every other site that closes
-     * an fd this loop armed does the same thing first.
+     * its waiter parked with nothing watching it. The transport and server
+     * teardowns do this before their own close, for that reason. The one that
+     * does not is the teardown for a loop that has already stopped, and it says
+     * why: the bookkeeping belongs to a loop that will never read it again.
      *
      * The counter and the captured handle are two allocations per in-progress
      * connect — not a hot path (at most once per outbound connection, and only

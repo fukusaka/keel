@@ -133,7 +133,9 @@ class KqueueEventLoopSeamTest {
                 runBlocking { withTimeout(15.seconds) { el.awaitWriteReady(fd, logger = logger) } }
             }
             assertTrue(ex.message!!.contains("kevent"))
-            assertTrue(ex.message!!.contains("$fd"))
+            // `fd=$fd`, not the bare number: a real descriptor is a small
+            // integer that could turn up anywhere in the message.
+            assertTrue(ex.message!!.contains("fd=$fd"), "expected the failing fd to be named: ${ex.message}")
         } finally {
             el.close()
         }
