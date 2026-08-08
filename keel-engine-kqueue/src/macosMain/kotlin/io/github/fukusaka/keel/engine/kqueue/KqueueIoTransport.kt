@@ -230,8 +230,13 @@ internal class KqueueIoTransport(
      * parked reader. A close that throws loses only what the stage that failed was
      * for — the teardown runs its remaining stages and reaches its own
      * `closeFdSafely`. In practice the stages that can fail are the deferred
-     * flush and the release of what it left (a syscall wrapper, an allocator, a
-     * pointer); the ledger and registry ones report rather than throw, so the
+     * flush and the release of the queue (a syscall wrapper, an allocator, a
+     * pointer). What the flush leaves behind for that release is not all of what
+     * it took: the single-write path removes the entry before writing it, so a
+     * throw there loses that one buffer outright and the release stage has
+     * nothing to find — tracked separately, and not something a stage boundary
+     * can reach. The ledger and registry stages neither throw nor report: they
+     * are map removals under the registration lock, no-ops on a miss. So the
      * descriptor, the entries, the registry slot and the flush waiter are not
      * the cost. (In Pipeline mode the notification
      * performs that same teardown, so it can lose either set.)
@@ -709,7 +714,9 @@ internal class KqueueIoTransport(
     /**
      * Releases all pending write buffers and closes the socket fd.
      *
-     * Unsent data is discarded — no flush is attempted. The teardown withdraws
+     * Unsent data is discarded, apart from a flush already deferred to this
+     * tick: the teardown runs that one and drops whatever it could not send.
+     * Nothing is waited for either way. The teardown withdraws
      * this fd's EVFILT_READ / EVFILT_WRITE callback registrations before
      * closing, so the loop stops referencing this transport once the connection
      * is gone; a callback that fires in between is harmless anyway, since they
@@ -975,7 +982,18 @@ internal class KqueueIoTransport(
         // guarded on this since it existed; the write half reached the same
         // readiness with nothing in the way, and an `EV_ADD` filter is
         // persistent, so write readiness keeps arriving until the registration
-        // is withdrawn. The teardown withdraws it in its own stage now, but
+        // is withdrawn.
+        //
+        // That window opens on an ordinary close too, not only a failed one:
+        // `markClosing()` flips this flag off the loop and the teardown is
+        // dispatched, so readiness arriving in between used to drain the queue
+        // and resume the flush waiter. It no longer does, and the teardown
+        // cancels that waiter and drops the bytes instead. Deliberate, and the
+        // same answer `awaitPendingFlush` gives a caller that arrives one line
+        // later: with a close already under way, "the flush completed" is not
+        // something either path can honestly report.
+        //
+        // The teardown withdraws it in its own stage now, but
         // this guard is what covers the window before that runs -- and the
         // connection is over either way.
         if (!opened) return

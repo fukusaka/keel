@@ -240,10 +240,23 @@ abstract class AbstractIoTransport(
      * invariant cannot drift apart; the other engines still carry inline
      * copies and can adopt this as they gain a stopped-loop path.
      * Caller must hold the teardown claim ([markTeardownStarted]).
+     *
+     * **Two obligations, and the second is owed whatever the first did.** A
+     * refused release used to skip the zeroing, leaving a count naming buffers
+     * that are no longer queued. The POSIX teardowns give one stage per
+     * obligation for exactly this reason, and calling this from a single stage
+     * would have smuggled the grouping they forbid back in through the helper
+     * they share. It is kept here rather than split across two stages at four
+     * call sites because the second obligation is one assignment: a `finally`
+     * that cannot throw cannot displace the release failure on its way out,
+     * which is the one thing the staging exists to prevent.
      */
     protected fun releaseAllPendingWrites() {
-        releaseQueuedWrites()
-        pendingBytes = 0
+        try {
+            releaseQueuedWrites()
+        } finally {
+            pendingBytes = 0
+        }
     }
 
     /**
