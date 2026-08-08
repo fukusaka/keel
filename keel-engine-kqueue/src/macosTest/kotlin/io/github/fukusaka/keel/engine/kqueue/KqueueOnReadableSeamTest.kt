@@ -398,7 +398,7 @@ class KqueueOnReadableSeamTest {
             // buffers: an assertion about the refusal only bites while the
             // scripted write succeeds, and one about the syscall bites whatever
             // the fake is set to answer.
-            assertEquals(0, fake.writeCalls, "no flush was attempted")
+            assertEquals(0, fake.writeCalls + fake.writevCalls, "no flush was attempted")
             assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the abort left")
 
             assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the teardown could not")

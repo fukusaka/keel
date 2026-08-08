@@ -147,12 +147,13 @@ internal class KqueuePipelinedStreamServer(
                 is AcceptResult.Accepted -> {
                     // Per accepted descriptor, because that is the unit that can
                     // fail here: `setNonBlocking` is `check(...)` over `fcntl`,
-                    // so one connection meeting EMFILE threw all the way out of
-                    // this loop, out of the readiness dispatch and off the
-                    // loop's pthread entry -- ending the process over a single
-                    // socket. (`applySocketOptions` logs and swallows, so it is
-                    // not a second source; the point is that one exists at all.)
-                    // The listener has done nothing wrong and neither have the
+                    // so one connection whose descriptor cannot be made
+                    // non-blocking threw all the way out of this loop, out of
+                    // the readiness dispatch and off the loop's pthread entry
+                    // -- ending the process over a single socket.
+                    // (`applySocketOptions` logs and swallows, so it is not a
+                    // second source; the point is that one exists at all.) The
+                    // listener has done nothing wrong and neither have the
                     // other connections.
                     //
                     // Closing rather than dispatching: setup did not finish, so

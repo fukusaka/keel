@@ -1608,8 +1608,8 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // waiter queued on the same key still needs the interest armed.
             val keepInterest = withRegLock {
                 // A listener that threw does not get to vouch for itself, for
-                // the reason above. Whatever it put back is dropped here, so
-                // the ledger and the kernel go on agreeing about what is
+                // the reason above. Its own re-arm is dropped here, so the
+                // ledger and the kernel go on agreeing about what is
                 // watched -- a ledger saying "armed" over an interest nobody
                 // holds is how the stale-entry hangs this loop has already been
                 // fixed for began. A waiter is a different party and is still

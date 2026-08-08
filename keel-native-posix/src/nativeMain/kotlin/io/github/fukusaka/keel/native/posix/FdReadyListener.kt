@@ -64,11 +64,16 @@ interface FdReadyListener {
      * to the same failure on the next turn, and the turn after — whether the
      * listener armed before failing in [onReady], or earned its re-arm there
      * and then threw from here, since the EOF that brought it is permanently
-     * readable. Only a suspend waiter — a different party — keeps the interest
-     * armed then. So a listener that throws out of either callback is off
-     * **this interest on this fd** (the other interest, if it holds one, is
-     * untouched) until it registers again from somewhere that returned
-     * normally.
+     * readable. So a listener that throws out of either callback is off **this
+     * interest on this fd** (the other interest, if it holds one, is untouched)
+     * until it registers again from somewhere that returned normally.
+     *
+     * **Only its own re-arm is dropped.** What is withdrawn is the entry if it
+     * is still the failing listener's; anything a different party put on the
+     * key while the call was running stays, and keeps the interest armed with
+     * it. That party is not always a suspend waiter: a listener whose failure
+     * ends its connection has closed the fd on the way through, so the number
+     * can already have been handed to a fresh registration.
      */
     fun onPeerClosed(interest: Interest) {}
 }
