@@ -261,8 +261,9 @@ abstract class AbstractIoTransport(
      * the teardown claim is taken, so it has no next walker of its own; it uses
      * this so that the two drains that share a body cannot drift apart. **Every
      * other transport still writes the release-then-clear order out inline** —
-     * io_uring, NWConnection, Netty, NIO and Node all inherit this and none of
-     * them calls it, so the class of defect is open in all five.
+     * io_uring, NWConnection, Netty, NIO, Node and the in-memory one used by
+     * tests all inherit this and none of them calls it, so the class of defect
+     * is open in all six.
      *
      * **It does not touch [pendingBytes].** A caller on a path that continues
      * afterwards owes the matching [updatePendingBytes]. The two engine flush

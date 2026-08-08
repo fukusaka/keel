@@ -549,9 +549,9 @@ internal class KqueueIoTransport(
         // behalf -- it releases `pendingWrites`, which it can reach, and this
         // buffer is a local nothing else can see. The first thing between the
         // allocation and the hand-off that can throw is the pointer access one
-        // line down: it is an unchecked cast, so an allocator whose `IoBuf` does
-        // not implement the native-pointer interface fails here, having just
-        // handed out a pooled buffer.
+        // line down: it casts, so an allocator whose `IoBuf` does not implement
+        // the native-pointer interface fails there with a `ClassCastException`,
+        // having just handed out a pooled buffer.
         var unreleased: IoBuf? = buf
         try {
             val ptr = (buf.unsafePointer + buf.writerIndex)!!

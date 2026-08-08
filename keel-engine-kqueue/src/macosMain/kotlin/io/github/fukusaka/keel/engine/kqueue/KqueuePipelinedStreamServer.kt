@@ -146,18 +146,21 @@ internal class KqueuePipelinedStreamServer(
             when (val result = nativeSocket.accept(listener.serverFd)) {
                 is AcceptResult.Accepted -> {
                     // Per accepted descriptor, because that is the unit that can
-                    // fail here: `setNonBlocking` and `applySocketOptions` are
-                    // `check(...)` over `fcntl` / `setsockopt`, so one connection
-                    // meeting ENOBUFS threw all the way out of this loop, out of
-                    // the readiness dispatch and off the loop's pthread entry --
-                    // ending the process over a single socket. The listener has
-                    // done nothing wrong and neither have the other connections.
+                    // fail here: `setNonBlocking` is `check(...)` over `fcntl`,
+                    // so one connection meeting EMFILE threw all the way out of
+                    // this loop, out of the readiness dispatch and off the
+                    // loop's pthread entry -- ending the process over a single
+                    // socket. (`applySocketOptions` logs and swallows, so it is
+                    // not a second source; the point is that one exists at all.)
+                    // The listener has done nothing wrong and neither have the
+                    // other connections.
                     //
                     // Closing rather than dispatching: setup did not finish, so
                     // no transport owns this descriptor and nothing else will
-                    // release it. Then `continue`, which is what the sibling
-                    // `Failed` branch already does for a failed accept -- the
-                    // repeat rate is bounded by the peers connecting, not by
+                    // release it. Then `continue` rather than the `arm()` and
+                    // `return` the sibling `Failed` branch does, because the
+                    // queue may still hold peers this listener can serve -- the
+                    // repeat rate is bounded by them connecting, not by
                     // readiness re-firing.
                     //
                     // Choosing the worker is inside the guard and handing the

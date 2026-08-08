@@ -415,9 +415,11 @@ class EpollOnReadableSeamTest {
             assertEquals(1, queued.refusedReleases)
 
             // The same readiness on the write half must not walk back into what
-            // the aborted teardown left: `abandoned` is still queued, and the
-            // WRITE registration outlives the abort because the backstop takes
-            // back only the interest that fired. Level-triggered EPOLLOUT then
+            // the aborted teardown left: `abandoned` is still queued. In
+            // production the WRITE registration outlives the abort too, because
+            // the backstop takes back only the interest that fired; this
+            // fixture never arms one, so what is checked here is the transport's
+            // own refusal to act, not the arrival. Level-triggered EPOLLOUT then
             // arrives for as long as the fd is open, which is now forever.
             //
             // The `opened` guard in `onWritable` is the only thing stopping it,
@@ -428,7 +430,11 @@ class EpollOnReadableSeamTest {
             val onWrite = onLoopCatching { transport.onReady(Interest.WRITE) }
 
             assertEquals(null, onWrite, "write readiness on an ended connection does nothing")
-            assertEquals(1, queued.refusedReleases, "the drain is not entered a second time")
+            // Directly, not through what a flush would have done with the
+            // buffers: an assertion about the refusal only bites while the
+            // scripted write succeeds, and one about the syscall bites whatever
+            // the fake is set to answer.
+            assertEquals(0, fake.writeCalls, "no flush was attempted")
             assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the abort left")
 
             assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the teardown could not")

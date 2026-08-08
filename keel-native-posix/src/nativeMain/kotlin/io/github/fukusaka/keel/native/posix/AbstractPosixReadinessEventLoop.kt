@@ -1615,7 +1615,18 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
                 // fixed for began. A waiter is a different party and is still
                 // owed the interest, and keeping it armed for one is why the
                 // drop above is of the registration and not of the interest.
-                if (listenerThrew) popCallback(key)
+                //
+                // By identity, because by key alone would take a stranger's.
+                // A listener that ends its connection closes the fd on the way
+                // through here, and the number is free from that moment: a
+                // connect on another thread can be handed it back and register
+                // on this very key before this line runs. Dropping that would
+                // leave a freshly opened channel that reports itself open,
+                // never reads a byte and never learns of a close -- and, with
+                // the interest taken back below, nothing to revive it. The
+                // teardown's own withdrawal is key-only and safe because it
+                // runs before the descriptor is closed; this one runs after.
+                if (listenerThrew) popCallbackIfCurrent(key, cb)
                 hasWaiters(key) || hasCallbackListener(key)
             }
             if (!keepInterest) {
