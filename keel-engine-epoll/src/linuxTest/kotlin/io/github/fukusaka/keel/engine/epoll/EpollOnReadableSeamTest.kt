@@ -420,8 +420,10 @@ class EpollOnReadableSeamTest {
             // drain stops where it failed even though the stages after it run.
             // The registration and the descriptor are gone by now -- the
             // teardown withdrew and closed them -- so what is checked here is
-            // the transport's own refusal to act on a connection that ended. Level-triggered EPOLLOUT then
-            // arrives for as long as the fd is open, which is now forever.
+            // the transport's own refusal to act on a connection that ended.
+            // Before the teardown finished past a failed stage, neither was
+            // gone and the readiness kept arriving for as long as the process
+            // ran.
             //
             // The `opened` guard in `onWritable` is the only thing stopping it,
             // and this is what pins it: these buffers hand out a native pointer,
@@ -444,7 +446,11 @@ class EpollOnReadableSeamTest {
             // stage that threw. This assertion was the other way round when the
             // teardown was a straight line -- a refused release abandoned the
             // descriptor, and the test closed it on the teardown's behalf.
-            assertEquals(-1, close(transportFd), "the teardown released the descriptor itself")
+            assertEquals(
+                -1,
+                fcntl(transportFd, F_GETFD),
+                "the teardown released the descriptor itself",
+            )
         }
     }
 

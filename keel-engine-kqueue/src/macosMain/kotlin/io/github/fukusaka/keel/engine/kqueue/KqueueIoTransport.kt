@@ -229,8 +229,10 @@ internal class KqueueIoTransport(
      * borrowed header set, the server's registry entry, the EOF that wakes a
      * parked reader. A close that throws loses only what the stage that failed was
      * for — the teardown runs its remaining stages and reaches its own
-     * `closeFdSafely`, so the descriptor, the ledger entries, the registry slot
-     * and the flush waiter are not the cost. (In Pipeline mode the notification
+     * `closeFdSafely`. In practice the stages that can fail are the flush and
+     * the drain (an allocator, a pointer, a syscall wrapper); the ledger and
+     * registry ones report rather than throw, so the descriptor, the entries,
+     * the registry slot and the flush waiter are not the cost. (In Pipeline mode the notification
      * performs that same teardown, so it can lose either set.)
      *
      * Reaching the loop's backstop repairs none of it — it drops the
@@ -774,8 +776,10 @@ internal class KqueueIoTransport(
         // Reached whatever the stages above did: `closeFdSafely` reports rather
         // than throws, so the descriptor is released on every path out of here.
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
-        // Staged too: `Logger` is a pluggable SPI, and a throw from the stats
-        // line would replace the failure this whole structure exists to carry.
+        // Staged too. Not because this can throw -- the engines wrap the
+        // configured factory so a `Logger` cannot escape a guard -- but because
+        // the line above says the close reports rather than throws, and the
+        // difference between the two should not rest on which logger call it is.
         failure = runTeardownStage(failure) { logTransportStatsOnClose(eventLoop.logger, "fd=$fd") }
         failure?.let { throw it }
     }
@@ -832,8 +836,8 @@ internal class KqueueIoTransport(
     private fun teardownAfterLoopStopped() {
         if (!markTeardownStarted()) return
         // Staged for the same reason the on-loop teardown is, and it has the
-        // same two obligations to keep apart: the `finally` below saved the
-        // descriptor from a throwing release, but the waiter behind that
+        // same two obligations to keep apart: the `finally` this replaces saved
+        // the descriptor from a throwing release, but the waiter behind that
         // release was inside the `try` and went with it -- parked for the
         // process lifetime, on a path that exists to end exactly those waits.
         var failure: Throwable? = null
