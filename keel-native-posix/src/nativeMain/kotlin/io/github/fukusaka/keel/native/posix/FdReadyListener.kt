@@ -28,6 +28,11 @@ interface FdReadyListener {
      * peer-close signal with no data behind it. A listener therefore sees the
      * end of the stream the ordinary way — its `read()` returns 0 — and does
      * not need to distinguish that case from a normal wakeup.
+     *
+     * **A throw out of here costs the registration**, including one made from
+     * inside this call — see [onPeerClosed], where the rule and its reason are
+     * written out. It applies to both callbacks; it is stated there because
+     * that is where the interest being dropped is least obvious.
      */
     fun onReady(interest: Interest)
 
@@ -53,6 +58,22 @@ interface FdReadyListener {
      * here or from [onReady], nor a suspend waiter queued on the same key. It
      * used to disarm unconditionally; that discarded a live registration and
      * left an accept loop that never ran again.
+     *
+     * **Unless the listener threw**, in which case its own re-registration does
+     * not count and is dropped: honouring it would hand the same readiness back
+     * to the same failure on the next turn, and the turn after — whether the
+     * listener armed before failing in [onReady], or earned its re-arm there
+     * and then threw from here, since the EOF that brought it is permanently
+     * readable. So a listener that throws out of either callback is off **this
+     * interest on this fd** (the other interest, if it holds one, is untouched)
+     * until it registers again from somewhere that returned normally.
+     *
+     * **Only its own re-arm is dropped.** What is withdrawn is the entry if it
+     * is still the failing listener's; anything a different party put on the
+     * key while the call was running stays, and keeps the interest armed with
+     * it. That party is not always a suspend waiter: a listener whose failure
+     * ends its connection has closed the fd on the way through, so the number
+     * can already have been handed to a fresh registration.
      */
     fun onPeerClosed(interest: Interest) {}
 }

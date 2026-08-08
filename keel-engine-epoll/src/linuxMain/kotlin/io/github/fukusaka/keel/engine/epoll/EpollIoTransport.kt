@@ -81,6 +81,19 @@ internal class EpollIoTransport(
     // Touched only on the EventLoop thread (the read path).
     private var readPoolRegistered = false
 
+    // Sticky: set once any part of this connection's wind-down failed, and
+    // never cleared, because nothing repairs what that wind-down skipped. A
+    // second entry into [endConnectionAfterFailure] would otherwise start from
+    // "nothing has failed yet" and find no evidence to the contrary -- the
+    // close it runs is a no-op by then, so it cannot produce any.
+    //
+    // No readiness path reaches that second entry today: all three guard on
+    // `opened`, the last of them (`onWritable`) only since the route was found.
+    // This is what keeps the invariant true if a fourth is added -- the guard's
+    // own documentation invites new call sites -- so it is deliberately not
+    // reachable from the seam, and no test pins it.
+    private var windDownFailed = false
+
     /**
      * [FdReadyListener] dispatch — passing `this` to
      * `AbstractPosixReadinessEventLoop.registerCallback` avoids per-call lambda allocation on
@@ -88,10 +101,189 @@ internal class EpollIoTransport(
      * compare (negligible vs. surrounding syscall + buffer alloc).
      */
     override fun onReady(interest: Interest) {
-        when (interest) {
-            Interest.READ -> onReadable()
-            Interest.WRITE -> onWritable()
+        // Per connection, because that is the unit that can fail in here. The
+        // pipeline already contains anything a user handler throws (it turns it
+        // into `onError` and ends at the tail), and a resumed coroutine's throw
+        // is caught by the loop's per-task guard. What reaches this frame is
+        // this connection's own plumbing -- an allocator that cannot serve a
+        // read buffer, a timer that will not arm -- and that used to leave the
+        // readiness dispatch, the loop body and the pthread entry point behind
+        // it, ending the process over one socket.
+        //
+        // Reclaiming it the way an idle timeout does -- report inactive, then
+        // close, in every channel mode -- so the caller learns through the path
+        // it already watches: `onReadClosed`, `read()` returning -1, the
+        // pipeline going inactive. Nothing new to subscribe to. Not the
+        // fatal-read shape, which reports and leaves the close to the channel;
+        // a connection whose readiness cannot be handled is not coming back,
+        // and a Coroutine-mode caller must not be left holding its fd. An
+        // earlier revision closed without reporting, which reads as the same
+        // thing and is not: `close()` releases what it can reach and tells
+        // nobody, so every handler's `onInactive` was skipped.
+        //
+        // What no end can do for us is release a buffer that is only a local
+        // of the frame that threw. `onReadable` therefore owns what it
+        // allocates until it has handed it on; `flushSingle` has the same
+        // exposure on the write half and does not yet, which is filed rather
+        // than widened into here.
+        containReadinessFailure(interest) {
+            when (interest) {
+                Interest.READ -> onReadable()
+                Interest.WRITE -> onWritable()
+            }
         }
+    }
+
+    /**
+     * Runs [body] and ends this connection if it throws.
+     *
+     * Covers every entry the readiness dispatch has into this transport, not
+     * just [onReady]: the peer-close notification runs user-facing callbacks
+     * on the same thread with the same nothing above it, and letting that one
+     * fall through to the backstop in the event loop leaves the connection
+     * open in CLOSE-WAIT holding its descriptor -- the loop survives, and the
+     * fd is never released by anybody.
+     *
+     * [readinessInterest] is the interest being handled, or `null` for the
+     * peer-close notification. An enum rather than a formatted string because
+     * this runs on every readiness event: the message is built inside the log
+     * lambda, which the level check already gates.
+     *
+     * **It does not contain everything, despite the name.** If the connection
+     * cannot be reported inactive — which in Pipeline mode is the close itself
+     * — [body]'s failure is re-raised rather than swallowed; see
+     * [endConnectionAfterFailure] for why, and for why that decision cannot be
+     * made by calling the notification a second time. The intended recipient is
+     * the backstop in the readiness dispatch, which is the only *guard* between
+     * here and the loop's `pthread` entry point, so a new call site must be one
+     * that backstop reaches.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun containReadinessFailure(readinessInterest: Interest?, body: () -> Unit) {
+        try {
+            body()
+        } catch (readinessFailure: Throwable) {
+            eventLoop.logger.warn(readinessFailure) {
+                val what = readinessInterest?.let { "readiness for $it" } ?: "the peer close"
+                "handling $what threw; ending the connection: fd=$fd"
+            }
+            endConnectionAfterFailure(readinessFailure)
+        }
+    }
+
+    /**
+     * Reports this connection inactive, remembering it if that throws.
+     *
+     * Every readiness path that ends a connection goes through here rather than
+     * touching [onReadClosed] directly, because whether that call succeeded is
+     * what [endConnectionAfterFailure] needs and **cannot learn by calling it
+     * again** — so the answer is recorded in [windDownFailed] instead. The
+     * route is `pipeline.notifyInactive()`, which sets `inactiveObserved`
+     * before it dispatches the chain, and then `close()`,
+     * whose `markClosing()` flips `opened` exactly once — so a chain that threw
+     * is short-circuited on re-entry and the second call returns normally. A
+     * fallback that reads that return as "the teardown finished" is reading the
+     * short-circuit, not the teardown.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun notifyInactive() {
+        try {
+            onReadClosed?.invoke()
+        } catch (notifyFailure: Throwable) {
+            windDownFailed = true
+            throw notifyFailure
+        }
+    }
+
+    /**
+     * Notifies inactivity, then forces the close — the order the idle-timeout
+     * paths on the base transport use, for the same reason.
+     *
+     * Only the order is shared. Those two call [onReadClosed] directly and
+     * record nothing, so a throw out of one is absorbed by the deadline
+     * scheduler's own guard and the `close()` after it never runs — the same
+     * shape as the gap below, on a path this guard cannot reach because a
+     * different thing drives it. Closing it means deciding what that scheduler's
+     * guard owes a half-torn-down connection, which is a separate change.
+     *
+     * `close()` alone is not the end of a connection, only the end of its
+     * descriptor. It releases what it can reach — the pending writes, the
+     * registrations, the fd — and tells nobody. [onReadClosed] is the single
+     * route from this transport to `pipeline.notifyInactive()`, and that is
+     * what runs every handler's `onInactive`: the body aggregator's held
+     * chunks, the decoder's borrowed header set, the server's entry in its
+     * connection registry, and the EOF that wakes a caller parked in a
+     * Coroutine-mode `read()`. Closing without it leaks the first three per
+     * failed connection and hangs the fourth for good.
+     *
+     * Unlike the fatal-read path, which notifies and lets the channel decide
+     * whether to close, this closes in every mode: an idle timeout and a
+     * connection whose readiness cannot be handled are both reclamations, and
+     * a Coroutine-mode caller who is never coming back must not keep the fd.
+     *
+     * **If any part of the wind-down failed, [readinessFailure] is re-raised
+     * rather than swallowed** — the notification and the close alike, because
+     * either one leaves this connection in a state nothing else completes.
+     *
+     * What is lost depends on which one. A notification that throws skipped
+     * every handler's `onInactive`: the aggregator's held chunks, the decoder's
+     * borrowed header set, the server's registry entry, the EOF that wakes a
+     * parked reader. A close that throws part-way skipped the rest of its own
+     * teardown, and the claim it consumed means nothing retries it — so the fd
+     * is not closed, the ledger entries are not withdrawn, this transport stays
+     * in the participant registry, and a caller parked in `awaitPendingFlush`
+     * is never woken. (In Pipeline mode the notification performs that same
+     * teardown, so it can lose either set.)
+     *
+     * Reaching the loop's backstop repairs none of it — it drops the
+     * registration so the same readiness stops re-entering the same failure,
+     * and it is the only report at ERROR: the two below it are warnings, which
+     * is not what a connection abandoned mid-teardown deserves.
+     *
+     * **What the decision may not rest on is a second call to the callback.**
+     * See [notifyInactive]: the second call returns normally whatever happened
+     * to the first, so an earlier revision re-raised only against a stub that
+     * throws every time. On the paths where the guarded body was *itself* the
+     * notification (a peer close, an `Eof`, a failed `read`) a real callback
+     * looked like success and the failure was swallowed. The revision after it
+     * fixed that and then wrapped the close in a `catch` it did not re-raise
+     * from, which put the same hole back one call along: in a mode where the
+     * notification does not close — a Coroutine-mode channel — the close here
+     * is the whole teardown, and swallowing its failure loses everything above.
+     *
+     * What is raised is the original failure with anything the wind-down added
+     * suppressed onto it, in the order they happened: the readiness failure is
+     * the cause, a throw from the notification or the close is a consequence of
+     * reacting to it. On the paths above the first two are the same object, and
+     * then there is only the one.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun endConnectionAfterFailure(readinessFailure: Throwable) {
+        // Gated on the sticky record, not on the notification's own flag: on a
+        // second entry the first wind-down has already failed, and calling the
+        // callback again would be the very thing [notifyInactive] says means
+        // nothing.
+        if (!windDownFailed) {
+            try {
+                notifyInactive()
+            } catch (notifyFailure: Throwable) {
+                eventLoop.logger.warn(notifyFailure) {
+                    "reporting the failed connection inactive threw as well: fd=$fd"
+                }
+                readinessFailure.addSuppressed(notifyFailure)
+                windDownFailed = true
+            }
+        }
+        try {
+            // A no-op when the notification already consumed the claim; the
+            // point is the mode where it did not.
+            close()
+        } catch (closeFailure: Throwable) {
+            eventLoop.logger.warn(closeFailure) { "closing the failed connection threw as well: fd=$fd" }
+            readinessFailure.addSuppressed(closeFailure)
+            windDownFailed = true
+        }
+        if (windDownFailed) throw readinessFailure
     }
 
     /**
@@ -109,7 +301,7 @@ internal class EpollIoTransport(
     override fun onPeerClosed(interest: Interest) {
         if (interest != Interest.READ) return
         if (!opened) return
-        onReadClosed?.invoke()
+        containReadinessFailure(readinessInterest = null) { notifyInactive() }
     }
 
     /**
@@ -345,30 +537,48 @@ internal class EpollIoTransport(
             readPoolRegistered = true
         }
         val buf = allocator.allocate(readBufferSize)
-        val ptr = (buf.unsafePointer + buf.writerIndex)!!
-        when (val result = nativeSocket.read(fd, ptr, buf.writableBytes)) {
-            is ReadResult.Bytes -> {
-                buf.writerIndex += result.bytes
-                touchIdleTimeout() // progress: refresh the idle deadline
-                onRead?.invoke(buf) ?: buf.release()
-                armRead()
+        // Held until this body has either released it or handed it on, so that
+        // a throw in between still releases it. `close()` cannot do this on our
+        // behalf -- it releases `pendingWrites`, which it can reach, and this
+        // buffer is a local nothing else can see. The first thing between the
+        // allocation and the hand-off that can throw is the pointer access one
+        // line down: it casts, so an allocator whose `IoBuf` does not implement
+        // the native-pointer interface fails there with a `ClassCastException`,
+        // having just handed out a pooled buffer.
+        var unreleased: IoBuf? = buf
+        try {
+            val ptr = (buf.unsafePointer + buf.writerIndex)!!
+            when (val result = nativeSocket.read(fd, ptr, buf.writableBytes)) {
+                is ReadResult.Bytes -> {
+                    buf.writerIndex += result.bytes
+                    touchIdleTimeout() // progress: refresh the idle deadline
+                    unreleased = null
+                    onRead?.invoke(buf) ?: buf.release()
+                    armRead()
+                }
+                ReadResult.Eof -> {
+                    unreleased = null
+                    buf.release()
+                    notifyInactive()
+                }
+                ReadResult.WouldBlock -> {
+                    // Spurious wake-up (read readiness without data) — re-arm.
+                    unreleased = null
+                    buf.release()
+                    armRead()
+                }
+                is ReadResult.Failed -> {
+                    // Fatal read error (ECONNRESET / EBADF / ...). EINTR is
+                    // already absorbed by Layer 1.
+                    eventLoop.logger.warn { "read failed: fd=$fd ${errnoMessage(result.errno)}" }
+                    unreleased = null
+                    buf.release()
+                    notifyInactive()
+                }
             }
-            ReadResult.Eof -> {
-                buf.release()
-                onReadClosed?.invoke()
-            }
-            ReadResult.WouldBlock -> {
-                // Spurious wake-up (read readiness without data) — re-arm.
-                buf.release()
-                armRead()
-            }
-            is ReadResult.Failed -> {
-                // Fatal read error (ECONNRESET / EBADF / ...). EINTR is
-                // already absorbed by Layer 1.
-                eventLoop.logger.warn { "read failed: fd=$fd ${errnoMessage(result.errno)}" }
-                buf.release()
-                onReadClosed?.invoke()
-            }
+        } catch (readFailure: Throwable) {
+            unreleased?.release()
+            throw readFailure
         }
     }
 
@@ -639,8 +849,7 @@ internal class EpollIoTransport(
             }
             is WriteResult.Failed -> {
                 eventLoop.logger.warn { "writev() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                for (pw in pendingWrites) pw.buf.release()
-                pendingWrites.clear()
+                releaseQueuedWrites()
                 updatePendingBytes(-totalBytes)
                 return true
             }
@@ -648,8 +857,7 @@ internal class EpollIoTransport(
         }
 
         if (writtenBytes >= totalBytes) {
-            for (pw in pendingWrites) pw.buf.release()
-            pendingWrites.clear()
+            releaseQueuedWrites()
             updatePendingBytes(-totalBytes)
             return true
         }
@@ -667,8 +875,8 @@ internal class EpollIoTransport(
             val pw = pendingWrites.first()
             if (consumed + pw.length <= writtenBytes) {
                 consumed += pw.length
-                pw.buf.release()
                 pendingWrites.removeFirst()
+                pw.buf.release()
             } else {
                 val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
                 pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
@@ -693,6 +901,15 @@ internal class EpollIoTransport(
 
     /** EPOLLOUT callback body — invoked via [onReady] when [Interest.WRITE] fires. */
     private fun onWritable() {
+        // Nothing to drain for a connection that has ended, and the queue this
+        // would drain may be the wreckage of a teardown that threw part-way:
+        // buffers already released, or never releasable. `onReadable` has
+        // guarded on this since it existed; the write half reached the same
+        // readiness with nothing in the way, and level-triggered EPOLLOUT keeps
+        // arriving until the registration is withdrawn -- which is one of the
+        // steps a failed teardown skips.
+        if (!opened) return
+
         // Retry drain immediately when fd becomes writable — do NOT go through
         // flush() which would re-defer to the next tick.
         val done = performFlush()

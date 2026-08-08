@@ -242,9 +242,52 @@ abstract class AbstractIoTransport(
      * Caller must hold the teardown claim ([markTeardownStarted]).
      */
     protected fun releaseAllPendingWrites() {
-        for (pw in pendingWrites) pw.buf.release()
-        pendingWrites.clear()
+        releaseQueuedWrites()
         pendingBytes = 0
+    }
+
+    /**
+     * Empties the pending-write queue, releasing each buffer *after* it has left
+     * the queue.
+     *
+     * The order is the point. Releasing first and clearing afterwards means a release
+     * that throws leaves every buffer it already released **still queued** — and
+     * whatever walks this queue next releases them a second time, which fails
+     * the reference-count check. In a flush that next walker is the teardown, at
+     * its first step, so one refused release costs the fd, the ledger entries,
+     * the registry slot and the flush waiter.
+     *
+     * [releaseAllPendingWrites] itself runs at most once per transport, after
+     * the teardown claim is taken, so it has no next walker of its own; it uses
+     * this so that the two drains that share a body cannot drift apart. No other
+     * transport calls it, and what that costs them differs — **the defect needs
+     * a second walker over the same queue**, which only some have. The NIO and
+     * Node transports drain on their flush path *and* on teardown, so a refused
+     * release on the first leaves a buffer for the second to release again:
+     * open. io_uring releases without clearing but its flush clears in a
+     * `finally`, so a refusal there loses the tail rather than double-releasing
+     * it: a different defect. Netty and NWConnection release only from a
+     * teardown behind [markTeardownStarted], which by the paragraph above has
+     * no next walker: not open. The in-memory transport used by tests does have
+     * a second walker, and is safe for the other reason — its flush already
+     * takes each entry out of the queue before releasing it, which is what this
+     * does.
+     *
+     * **It does not touch [pendingBytes].** A caller on a path that continues
+     * afterwards owes the matching [updatePendingBytes]. The two engine flush
+     * sites make that call on the next statement, which is to say **not when
+     * this throws** — on that path the count is left high and only the teardown
+     * that follows puts it right by zeroing it. A caller that means to carry on
+     * needs the update somewhere this cannot skip. Without it the count only
+     * ever grows, and `writable` latches `false` for the life of the
+     * connection.
+     *
+     * **It stops where the failure was.** The buffers behind a refused release
+     * stay queued and this returns by throwing, so a caller that has more to do
+     * does not get to do it. Making a failed drain finish is a separate change.
+     */
+    protected fun releaseQueuedWrites() {
+        while (pendingWrites.isNotEmpty()) pendingWrites.removeFirst().buf.release()
     }
 
     /**

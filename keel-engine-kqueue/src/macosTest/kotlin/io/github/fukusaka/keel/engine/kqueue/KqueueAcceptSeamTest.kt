@@ -16,8 +16,10 @@ import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
 import platform.posix.ECONNABORTED
 import platform.posix.EMFILE
+import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
 import platform.posix.close
+import platform.posix.fcntl
 import platform.posix.socket
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -44,10 +46,11 @@ import kotlin.time.Duration.Companion.seconds
  *   fd on the boss event loop's real kqueue and suspends the
  *   continuation; resuming requires the real socket to become readable.
  *   Exercised by `KqueueEngineTest` integration tests.
- * - **`onAcceptable` `Accepted` branch (callback-based)** — after
- *   `setNonBlocking` + `getAddr` chain, the flow calls
- *   `transport.readEnabled = true` which arms a real worker-loop read
- *   on the (fake) accepted fd and fails with EBADF. Integration tests
+ * - **`onAcceptable` `Accepted` branch, past the hand-off** — the flow
+ *   calls `transport.readEnabled = true`, which arms a real worker-loop
+ *   read on the accepted fd. A *fake* fd fails there with EBADF, which
+ *   is why most of this file stops before the hand-off; the tests that
+ *   need to go through it pass a real descriptor. Integration tests
  *   cover the full accept-to-first-byte flow.
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -56,8 +59,9 @@ class KqueueAcceptSeamTest {
     private fun newEngine(
         fakeSocket: FakeNativeSocket = FakeNativeSocket(),
         fakeOps: FakeNativeSocketOps = FakeNativeSocketOps(),
+        threads: Int = 1,
     ): KqueueEngine = KqueueEngine(
-        config = IoEngineConfig(threads = 1),
+        config = IoEngineConfig(threads = threads),
         nativeSocket = fakeSocket,
         nativeSocketOps = fakeOps,
     )
@@ -277,6 +281,115 @@ class KqueueAcceptSeamTest {
     }
 
     @Test
+    fun `a socket that cannot be prepared is closed and the accept loop carries on`() = runBlocking {
+        withTimeout(15.seconds) {
+            // `setNonBlocking` is `check(...)` over `fcntl` in production, so one
+            // accepted socket whose descriptor cannot be made non-blocking
+            // throws on the accept loop's own thread -- out of the loop, out of the readiness dispatch, off a
+            // pthread entry with nothing above it, ending the process. The
+            // listener and every other connection are blameless.
+            val sentinelFd = newSentinelFd()
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18086)
+            // A real descriptor: the failure path closes it, and whether it did
+            // is half of what this asserts.
+            val doomedFd = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(doomedFd >= 0, "could not open a socket to be accepted")
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(doomedFd))
+                enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+                setNonBlockingThrowsOnce = IllegalStateException("fcntl(F_SETFL, O_NONBLOCK) failed: boom")
+            }
+            val engine = newEngine(fakeSocket, fakeOps)
+            try {
+                val server = engine.bindPipeline(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                ) { /* no-op initializer */ }
+                val pipelined = server as KqueuePipelinedStreamServer
+
+                pipelined.onAcceptable()
+
+                assertEquals(
+                    2,
+                    fakeSocket.acceptCalls,
+                    "the loop must go round again rather than unwind: the next peer is not at fault",
+                )
+                assertEquals(
+                    -1,
+                    fcntl(doomedFd, F_GETFD),
+                    "setup did not finish, so no transport owns that descriptor and this must release it",
+                )
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a wrapped worker index does not turn every accept into a dropped one`() = runBlocking {
+        withTimeout(15.seconds) {
+            // `workerIndex++ % size` goes negative after Int.MAX_VALUE accepts,
+            // and a negative index throws out of `at()`. The per-socket guard
+            // catches it, so the loop survives -- and closes and drops the
+            // connection. The counter keeps incrementing, so from then on one
+            // accept in `size` lands on a usable index and the rest are
+            // dropped, one warning each, for as long as the server runs: the
+            // listener looks healthy and serves a fraction. The counter is
+            // wound here rather than reached, because reaching it means two
+            // billion accepts.
+            val sentinelFd = newSentinelFd()
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18088)
+            val acceptedFd = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(acceptedFd >= 0, "could not open a socket to be accepted")
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(acceptedFd))
+                enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+            }
+            // Two workers, because `n % 1` is 0 for every n -- a single-worker
+            // group cannot be indexed wrongly, so it cannot show this at all.
+            val engine = newEngine(fakeSocket, fakeOps, threads = 2)
+            try {
+                val server = engine.bindPipeline(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                ) { /* no-op initializer */ }
+                val pipelined = server as KqueuePipelinedStreamServer
+                // Any value the wrap passes through; -1 makes an unmasked
+                // modulo negative for every group size above one.
+                pipelined.setWorkerIndexForTest(-1)
+
+                pipelined.onAcceptable()
+
+                assertTrue(
+                    fcntl(acceptedFd, F_GETFD) >= 0,
+                    "the connection is handed to a worker, not dropped for the counter's sake",
+                )
+                // Nothing else will: the worker transport holds it, and with an
+                // empty pipeline the loop-stop notification does not close.
+                close(acceptedFd)
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
+        }
+    }
+
+    @Test
     fun `onAcceptable WouldBlock re-arms without side effects`() = runBlocking {
         withTimeout(15.seconds) {
             val sentinelFd = newSentinelFd()
@@ -298,6 +411,49 @@ class KqueueAcceptSeamTest {
                 pipelined.onAcceptable()
                 assertEquals(1, fakeSocket.acceptCalls)
                 assertTrue(fakeOps.nonBlockingFds.isEmpty())
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `an accept loop that throws leaves the listener armed`() = runBlocking {
+        withTimeout(15.seconds) {
+            // `arm()` is reached from `start()` and from the two branches that
+            // end the loop normally, so a throw on the way out left this
+            // listener with no registration and nothing that would give it one
+            // back -- the readiness dispatch found no listener for the key and
+            // took the interest away. The server went on reporting itself
+            // active and never accepted again. Silent, where the crash this
+            // guard replaced at least said something.
+            val sentinelFd = newSentinelFd()
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18087)
+            val fakeSocket = FakeNativeSocket().apply {
+                acceptThrowsOnce = IllegalStateException("the accept loop failed")
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+            }
+            val engine = newEngine(fakeSocket, fakeOps)
+            try {
+                val server = engine.bindPipeline(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                ) { /* no-op initializer */ }
+                val pipelined = server as KqueuePipelinedStreamServer
+
+                pipelined.dispatchAcceptReadiness()
+
+                assertTrue(
+                    pipelined.isFirstListenerArmed(),
+                    "a listener that is still open stays armed, whatever the loop threw",
+                )
                 server.close()
             } catch (t: Throwable) {
                 close(sentinelFd)

@@ -82,6 +82,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`, `engine-epoll`, `engine-kqueue`: a throw while preparing an accepted socket or
+  handling readiness no longer ends the EventLoop's thread — the connection that raised it is the
+  casualty instead (#1039)
+- `core`, `engine-epoll`, `engine-kqueue`: a buffer leaves the pending-write queue before it is
+  released, so a release that throws in a flush no longer leaves it queued for the teardown to
+  release a second time (#1039)
+- `engine-epoll`, `engine-kqueue`: a throw out of the accept loop leaves the listener armed instead of
+  leaving the server reporting itself active while accepting nothing, and worker selection no longer
+  goes negative after `Int.MAX_VALUE` accepts (#1039)
 - `core`, `engine-*`: a `Logger` that throws no longer escapes the `catch` that reported to it —
   it could end an EventLoop thread, abandon a bind rollback, or kill the process (#1038)
 - `engine-epoll`, `engine-kqueue`: join the EventLoop when the channel attaches rather than in the

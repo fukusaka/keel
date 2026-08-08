@@ -197,8 +197,28 @@ public class FakeNativeSocketOps : NativeSocketOps {
         return remoteAddressQueue[fd]?.removeFirstOrNull() ?: defaultAddresses.first
     }
 
+    /**
+     * Makes the next [setNonBlocking] throw this, then clears itself.
+     *
+     * The production `PosixNativeSocketOps` reaches `setNonBlocking` through
+     * `check(...)` over `fcntl`, so a single accepted socket whose descriptor
+     * cannot be made non-blocking throws — on the accept loop's own thread.
+     * One-shot rather than sticky so a test can assert that the *next*
+     * connection is still served.
+     */
+    public var setNonBlockingThrowsOnce: Throwable? = null
+
     override fun setNonBlocking(fd: Int) {
         setNonBlockingCalls++
+        // Recorded only on the way out: [nonBlockingFds] is what tests read to
+        // decide which descriptors were made non-blocking, and a throwing call
+        // did not make this one non-blocking. Listing it anyway would let a
+        // test asserting the fd was prepared pass against a build where it
+        // never was.
+        setNonBlockingThrowsOnce?.let {
+            setNonBlockingThrowsOnce = null
+            throw it
+        }
         _nonBlockingFds.add(fd)
     }
 

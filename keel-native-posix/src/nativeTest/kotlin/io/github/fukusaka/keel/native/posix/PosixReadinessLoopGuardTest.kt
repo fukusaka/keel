@@ -129,4 +129,60 @@ internal class PosixReadinessLoopGuardTest : AbstractPosixReadinessEventLoopFixt
         assertEquals(0, loop.wakeups, "a quiescent loop must not be woken")
         assertFalse(ran, "and nothing runs the task -- the queue is dead")
     }
+
+    // --- what the backstop withdraws when a listener throws ---
+
+    @Test
+    fun `a listener that throws loses the registration it put back itself`() {
+        // The re-arm a failing listener makes on its way out is not evidence
+        // that it can be called again: the readiness that woke it is still
+        // there, so honouring it hands the same event to the same throw on the
+        // next turn, and the turn after.
+        val loop = FakeLoop()
+        val thrower = object : FdReadyListener {
+            override fun onReady(interest: Interest) {
+                loop.registerCallback(FD, interest, this)
+                throw IllegalStateException("armed, then failed")
+            }
+        }
+        loop.registerCallback(FD, Interest.READ, thrower)
+
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = false)
+
+        assertFalse(
+            loop.hasCallbackRegistration(FD, Interest.READ),
+            "its own re-arm does not survive the throw",
+        )
+        assertEquals(listOf(FD to Interest.READ), loop.disarmed, "and the interest goes back")
+    }
+
+    @Test
+    fun `a listener that throws does not take a registration another party made`() {
+        // Withdrawing by key alone would. A listener that ends its connection
+        // closes the fd on the way through the call, so the number is free from
+        // that moment: a connect on another thread can be handed it back and
+        // register on this very key before the throw is dealt with. Dropping
+        // that leaves a channel that reports itself open, never reads a byte
+        // and never learns of a close -- and, with the interest taken back too,
+        // nothing to revive it.
+        val loop = FakeLoop()
+        val newcomer = object : FdReadyListener {
+            override fun onReady(interest: Interest) = Unit
+        }
+        val thrower = object : FdReadyListener {
+            override fun onReady(interest: Interest) {
+                loop.registerCallback(FD, interest, newcomer)
+                throw IllegalStateException("ended this connection, and failed doing it")
+            }
+        }
+        loop.registerCallback(FD, Interest.READ, thrower)
+
+        loop.dispatchReadyFor(FD, Interest.READ, eofFlag = false)
+
+        assertTrue(
+            loop.hasCallbackRegistration(FD, Interest.READ),
+            "the party that now owns the key keeps its registration",
+        )
+        assertEquals(emptyList(), loop.disarmed, "and keeps the interest armed with it")
+    }
 }

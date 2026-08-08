@@ -1560,8 +1560,42 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // that can surface the close. How far that covers a given
             // connection is the transport's to state, and each one does, at
             // the arm in its own `init`.
-            cb.onReady(interest)
-            if (eofFlag) cb.onPeerClosed(interest)
+            // Backstop, below the two guards that know what a failure means:
+            // a server's accept loop closes the descriptor it could not prepare,
+            // a transport closes the connection whose readiness it could not
+            // handle. Anything still arriving here is a listener this class does
+            // not recognise, or one of those guards itself failing -- in both
+            // cases the unit that died is unknown, so this cannot release
+            // anything on its behalf and does not pretend to.
+            //
+            // What it does buy is the loop. Without it the throw leaves the
+            // readiness dispatch, the loop body and the pthread entry that has
+            // nothing above it to catch, and the process ends -- taking every
+            // other connection on this engine with the one that failed.
+            //
+            // Popping the entry above is not by itself enough to stop the fd
+            // re-firing into the same throw. A listener that re-arms before it
+            // does its work has put a fresh entry back before it throws, and on
+            // a level-triggered interest the next iteration finds it and calls
+            // straight back in -- a hot loop logging one ERROR a turn. So does
+            // one whose `onReady` earned its re-arm and whose `onPeerClosed`
+            // then threw: EOF is permanently readable, so that pair repeats
+            // every turn too. Either way the re-arm cannot be taken as evidence
+            // the listener can proceed, so only an independent waiter keeps the
+            // interest armed below.
+            var listenerThrew = false
+            try {
+                cb.onReady(interest)
+                if (eofFlag) cb.onPeerClosed(interest)
+            } catch (listenerFailure: Throwable) {
+                listenerThrew = true
+                logger.error(listenerFailure) {
+                    // Not "the interest is dropped": that is decided below, and
+                    // a suspend waiter on the same key keeps it armed.
+                    "${cb::class.simpleName} threw from readiness for fd=$fd $interest; " +
+                        "its registration is dropped and whatever it held is not released"
+                }
+            }
             // The eof path used to disarm unconditionally, on the reasoning that
             // a connection reporting EOF is ending. Not true of every listener
             // that reaches here: a server's AcceptArm re-arms on both WouldBlock
@@ -1572,7 +1606,29 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             //
             // Both ledgers decide this, not just the callback one: a suspend
             // waiter queued on the same key still needs the interest armed.
-            val keepInterest = withRegLock { hasCallbackListener(key) || hasWaiters(key) }
+            val keepInterest = withRegLock {
+                // A listener that threw does not get to vouch for itself, for
+                // the reason above. Its own re-arm is dropped here, so the
+                // ledger and the kernel go on agreeing about what is
+                // watched -- a ledger saying "armed" over an interest nobody
+                // holds is how the stale-entry hangs this loop has already been
+                // fixed for began. A waiter is a different party and is still
+                // owed the interest, and keeping it armed for one is why the
+                // drop above is of the registration and not of the interest.
+                //
+                // By identity, because by key alone would take a stranger's.
+                // A listener that ends its connection closes the fd on the way
+                // through here, and the number is free from that moment: a
+                // connect on another thread can be handed it back and register
+                // on this very key before this line runs. Dropping that would
+                // leave a freshly opened channel that reports itself open,
+                // never reads a byte and never learns of a close -- and, with
+                // the interest taken back below, nothing to revive it. The
+                // teardown's own withdrawal is key-only and safe because it
+                // runs before the descriptor is closed; this one runs after.
+                if (listenerThrew) popCallbackIfCurrent(key, cb)
+                hasWaiters(key) || hasCallbackListener(key)
+            }
             if (!keepInterest) {
                 removeInterest(fd, interest)
             }
