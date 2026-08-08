@@ -97,17 +97,22 @@ internal class EpollIoTransport(
         // readiness dispatch, the loop body and the pthread entry point behind
         // it, ending the process over one socket.
         //
-        // Ending it the way a fatal read error does -- report inactive, then
-        // close -- so the caller learns through the path it already watches:
-        // `onReadClosed`, `read()` returning -1, the pipeline going inactive.
-        // Nothing new to subscribe to. An earlier revision closed and left it
-        // there, which reads as the same thing and is not: `close()` releases
-        // what it can reach and tells nobody, so every handler's `onInactive`
-        // was skipped.
+        // Reclaiming it the way an idle timeout does -- report inactive, then
+        // close, in every channel mode -- so the caller learns through the path
+        // it already watches: `onReadClosed`, `read()` returning -1, the
+        // pipeline going inactive. Nothing new to subscribe to. Not the
+        // fatal-read shape, which reports and leaves the close to the channel;
+        // a connection whose readiness cannot be handled is not coming back,
+        // and a Coroutine-mode caller must not be left holding its fd. An
+        // earlier revision closed without reporting, which reads as the same
+        // thing and is not: `close()` releases what it can reach and tells
+        // nobody, so every handler's `onInactive` was skipped.
         //
-        // What no end can do for us is release the in-flight read buffer: it
-        // is a local, reachable from this frame and nowhere else. Each body
-        // owns what it allocates -- see `onReadable`.
+        // What no end can do for us is release a buffer that is only a local
+        // of the frame that threw. `onReadable` therefore owns what it
+        // allocates until it has handed it on; `flushSingle` has the same
+        // exposure on the write half and does not yet, which is filed rather
+        // than widened into here.
         containReadinessFailure(interest) {
             when (interest) {
                 Interest.READ -> onReadable()
@@ -130,6 +135,13 @@ internal class EpollIoTransport(
      * peer-close notification. An enum rather than a formatted string because
      * this runs on every readiness event: the message is built inside the log
      * lambda, which the level check already gates.
+     *
+     * **It does not contain everything, despite the name.** If ending the
+     * connection itself fails, that failure is re-raised — see
+     * [endConnectionAfterFailure] for why. The intended recipient is the
+     * backstop in the readiness dispatch, which is the only frame between here
+     * and the loop's `pthread` entry point, so a new call site must be one
+     * that backstop reaches.
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun containReadinessFailure(readinessInterest: Interest?, body: () -> Unit) {
@@ -145,8 +157,8 @@ internal class EpollIoTransport(
     }
 
     /**
-     * Notifies inactivity, then forces the close — the shape [onIdleTimeout]
-     * uses, for the same reason.
+     * Notifies inactivity, then forces the close — the shape the idle-timeout
+     * paths on the base transport use, for the same reason.
      *
      * `close()` alone is not the end of a connection, only the end of its
      * descriptor. It releases what it can reach — the pending writes, the
@@ -158,9 +170,19 @@ internal class EpollIoTransport(
      * Coroutine-mode `read()`. Closing without it leaks the first three per
      * failed connection and hangs the fourth for good.
      *
-     * The notification is itself guarded because on the peer-close path it is
-     * the very call that just failed, so a second failure is expected there
-     * and there is nothing above this to act on it.
+     * Unlike the fatal-read path, which notifies and lets the channel decide
+     * whether to close, this closes in every mode: an idle timeout and a
+     * connection whose readiness cannot be handled are both reclamations, and
+     * a Coroutine-mode caller who is never coming back must not keep the fd.
+     *
+     * **A failure here is reported and re-raised, not swallowed.** In Pipeline
+     * mode this callback *is* what closes the connection, so a throw out of it
+     * is a teardown that did not finish — and the claim it consumed means no
+     * later `close()` retries it. Swallowing left the descriptor open with its
+     * registration intact and, because the loop then saw a listener that had
+     * not failed, its interest still armed: the same readiness re-entering the
+     * same failure every turn. Letting it reach the loop's backstop is what
+     * drops the registration and takes the interest back.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun endConnectionAfterFailure() {
@@ -170,6 +192,14 @@ internal class EpollIoTransport(
             eventLoop.logger.warn(notifyFailure) {
                 "reporting the failed connection inactive threw as well: fd=$fd"
             }
+            try {
+                // A no-op when the notification already consumed the claim;
+                // the point is the mode where it did not.
+                close()
+            } catch (closeFailure: Throwable) {
+                notifyFailure.addSuppressed(closeFailure)
+            }
+            throw notifyFailure
         }
         close()
     }

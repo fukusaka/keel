@@ -24,6 +24,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -278,7 +279,7 @@ class EpollOnReadableSeamTest {
     }
 
     @Test
-    fun `a peer close that throws closes the connection rather than the loop`() = runBlocking {
+    fun `a peer close that throws ends the connection and reaches the loop`() = runBlocking {
         withTimeout(15.seconds) {
             // The other half of what the readiness dispatch calls into. Guarding
             // only `onReady` left this one falling through to the backstop in the
@@ -292,8 +293,15 @@ class EpollOnReadableSeamTest {
             surrenderReadFd()
             transport.readEnabled = true
 
-            transport.onPeerClosed(Interest.READ)
-
+            // Raised, not swallowed: on this path the notification the guard
+            // falls back to is the very call that failed, and in Pipeline mode
+            // that call is what closes the connection. A throw out of it is a
+            // teardown that did not finish, and the loop's backstop is what
+            // drops the registration and takes the interest back.
+            val thrown = assertFailsWith<IllegalStateException> {
+                transport.onPeerClosed(Interest.READ)
+            }
+            assertEquals("the close handler failed", thrown.message)
             assertFalse(
                 transport.isOpen,
                 "a peer close that cannot be delivered still ends this connection",
@@ -362,9 +370,34 @@ class EpollOnReadableSeamTest {
             assertEquals(
                 1,
                 reportedInactive,
-                "the pipeline learns the connection ended, exactly as a fatal read reports it",
+                "the pipeline learns the connection ended, the way an idle timeout reports it",
             )
             assertFalse(transport.isOpen)
+        }
+    }
+
+    @Test
+    fun `a failure while ending the connection reaches the loop rather than being swallowed`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The guard's fallback runs `onReadClosed`, which in Pipeline mode
+            // is what performs the teardown. Swallowing a throw from there left
+            // the descriptor open with its registration intact -- and, because
+            // the loop then saw a listener that had not failed, its interest
+            // still armed, re-entering the same failure every turn. The
+            // teardown claim is spent by then, so no later close() retries it.
+            val fake = FakeNativeSocket()
+            val transport = EpollIoTransport(readFd, eventLoop, FailingAllocator, fake)
+            surrenderReadFd()
+            transport.onChannelAttached()
+            transport.onReadClosed = { throw IllegalStateException("the teardown failed too") }
+            transport.readEnabled = true
+
+            val thrown = assertFailsWith<IllegalStateException> {
+                transport.onReady(Interest.READ)
+            }
+
+            assertEquals("the teardown failed too", thrown.message)
+            assertFalse(transport.isOpen, "the connection is still ended")
         }
     }
 }
