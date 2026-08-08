@@ -80,6 +80,10 @@ internal class KqueueIoTransport(
     // Touched only on the EventLoop thread (the read path).
     private var readPoolRegistered = false
 
+    // Set when a readiness path's call to onReadClosed threw; see
+    // [notifyInactive]. EventLoop-confined, like everything else in here.
+    private var inactiveNotifyThrew = false
+
     /**
      * [FdReadyListener] dispatch — passing `this` to
      * `AbstractPosixReadinessEventLoop.registerCallback` avoids per-call lambda allocation
@@ -135,11 +139,13 @@ internal class KqueueIoTransport(
      * this runs on every readiness event: the message is built inside the log
      * lambda, which the level check already gates.
      *
-     * **It does not contain everything, despite the name.** If ending the
-     * connection itself fails, that failure is re-raised — see
-     * [endConnectionAfterFailure] for why. The intended recipient is the
-     * backstop in the readiness dispatch, which is the only frame between here
-     * and the loop's `pthread` entry point, so a new call site must be one
+     * **It does not contain everything, despite the name.** If the connection
+     * cannot be reported inactive — which in Pipeline mode is the close itself
+     * — [body]'s failure is re-raised rather than swallowed; see
+     * [endConnectionAfterFailure] for why, and for why that decision cannot be
+     * made by calling the notification a second time. The intended recipient is
+     * the backstop in the readiness dispatch, which is the only *guard* between
+     * here and the loop's `pthread` entry point, so a new call site must be one
      * that backstop reaches.
      */
     @Suppress("TooGenericExceptionCaught")
@@ -151,7 +157,30 @@ internal class KqueueIoTransport(
                 val what = readinessInterest?.let { "readiness for $it" } ?: "the peer close"
                 "handling $what threw; ending the connection: fd=$fd"
             }
-            endConnectionAfterFailure()
+            endConnectionAfterFailure(readinessFailure)
+        }
+    }
+
+    /**
+     * Reports this connection inactive, remembering it if that throws.
+     *
+     * Every readiness path that ends a connection goes through here rather than
+     * touching [onReadClosed] directly, because whether that call succeeded is
+     * what [endConnectionAfterFailure] needs and **cannot learn by calling it
+     * again**. The route is `pipeline.notifyInactive()`, which sets
+     * `inactiveObserved` before it dispatches the chain, and then `close()`,
+     * whose `markClosing()` flips `opened` exactly once — so a chain that threw
+     * is short-circuited on re-entry and the second call returns normally. A
+     * fallback that reads that return as "the teardown finished" is reading the
+     * short-circuit, not the teardown.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun notifyInactive() {
+        try {
+            onReadClosed?.invoke()
+        } catch (notifyFailure: Throwable) {
+            inactiveNotifyThrew = true
+            throw notifyFailure
         }
     }
 
@@ -174,33 +203,53 @@ internal class KqueueIoTransport(
      * connection whose readiness cannot be handled are both reclamations, and
      * a Coroutine-mode caller who is never coming back must not keep the fd.
      *
-     * **A failure here is reported and re-raised, not swallowed.** In Pipeline
-     * mode this callback *is* what closes the connection, so a throw out of it
-     * is a teardown that did not finish — and the claim it consumed means no
-     * later `close()` retries it. Swallowing left the descriptor open with its
-     * registration intact and, because the loop then saw a listener that had
-     * not failed, its interest still armed: the same readiness re-entering the
-     * same failure every turn. Letting it reach the loop's backstop is what
-     * drops the registration and takes the interest back.
+     * **If the notification failed, [readinessFailure] is re-raised rather than
+     * swallowed.** In Pipeline mode this callback *is* what closes the
+     * connection, so a throw out of it is a teardown that did not finish — and
+     * the claim it consumed means no later `close()` retries it. Swallowing left
+     * the descriptor open with its registration intact and, because the loop
+     * then saw a listener that had not failed, its interest still armed: the
+     * same readiness re-entering the same failure every turn. Letting it reach
+     * the loop's backstop is what drops the registration and takes the interest
+     * back.
+     *
+     * The decision is [inactiveNotifyThrew], not the return of a second call to
+     * the callback — see [notifyInactive] for why the second call is not
+     * evidence of anything. Deciding on it instead meant this re-raised only
+     * against a stub that throws every time: on the paths where the guarded
+     * body was *itself* the notification (a peer close, an `Eof` or a failed
+     * `read`), a real callback returned normally the second time and the
+     * failure was swallowed — leaking the descriptor for the lifetime of the
+     * process, pinning the transport in the participant registry, and leaving
+     * a caller parked in `awaitPendingFlush` until the engine shut down.
+     *
+     * What is raised is the original failure with anything the wind-down added
+     * suppressed onto it, in the order they happened: the readiness failure is
+     * the cause, a throw from the notification or the close is a consequence of
+     * reacting to it. On the paths above the two are the same object, and then
+     * there is only the one.
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun endConnectionAfterFailure() {
-        try {
-            onReadClosed?.invoke()
-        } catch (notifyFailure: Throwable) {
-            eventLoop.logger.warn(notifyFailure) {
-                "reporting the failed connection inactive threw as well: fd=$fd"
-            }
+    private fun endConnectionAfterFailure(readinessFailure: Throwable) {
+        if (!inactiveNotifyThrew) {
             try {
-                // A no-op when the notification already consumed the claim;
-                // the point is the mode where it did not.
-                close()
-            } catch (closeFailure: Throwable) {
-                notifyFailure.addSuppressed(closeFailure)
+                notifyInactive()
+            } catch (notifyFailure: Throwable) {
+                eventLoop.logger.warn(notifyFailure) {
+                    "reporting the failed connection inactive threw as well: fd=$fd"
+                }
+                readinessFailure.addSuppressed(notifyFailure)
             }
-            throw notifyFailure
         }
-        close()
+        try {
+            // A no-op when the notification already consumed the claim; the
+            // point is the mode where it did not.
+            close()
+        } catch (closeFailure: Throwable) {
+            eventLoop.logger.warn(closeFailure) { "closing the failed connection threw as well: fd=$fd" }
+            readinessFailure.addSuppressed(closeFailure)
+        }
+        if (inactiveNotifyThrew) throw readinessFailure
     }
 
     /**
@@ -224,7 +273,7 @@ internal class KqueueIoTransport(
     override fun onPeerClosed(interest: Interest) {
         if (interest != Interest.READ) return
         if (!opened) return
-        containReadinessFailure(readinessInterest = null) { onReadClosed?.invoke() }
+        containReadinessFailure(readinessInterest = null) { notifyInactive() }
     }
 
     /**
@@ -485,7 +534,7 @@ internal class KqueueIoTransport(
                 ReadResult.Eof -> {
                     unreleased = null
                     buf.release()
-                    onReadClosed?.invoke()
+                    notifyInactive()
                 }
                 ReadResult.WouldBlock -> {
                     unreleased = null
@@ -496,7 +545,7 @@ internal class KqueueIoTransport(
                     eventLoop.logger.warn { "read failed: fd=$fd ${errnoMessage(result.errno)}" }
                     unreleased = null
                     buf.release()
-                    onReadClosed?.invoke()
+                    notifyInactive()
                 }
             }
         } catch (readFailure: Throwable) {

@@ -58,6 +58,23 @@ class KqueueOnReadableSeamTest {
             throw UnsupportedOperationException("this allocator exists to fail allocate")
     }
 
+    /**
+     * An `onReadClosed` that fails the way the production one can: once.
+     *
+     * The route this callback takes is `pipeline.notifyInactive()`, which sets
+     * `inactiveObserved` *before* it dispatches the chain, and then `close()`,
+     * whose `markClosing()` flips `opened` exactly once. A chain that threw is
+     * therefore short-circuited on re-entry, so whatever failed the first time
+     * returns normally the second.
+     *
+     * A stub that throws on every call cannot show that, and it is the
+     * difference that matters here: it lets a fallback which decides "did the
+     * teardown finish?" by calling this again read as protective when against a
+     * real callback it never fires.
+     */
+    private fun failsOnceLikeProduction(message: String, calls: AtomicInt = AtomicInt(0)): () -> Unit =
+        { if (calls.incrementAndGet() == 1) throw IllegalStateException(message) }
+
     private val logger = NoopLoggerFactory.logger("KqueueOnReadableSeamTest")
     private lateinit var eventLoop: KqueueEventLoop
     private var readFd: Int = -1
@@ -252,7 +269,8 @@ class KqueueOnReadableSeamTest {
             val fake = FakeNativeSocket()
             val transport = KqueueIoTransport(readFd, eventLoop, DefaultAllocator, fake)
             transport.onChannelAttached()
-            transport.onReadClosed = { throw IllegalStateException("the close handler failed") }
+            val notifyCalls = AtomicInt(0)
+            transport.onReadClosed = failsOnceLikeProduction("the close handler failed", notifyCalls)
             surrenderReadFd()
             transport.readEnabled = true
 
@@ -269,6 +287,40 @@ class KqueueOnReadableSeamTest {
                 transport.isOpen,
                 "a peer close that cannot be delivered still ends this connection",
             )
+            // And the guard does not ask again. Calling back into a callback
+            // that just failed is how this path came to look protected: the
+            // second call returns normally -- the pipeline short-circuits on
+            // `inactiveObserved` -- and reading that return as "the teardown
+            // finished" is what swallowed the failure.
+            assertEquals(1, notifyCalls.value, "the failed notification is not retried for an answer")
+        }
+    }
+
+    @Test
+    fun `an EOF whose notification throws ends the connection and reaches the loop`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The same shape as the peer-close path, reached through the read
+            // instead: the guarded body is what notifies, so the fallback's own
+            // call is the second one. The connection this describes is an
+            // ordinary FIN -- the close arrives as a `read()` returning 0 --
+            // which makes it the common way in, not a corner.
+            val tracker = TrackingAllocator(DefaultAllocator)
+            val fake = FakeNativeSocket().apply { enqueueRead(readFd, ReadResult.Eof) }
+            val transport = KqueueIoTransport(readFd, eventLoop, tracker, fake)
+            transport.onChannelAttached()
+            val notifyCalls = AtomicInt(0)
+            transport.onReadClosed = failsOnceLikeProduction("the EOF handler failed", notifyCalls)
+            surrenderReadFd()
+            transport.readEnabled = true
+
+            val thrown = assertFailsWith<IllegalStateException> {
+                transport.onReady(Interest.READ)
+            }
+
+            assertEquals("the EOF handler failed", thrown.message)
+            assertEquals(1, notifyCalls.value, "the failed notification is not retried for an answer")
+            assertFalse(transport.isOpen, "the connection is still ended")
+            tracker.assertNoLeaks()
         }
     }
 
@@ -352,14 +404,24 @@ class KqueueOnReadableSeamTest {
             val transport = KqueueIoTransport(readFd, eventLoop, FailingAllocator, fake)
             surrenderReadFd()
             transport.onChannelAttached()
-            transport.onReadClosed = { throw IllegalStateException("the teardown failed too") }
+            transport.onReadClosed = failsOnceLikeProduction("the teardown failed too")
             transport.readEnabled = true
 
-            val thrown = assertFailsWith<IllegalStateException> {
+            // The readiness failure is what is raised, with the wind-down's own
+            // failure suppressed onto it: the allocator is the cause and the
+            // notification threw reacting to it. Here they are two exceptions;
+            // on the peer-close path they are one, which is the case that used
+            // to be swallowed.
+            val thrown = assertFailsWith<OutOfMemoryError> {
                 transport.onReady(Interest.READ)
             }
 
-            assertEquals("the teardown failed too", thrown.message)
+            assertEquals("no buffer for you", thrown.message)
+            assertEquals(
+                listOf("the teardown failed too"),
+                thrown.suppressedExceptions.map { it.message },
+                "the failure that ended the wind-down travels with the one that started it",
+            )
             assertFalse(transport.isOpen, "the connection is still ended")
         }
     }
