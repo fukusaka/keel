@@ -731,30 +731,73 @@ internal class KqueueIoTransport(
 
     private fun teardownOnEventLoop() {
         if (!markTeardownStarted()) return
-        cancelIdleTimeout()
-        cancelWriteIdleTimeout()
+        // One stage per obligation, each owed whatever the ones before it did.
+        // The claim above is spent, so nothing runs any of them a second time --
+        // an abandoned obligation here is abandoned for good.
+        //
+        // One stage *per* obligation, not per group. Two in a stage lets the
+        // first skip the second, and the two that grouping stranded are not
+        // interchangeable: a skipped release leaks buffers, a skipped waiter
+        // wake parks a caller for the process lifetime, and a skipped withdraw
+        // leaves a ledger entry naming an fd that is gone.
+        //
+        // Stages rather than nested `finally` blocks, because a throw from a
+        // `finally` discards the exception that entered it: a later failure
+        // would replace the one that started the teardown, and the connection
+        // would die logging the wrong cause. The first failure propagates and
+        // the rest are attached to it.
+        var failure: Throwable? = null
+        failure = runTeardownStage(failure) { cancelIdleTimeout() }
+        failure = runTeardownStage(failure) { cancelWriteIdleTimeout() }
         // Same-tick send→close: drain deferred writes before releasing.
-        if (flushScheduled) {
-            flushScheduled = false
-            performFlush()
+        failure = runTeardownStage(failure) {
+            if (flushScheduled) {
+                flushScheduled = false
+                performFlush()
+            }
         }
-        releaseAllPendingWrites()
+        failure = runTeardownStage(failure) { releaseAllPendingWrites() }
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
-        flushContinuation?.let { cont ->
-            flushContinuation = null
-            cont.cancel(stoppedLoopFlushCause())
+        failure = runTeardownStage(failure) {
+            flushContinuation?.let { cont ->
+                flushContinuation = null
+                cont.cancel(stoppedLoopFlushCause())
+            }
         }
         // Withdraw the registrations before dropping the fd. The map is keyed by
         // fd number, so one left behind keeps this transport — and the channel
         // and pipeline graph it references — reachable until that number comes
         // back. The server side has always done this on close; the transport
         // did not.
-        eventLoop.unregisterCallback(fd, Interest.READ)
-        eventLoop.unregisterCallback(fd, Interest.WRITE)
-        eventLoop.removeParticipant(this)
+        failure = runTeardownStage(failure) { eventLoop.unregisterCallback(fd, Interest.READ) }
+        failure = runTeardownStage(failure) { eventLoop.unregisterCallback(fd, Interest.WRITE) }
+        failure = runTeardownStage(failure) { eventLoop.removeParticipant(this) }
+        // Reached whatever the stages above did: `closeFdSafely` reports rather
+        // than throws, so the descriptor is released on every path out of here.
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
         logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
+        failure?.let { throw it }
     }
+
+    /**
+     * Runs [stage] and returns the teardown's failure so far.
+     *
+     * [carried] if [stage] succeeds; [carried] with [stage]'s failure attached
+     * if it does not; [stage]'s failure if there was nothing carried yet. The
+     * point is that the *first* failure is the one that reaches the log, since
+     * it is the one that explains the rest.
+     *
+     * `crossinline` so a `return` written inside a future stage cannot skip the
+     * stages after it and the rethrow at the end — which is the whole contract.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun runTeardownStage(carried: Throwable?, crossinline stage: () -> Unit): Throwable? =
+        try {
+            stage()
+            carried
+        } catch (stageFailure: Throwable) {
+            carried?.also { it.addSuppressed(stageFailure) } ?: stageFailure
+        }
 
     /**
      * Teardown on the closing caller's thread, for a loop that has stopped:

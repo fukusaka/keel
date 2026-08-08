@@ -158,8 +158,27 @@ public class FakeNativeSocket : NativeSocket {
         return readQueue[fd]?.removeFirstOrNull() ?: defaultRead
     }
 
+    /**
+     * Thrown by the next [write] or [writev] call, then cleared.
+     *
+     * The seam for a flush that fails rather than returning a [WriteResult]. A
+     * scripted `WriteResult.Failed` exercises the engine's own error branch;
+     * this exercises the paths that assume flushing cannot throw at all —
+     * teardown drains one deferred flush before releasing, and had no answer
+     * for that call not returning.
+     */
+    public var flushThrowsOnce: Throwable? = null
+
+    private fun failFlushIfScripted() {
+        flushThrowsOnce?.let {
+            flushThrowsOnce = null
+            throw it
+        }
+    }
+
     override fun write(fd: Int, buf: CPointer<ByteVar>, length: Int): WriteResult {
         writeCalls++
+        failFlushIfScripted()
         return writeQueue[fd]?.removeFirstOrNull() ?: defaultWrite
     }
 
@@ -170,6 +189,7 @@ public class FakeNativeSocket : NativeSocket {
         count: Int,
     ): WriteResult {
         writevCalls++
+        failFlushIfScripted()
         return writevQueue[fd]?.removeFirstOrNull() ?: defaultWrite
     }
 
