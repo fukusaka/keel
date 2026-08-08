@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
@@ -15,6 +16,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import platform.posix.F_GETFD
 import platform.posix.close
 import platform.posix.fcntl
@@ -38,17 +40,20 @@ import kotlin.time.Duration.Companion.seconds
  * only check on it was reading the code, which over three attempts kept
  * producing a different defect.
  *
- * `teardownAfterLoopStopped` owes a narrowed version of the same list and is
- * covered here too. It is the *only* thing left that can end a flush wait the
- * stop sweep did not, so a release that throws ahead of it costs a caller the
- * process lifetime.
- *
  * Two things make it reachable here. **The scenario is driven from the
  * EventLoop thread**, so `flush()` leaves `flushScheduled` set and the very next
  * `close()` runs the teardown inline and finds it — no race with the flush task
  * the dispatcher queued. And the failures are injected at the two places that
  * can really fail: [FakeNativeSocket.flushThrowsOnce] for the drain,
  * [FailingReleaseIoBuf] for the release.
+ *
+ * `teardownAfterLoopStopped` is covered here too, and is reached the other way
+ * round: from the *test* thread, after the loop is gone. That is the only way
+ * in — `close()` hands the teardown to the loop for as long as there is one,
+ * and takes this branch only once the loop is quiescent — so none of the
+ * paragraph above applies to it. It has no drain to fail, which makes the
+ * release its first failure point, and it is the last thing able to end a
+ * flush wait the stop sweep did not.
  *
  * Every test here asserts first that the seam *reached* the code it is about.
  * A teardown that never entered the drain would satisfy an assertion about what
@@ -204,9 +209,10 @@ class KqueueTeardownFailureSeamTest {
             // `markClosing()` flips `opened` before the sweep gets here, and
             // `onLoopStopped` returns on that first line -- so the route taken
             // here is the deterministic one to an identical starting point.
-            val transport = KqueueIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+            val tracker = TrackingAllocator()
+            val transport = KqueueIoTransport(readFd, eventLoop, tracker, fake)
             val failing = FailingReleaseIoBuf(
-                DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
+                tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
             )
             val surrendered = readFd
             readFd = -1
@@ -234,6 +240,14 @@ class KqueueTeardownFailureSeamTest {
                 transport.hasFlushWaiter(),
                 "the sweep must have left the waiter for the teardown to find",
             )
+            // And which teardown: everything asserted below holds under the
+            // on-loop one too, so without this the test silently becomes a
+            // duplicate of the one above it if close() ever returns before
+            // quiescence.
+            assertTrue(
+                eventLoop.isStopped(),
+                "close() must have left the loop quiescent, or the stopped-loop teardown is not what runs",
+            )
 
             // Quiescent, so close() runs the stopped-loop teardown inline on
             // this thread -- and re-raises what the release refused.
@@ -248,7 +262,12 @@ class KqueueTeardownFailureSeamTest {
                 raised is InjectedFault,
                 "the refused release must still reach the caller, got: $raised",
             )
-            withTimeout(IO_BUDGET) { waiter.await() }
+            // A budget of its own, well inside the enclosing one, so a teardown
+            // that skips the cancel fails here -- naming the waiter -- rather
+            // than at the outer deadline, whose message is the same one an
+            // unrelated hang produces.
+            val woken = withTimeoutOrNull(WAITER_BUDGET) { waiter.await() } != null
+            assertTrue(woken, "the refused release must not take the waiter's wake with it")
             waiting.cancel()
             failing.releaseUnderlying()
 
@@ -256,6 +275,11 @@ class KqueueTeardownFailureSeamTest {
                 -1,
                 fcntl(surrendered, F_GETFD),
                 "nor may a release that threw strand the descriptor on this path",
+            )
+            assertEquals(
+                0,
+                tracker.outstandingCount,
+                "and nothing else may be left outstanding once the refused buffer is accounted for",
             )
         }
     }
@@ -266,6 +290,13 @@ class KqueueTeardownFailureSeamTest {
          * envelope the sibling seam tests use for a loopback dispatch hop.
          */
         val IO_BUDGET = 15.seconds
+
+        /**
+         * Budget for the one wait whose failure this file is about. Shorter
+         * than [IO_BUDGET] on purpose: it has to expire first for the failure
+         * to say which wait it was.
+         */
+        val WAITER_BUDGET = 5.seconds
         const val POLL_MS = 10L
         const val PAYLOAD = 8
     }
