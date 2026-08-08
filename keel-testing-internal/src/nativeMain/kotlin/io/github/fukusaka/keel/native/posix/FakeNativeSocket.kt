@@ -166,6 +166,13 @@ public class FakeNativeSocket : NativeSocket {
      * this exercises the paths that assume flushing cannot throw at all —
      * teardown drains one deferred flush before releasing, and had no answer
      * for that call not returning.
+     *
+     * **All three write syscalls, not just the two the POSIX transports use.**
+     * `flushSingle` reaches `write` on epoll and kqueue and `send` on io_uring,
+     * with `writev` shared by the gather paths. A seam wired to only some of
+     * them fails silently on an engine that uses the others: the fake returns
+     * [defaultWrite], the drain succeeds, and a test written to assert what a
+     * failing drain costs goes green against a build that never fixed it.
      */
     public var flushThrowsOnce: Throwable? = null
 
@@ -209,6 +216,7 @@ public class FakeNativeSocket : NativeSocket {
 
     override fun send(fd: Int, buf: CPointer<ByteVar>, length: Int, flags: Int): WriteResult {
         sendCalls++
+        failFlushIfScripted()
         return sendQueue[fd]?.removeFirstOrNull() ?: defaultWrite
     }
 
