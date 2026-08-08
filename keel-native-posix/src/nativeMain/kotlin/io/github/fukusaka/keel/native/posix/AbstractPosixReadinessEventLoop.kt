@@ -1574,12 +1574,15 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // other connection on this engine with the one that failed.
             //
             // Popping the entry above is not by itself enough to stop the fd
-            // re-firing into the same throw: a listener that re-arms before it
+            // re-firing into the same throw. A listener that re-arms before it
             // does its work has put a fresh entry back before it throws, and on
             // a level-triggered interest the next iteration finds it and calls
-            // straight back in -- a hot loop logging one ERROR a turn. So a
-            // listener that threw does not get to vouch for itself: only an
-            // independent waiter keeps the interest armed below.
+            // straight back in -- a hot loop logging one ERROR a turn. So does
+            // one whose `onReady` earned its re-arm and whose `onPeerClosed`
+            // then threw: EOF is permanently readable, so that pair repeats
+            // every turn too. Either way the re-arm cannot be taken as evidence
+            // the listener can proceed, so only an independent waiter keeps the
+            // interest armed below.
             var listenerThrew = false
             try {
                 cb.onReady(interest)
@@ -1587,8 +1590,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             } catch (listenerFailure: Throwable) {
                 listenerThrew = true
                 logger.error(listenerFailure) {
+                    // Not "the interest is dropped": that is decided below, and
+                    // a suspend waiter on the same key keeps it armed.
                     "${cb::class.simpleName} threw from readiness for fd=$fd $interest; " +
-                        "the interest is dropped and whatever it held is not released"
+                        "its registration is dropped and whatever it held is not released"
                 }
             }
             // The eof path used to disarm unconditionally, on the reasoning that
@@ -1603,13 +1608,14 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // waiter queued on the same key still needs the interest armed.
             //
             val keepInterest = withRegLock {
-                // A listener that threw does not get to vouch for itself: it may
-                // have armed and then failed before doing the work the arm was
-                // for. Whatever it put back is dropped here, so the ledger and
-                // the kernel go on agreeing about what is watched -- a ledger
-                // saying "armed" over an interest nobody holds is how the
-                // stale-entry hangs this loop has already been fixed for began.
-                // A waiter is a different party and is still owed the interest.
+                // A listener that threw does not get to vouch for itself, for
+                // the reason above. Whatever it put back is dropped here, so
+                // the ledger and the kernel go on agreeing about what is
+                // watched -- a ledger saying "armed" over an interest nobody
+                // holds is how the stale-entry hangs this loop has already been
+                // fixed for began. A waiter is a different party and is still
+                // owed the interest, and keeping it armed for one is why the
+                // drop above is of the registration and not of the interest.
                 if (listenerThrew) popCallback(key)
                 hasWaiters(key) || hasCallbackListener(key)
             }

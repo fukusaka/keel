@@ -55,12 +55,15 @@ interface FdReadyListener {
      * left an accept loop that never ran again.
      *
      * **Unless the listener threw**, in which case its own re-registration does
-     * not count and is dropped: a listener that arms before doing its work has
-     * put an entry back before it fails, and honouring that would hand it the
-     * same readiness again on the next turn, and the turn after. Only a suspend
-     * waiter — a different party — keeps the interest armed then. So a listener
-     * that throws out of either callback is off this fd until it registers
-     * again from somewhere that returned normally.
+     * not count and is dropped: honouring it would hand the same readiness back
+     * to the same failure on the next turn, and the turn after — whether the
+     * listener armed before failing in [onReady], or earned its re-arm there
+     * and then threw from here, since the EOF that brought it is permanently
+     * readable. Only a suspend waiter — a different party — keeps the interest
+     * armed then. So a listener that throws out of either callback is off
+     * **this interest on this fd** (the other interest, if it holds one, is
+     * untouched) until it registers again from somewhere that returned
+     * normally.
      */
     fun onPeerClosed(interest: Interest) {}
 }

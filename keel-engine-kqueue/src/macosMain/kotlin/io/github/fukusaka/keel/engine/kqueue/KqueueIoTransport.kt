@@ -96,16 +96,18 @@ internal class KqueueIoTransport(
         // readiness dispatch, the loop body and the pthread entry point behind
         // it, ending the process over one socket.
         //
-        // Closing is the end this connection reaches on a fatal read or write
-        // error too, so the caller learns through the path it already watches:
+        // Ending it the way a fatal read error does -- report inactive, then
+        // close -- so the caller learns through the path it already watches:
         // `onReadClosed`, `read()` returning -1, the pipeline going inactive.
-        // Nothing new to subscribe to, and the close is idempotent.
+        // Nothing new to subscribe to. An earlier revision closed and left it
+        // there, which reads as the same thing and is not: `close()` releases
+        // what it can reach and tells nobody, so every handler's `onInactive`
+        // was skipped.
         //
-        // It is not, however, the *same* end. Those paths release the buffer
-        // they were holding before they take it; a throw releases nothing that
-        // is not reachable from this object, and the in-flight read buffer is a
-        // local. Each body owns what it allocates -- see `onReadable`.
-        containReadinessFailure("readiness for $interest") {
+        // What no end can do for us is release the in-flight read buffer: it
+        // is a local, reachable from this frame and nowhere else. Each body
+        // owns what it allocates -- see `onReadable`.
+        containReadinessFailure(interest) {
             when (interest) {
                 Interest.READ -> onReadable()
                 Interest.WRITE -> onWritable()
@@ -114,7 +116,7 @@ internal class KqueueIoTransport(
     }
 
     /**
-     * Runs [body] and closes this connection if it throws.
+     * Runs [body] and ends this connection if it throws.
      *
      * Covers every entry the readiness dispatch has into this transport, not
      * just [onReady]: the peer-close notification runs user-facing callbacks
@@ -122,17 +124,53 @@ internal class KqueueIoTransport(
      * fall through to the backstop in the event loop leaves the connection
      * open in CLOSE-WAIT holding its descriptor -- the loop survives, and the
      * fd is never released by anybody.
+     *
+     * [readinessInterest] is the interest being handled, or `null` for the
+     * peer-close notification. An enum rather than a formatted string because
+     * this runs on every readiness event: the message is built inside the log
+     * lambda, which the level check already gates.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun containReadinessFailure(what: String, body: () -> Unit) {
+    private inline fun containReadinessFailure(readinessInterest: Interest?, body: () -> Unit) {
         try {
             body()
         } catch (readinessFailure: Throwable) {
             eventLoop.logger.warn(readinessFailure) {
-                "handling $what threw; closing the connection: fd=$fd"
+                val what = readinessInterest?.let { "readiness for $it" } ?: "the peer close"
+                "handling $what threw; ending the connection: fd=$fd"
             }
-            close()
+            endConnectionAfterFailure()
         }
+    }
+
+    /**
+     * Notifies inactivity, then forces the close — the shape [onIdleTimeout]
+     * uses, for the same reason.
+     *
+     * `close()` alone is not the end of a connection, only the end of its
+     * descriptor. It releases what it can reach — the pending writes, the
+     * registrations, the fd — and tells nobody. [onReadClosed] is the single
+     * route from this transport to `pipeline.notifyInactive()`, and that is
+     * what runs every handler's `onInactive`: the body aggregator's held
+     * chunks, the decoder's borrowed header set, the server's entry in its
+     * connection registry, and the EOF that wakes a caller parked in a
+     * Coroutine-mode `read()`. Closing without it leaks the first three per
+     * failed connection and hangs the fourth for good.
+     *
+     * The notification is itself guarded because on the peer-close path it is
+     * the very call that just failed, so a second failure is expected there
+     * and there is nothing above this to act on it.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun endConnectionAfterFailure() {
+        try {
+            onReadClosed?.invoke()
+        } catch (notifyFailure: Throwable) {
+            eventLoop.logger.warn(notifyFailure) {
+                "reporting the failed connection inactive threw as well: fd=$fd"
+            }
+        }
+        close()
     }
 
     /**
@@ -156,7 +194,7 @@ internal class KqueueIoTransport(
     override fun onPeerClosed(interest: Interest) {
         if (interest != Interest.READ) return
         if (!opened) return
-        containReadinessFailure("the peer close") { onReadClosed?.invoke() }
+        containReadinessFailure(readinessInterest = null) { onReadClosed?.invoke() }
     }
 
     /**

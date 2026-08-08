@@ -91,8 +91,22 @@ class EpollOnReadableSeamTest {
     @AfterTest
     fun tearDown() {
         close(writeFd)
-        close(readFd)
+        // Only if this fixture still owns it. A test that lets the transport
+        // close the connection hands `readFd` over: the transport's teardown is
+        // dispatched to the loop, so closing here as well is a second close(2)
+        // on the same number from another thread -- and if anything on the loop
+        // or in `eventLoop.close()` opens a descriptor in between, the loser
+        // closes a live one belonging to something else.
+        if (readFd >= 0) close(readFd)
         eventLoop.close()
+    }
+
+    /**
+     * Marks `readFd` as belonging to the transport from here on, so [tearDown]
+     * does not close it a second time.
+     */
+    private fun surrenderReadFd() {
+        readFd = -1
     }
 
     private fun createPipe(): Pair<Int, Int> {
@@ -226,6 +240,7 @@ class EpollOnReadableSeamTest {
             // other connection on this engine, over one socket's buffer.
             val fake = FakeNativeSocket()
             val transport = EpollIoTransport(readFd, eventLoop, FailingAllocator, fake)
+            surrenderReadFd()
             transport.onChannelAttached()
             transport.readEnabled = true
 
@@ -251,6 +266,7 @@ class EpollOnReadableSeamTest {
                 readThrowsOnce = IllegalStateException("the read path failed mid-flight")
             }
             val transport = EpollIoTransport(readFd, eventLoop, tracker, fake)
+            surrenderReadFd()
             transport.onChannelAttached()
             transport.readEnabled = true
 
@@ -273,6 +289,7 @@ class EpollOnReadableSeamTest {
             val transport = EpollIoTransport(readFd, eventLoop, DefaultAllocator, fake)
             transport.onChannelAttached()
             transport.onReadClosed = { throw IllegalStateException("the close handler failed") }
+            surrenderReadFd()
             transport.readEnabled = true
 
             transport.onPeerClosed(Interest.READ)
@@ -305,12 +322,49 @@ class EpollOnReadableSeamTest {
 
             triggerReadiness() // and nothing ever reads the byte back out
 
-            delay(500)
+            // Await the first call rather than sleeping for it: a fixed wait
+            // that is too short reports 0, which fails this test for the one
+            // reason it is not about. The sleep after it is for the second
+            // call, which must not come -- unbounded waiting cannot show that.
+            withTimeout(10.seconds) {
+                while (calls.value == 0) delay(10)
+            }
+            delay(300)
             assertEquals(
                 1,
                 calls.value,
                 "the interest must not be handed back to the listener that just threw",
             )
+        }
+    }
+
+    @Test
+    fun `readiness that throws reports the connection inactive as well as closing it`() = runBlocking {
+        withTimeout(15.seconds) {
+            // `close()` releases what it can reach -- the pending writes, the
+            // registrations, the fd -- and tells nobody. `onReadClosed` is the
+            // only route to `pipeline.notifyInactive()`, and that is what runs
+            // each handler's `onInactive`: held body chunks, a borrowed header
+            // set, the server's connection-registry entry, and the EOF that
+            // wakes a caller parked in a Coroutine-mode `read()`. An earlier
+            // revision closed without it, leaking the first three per failed
+            // connection and hanging the fourth for good.
+            val fake = FakeNativeSocket()
+            val transport = EpollIoTransport(readFd, eventLoop, FailingAllocator, fake)
+            surrenderReadFd()
+            var reportedInactive = 0
+            transport.onChannelAttached()
+            transport.onReadClosed = { reportedInactive++ }
+            transport.readEnabled = true
+
+            transport.onReady(Interest.READ)
+
+            assertEquals(
+                1,
+                reportedInactive,
+                "the pipeline learns the connection ended, exactly as a fatal read reports it",
+            )
+            assertFalse(transport.isOpen)
         }
     }
 }
