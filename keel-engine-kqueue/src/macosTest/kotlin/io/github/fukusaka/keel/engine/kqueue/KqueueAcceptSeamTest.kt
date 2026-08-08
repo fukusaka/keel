@@ -58,8 +58,9 @@ class KqueueAcceptSeamTest {
     private fun newEngine(
         fakeSocket: FakeNativeSocket = FakeNativeSocket(),
         fakeOps: FakeNativeSocketOps = FakeNativeSocketOps(),
+        threads: Int = 1,
     ): KqueueEngine = KqueueEngine(
-        config = IoEngineConfig(threads = 1),
+        config = IoEngineConfig(threads = threads),
         nativeSocket = fakeSocket,
         nativeSocketOps = fakeOps,
     )
@@ -282,8 +283,8 @@ class KqueueAcceptSeamTest {
     fun `a socket that cannot be prepared is closed and the accept loop carries on`() = runBlocking {
         withTimeout(15.seconds) {
             // `setNonBlocking` is `check(...)` over `fcntl` in production, so one
-            // accepted socket meeting a resource limit throws on the accept loop's own
-            // thread -- out of the loop, out of the readiness dispatch, off a
+            // accepted socket whose descriptor cannot be made non-blocking
+            // throws on the accept loop's own thread -- out of the loop, out of the readiness dispatch, off a
             // pthread entry with nothing above it, ending the process. The
             // listener and every other connection are blameless.
             val sentinelFd = newSentinelFd()
@@ -320,6 +321,57 @@ class KqueueAcceptSeamTest {
                     -1,
                     fcntl(doomedFd, F_GETFD),
                     "setup did not finish, so no transport owns that descriptor and this must release it",
+                )
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a wrapped worker index does not turn every accept into a dropped one`() = runBlocking {
+        withTimeout(15.seconds) {
+            // `workerIndex++ % size` goes negative after Int.MAX_VALUE accepts,
+            // and a negative index throws out of `at()`. The per-socket guard
+            // catches it, so the loop survives -- and closes and drops the
+            // connection. Every accept from then on, one warning each, for as
+            // long as the server runs: the listener looks healthy and serves
+            // nobody. The counter is wound here rather than reached, because
+            // reaching it means two billion accepts.
+            val sentinelFd = newSentinelFd()
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18088)
+            val acceptedFd = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(acceptedFd >= 0, "could not open a socket to be accepted")
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(acceptedFd))
+                enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+            }
+            // Two workers, because `n % 1` is 0 for every n -- a single-worker
+            // group cannot be indexed wrongly, so it cannot show this at all.
+            val engine = newEngine(fakeSocket, fakeOps, threads = 2)
+            try {
+                val server = engine.bindPipeline(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                ) { /* no-op initializer */ }
+                val pipelined = server as KqueuePipelinedStreamServer
+                // Any value the wrap passes through; -1 makes an unmasked
+                // modulo negative for every group size above one.
+                pipelined.setWorkerIndexForTest(-1)
+
+                pipelined.onAcceptable()
+
+                assertTrue(
+                    fcntl(acceptedFd, F_GETFD) >= 0,
+                    "the connection is handed to a worker, not dropped for the counter's sake",
                 )
                 server.close()
             } catch (t: Throwable) {

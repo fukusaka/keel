@@ -202,8 +202,9 @@ public class FakeNativeSocketOps : NativeSocketOps {
      *
      * The production `PosixNativeSocketOps` reaches `setNonBlocking` through
      * `check(...)` over `fcntl`, so a single accepted socket whose descriptor
-     * cannot be made non-blocking throws — on the accept loop's own thread. One-shot rather than sticky so
-     * a test can assert that the *next* connection is still served.
+     * cannot be made non-blocking throws — on the accept loop's own thread.
+     * One-shot rather than sticky so a test can assert that the *next*
+     * connection is still served.
      */
     public var setNonBlockingThrowsOnce: Throwable? = null
 

@@ -266,9 +266,12 @@ abstract class AbstractIoTransport(
      * release on the first leaves a buffer for the second to release again:
      * open. io_uring releases without clearing but its flush clears in a
      * `finally`, so a refusal there loses the tail rather than double-releasing
-     * it: a different defect. Netty, NWConnection and the in-memory transport
-     * release only from a teardown behind [markTeardownStarted], which by the
-     * paragraph above has no next walker: not open.
+     * it: a different defect. Netty and NWConnection release only from a
+     * teardown behind [markTeardownStarted], which by the paragraph above has
+     * no next walker: not open. The in-memory transport used by tests does have
+     * a second walker, and is safe for the other reason — its flush already
+     * takes each entry out of the queue before releasing it, which is what this
+     * does.
      *
      * **It does not touch [pendingBytes].** A caller on a path that continues
      * afterwards owes the matching [updatePendingBytes]. The two engine flush

@@ -194,11 +194,26 @@ internal class KqueuePipelinedStreamServer(
     }
 
     /**
+     * Winds [workerIndex] to [value] so a test can reach the wrap without
+     * accepting `Int.MAX_VALUE` connections.
+     *
+     * `internal` for the same reason the other probes here are: the counter and
+     * the round-robin over it are private, and the boundary they exist for is
+     * two billion accepts away from any test that drives real ones.
+     */
+    internal fun setWorkerIndexForTest(value: Int) {
+        workerIndex = value
+    }
+
+    /**
      * Round-robin over the worker group.
      *
      * Masked rather than taken modulo directly: [workerIndex] wraps to negative
-     * after `Int.MAX_VALUE` accepts, and a negative index throws out of the
-     * accept loop. Matches the sibling counter in `KqueueEventLoopGroup.next()`.
+     * after `Int.MAX_VALUE` accepts, and a negative index throws out of
+     * [KqueueEventLoopGroup.at]. The per-socket guard catches that, so the loop
+     * survives — and closes and drops **every** accept from then on, one
+     * warning each, for as long as the server runs. Matches the sibling counter
+     * in `KqueueEventLoopGroup.next()`.
      */
     private fun nextWorker(): KqueueEventLoop =
         workerGroup.at((workerIndex++ and Int.MAX_VALUE) % workerGroup.size)
