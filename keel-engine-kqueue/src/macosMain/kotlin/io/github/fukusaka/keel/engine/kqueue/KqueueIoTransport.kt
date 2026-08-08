@@ -229,10 +229,11 @@ internal class KqueueIoTransport(
      * borrowed header set, the server's registry entry, the EOF that wakes a
      * parked reader. A close that throws loses only what the stage that failed was
      * for — the teardown runs its remaining stages and reaches its own
-     * `closeFdSafely`. In practice the stages that can fail are the flush and
-     * the drain (an allocator, a pointer, a syscall wrapper); the ledger and
-     * registry ones report rather than throw, so the descriptor, the entries,
-     * the registry slot and the flush waiter are not the cost. (In Pipeline mode the notification
+     * `closeFdSafely`. In practice the stages that can fail are the deferred
+     * flush and the release of what it left (a syscall wrapper, an allocator, a
+     * pointer); the ledger and registry ones report rather than throw, so the
+     * descriptor, the entries, the registry slot and the flush waiter are not
+     * the cost. (In Pipeline mode the notification
      * performs that same teardown, so it can lose either set.)
      *
      * Reaching the loop's backstop repairs none of it — it drops the

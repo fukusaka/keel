@@ -254,8 +254,10 @@ abstract class AbstractIoTransport(
      * that throws leaves every buffer it already released **still queued** — and
      * whatever walks this queue next releases them a second time, which fails
      * the reference-count check. In a flush that next walker is the teardown, at
-     * its first step, so one refused release costs the fd, the ledger entries,
-     * the registry slot and the flush waiter.
+     * its first step — so before the POSIX engines staged theirs, one refused
+     * release cost the fd, the ledger entries, the registry slot and the flush
+     * waiter. They finish past a failed stage now; the transports that do not
+     * stage still pay the whole list.
      *
      * [releaseAllPendingWrites] itself runs at most once per transport, after
      * the teardown claim is taken, so it has no next walker of its own; it uses
