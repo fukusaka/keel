@@ -72,7 +72,12 @@ internal class NioPipelinedStreamServer(
     }
 
     private fun dispatchToWorker(client: java.nio.channels.SocketChannel, listener: Listener) {
-        val idx = workerIndex++ % workerGroup.size
+        // Masked before the modulo: after Int.MAX_VALUE accepts the counter
+        // wraps negative, and a negative index throws out of the accept loop on
+        // the boss thread -- which selects, so the server stops accepting.
+        // Matches the round-robin in this group's own `next()`, which has
+        // masked since it was written.
+        val idx = (workerIndex++ and Int.MAX_VALUE) % workerGroup.size
         val workerLoop = workerGroup.at(idx)
         // Register on worker thread because NIO Selector.register() blocks during select().
         workerLoop.dispatch(

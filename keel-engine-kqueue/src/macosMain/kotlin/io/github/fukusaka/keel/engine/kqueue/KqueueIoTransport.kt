@@ -176,8 +176,9 @@ internal class KqueueIoTransport(
      * Every readiness path that ends a connection goes through here rather than
      * touching [onReadClosed] directly, because whether that call succeeded is
      * what [endConnectionAfterFailure] needs and **cannot learn by calling it
-     * again** — so the answer is recorded in [windDownFailed] instead. The route is `pipeline.notifyInactive()`, which sets
-     * `inactiveObserved` before it dispatches the chain, and then `close()`,
+     * again** — so the answer is recorded in [windDownFailed] instead. The
+     * route is `pipeline.notifyInactive()`, which sets `inactiveObserved`
+     * before it dispatches the chain, and then `close()`,
      * whose `markClosing()` flips `opened` exactly once — so a chain that threw
      * is short-circuited on re-entry and the second call returns normally. A
      * fallback that reads that return as "the teardown finished" is reading the

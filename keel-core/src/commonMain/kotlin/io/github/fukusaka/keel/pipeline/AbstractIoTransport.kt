@@ -259,11 +259,16 @@ abstract class AbstractIoTransport(
      *
      * [releaseAllPendingWrites] itself runs at most once per transport, after
      * the teardown claim is taken, so it has no next walker of its own; it uses
-     * this so that the two drains that share a body cannot drift apart. **Every
-     * other transport still writes the release-then-clear order out inline** —
-     * io_uring, NWConnection, Netty, NIO, Node and the in-memory one used by
-     * tests all inherit this and none of them calls it, so the class of defect
-     * is open in all six.
+     * this so that the two drains that share a body cannot drift apart. No other
+     * transport calls it, and what that costs them differs — **the defect needs
+     * a second walker over the same queue**, which only some have. The NIO and
+     * Node transports drain on their flush path *and* on teardown, so a refused
+     * release on the first leaves a buffer for the second to release again:
+     * open. io_uring releases without clearing but its flush clears in a
+     * `finally`, so a refusal there loses the tail rather than double-releasing
+     * it: a different defect. Netty, NWConnection and the in-memory transport
+     * release only from a teardown behind [markTeardownStarted], which by the
+     * paragraph above has no next walker: not open.
      *
      * **It does not touch [pendingBytes].** A caller on a path that continues
      * afterwards owes the matching [updatePendingBytes]. The two engine flush

@@ -201,8 +201,8 @@ public class FakeNativeSocketOps : NativeSocketOps {
      * Makes the next [setNonBlocking] throw this, then clears itself.
      *
      * The production `PosixNativeSocketOps` reaches `setNonBlocking` through
-     * `check(...)` over `fcntl`, so a single accepted socket meeting `ENOBUFS`
-     * throws — on the accept loop's own thread. One-shot rather than sticky so
+     * `check(...)` over `fcntl`, so a single accepted socket whose descriptor
+     * cannot be made non-blocking throws — on the accept loop's own thread. One-shot rather than sticky so
      * a test can assert that the *next* connection is still served.
      */
     public var setNonBlockingThrowsOnce: Throwable? = null

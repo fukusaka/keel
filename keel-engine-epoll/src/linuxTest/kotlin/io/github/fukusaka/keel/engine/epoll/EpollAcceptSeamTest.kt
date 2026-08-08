@@ -282,7 +282,7 @@ class EpollAcceptSeamTest {
     fun `a socket that cannot be prepared is closed and the accept loop carries on`() = runBlocking {
         withTimeout(15.seconds) {
             // `setNonBlocking` is `check(...)` over `fcntl` in production, so one
-            // accepted socket meeting ENOBUFS throws on the accept loop's own
+            // accepted socket meeting a resource limit throws on the accept loop's own
             // thread -- out of the loop, out of the readiness dispatch, off a
             // pthread entry with nothing above it, ending the process. The
             // listener and every other connection are blameless.
