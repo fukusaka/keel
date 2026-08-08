@@ -3,19 +3,23 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
+import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
 import platform.posix.pipe
 import platform.posix.write
+import kotlin.concurrent.AtomicInt
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -193,6 +197,82 @@ class KqueueOnReadableSeamTest {
             assertFalse(
                 transport.isOpen,
                 "the connection whose readiness could not be handled is the unit that dies",
+            )
+        }
+    }
+
+    @Test
+    fun `a read that throws releases the buffer it was holding`() = runBlocking {
+        withTimeout(15.seconds) {
+            // Nothing but this frame can see that buffer between the allocation
+            // and the hand-off: `close()` releases `pendingWrites`, which it can
+            // reach, and a local is not that. Before the body owned what it
+            // allocated, a throw in the window lost a pooled buffer per failed
+            // read -- quietly, since the connection dies either way.
+            val tracker = TrackingAllocator(DefaultAllocator)
+            val fake = FakeNativeSocket().apply {
+                readThrowsOnce = IllegalStateException("the read path failed mid-flight")
+            }
+            val transport = KqueueIoTransport(readFd, eventLoop, tracker, fake)
+            transport.onChannelAttached()
+            transport.readEnabled = true
+
+            transport.onReady(Interest.READ)
+
+            assertFalse(transport.isOpen, "the connection is still the unit that dies")
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a peer close that throws closes the connection rather than the loop`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The other half of what the readiness dispatch calls into. Guarding
+            // only `onReady` left this one falling through to the backstop in the
+            // event loop, which releases nothing on the listener's behalf: the
+            // loop survived and the connection sat in CLOSE-WAIT holding its
+            // descriptor, with nobody left who would close it.
+            val fake = FakeNativeSocket()
+            val transport = KqueueIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+            transport.onChannelAttached()
+            transport.onReadClosed = { throw IllegalStateException("the close handler failed") }
+            transport.readEnabled = true
+
+            transport.onPeerClosed(Interest.READ)
+
+            assertFalse(
+                transport.isOpen,
+                "a peer close that cannot be delivered still ends this connection",
+            )
+        }
+    }
+
+    @Test
+    fun `a listener that re-arms and then throws is disarmed rather than spun`() = runBlocking {
+        withTimeout(15.seconds) {
+            // Popping the ledger entry before the call is not by itself
+            // protection. A listener that arms before doing its work has put a
+            // fresh entry back by the time it throws, and the interest is still
+            // ready -- nothing consumed the byte -- so the next turn finds the
+            // entry and calls straight back into the same throw. One ERROR a
+            // turn, for as long as the fd is open.
+            val calls = AtomicInt(0)
+            val listener = object : FdReadyListener {
+                override fun onReady(interest: Interest) {
+                    calls.incrementAndGet()
+                    eventLoop.registerCallback(readFd, Interest.READ, this)
+                    throw IllegalStateException("armed, then failed")
+                }
+            }
+            eventLoop.registerCallback(readFd, Interest.READ, listener)
+
+            triggerReadiness() // and nothing ever reads the byte back out
+
+            delay(500)
+            assertEquals(
+                1,
+                calls.value,
+                "the interest must not be handed back to the listener that just threw",
             )
         }
     }

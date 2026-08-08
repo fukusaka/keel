@@ -96,18 +96,40 @@ internal class KqueueIoTransport(
         // readiness dispatch, the loop body and the pthread entry point behind
         // it, ending the process over one socket.
         //
-        // Closing is the same end this connection reaches on a fatal read or
-        // write error, so the caller learns through the path it already
-        // watches: `onReadClosed`, `read()` returning -1, the pipeline going
-        // inactive. Nothing new to subscribe to, and the close is idempotent.
-        try {
+        // Closing is the end this connection reaches on a fatal read or write
+        // error too, so the caller learns through the path it already watches:
+        // `onReadClosed`, `read()` returning -1, the pipeline going inactive.
+        // Nothing new to subscribe to, and the close is idempotent.
+        //
+        // It is not, however, the *same* end. Those paths release the buffer
+        // they were holding before they take it; a throw releases nothing that
+        // is not reachable from this object, and the in-flight read buffer is a
+        // local. Each body owns what it allocates -- see `onReadable`.
+        containReadinessFailure("readiness for $interest") {
             when (interest) {
                 Interest.READ -> onReadable()
                 Interest.WRITE -> onWritable()
             }
+        }
+    }
+
+    /**
+     * Runs [body] and closes this connection if it throws.
+     *
+     * Covers every entry the readiness dispatch has into this transport, not
+     * just [onReady]: the peer-close notification runs user-facing callbacks
+     * on the same thread with the same nothing above it, and letting that one
+     * fall through to the backstop in the event loop leaves the connection
+     * open in CLOSE-WAIT holding its descriptor -- the loop survives, and the
+     * fd is never released by anybody.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun containReadinessFailure(what: String, body: () -> Unit) {
+        try {
+            body()
         } catch (readinessFailure: Throwable) {
             eventLoop.logger.warn(readinessFailure) {
-                "handling readiness threw; closing the connection: fd=$fd interest=$interest"
+                "handling $what threw; closing the connection: fd=$fd"
             }
             close()
         }
@@ -134,7 +156,7 @@ internal class KqueueIoTransport(
     override fun onPeerClosed(interest: Interest) {
         if (interest != Interest.READ) return
         if (!opened) return
-        onReadClosed?.invoke()
+        containReadinessFailure("the peer close") { onReadClosed?.invoke() }
     }
 
     /**
@@ -373,27 +395,45 @@ internal class KqueueIoTransport(
             readPoolRegistered = true
         }
         val buf = allocator.allocate(readBufferSize)
-        val ptr = (buf.unsafePointer + buf.writerIndex)!!
-        when (val result = nativeSocket.read(fd, ptr, buf.writableBytes)) {
-            is ReadResult.Bytes -> {
-                buf.writerIndex += result.bytes
-                touchIdleTimeout() // progress: refresh the idle deadline
-                onRead?.invoke(buf) ?: buf.release()
-                armRead()
+        // Held until this body has either released it or handed it on, so that
+        // a throw in between still releases it. `close()` cannot do this on our
+        // behalf -- it releases `pendingWrites`, which it can reach, and this
+        // buffer is a local nothing else can see. The first thing between the
+        // allocation and the hand-off that can throw is the pointer access one
+        // line down: it is an unchecked cast, so an allocator whose `IoBuf` does
+        // not implement the native-pointer interface fails here, having just
+        // handed out a pooled buffer.
+        var unreleased: IoBuf? = buf
+        try {
+            val ptr = (buf.unsafePointer + buf.writerIndex)!!
+            when (val result = nativeSocket.read(fd, ptr, buf.writableBytes)) {
+                is ReadResult.Bytes -> {
+                    buf.writerIndex += result.bytes
+                    touchIdleTimeout() // progress: refresh the idle deadline
+                    unreleased = null
+                    onRead?.invoke(buf) ?: buf.release()
+                    armRead()
+                }
+                ReadResult.Eof -> {
+                    unreleased = null
+                    buf.release()
+                    onReadClosed?.invoke()
+                }
+                ReadResult.WouldBlock -> {
+                    unreleased = null
+                    buf.release()
+                    armRead()
+                }
+                is ReadResult.Failed -> {
+                    eventLoop.logger.warn { "read failed: fd=$fd ${errnoMessage(result.errno)}" }
+                    unreleased = null
+                    buf.release()
+                    onReadClosed?.invoke()
+                }
             }
-            ReadResult.Eof -> {
-                buf.release()
-                onReadClosed?.invoke()
-            }
-            ReadResult.WouldBlock -> {
-                buf.release()
-                armRead()
-            }
-            is ReadResult.Failed -> {
-                eventLoop.logger.warn { "read failed: fd=$fd ${errnoMessage(result.errno)}" }
-                buf.release()
-                onReadClosed?.invoke()
-            }
+        } catch (readFailure: Throwable) {
+            unreleased?.release()
+            throw readFailure
         }
     }
 

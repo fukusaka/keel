@@ -209,11 +209,16 @@ public class FakeNativeSocketOps : NativeSocketOps {
 
     override fun setNonBlocking(fd: Int) {
         setNonBlockingCalls++
-        _nonBlockingFds.add(fd)
+        // Recorded only on the way out: [nonBlockingFds] is what tests read to
+        // decide which descriptors were made non-blocking, and a throwing call
+        // did not make this one non-blocking. Listing it anyway would let a
+        // test asserting the fd was prepared pass against a build where it
+        // never was.
         setNonBlockingThrowsOnce?.let {
             setNonBlockingThrowsOnce = null
             throw it
         }
+        _nonBlockingFds.add(fd)
     }
 
     override fun setSocketOption(fd: Int, option: SocketOption) {

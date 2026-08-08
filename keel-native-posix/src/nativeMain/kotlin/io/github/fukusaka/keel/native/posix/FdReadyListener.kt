@@ -53,6 +53,14 @@ interface FdReadyListener {
      * here or from [onReady], nor a suspend waiter queued on the same key. It
      * used to disarm unconditionally; that discarded a live registration and
      * left an accept loop that never ran again.
+     *
+     * **Unless the listener threw**, in which case its own re-registration does
+     * not count and is dropped: a listener that arms before doing its work has
+     * put an entry back before it fails, and honouring that would hand it the
+     * same readiness again on the next turn, and the turn after. Only a suspend
+     * waiter — a different party — keeps the interest armed then. So a listener
+     * that throws out of either callback is off this fd until it registers
+     * again from somewhere that returned normally.
      */
     fun onPeerClosed(interest: Interest) {}
 }

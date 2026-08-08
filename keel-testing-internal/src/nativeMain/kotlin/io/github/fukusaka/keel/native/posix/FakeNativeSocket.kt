@@ -130,8 +130,31 @@ public class FakeNativeSocket : NativeSocket {
 
     // --- NativeSocket impl ---
 
+    /**
+     * Thrown by the next [read] call, then cleared.
+     *
+     * Stands in for the read path failing between the buffer allocation and
+     * the hand-off to the transport's reader — the window in which a throw
+     * leaks a pooled buffer no one else can reach. One-shot so a test can
+     * assert what the connection does afterwards.
+     */
+    public var readThrowsOnce: Throwable? = null
+
+    /**
+     * Thrown by the next [accept] call, then cleared.
+     *
+     * Stands in for the accept loop failing somewhere other than the per-socket
+     * setup it guards individually, which is what decides whether the listener
+     * is left armed. One-shot for the same reason as [readThrowsOnce].
+     */
+    public var acceptThrowsOnce: Throwable? = null
+
     override fun read(fd: Int, buf: CPointer<ByteVar>, length: Int): ReadResult {
         readCalls++
+        readThrowsOnce?.let {
+            readThrowsOnce = null
+            throw it
+        }
         return readQueue[fd]?.removeFirstOrNull() ?: defaultRead
     }
 
@@ -152,6 +175,10 @@ public class FakeNativeSocket : NativeSocket {
 
     override fun accept(serverFd: Int): AcceptResult {
         acceptCalls++
+        acceptThrowsOnce?.let {
+            acceptThrowsOnce = null
+            throw it
+        }
         return acceptQueue[serverFd]?.removeFirstOrNull() ?: defaultAccept
     }
 

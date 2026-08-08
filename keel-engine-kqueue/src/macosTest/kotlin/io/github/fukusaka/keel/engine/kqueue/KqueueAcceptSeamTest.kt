@@ -362,4 +362,47 @@ class KqueueAcceptSeamTest {
             }
         }
     }
+
+    @Test
+    fun `an accept loop that throws leaves the listener armed`() = runBlocking {
+        withTimeout(15.seconds) {
+            // `arm()` is reached from `start()` and from the two branches that
+            // end the loop normally, so a throw on the way out left this
+            // listener with no registration and nothing that would give it one
+            // back -- the readiness dispatch found no listener for the key and
+            // took the interest away. The server went on reporting itself
+            // active and never accepted again. Silent, where the crash this
+            // guard replaced at least said something.
+            val sentinelFd = newSentinelFd()
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18087)
+            val fakeSocket = FakeNativeSocket().apply {
+                acceptThrowsOnce = IllegalStateException("the accept loop failed")
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+            }
+            val engine = newEngine(fakeSocket, fakeOps)
+            try {
+                val server = engine.bindPipeline(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                ) { /* no-op initializer */ }
+                val pipelined = server as KqueuePipelinedStreamServer
+
+                pipelined.dispatchAcceptReadiness()
+
+                assertTrue(
+                    pipelined.isFirstListenerArmed(),
+                    "a listener that is still open stays armed, whatever the loop threw",
+                )
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
+        }
+    }
 }

@@ -93,8 +93,54 @@ internal class KqueuePipelinedStreamServer(
         onAcceptable(acceptArms.first())
     }
 
+    /**
+     * Whether the first listener still holds an accept registration.
+     *
+     * A probe, for the one property of this class that has no other symptom: a
+     * listener that lost its registration goes on reporting [isActive] and
+     * simply never accepts again. Nothing in the public surface separates that
+     * from an idle server.
+     */
+    internal fun isFirstListenerArmed(): Boolean =
+        bossLoop.hasCallbackRegistration(listeners.first().serverFd, Interest.READ)
+
+    /**
+     * Drives one accept readiness the way the event loop does.
+     *
+     * The ledger entry is taken first, as `dispatchReady` pops it before it
+     * calls anything, and only then is the listener run. What is registered
+     * afterwards is therefore what this call itself put back — which is the
+     * whole question for a call that does not return normally. Calling
+     * [onAcceptable] directly leaves the arm from `start()` in place and would
+     * report a listener as armed whether or not the loop re-armed it.
+     */
+    internal fun dispatchAcceptReadiness() {
+        val arm = acceptArms.first()
+        bossLoop.unregisterCallback(arm.listener.serverFd, Interest.READ)
+        onAcceptable(arm)
+    }
+
     private fun onAcceptable(arm: AcceptArm) {
         if (closed) return
+        // Whatever escapes the loop, this listener stays armed. `arm()` is
+        // reached from `start()` and from the two branches that end the loop
+        // normally, so a throw on the way out used to leave the listener with
+        // no registration and nothing that would give it one back: the readiness
+        // dispatch caught the throw, found no listener left for the key and took
+        // the interest away. The server went on reporting itself active and
+        // never accepted again -- silent, which is the one outcome worse than
+        // the crash this guard replaced.
+        try {
+            acceptLoop(arm)
+        } catch (acceptFailure: Throwable) {
+            logger.error(acceptFailure) {
+                "the accept loop threw; re-arming the listener: serverFd=${arm.listener.serverFd}"
+            }
+            arm.arm()
+        }
+    }
+
+    private fun acceptLoop(arm: AcceptArm) {
         val listener = arm.listener
         while (true) {
             when (val result = nativeSocket.accept(listener.serverFd)) {
@@ -113,9 +159,14 @@ internal class KqueuePipelinedStreamServer(
                     // `Failed` branch already does for a failed accept -- the
                     // repeat rate is bounded by the peers connecting, not by
                     // readiness re-firing.
-                    try {
+                    //
+                    // Choosing the worker is inside the guard and handing the
+                    // descriptor to it is not: everything up to the hand-off can
+                    // still close the fd, because nothing else has seen it yet.
+                    val worker = try {
                         nativeSocketOps.setNonBlocking(result.fd)
                         nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
+                        nextWorker()
                     } catch (setupFailure: Throwable) {
                         closeFdSafely(result.fd, logger, "accepted socket setup")
                         logger.warn(setupFailure) {
@@ -123,7 +174,7 @@ internal class KqueuePipelinedStreamServer(
                         }
                         continue
                     }
-                    dispatchToWorker(result.fd, listener)
+                    dispatchToWorker(worker, result.fd, listener)
                 }
                 AcceptResult.WouldBlock -> {
                     arm.arm()
@@ -138,9 +189,17 @@ internal class KqueuePipelinedStreamServer(
         }
     }
 
-    private fun dispatchToWorker(clientFd: Int, listener: Listener) {
-        val idx = workerIndex++ % workerGroup.size
-        val workerLoop = workerGroup.at(idx)
+    /**
+     * Round-robin over the worker group.
+     *
+     * Masked rather than taken modulo directly: [workerIndex] wraps to negative
+     * after `Int.MAX_VALUE` accepts, and a negative index throws out of the
+     * accept loop. Matches the sibling counter in `KqueueEventLoopGroup.next()`.
+     */
+    private fun nextWorker(): KqueueEventLoop =
+        workerGroup.at((workerIndex++ and Int.MAX_VALUE) % workerGroup.size)
+
+    private fun dispatchToWorker(workerLoop: KqueueEventLoop, clientFd: Int, listener: Listener) {
         workerLoop.dispatch(
             kotlin.coroutines.EmptyCoroutineContext,
             kotlinx.coroutines.Runnable {
