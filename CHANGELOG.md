@@ -82,6 +82,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`, `engine-epoll`, `engine-kqueue`: a throw while preparing an accepted socket or
+  handling readiness no longer ends the EventLoop's thread — the connection is dropped and the loop
+  carries on (#1039)
 - `core`, `engine-*`: a `Logger` that throws no longer escapes the `catch` that reported to it —
   it could end an EventLoop thread, abandon a bind rollback, or kill the process (#1038)
 - `engine-epoll`, `engine-kqueue`: join the EventLoop when the channel attaches rather than in the

@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
@@ -98,8 +99,30 @@ internal class KqueuePipelinedStreamServer(
         while (true) {
             when (val result = nativeSocket.accept(listener.serverFd)) {
                 is AcceptResult.Accepted -> {
-                    nativeSocketOps.setNonBlocking(result.fd)
-                    nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
+                    // Per accepted descriptor, because that is the unit that can
+                    // fail here: `setNonBlocking` and `applySocketOptions` are
+                    // `check(...)` over `fcntl` / `setsockopt`, so one connection
+                    // meeting ENOBUFS threw all the way out of this loop, out of
+                    // the readiness dispatch and off the loop's pthread entry --
+                    // ending the process over a single socket. The listener has
+                    // done nothing wrong and neither have the other connections.
+                    //
+                    // Closing rather than dispatching: setup did not finish, so
+                    // no transport owns this descriptor and nothing else will
+                    // release it. Then `continue`, which is what the sibling
+                    // `Failed` branch already does for a failed accept -- the
+                    // repeat rate is bounded by the peers connecting, not by
+                    // readiness re-firing.
+                    try {
+                        nativeSocketOps.setNonBlocking(result.fd)
+                        nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
+                    } catch (setupFailure: Throwable) {
+                        closeFdSafely(result.fd, logger, "accepted socket setup")
+                        logger.warn(setupFailure) {
+                            "preparing an accepted socket failed; dropping that connection: fd=${result.fd}"
+                        }
+                        continue
+                    }
                     dispatchToWorker(result.fd, listener)
                 }
                 AcceptResult.WouldBlock -> {

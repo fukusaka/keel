@@ -1,8 +1,11 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -17,6 +20,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -32,6 +36,22 @@ import kotlin.time.Duration.Companion.seconds
  */
 @OptIn(ExperimentalForeignApi::class)
 class KqueueOnReadableSeamTest {
+
+    /**
+     * An allocator that cannot serve a read buffer.
+     *
+     * Stands in for this connection's own plumbing failing on the loop thread:
+     * a user handler's throw is contained by the pipeline and a resumed
+     * coroutine's by the loop's per-task guard, so what actually reaches the
+     * readiness frame is something like a native heap that will not give up a
+     * buffer.
+     */
+    private object FailingAllocator : BufferAllocator {
+        override fun allocate(capacity: Int): IoBuf = throw OutOfMemoryError("no buffer for you")
+        override fun wrapBytes(bytes: ByteArray, offset: Int, length: Int): IoBuf? = null
+        override fun slice(source: IoBuf, offset: Int, length: Int): IoBuf =
+            throw UnsupportedOperationException("this allocator exists to fail allocate")
+    }
 
     private val logger = NoopLoggerFactory.logger("KqueueOnReadableSeamTest")
     private lateinit var eventLoop: KqueueEventLoop
@@ -154,5 +174,26 @@ class KqueueOnReadableSeamTest {
         withTimeout(2.seconds) { closedSignal.await() }
         assertEquals(1, fake.readCalls)
         assertEquals(0, readFired, "Failed must not deliver a buffer")
+    }
+
+    @Test
+    fun `readiness handling that throws closes the connection instead of the loop`() = runBlocking {
+        withTimeout(15.seconds) {
+            // Before this was guarded the throw left onReady, the readiness
+            // dispatch and the loop body, and reached a pthread entry point with
+            // nothing above it to catch -- ending the process, and with it every
+            // other connection on this engine, over one socket's buffer.
+            val fake = FakeNativeSocket()
+            val transport = KqueueIoTransport(readFd, eventLoop, FailingAllocator, fake)
+            transport.onChannelAttached()
+            transport.readEnabled = true
+
+            transport.onReady(Interest.READ)
+
+            assertFalse(
+                transport.isOpen,
+                "the connection whose readiness could not be handled is the unit that dies",
+            )
+        }
     }
 }

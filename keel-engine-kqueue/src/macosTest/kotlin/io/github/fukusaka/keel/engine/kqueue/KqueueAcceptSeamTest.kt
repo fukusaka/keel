@@ -16,8 +16,10 @@ import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
 import platform.posix.ECONNABORTED
 import platform.posix.EMFILE
+import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
 import platform.posix.close
+import platform.posix.fcntl
 import platform.posix.socket
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -266,6 +268,59 @@ class KqueueAcceptSeamTest {
                 // No Accepted → no setNonBlocking / address reads.
                 assertTrue(fakeOps.nonBlockingFds.isEmpty())
                 assertEquals(0, fakeOps.getRemoteAddressCalls)
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a socket that cannot be prepared is closed and the accept loop carries on`() = runBlocking {
+        withTimeout(15.seconds) {
+            // `setNonBlocking` is `check(...)` over `fcntl` in production, so one
+            // accepted socket meeting ENOBUFS throws on the accept loop's own
+            // thread -- out of the loop, out of the readiness dispatch, off a
+            // pthread entry with nothing above it, ending the process. The
+            // listener and every other connection are blameless.
+            val sentinelFd = newSentinelFd()
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18086)
+            // A real descriptor: the failure path closes it, and whether it did
+            // is half of what this asserts.
+            val doomedFd = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(doomedFd >= 0, "could not open a socket to be accepted")
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(doomedFd))
+                enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+                setNonBlockingThrowsOnce = IllegalStateException("fcntl(F_SETFL, O_NONBLOCK) failed: boom")
+            }
+            val engine = newEngine(fakeSocket, fakeOps)
+            try {
+                val server = engine.bindPipeline(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                ) { /* no-op initializer */ }
+                val pipelined = server as KqueuePipelinedStreamServer
+
+                pipelined.onAcceptable()
+
+                assertEquals(
+                    2,
+                    fakeSocket.acceptCalls,
+                    "the loop must go round again rather than unwind: the next peer is not at fault",
+                )
+                assertEquals(
+                    -1,
+                    fcntl(doomedFd, F_GETFD),
+                    "setup did not finish, so no transport owns that descriptor and this must release it",
+                )
                 server.close()
             } catch (t: Throwable) {
                 close(sentinelFd)

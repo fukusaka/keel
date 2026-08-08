@@ -87,9 +87,29 @@ internal class KqueueIoTransport(
      * compare (negligible vs. surrounding syscall + buffer alloc).
      */
     override fun onReady(interest: Interest) {
-        when (interest) {
-            Interest.READ -> onReadable()
-            Interest.WRITE -> onWritable()
+        // Per connection, because that is the unit that can fail in here. The
+        // pipeline already contains anything a user handler throws (it turns it
+        // into `onError` and ends at the tail), and a resumed coroutine's throw
+        // is caught by the loop's per-task guard. What reaches this frame is
+        // this connection's own plumbing -- an allocator that cannot serve a
+        // read buffer, a timer that will not arm -- and that used to leave the
+        // readiness dispatch, the loop body and the pthread entry point behind
+        // it, ending the process over one socket.
+        //
+        // Closing is the same end this connection reaches on a fatal read or
+        // write error, so the caller learns through the path it already
+        // watches: `onReadClosed`, `read()` returning -1, the pipeline going
+        // inactive. Nothing new to subscribe to, and the close is idempotent.
+        try {
+            when (interest) {
+                Interest.READ -> onReadable()
+                Interest.WRITE -> onWritable()
+            }
+        } catch (readinessFailure: Throwable) {
+            eventLoop.logger.warn(readinessFailure) {
+                "handling readiness threw; closing the connection: fd=$fd interest=$interest"
+            }
+            close()
         }
     }
 

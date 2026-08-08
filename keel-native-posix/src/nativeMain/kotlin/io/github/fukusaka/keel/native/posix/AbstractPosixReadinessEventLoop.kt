@@ -1560,8 +1560,31 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // that can surface the close. How far that covers a given
             // connection is the transport's to state, and each one does, at
             // the arm in its own `init`.
-            cb.onReady(interest)
-            if (eofFlag) cb.onPeerClosed(interest)
+            // Backstop, below the two guards that know what a failure means:
+            // a server's accept loop closes the descriptor it could not prepare,
+            // a transport closes the connection whose readiness it could not
+            // handle. Anything still arriving here is a listener this class does
+            // not recognise, or one of those guards itself failing -- in both
+            // cases the unit that died is unknown, so this cannot release
+            // anything on its behalf and does not pretend to.
+            //
+            // What it does buy is the loop. Without it the throw leaves the
+            // readiness dispatch, the loop body and the pthread entry that has
+            // nothing above it to catch, and the process ends -- taking every
+            // other connection on this engine with the one that failed. The
+            // ledger entry was already popped above, so the fd does not re-fire
+            // into the same throw: the next readiness finds neither a callback
+            // nor a waiter and takes the stale-interest branch below, which
+            // disarms it.
+            try {
+                cb.onReady(interest)
+                if (eofFlag) cb.onPeerClosed(interest)
+            } catch (listenerFailure: Throwable) {
+                logger.error(listenerFailure) {
+                    "${cb::class.simpleName} threw from readiness for fd=$fd $interest; " +
+                        "the interest is dropped and whatever it held is not released"
+                }
+            }
             // The eof path used to disarm unconditionally, on the reasoning that
             // a connection reporting EOF is ending. Not true of every listener
             // that reaches here: a server's AcceptArm re-arms on both WouldBlock
