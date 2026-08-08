@@ -370,11 +370,11 @@ class EpollOnReadableSeamTest {
         withTimeout(15.seconds) {
             // The notification succeeds and the close is what fails. That is the
             // ordinary shape in Coroutine mode, where `onReadClosed` reports and
-            // does not close, so the close here is the entire teardown -- and a
-            // teardown that throws part-way is not retried: the claim is spent,
-            // so the fd is never closed, the ledger entries are never withdrawn,
-            // this transport stays in the participant registry, and a caller
-            // parked in `awaitPendingFlush` is never woken. An earlier revision
+            // does not close, so the close here is the entire teardown. The
+            // failure still reaches the loop -- the claim is spent, so nothing
+            // retries what the failed stage skipped -- but the stages after it
+            // run, so the descriptor, the ledger entries, the registry slot and
+            // the flush waiter are not the cost any more. An earlier revision
             // caught this throw and re-raised only when the *notification* had
             // failed, which put back one call along the hole it had just fixed.
             // A write that succeeds, so that a flush which should not happen
@@ -437,11 +437,13 @@ class EpollOnReadableSeamTest {
             assertEquals(0, fake.writeCalls + fake.writevCalls, "no flush was attempted")
             assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the abort left")
 
-            assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the teardown could not")
-            assertTrue(abandoned.releaseUnderlying(), "and the one the abort left queued")
-            // 0 rather than EBADF: the aborted teardown really did leave this
-            // open, which is the cost the test is named for.
-            assertEquals(0, close(abandonedFd), "the fixture closes what the teardown could not")
+            assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the drain could not")
+            assertTrue(abandoned.releaseUnderlying(), "and the one behind the refusal")
+            // EBADF rather than 0: the teardown reached its close despite the
+            // stage that threw. This assertion was the other way round when the
+            // teardown was a straight line -- a refused release abandoned the
+            // descriptor, and the test closed it on the teardown's behalf.
+            assertEquals(-1, close(abandonedFd), "the teardown released the descriptor itself")
         }
     }
 
