@@ -250,8 +250,7 @@ abstract class AbstractIoTransport(
      * Empties the pending-write queue, releasing each buffer *after* it has left
      * the queue.
      *
-     * The order is the point, and it is why this is here rather than written out
-     * at each drain. Releasing first and clearing afterwards means a release
+     * The order is the point. Releasing first and clearing afterwards means a release
      * that throws leaves every buffer it already released **still queued** — and
      * whatever walks this queue next releases them a second time, which fails
      * the reference-count check. In a flush that next walker is the teardown, at
@@ -260,7 +259,15 @@ abstract class AbstractIoTransport(
      *
      * [releaseAllPendingWrites] itself runs at most once per transport, after
      * the teardown claim is taken, so it has no next walker of its own; it uses
-     * this so that the one drain the codebase has behaves the same everywhere.
+     * this so that the two drains that share a body cannot drift apart. **The
+     * JVM, JS and io_uring transports still write the release-then-clear order
+     * out inline** — they inherit this and do not call it, so the class of
+     * defect is open there.
+     *
+     * **It does not touch [pendingBytes].** A caller on a path that continues
+     * afterwards owes the matching [updatePendingBytes]; the two engine flush
+     * sites do it on the next line. Without it the count only ever grows, and
+     * `writable` latches `false` for the life of the connection.
      *
      * **It stops where the failure was.** The buffers behind a refused release
      * stay queued and this returns by throwing, so a caller that has more to do

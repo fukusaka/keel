@@ -43,17 +43,15 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * Everything else delegates, so this is the buffer the transport actually
  * queued: same bytes, same indices, same reader and writer positions.
  *
- * **It is not a stand-in wherever a native pointer is taken.** Delegation
- * covers [IoBuf], and the pointer a transport reads and writes through comes
- * from an extension that casts to a separate native-pointer interface — which
- * this wrapper does not implement, so that cast fails on it. Queue it as a
- * pending write **that is never flushed**, where the release is what the test
- * is about: a flush takes that pointer on the queued buffer and fails with a
- * cast error instead, which is not the failure under test.
- *
  * Note that `retain()` is delegated and hands back the *wrapped* buffer, not
  * this one, so a caller that queues `buf.retain()` gets a release that
  * succeeds.
+ *
+ * **Native source set, so the engines whose drains are still inline cannot use
+ * it.** It sits here because forwarding the pointer requires the interface that
+ * lives here. The JVM and JS transports carry the same release-then-clear drain
+ * this seam is for; reaching those means giving this a common form, which is
+ * work for whoever fixes them.
  */
 @OptIn(ExperimentalForeignApi::class)
 public class FailingReleaseIoBuf(

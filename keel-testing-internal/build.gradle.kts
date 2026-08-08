@@ -37,7 +37,9 @@ plugins {
 //                 WS pipeline seam tests)
 //   - nativeMain: POSIX socket Native fakes (`FakeNativeSocket` /
 //                 `FakeNativeSocketOps` / `PosixRawClient`) +
-//                 `posix_testing` cinterop
+//                 `posix_testing` cinterop + `FailingReleaseIoBuf`
+//                 (here because forwarding the native pointer needs
+//                 the interface that lives in this source set)
 //   - nativeTest: in-module sanity tests for the Native fakes
 //                 (`FakeNativeSocketTest`).
 //

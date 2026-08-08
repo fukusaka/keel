@@ -85,6 +85,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `native-posix`, `engine-epoll`, `engine-kqueue`: a throw while preparing an accepted socket or
   handling readiness no longer ends the EventLoop's thread — the connection that raised it is the
   casualty instead (#1039)
+- `core`, `engine-epoll`, `engine-kqueue`: a buffer leaves the pending-write queue before it is
+  released, so a release that throws costs that buffer rather than the connection's descriptor
+  (#1039)
 - `engine-epoll`, `engine-kqueue`: a throw out of the accept loop leaves the listener armed instead of
   leaving the server reporting itself active while accepting nothing, and worker selection no longer
   goes negative after `Int.MAX_VALUE` accepts (#1039)

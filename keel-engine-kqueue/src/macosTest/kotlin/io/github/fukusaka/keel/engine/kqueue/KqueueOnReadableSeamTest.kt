@@ -20,7 +20,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.ECONNRESET
+import platform.posix.F_GETFD
 import platform.posix.close
+import platform.posix.fcntl
 import platform.posix.pipe
 import platform.posix.write
 import kotlin.concurrent.AtomicInt
@@ -372,6 +374,11 @@ class KqueueOnReadableSeamTest {
             // aborted teardown -- the backstop takes back only the interest that
             // fired. Level-triggered EVFILT_WRITE then arrives for as long as the fd
             // is open, which is now forever.
+            //
+            // The `opened` guard in `onWritable` is the only thing stopping it
+            // now: this buffer can hand out a native pointer, so a gather flush
+            // over that queue would reach its release rather than failing on
+            // the cast first.
             val onWrite = onLoopCatching { transport.onReady(Interest.WRITE) }
 
             assertEquals(null, onWrite, "write readiness on an ended connection does nothing")
@@ -444,9 +451,18 @@ class KqueueOnReadableSeamTest {
             assertEquals(1, refusing.refusedReleases)
             assertEquals(1, reportedInactive, "the connection still ended the ordinary way")
             assertFalse(transport.isOpen)
-            // -1: the teardown ran all the way through and closed it, which is
-            // what it could not do while the drain left it a double release.
-            assertEquals(-1, close(abandonedFd), "the teardown closed the descriptor itself")
+            // Asked, not closed. The teardown owns this descriptor and closed
+            // it, so the number is free from that moment -- and `tearDown` in
+            // this class refuses to close a surrendered fd for exactly that
+            // reason. `fcntl` answers the same question without touching
+            // whatever may have taken the number: EBADF means the teardown ran
+            // all the way through, which it could not do while the drain left
+            // it a double release.
+            assertEquals(
+                -1,
+                fcntl(abandonedFd, F_GETFD),
+                "the teardown closed the descriptor itself",
+            )
 
             assertTrue(refusing.releaseUnderlying(), "the fixture cleans up the one that refused")
             tracker.assertNoLeaks()
