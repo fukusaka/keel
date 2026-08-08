@@ -46,10 +46,11 @@ import kotlin.time.Duration.Companion.seconds
  *   fd on the boss event loop's real kqueue and suspends the
  *   continuation; resuming requires the real socket to become readable.
  *   Exercised by `KqueueEngineTest` integration tests.
- * - **`onAcceptable` `Accepted` branch (callback-based)** — after
- *   `setNonBlocking` + `getAddr` chain, the flow calls
- *   `transport.readEnabled = true` which arms a real worker-loop read
- *   on the (fake) accepted fd and fails with EBADF. Integration tests
+ * - **`onAcceptable` `Accepted` branch, past the hand-off** — the flow
+ *   calls `transport.readEnabled = true`, which arms a real worker-loop
+ *   read on the accepted fd. A *fake* fd fails there with EBADF, which
+ *   is why most of this file stops before the hand-off; the tests that
+ *   need to go through it pass a real descriptor. Integration tests
  *   cover the full accept-to-first-byte flow.
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -338,10 +339,12 @@ class KqueueAcceptSeamTest {
             // `workerIndex++ % size` goes negative after Int.MAX_VALUE accepts,
             // and a negative index throws out of `at()`. The per-socket guard
             // catches it, so the loop survives -- and closes and drops the
-            // connection. Every accept from then on, one warning each, for as
-            // long as the server runs: the listener looks healthy and serves
-            // nobody. The counter is wound here rather than reached, because
-            // reaching it means two billion accepts.
+            // connection. The counter keeps incrementing, so from then on one
+            // accept in `size` lands on a usable index and the rest are
+            // dropped, one warning each, for as long as the server runs: the
+            // listener looks healthy and serves a fraction. The counter is
+            // wound here rather than reached, because reaching it means two
+            // billion accepts.
             val sentinelFd = newSentinelFd()
             val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18088)
             val acceptedFd = socket(AF_INET, SOCK_STREAM, 0)
@@ -373,6 +376,9 @@ class KqueueAcceptSeamTest {
                     fcntl(acceptedFd, F_GETFD) >= 0,
                     "the connection is handed to a worker, not dropped for the counter's sake",
                 )
+                // Nothing else will: the worker transport holds it, and with an
+                // empty pipeline the loop-stop notification does not close.
+                close(acceptedFd)
                 server.close()
             } catch (t: Throwable) {
                 close(sentinelFd)

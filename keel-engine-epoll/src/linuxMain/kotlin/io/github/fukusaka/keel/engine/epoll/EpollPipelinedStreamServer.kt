@@ -211,8 +211,11 @@ internal class EpollPipelinedStreamServer(
      * Masked rather than taken modulo directly: [workerIndex] wraps to negative
      * after `Int.MAX_VALUE` accepts, and a negative index throws out of
      * [EpollEventLoopGroup.at]. The per-socket guard catches that, so the loop
-     * survives — and closes and drops **every** accept from then on, one
-     * warning each, for as long as the server runs. Matches the sibling counter
+     * survives — and closes and drops the connection instead. The counter keeps
+     * incrementing either way, so from then on it lands on a usable index once
+     * per [EpollEventLoopGroup.size] and every other accept is dropped with one
+     * warning, for as long as the server runs. A single-worker group loses
+     * nothing: `n % 1` is `0` for every `n`. Matches the sibling counter
      * in `EpollEventLoopGroup.next()`.
      */
     private fun nextWorker(): EpollEventLoop =
