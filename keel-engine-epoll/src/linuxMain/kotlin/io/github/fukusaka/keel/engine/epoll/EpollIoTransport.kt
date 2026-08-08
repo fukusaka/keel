@@ -81,10 +81,6 @@ internal class EpollIoTransport(
     // Touched only on the EventLoop thread (the read path).
     private var readPoolRegistered = false
 
-    // Set when a readiness path's call to onReadClosed threw; see
-    // [notifyInactive]. EventLoop-confined, like everything else in here.
-    private var inactiveNotifyThrew = false
-
     // Sticky: set once any part of this connection's wind-down failed, and
     // never cleared, because nothing repairs what that wind-down skipped. A
     // second entry into [endConnectionAfterFailure] would otherwise start from
@@ -181,7 +177,7 @@ internal class EpollIoTransport(
      * Every readiness path that ends a connection goes through here rather than
      * touching [onReadClosed] directly, because whether that call succeeded is
      * what [endConnectionAfterFailure] needs and **cannot learn by calling it
-     * again**. The route is `pipeline.notifyInactive()`, which sets
+     * again** — so the answer is recorded in [windDownFailed] instead. The route is `pipeline.notifyInactive()`, which sets
      * `inactiveObserved` before it dispatches the chain, and then `close()`,
      * whose `markClosing()` flips `opened` exactly once — so a chain that threw
      * is short-circuited on re-entry and the second call returns normally. A
@@ -193,7 +189,6 @@ internal class EpollIoTransport(
         try {
             onReadClosed?.invoke()
         } catch (notifyFailure: Throwable) {
-            inactiveNotifyThrew = true
             windDownFailed = true
             throw notifyFailure
         }
@@ -263,7 +258,11 @@ internal class EpollIoTransport(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun endConnectionAfterFailure(readinessFailure: Throwable) {
-        if (!inactiveNotifyThrew) {
+        // Gated on the sticky record, not on the notification's own flag: on a
+        // second entry the first wind-down has already failed, and calling the
+        // callback again would be the very thing [notifyInactive] says means
+        // nothing.
+        if (!windDownFailed) {
             try {
                 notifyInactive()
             } catch (notifyFailure: Throwable) {
@@ -830,6 +829,22 @@ internal class EpollIoTransport(
      * arrays to hand pointers and lengths to [NativeSocket.writev] without
      * allocating a per-flush `List<NativeRegion>`.
      */
+    /**
+     * Empties the pending-write queue, releasing each buffer *after* it has
+     * left the queue.
+     *
+     * The order is the point. Releasing first and clearing afterwards means a
+     * throw part-way through leaves every buffer it already released still
+     * queued — and the teardown that follows releases them a second time,
+     * which fails the reference-count check and abandons the teardown at its
+     * first step, with the fd still open and the registrations still in the
+     * ledger. Taking each one out first makes a failing release cost that one
+     * buffer instead of the connection.
+     */
+    private fun releaseQueuedWrites() {
+        while (pendingWrites.isNotEmpty()) pendingWrites.removeFirst().buf.release()
+    }
+
     private fun flushGather(): Boolean {
         val count = pendingWrites.size
         eventLoop.ensureWritevCapacity(count)
@@ -849,8 +864,7 @@ internal class EpollIoTransport(
             }
             is WriteResult.Failed -> {
                 eventLoop.logger.warn { "writev() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                for (pw in pendingWrites) pw.buf.release()
-                pendingWrites.clear()
+                releaseQueuedWrites()
                 updatePendingBytes(-totalBytes)
                 return true
             }
@@ -858,8 +872,7 @@ internal class EpollIoTransport(
         }
 
         if (writtenBytes >= totalBytes) {
-            for (pw in pendingWrites) pw.buf.release()
-            pendingWrites.clear()
+            releaseQueuedWrites()
             updatePendingBytes(-totalBytes)
             return true
         }
@@ -877,8 +890,8 @@ internal class EpollIoTransport(
             val pw = pendingWrites.first()
             if (consumed + pw.length <= writtenBytes) {
                 consumed += pw.length
-                pw.buf.release()
                 pendingWrites.removeFirst()
+                pw.buf.release()
             } else {
                 val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
                 pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)

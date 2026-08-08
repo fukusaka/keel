@@ -4,15 +4,21 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.testing.InjectedFault
 
 /**
- * An [IoBuf] whose first [release] throws instead of releasing.
+ * An [IoBuf] whose [release] throws instead of releasing, [failures] times.
  *
- * The seam for teardown paths that release a queue of buffers. Those loops are
- * written as `for (pw in pendingWrites) pw.buf.release()`, so what a failing
- * release costs is not one buffer but every buffer behind it, plus whatever the
- * caller was going to do on the next line. Without a buffer that can fail, that
- * whole class of teardown defect is only reachable by reading the code.
+ * The seam for teardown paths that release a queue of buffers. What a failing
+ * release costs there is not one buffer: the loop stops, so every buffer behind
+ * it stays queued, and so does whatever the caller was going to do on the next
+ * line. Without a buffer that can fail, that whole class of teardown defect is
+ * only reachable by reading the code.
  *
- * **One-shot, and the underlying buffer is never lost.** [release] throws
+ * **It reaches the release loops, not the flush ones.** A flush takes a native
+ * pointer off each queued buffer before it writes, and this wrapper cannot
+ * supply one (see below), so a pending write it is part of fails there with a
+ * cast error instead. The teardown drain — which takes no pointers — is what
+ * this is for.
+ *
+ * **Bounded, and the underlying buffer is never lost.** [release] throws
  * [InjectedFault] the first [failures] times and delegates afterwards, so a
  * test can let the production path fail, observe what that cost, and then clean
  * up through [releaseUnderlying] — which is what keeps a `TrackingAllocator`

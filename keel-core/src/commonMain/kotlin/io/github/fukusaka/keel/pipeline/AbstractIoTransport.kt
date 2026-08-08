@@ -242,8 +242,12 @@ abstract class AbstractIoTransport(
      * Caller must hold the teardown claim ([markTeardownStarted]).
      */
     protected fun releaseAllPendingWrites() {
-        for (pw in pendingWrites) pw.buf.release()
-        pendingWrites.clear()
+        // Out of the queue before released, so a release that throws costs the
+        // one buffer rather than leaving the ones behind it released *and*
+        // queued — which the next pass over this queue would release a second
+        // time, failing the reference-count check on a path that is already
+        // winding a connection down.
+        while (pendingWrites.isNotEmpty()) pendingWrites.removeFirst().buf.release()
         pendingBytes = 0
     }
 

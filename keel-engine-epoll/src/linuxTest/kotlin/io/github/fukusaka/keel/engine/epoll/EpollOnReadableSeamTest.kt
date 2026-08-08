@@ -28,7 +28,6 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
@@ -286,8 +285,11 @@ class EpollOnReadableSeamTest {
             transport.onChannelAttached()
             transport.readEnabled = true
 
-            transport.onReady(Interest.READ)
-
+            assertEquals(
+                null,
+                onLoopCatching { transport.onReady(Interest.READ) },
+                "the wind-down completed, so nothing reaches the loop",
+            )
             assertFalse(
                 transport.isOpen,
                 "the connection whose readiness could not be handled is the unit that dies",
@@ -312,8 +314,11 @@ class EpollOnReadableSeamTest {
             transport.onChannelAttached()
             transport.readEnabled = true
 
-            transport.onReady(Interest.READ)
-
+            assertEquals(
+                null,
+                onLoopCatching { transport.onReady(Interest.READ) },
+                "the wind-down completed, so nothing reaches the loop",
+            )
             assertFalse(transport.isOpen, "the connection is still the unit that dies")
             tracker.assertNoLeaks()
         }
@@ -340,9 +345,9 @@ class EpollOnReadableSeamTest {
             // that call is what closes the connection. A throw out of it is a
             // teardown that did not finish, and the loop's backstop is what
             // drops the registration and takes the interest back.
-            val thrown = assertFailsWith<IllegalStateException> {
-                transport.onPeerClosed(Interest.READ)
-            }
+            val thrown = onLoopCatching { transport.onPeerClosed(Interest.READ) }
+
+            assertTrue(thrown is IllegalStateException, "expected the handler's failure, got $thrown")
             assertEquals("the close handler failed", thrown.message)
             assertFalse(
                 transport.isOpen,
@@ -458,10 +463,9 @@ class EpollOnReadableSeamTest {
             surrenderReadFd()
             transport.readEnabled = true
 
-            val thrown = assertFailsWith<IllegalStateException> {
-                transport.onReady(Interest.READ)
-            }
+            val thrown = onLoopCatching { transport.onReady(Interest.READ) }
 
+            assertTrue(thrown is IllegalStateException, "expected the handler's failure, got $thrown")
             assertEquals("the EOF handler failed", thrown.message)
             assertEquals(1, notifyCalls.value, "the failed notification is not retried for an answer")
             assertFalse(transport.isOpen, "the connection is still ended")
@@ -525,8 +529,11 @@ class EpollOnReadableSeamTest {
             transport.onReadClosed = { reportedInactive++ }
             transport.readEnabled = true
 
-            transport.onReady(Interest.READ)
-
+            assertEquals(
+                null,
+                onLoopCatching { transport.onReady(Interest.READ) },
+                "the wind-down completed, so nothing reaches the loop",
+            )
             assertEquals(
                 1,
                 reportedInactive,
@@ -557,10 +564,9 @@ class EpollOnReadableSeamTest {
             // notification threw reacting to it. Here they are two exceptions;
             // on the peer-close path they are one, which is the case that used
             // to be swallowed.
-            val thrown = assertFailsWith<OutOfMemoryError> {
-                transport.onReady(Interest.READ)
-            }
+            val thrown = onLoopCatching { transport.onReady(Interest.READ) }
 
+            assertTrue(thrown is OutOfMemoryError, "expected the allocator's failure, got $thrown")
             assertEquals("no buffer for you", thrown.message)
             assertEquals(
                 listOf("the teardown failed too"),
