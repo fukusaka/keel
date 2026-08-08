@@ -82,6 +82,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll`, `engine-kqueue`: complete a connection's teardown when part of it throws — the
+  descriptor stayed open and a caller parked in `awaitPendingFlush` was never woken (#1040)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: a throw while preparing an accepted socket or
   handling readiness no longer ends the EventLoop's thread — the connection that raised it is the
   casualty instead (#1039)
