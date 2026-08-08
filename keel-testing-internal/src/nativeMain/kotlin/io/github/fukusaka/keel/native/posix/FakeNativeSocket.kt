@@ -159,7 +159,7 @@ public class FakeNativeSocket : NativeSocket {
     }
 
     /**
-     * Thrown by the next [write] or [writev] call, then cleared.
+     * Thrown by the next [write], [writev] or [send] call, then cleared.
      *
      * The seam for a flush that fails rather than returning a [WriteResult]. A
      * scripted `WriteResult.Failed` exercises the engine's own error branch;

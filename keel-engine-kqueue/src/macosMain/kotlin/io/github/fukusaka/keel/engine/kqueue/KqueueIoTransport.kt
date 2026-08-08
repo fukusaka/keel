@@ -227,12 +227,11 @@ internal class KqueueIoTransport(
      * What is lost depends on which one. A notification that throws skipped
      * every handler's `onInactive`: the aggregator's held chunks, the decoder's
      * borrowed header set, the server's registry entry, the EOF that wakes a
-     * parked reader. A close that throws part-way skipped the rest of its own
-     * teardown, and the claim it consumed means nothing retries it — so the fd
-     * is not closed, the ledger entries are not withdrawn, this transport stays
-     * in the participant registry, and a caller parked in `awaitPendingFlush`
-     * is never woken. (In Pipeline mode the notification performs that same
-     * teardown, so it can lose either set.)
+     * parked reader. A close that throws loses only what the stage that failed was
+     * for — the teardown runs its remaining stages and reaches its own
+     * `closeFdSafely`, so the descriptor, the ledger entries, the registry slot
+     * and the flush waiter are not the cost. (In Pipeline mode the notification
+     * performs that same teardown, so it can lose either set.)
      *
      * Reaching the loop's backstop repairs none of it — it drops the
      * registration so the same readiness stops re-entering the same failure,
@@ -775,7 +774,9 @@ internal class KqueueIoTransport(
         // Reached whatever the stages above did: `closeFdSafely` reports rather
         // than throws, so the descriptor is released on every path out of here.
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
-        logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
+        // Staged too: `Logger` is a pluggable SPI, and a throw from the stats
+        // line would replace the failure this whole structure exists to carry.
+        failure = runTeardownStage(failure) { logTransportStatsOnClose(eventLoop.logger, "fd=$fd") }
         failure?.let { throw it }
     }
 
@@ -824,21 +825,28 @@ internal class KqueueIoTransport(
      * queue, whose close-race contract frees directly when the offer loses; a
      * same-thread (confinement-owner) release racing the engine-close thread's
      * allocator teardown is the one seam left, tracked separately. The
-     * `close(fd)` sits in a `finally` so a throw from a release cannot strand
-     * the descriptor behind the consumed teardown claim.
+     * `close(fd)` runs whatever the stages before it did, so a throw from a
+     * release cannot strand the descriptor behind the consumed teardown claim —
+     * nor, since the waiter's cancel is its own stage, the caller parked on it.
      */
     private fun teardownAfterLoopStopped() {
         if (!markTeardownStarted()) return
-        try {
-            releaseAllPendingWrites()
+        // Staged for the same reason the on-loop teardown is, and it has the
+        // same two obligations to keep apart: the `finally` below saved the
+        // descriptor from a throwing release, but the waiter behind that
+        // release was inside the `try` and went with it -- parked for the
+        // process lifetime, on a path that exists to end exactly those waits.
+        var failure: Throwable? = null
+        failure = runTeardownStage(failure) { releaseAllPendingWrites() }
+        failure = runTeardownStage(failure) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
                 cont.cancel(stoppedLoopFlushCause())
             }
-        } finally {
-            closeFdSafely(fd, eventLoop.logger, "transport teardown (loop stopped)")
-            logTransportStatsOnClose(eventLoop.logger, "fd=$fd")
         }
+        closeFdSafely(fd, eventLoop.logger, "transport teardown (loop stopped)")
+        failure = runTeardownStage(failure) { logTransportStatsOnClose(eventLoop.logger, "fd=$fd") }
+        failure?.let { throw it }
     }
 
     // --- Single-buffer flush ---
@@ -962,7 +970,9 @@ internal class KqueueIoTransport(
         // guarded on this since it existed; the write half reached the same
         // readiness with nothing in the way, and an `EV_ADD` filter is
         // persistent, so write readiness keeps arriving until the registration
-        // is withdrawn -- which is one of the steps a failed teardown skips.
+        // is withdrawn. The teardown withdraws it in its own stage now, but
+        // this guard is what covers the window before that runs -- and the
+        // connection is over either way.
         if (!opened) return
 
         // Retry drain immediately when fd becomes writable — do NOT go through

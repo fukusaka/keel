@@ -25,6 +25,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * The seam for a teardown whose own work fails.
@@ -191,7 +192,7 @@ class KqueueTeardownFailureSeamTest {
          * Wall-clock budget for anything that goes through the loop. Matches the
          * envelope the sibling seam tests use for a loopback dispatch hop.
          */
-        val IO_BUDGET = kotlin.time.Duration.parse("15s")
+        val IO_BUDGET = 15.seconds
         const val POLL_MS = 10L
         const val PAYLOAD = 8
     }

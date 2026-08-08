@@ -383,10 +383,11 @@ class EpollOnReadableSeamTest {
             // not have refused anything either way.
             val fake = FakeNativeSocket().apply { defaultWrite = WriteResult.Written(4) }
             val transport = EpollIoTransport(readFd, eventLoop, FailingAllocator, fake)
-            // The teardown under test aborts before it closes this, so the
-            // fixture has to. Taken before surrendering, because that is what
-            // stops `tearDown` from closing a descriptor the transport owns.
-            val abandonedFd = readFd
+            // The teardown closes this itself now, and the assertion at the
+            // end is that it did. Taken before surrendering, because that is
+            // what stops `tearDown` from closing a descriptor the transport
+            // owns -- and the number must be known to ask about it.
+            val transportFd = readFd
             surrenderReadFd()
             transport.onChannelAttached()
             var reportedInactive = 0
@@ -415,11 +416,11 @@ class EpollOnReadableSeamTest {
             assertEquals(1, queued.refusedReleases)
 
             // The same readiness on the write half must not walk back into what
-            // the aborted teardown left: `abandoned` is still queued. In
-            // production the WRITE registration outlives the abort too, because
-            // the backstop takes back only the interest that fired; this
-            // fixture never arms one, so what is checked here is the transport's
-            // own refusal to act, not the arrival. Level-triggered EPOLLOUT then
+            // the failed stage left: `abandoned` is still queued, because the
+            // drain stops where it failed even though the stages after it run.
+            // The registration and the descriptor are gone by now -- the
+            // teardown withdrew and closed them -- so what is checked here is
+            // the transport's own refusal to act on a connection that ended. Level-triggered EPOLLOUT then
             // arrives for as long as the fd is open, which is now forever.
             //
             // The `opened` guard in `onWritable` is the only thing stopping it,
@@ -435,7 +436,7 @@ class EpollOnReadableSeamTest {
             // scripted write succeeds, and one about the syscall bites whatever
             // the fake is set to answer.
             assertEquals(0, fake.writeCalls + fake.writevCalls, "no flush was attempted")
-            assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the abort left")
+            assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the drain left")
 
             assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the drain could not")
             assertTrue(abandoned.releaseUnderlying(), "and the one behind the refusal")
@@ -443,7 +444,7 @@ class EpollOnReadableSeamTest {
             // stage that threw. This assertion was the other way round when the
             // teardown was a straight line -- a refused release abandoned the
             // descriptor, and the test closed it on the teardown's behalf.
-            assertEquals(-1, close(abandonedFd), "the teardown released the descriptor itself")
+            assertEquals(-1, close(transportFd), "the teardown released the descriptor itself")
         }
     }
 
