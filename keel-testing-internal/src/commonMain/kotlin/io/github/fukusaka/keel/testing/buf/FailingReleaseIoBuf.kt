@@ -29,11 +29,16 @@ import io.github.fukusaka.keel.testing.InjectedFault
  * Everything else delegates, so this is the buffer the transport actually
  * queued: same bytes, same indices, same reader and writer positions.
  *
- * **It is not a stand-in on the native read path.** Delegation covers [IoBuf],
- * and the pointer a transport reads through comes from an extension that casts
- * to a separate native-pointer interface — which this wrapper does not
- * implement, so that cast fails on it. Queue it as a pending write, where the
- * release is what the test is about.
+ * **It is not a stand-in wherever a native pointer is taken.** Delegation
+ * covers [IoBuf], and the pointer a transport reads and writes through comes
+ * from an extension that casts to a separate native-pointer interface — which
+ * this wrapper does not implement, so that cast fails on it. Queue it as a
+ * pending write **that is never flushed**, where the release is what the test
+ * is about: a flush takes that pointer on the queued buffer and fails with a
+ * cast error instead, which is not the failure under test.
+ *
+ * For the same reason `retain()` hands back the *wrapped* buffer, not this one,
+ * so a caller that queues `buf.retain()` gets a release that succeeds.
  */
 public class FailingReleaseIoBuf(
     private val delegate: IoBuf,

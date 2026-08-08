@@ -84,6 +84,19 @@ internal class KqueueIoTransport(
     // [notifyInactive]. EventLoop-confined, like everything else in here.
     private var inactiveNotifyThrew = false
 
+    // Sticky: set once any part of this connection's wind-down failed, and
+    // never cleared, because nothing repairs what that wind-down skipped. A
+    // second entry into [endConnectionAfterFailure] would otherwise start from
+    // "nothing has failed yet" and find no evidence to the contrary -- the
+    // close it runs is a no-op by then, so it cannot produce any.
+    //
+    // No readiness path reaches that second entry today: all three guard on
+    // `opened`, the last of them (`onWritable`) only since the route was found.
+    // This is what keeps the invariant true if a fourth is added -- the guard's
+    // own documentation invites new call sites -- so it is deliberately not
+    // reachable from the seam, and no test pins it.
+    private var windDownFailed = false
+
     /**
      * [FdReadyListener] dispatch — passing `this` to
      * `AbstractPosixReadinessEventLoop.registerCallback` avoids per-call lambda allocation
@@ -180,6 +193,7 @@ internal class KqueueIoTransport(
             onReadClosed?.invoke()
         } catch (notifyFailure: Throwable) {
             inactiveNotifyThrew = true
+            windDownFailed = true
             throw notifyFailure
         }
     }
@@ -190,9 +204,10 @@ internal class KqueueIoTransport(
      *
      * Only the order is shared. Those two call [onReadClosed] directly and
      * record nothing, so a throw out of one is absorbed by the deadline
-     * scheduler's own guard and the `close()` after it never runs. That is a
-     * gap of the same shape as the one below, on a path this guard does not
-     * cover; it is filed rather than widened into here.
+     * scheduler's own guard and the `close()` after it never runs — the same
+     * shape as the gap below, on a path this guard cannot reach because a
+     * different thing drives it. Closing it means deciding what that scheduler's
+     * guard owes a half-torn-down connection, which is a separate change.
      *
      * `close()` alone is not the end of a connection, only the end of its
      * descriptor. It releases what it can reach — the pending writes, the
@@ -211,14 +226,22 @@ internal class KqueueIoTransport(
      *
      * **If any part of the wind-down failed, [readinessFailure] is re-raised
      * rather than swallowed** — the notification and the close alike, because
-     * either one throwing is a teardown that did not finish, and the claim it
-     * consumed means nothing retries it. Whatever it skipped is skipped for
-     * good: the fd is not closed, the ledger entries are not withdrawn, this
-     * transport stays in the participant registry, and a caller parked in
-     * `awaitPendingFlush` is never woken. Reaching the loop's backstop does not
-     * repair any of that — it drops the registration so the same readiness
-     * stops re-entering the same failure, and it logs at ERROR, which is the
-     * only reason anyone finds out.
+     * either one leaves this connection in a state nothing else completes.
+     *
+     * What is lost depends on which one. A notification that throws skipped
+     * every handler's `onInactive`: the aggregator's held chunks, the decoder's
+     * borrowed header set, the server's registry entry, the EOF that wakes a
+     * parked reader. A close that throws part-way skipped the rest of its own
+     * teardown, and the claim it consumed means nothing retries it — so the fd
+     * is not closed, the ledger entries are not withdrawn, this transport stays
+     * in the participant registry, and a caller parked in `awaitPendingFlush`
+     * is never woken. (In Pipeline mode the notification performs that same
+     * teardown, so it can lose either set.)
+     *
+     * Reaching the loop's backstop repairs none of it — it drops the
+     * registration so the same readiness stops re-entering the same failure,
+     * and it is the only report at ERROR: the two below it are warnings, which
+     * is not what a connection abandoned mid-teardown deserves.
      *
      * **What the decision may not rest on is a second call to the callback.**
      * See [notifyInactive]: the second call returns normally whatever happened
@@ -239,8 +262,7 @@ internal class KqueueIoTransport(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun endConnectionAfterFailure(readinessFailure: Throwable) {
-        var windDownFailed = inactiveNotifyThrew
-        if (!windDownFailed) {
+        if (!inactiveNotifyThrew) {
             try {
                 notifyInactive()
             } catch (notifyFailure: Throwable) {
@@ -893,6 +915,15 @@ internal class KqueueIoTransport(
 
     /** EVFILT_WRITE callback body — invoked via [onReady] when [Interest.WRITE] fires. */
     private fun onWritable() {
+        // Nothing to drain for a connection that has ended, and the queue this
+        // would drain may be the wreckage of a teardown that threw part-way:
+        // buffers already released, or never releasable. `onReadable` has
+        // guarded on this since it existed; the write half reached the same
+        // readiness with nothing in the way, and level-triggered EPOLLOUT keeps
+        // arriving until the registration is withdrawn -- which is one of the
+        // steps a failed teardown skips.
+        if (!opened) return
+
         // Retry drain immediately when fd becomes writable — do NOT go through
         // flush() which would re-defer to the next tick.
         val done = performFlush()

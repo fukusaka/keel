@@ -334,6 +334,10 @@ class KqueueOnReadableSeamTest {
             // failed, which put back one call along the hole it had just fixed.
             val fake = FakeNativeSocket()
             val transport = KqueueIoTransport(readFd, eventLoop, FailingAllocator, fake)
+            // The teardown under test aborts before it closes this, so the
+            // fixture has to. Taken before surrendering, because that is what
+            // stops `tearDown` from closing a descriptor the transport owns.
+            val abandonedFd = readFd
             surrenderReadFd()
             transport.onChannelAttached()
             var reportedInactive = 0
@@ -355,7 +359,22 @@ class KqueueOnReadableSeamTest {
             )
             assertEquals(1, reportedInactive, "the notification itself succeeded")
             assertEquals(1, queued.refusedReleases)
+
+            // The same readiness on the write half must not walk back into the
+            // wreckage: the queue still holds a buffer whose backing memory the
+            // cleanup below frees, and the WRITE registration outlives the
+            // aborted teardown -- the backstop takes back only the interest that
+            // fired. Level-triggered EVFILT_WRITE then arrives for as long as the fd
+            // is open, which is now forever.
+            val onWrite = onLoopCatching { transport.onReady(Interest.WRITE) }
+
+            assertEquals(null, onWrite, "write readiness on an ended connection does nothing")
+            assertEquals(1, queued.refusedReleases, "the stale queue is not entered a second time")
+
             assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the teardown could not")
+            // 0 rather than EBADF: the aborted teardown really did leave this
+            // open, which is the cost the test is named for.
+            assertEquals(0, close(abandonedFd), "the fixture closes what the teardown could not")
         }
     }
 
@@ -375,10 +394,9 @@ class KqueueOnReadableSeamTest {
             surrenderReadFd()
             transport.readEnabled = true
 
-            val thrown = assertFailsWith<IllegalStateException> {
-                transport.onReady(Interest.READ)
-            }
+            val thrown = onLoopCatching { transport.onReady(Interest.READ) }
 
+            assertTrue(thrown is IllegalStateException, "expected the handler's failure, got $thrown")
             assertEquals("the failed-read handler failed", thrown.message)
             assertEquals(1, notifyCalls.value, "the failed notification is not retried for an answer")
             assertFalse(transport.isOpen, "the connection is still ended")
