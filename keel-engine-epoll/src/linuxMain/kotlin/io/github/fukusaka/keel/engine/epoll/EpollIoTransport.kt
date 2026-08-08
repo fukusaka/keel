@@ -186,8 +186,14 @@ internal class EpollIoTransport(
     }
 
     /**
-     * Notifies inactivity, then forces the close — the shape the idle-timeout
+     * Notifies inactivity, then forces the close — the order the idle-timeout
      * paths on the base transport use, for the same reason.
+     *
+     * Only the order is shared. Those two call [onReadClosed] directly and
+     * record nothing, so a throw out of one is absorbed by the deadline
+     * scheduler's own guard and the `close()` after it never runs. That is a
+     * gap of the same shape as the one below, on a path this guard does not
+     * cover; it is filed rather than widened into here.
      *
      * `close()` alone is not the end of a connection, only the end of its
      * descriptor. It releases what it can reach — the pending writes, the
@@ -204,35 +210,38 @@ internal class EpollIoTransport(
      * connection whose readiness cannot be handled are both reclamations, and
      * a Coroutine-mode caller who is never coming back must not keep the fd.
      *
-     * **If the notification failed, [readinessFailure] is re-raised rather than
-     * swallowed.** In Pipeline mode this callback *is* what closes the
-     * connection, so a throw out of it is a teardown that did not finish — and
-     * the claim it consumed means no later `close()` retries it. Swallowing left
-     * the descriptor open with its registration intact and, because the loop
-     * then saw a listener that had not failed, its interest still armed: the
-     * same readiness re-entering the same failure every turn. Letting it reach
-     * the loop's backstop is what drops the registration and takes the interest
-     * back.
+     * **If any part of the wind-down failed, [readinessFailure] is re-raised
+     * rather than swallowed** — the notification and the close alike, because
+     * either one throwing is a teardown that did not finish, and the claim it
+     * consumed means nothing retries it. Whatever it skipped is skipped for
+     * good: the fd is not closed, the ledger entries are not withdrawn, this
+     * transport stays in the participant registry, and a caller parked in
+     * `awaitPendingFlush` is never woken. Reaching the loop's backstop does not
+     * repair any of that — it drops the registration so the same readiness
+     * stops re-entering the same failure, and it logs at ERROR, which is the
+     * only reason anyone finds out.
      *
-     * The decision is [inactiveNotifyThrew], not the return of a second call to
-     * the callback — see [notifyInactive] for why the second call is not
-     * evidence of anything. Deciding on it instead meant this re-raised only
-     * against a stub that throws every time: on the paths where the guarded
-     * body was *itself* the notification (a peer close, an `Eof` or a failed
-     * `read`), a real callback returned normally the second time and the
-     * failure was swallowed — leaking the descriptor for the lifetime of the
-     * process, pinning the transport in the participant registry, and leaving
-     * a caller parked in `awaitPendingFlush` until the engine shut down.
+     * **What the decision may not rest on is a second call to the callback.**
+     * See [notifyInactive]: the second call returns normally whatever happened
+     * to the first, so an earlier revision re-raised only against a stub that
+     * throws every time. On the paths where the guarded body was *itself* the
+     * notification (a peer close, an `Eof`, a failed `read`) a real callback
+     * looked like success and the failure was swallowed. The revision after it
+     * fixed that and then wrapped the close in a `catch` it did not re-raise
+     * from, which put the same hole back one call along: in a mode where the
+     * notification does not close — a Coroutine-mode channel — the close here
+     * is the whole teardown, and swallowing its failure loses everything above.
      *
      * What is raised is the original failure with anything the wind-down added
      * suppressed onto it, in the order they happened: the readiness failure is
      * the cause, a throw from the notification or the close is a consequence of
-     * reacting to it. On the paths above the two are the same object, and then
-     * there is only the one.
+     * reacting to it. On the paths above the first two are the same object, and
+     * then there is only the one.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun endConnectionAfterFailure(readinessFailure: Throwable) {
-        if (!inactiveNotifyThrew) {
+        var windDownFailed = inactiveNotifyThrew
+        if (!windDownFailed) {
             try {
                 notifyInactive()
             } catch (notifyFailure: Throwable) {
@@ -240,6 +249,7 @@ internal class EpollIoTransport(
                     "reporting the failed connection inactive threw as well: fd=$fd"
                 }
                 readinessFailure.addSuppressed(notifyFailure)
+                windDownFailed = true
             }
         }
         try {
@@ -249,8 +259,9 @@ internal class EpollIoTransport(
         } catch (closeFailure: Throwable) {
             eventLoop.logger.warn(closeFailure) { "closing the failed connection threw as well: fd=$fd" }
             readinessFailure.addSuppressed(closeFailure)
+            windDownFailed = true
         }
-        if (inactiveNotifyThrew) throw readinessFailure
+        if (windDownFailed) throw readinessFailure
     }
 
     /**

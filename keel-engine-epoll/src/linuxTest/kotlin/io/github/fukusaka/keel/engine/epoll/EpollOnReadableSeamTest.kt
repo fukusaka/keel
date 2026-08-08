@@ -9,17 +9,21 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.ReadResult
+import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import platform.posix.ECONNRESET
 import platform.posix.close
 import platform.posix.pipe
 import platform.posix.write
 import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -91,6 +95,26 @@ class EpollOnReadableSeamTest {
      */
     private fun failsOnceLikeProduction(message: String, calls: AtomicInt = AtomicInt(0)): () -> Unit =
         { if (calls.incrementAndGet() == 1) throw IllegalStateException(message) }
+
+    /**
+     * Runs [block] on the EventLoop thread and returns what it threw, if
+     * anything.
+     *
+     * Readiness runs on the loop in production, and that is not a detail here:
+     * `close()` hands off to [EpollEventLoop.runOnLoop], which runs the teardown
+     * inline on the loop thread and dispatches it from anywhere else. Driving
+     * these paths from the test thread therefore moves every teardown failure
+     * out of the frame under test, where nothing can observe it.
+     *
+     * The throwable is captured inside the task rather than let out of it: the
+     * loop's own per-task guard would otherwise swallow it, and a test that
+     * asserted on the absence of a throw would pass against any build.
+     */
+    private fun onLoopCatching(block: () -> Unit): Throwable? {
+        val outcome = CompletableDeferred<Result<Unit>>()
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable { outcome.complete(runCatching(block)) })
+        return runBlocking { withTimeout(10.seconds) { outcome.await() } }.exceptionOrNull()
+    }
 
     private val logger = NoopLoggerFactory.logger("EpollOnReadableSeamTest")
     private lateinit var eventLoop: EpollEventLoop
@@ -330,6 +354,72 @@ class EpollOnReadableSeamTest {
             // `inactiveObserved` -- and reading that return as "the teardown
             // finished" is what swallowed the failure.
             assertEquals(1, notifyCalls.value, "the failed notification is not retried for an answer")
+        }
+    }
+
+    @Test
+    fun `a close that throws while ending the connection reaches the loop`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The notification succeeds and the close is what fails. That is the
+            // ordinary shape in Coroutine mode, where `onReadClosed` reports and
+            // does not close, so the close here is the entire teardown -- and a
+            // teardown that throws part-way is not retried: the claim is spent,
+            // so the fd is never closed, the ledger entries are never withdrawn,
+            // this transport stays in the participant registry, and a caller
+            // parked in `awaitPendingFlush` is never woken. An earlier revision
+            // caught this throw and re-raised only when the *notification* had
+            // failed, which put back one call along the hole it had just fixed.
+            val fake = FakeNativeSocket()
+            val transport = EpollIoTransport(readFd, eventLoop, FailingAllocator, fake)
+            surrenderReadFd()
+            transport.onChannelAttached()
+            var reportedInactive = 0
+            transport.onReadClosed = { reportedInactive++ }
+            transport.readEnabled = true
+
+            // Queued, not flushed: the teardown's release of the pending writes
+            // is what throws.
+            val queued = FailingReleaseIoBuf(DefaultAllocator.allocate(16).apply { writerIndex = 4 })
+            transport.write(queued)
+
+            val thrown = onLoopCatching { transport.onReady(Interest.READ) }
+
+            assertTrue(thrown is OutOfMemoryError, "the readiness failure is what is raised, got $thrown")
+            assertEquals(
+                listOf<String?>("release refused by FailingReleaseIoBuf"),
+                thrown.suppressedExceptions.map { it.message },
+                "the failure that ended the wind-down travels with the one that started it",
+            )
+            assertEquals(1, reportedInactive, "the notification itself succeeded")
+            assertEquals(1, queued.refusedReleases)
+            assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the teardown could not")
+        }
+    }
+
+    @Test
+    fun `a failed read whose notification throws ends the connection and reaches the loop`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The third path on which the guarded body is itself the
+            // notification. It differs from the EOF one only in which branch
+            // gets there, which is exactly why it is easy to leave behind: a
+            // revert of this one arm alone passes every other test.
+            val tracker = TrackingAllocator(DefaultAllocator)
+            val fake = FakeNativeSocket().apply { enqueueRead(readFd, ReadResult.Failed(ECONNRESET)) }
+            val transport = EpollIoTransport(readFd, eventLoop, tracker, fake)
+            transport.onChannelAttached()
+            val notifyCalls = AtomicInt(0)
+            transport.onReadClosed = failsOnceLikeProduction("the failed-read handler failed", notifyCalls)
+            surrenderReadFd()
+            transport.readEnabled = true
+
+            val thrown = assertFailsWith<IllegalStateException> {
+                transport.onReady(Interest.READ)
+            }
+
+            assertEquals("the failed-read handler failed", thrown.message)
+            assertEquals(1, notifyCalls.value, "the failed notification is not retried for an answer")
+            assertFalse(transport.isOpen, "the connection is still ended")
+            tracker.assertNoLeaks()
         }
     }
 
