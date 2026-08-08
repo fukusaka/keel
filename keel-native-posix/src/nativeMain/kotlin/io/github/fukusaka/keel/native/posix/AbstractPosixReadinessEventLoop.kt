@@ -1606,7 +1606,6 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             //
             // Both ledgers decide this, not just the callback one: a suspend
             // waiter queued on the same key still needs the interest armed.
-            //
             val keepInterest = withRegLock {
                 // A listener that threw does not get to vouch for itself, for
                 // the reason above. Whatever it put back is dropped here, so

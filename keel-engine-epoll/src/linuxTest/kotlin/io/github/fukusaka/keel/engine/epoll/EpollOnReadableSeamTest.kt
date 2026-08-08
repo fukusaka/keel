@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.ReadResult
+import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -442,6 +443,49 @@ class EpollOnReadableSeamTest {
             assertEquals("the failed-read handler failed", thrown.message)
             assertEquals(1, notifyCalls.value, "the failed notification is not retried for an answer")
             assertFalse(transport.isOpen, "the connection is still ended")
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a release that throws mid-flush does not leave the buffers before it queued`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The expensive shape. The flush releases what it wrote, and a
+            // refusal part-way used to leave everything already released still
+            // in the queue -- so the teardown that follows released them a
+            // second time, failed the reference-count check at its first step,
+            // and abandoned the fd, the ledger entries, the registry slot and
+            // the flush waiter. One refused release, a whole connection.
+            val tracker = TrackingAllocator(DefaultAllocator)
+            val fake = FakeNativeSocket().apply { enqueueWritev(readFd, WriteResult.Written(8)) }
+            val transport = EpollIoTransport(readFd, eventLoop, tracker, fake)
+            val abandonedFd = readFd
+            surrenderReadFd()
+            transport.onChannelAttached()
+            var reportedInactive = 0
+            transport.onReadClosed = { reportedInactive++ }
+
+            // Two, and the refusal second: the buffer released before it is the
+            // one that used to be released again.
+            transport.write(tracker.allocate(16).apply { writerIndex = 4 })
+            val refusing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 4 })
+            transport.write(refusing)
+
+            val thrown = onLoopCatching { transport.onReady(Interest.WRITE) }
+
+            assertEquals(
+                null,
+                thrown,
+                "the wind-down completed, so nothing reaches the loop",
+            )
+            assertEquals(1, refusing.refusedReleases)
+            assertEquals(1, reportedInactive, "the connection still ended the ordinary way")
+            assertFalse(transport.isOpen)
+            // -1: the teardown ran all the way through and closed it, which is
+            // what it could not do while the drain left it a double release.
+            assertEquals(-1, close(abandonedFd), "the teardown closed the descriptor itself")
+
+            assertTrue(refusing.releaseUnderlying(), "the fixture cleans up the one that refused")
             tracker.assertNoLeaks()
         }
     }

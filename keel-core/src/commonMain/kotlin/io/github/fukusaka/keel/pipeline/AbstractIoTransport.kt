@@ -242,13 +242,32 @@ abstract class AbstractIoTransport(
      * Caller must hold the teardown claim ([markTeardownStarted]).
      */
     protected fun releaseAllPendingWrites() {
-        // Out of the queue before released, so a release that throws costs the
-        // one buffer rather than leaving the ones behind it released *and*
-        // queued — which the next pass over this queue would release a second
-        // time, failing the reference-count check on a path that is already
-        // winding a connection down.
-        while (pendingWrites.isNotEmpty()) pendingWrites.removeFirst().buf.release()
+        releaseQueuedWrites()
         pendingBytes = 0
+    }
+
+    /**
+     * Empties the pending-write queue, releasing each buffer *after* it has left
+     * the queue.
+     *
+     * The order is the point, and it is why this is here rather than written out
+     * at each drain. Releasing first and clearing afterwards means a release
+     * that throws leaves every buffer it already released **still queued** — and
+     * whatever walks this queue next releases them a second time, which fails
+     * the reference-count check. In a flush that next walker is the teardown, at
+     * its first step, so one refused release costs the fd, the ledger entries,
+     * the registry slot and the flush waiter.
+     *
+     * [releaseAllPendingWrites] itself runs at most once per transport, after
+     * the teardown claim is taken, so it has no next walker of its own; it uses
+     * this so that the one drain the codebase has behaves the same everywhere.
+     *
+     * **It stops where the failure was.** The buffers behind a refused release
+     * stay queued and this returns by throwing, so a caller that has more to do
+     * does not get to do it. Making a failed drain finish is a separate change.
+     */
+    protected fun releaseQueuedWrites() {
+        while (pendingWrites.isNotEmpty()) pendingWrites.removeFirst().buf.release()
     }
 
     /**

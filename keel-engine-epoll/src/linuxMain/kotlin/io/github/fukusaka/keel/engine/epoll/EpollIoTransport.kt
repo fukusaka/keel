@@ -829,22 +829,6 @@ internal class EpollIoTransport(
      * arrays to hand pointers and lengths to [NativeSocket.writev] without
      * allocating a per-flush `List<NativeRegion>`.
      */
-    /**
-     * Empties the pending-write queue, releasing each buffer *after* it has
-     * left the queue.
-     *
-     * The order is the point. Releasing first and clearing afterwards means a
-     * throw part-way through leaves every buffer it already released still
-     * queued — and the teardown that follows releases them a second time,
-     * which fails the reference-count check and abandons the teardown at its
-     * first step, with the fd still open and the registrations still in the
-     * ledger. Taking each one out first makes a failing release cost that one
-     * buffer instead of the connection.
-     */
-    private fun releaseQueuedWrites() {
-        while (pendingWrites.isNotEmpty()) pendingWrites.removeFirst().buf.release()
-    }
-
     private fun flushGather(): Boolean {
         val count = pendingWrites.size
         eventLoop.ensureWritevCapacity(count)

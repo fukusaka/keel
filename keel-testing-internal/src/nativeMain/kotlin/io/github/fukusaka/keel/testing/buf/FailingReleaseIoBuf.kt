@@ -1,7 +1,13 @@
 package io.github.fukusaka.keel.testing.buf
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.NativePointerAccess
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
+import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.testing.InjectedFault
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.ExperimentalForeignApi
 
 /**
  * An [IoBuf] whose [release] throws instead of releasing, [failures] times.
@@ -12,11 +18,13 @@ import io.github.fukusaka.keel.testing.InjectedFault
  * line. Without a buffer that can fail, that whole class of teardown defect is
  * only reachable by reading the code.
  *
- * **It reaches the release loops, not the flush ones.** A flush takes a native
- * pointer off each queued buffer before it writes, and this wrapper cannot
- * supply one (see below), so a pending write it is part of fails there with a
- * cast error instead. The teardown drain — which takes no pointers — is what
- * this is for.
+ * **It reaches the flush loops as well as the teardown drain.** A flush takes a
+ * native pointer off each queued buffer before it writes, so this forwards
+ * [unsafePointer] to the wrapped buffer — without that, a pending write it was
+ * part of failed on the cast long before any release, and the release loop
+ * inside the flush was unreachable. That loop is where a failed release is at
+ * its most expensive, because a *later* pass over the same queue is what pays
+ * for it.
  *
  * **Bounded, and the underlying buffer is never lost.** [release] throws
  * [InjectedFault] the first [failures] times and delegates afterwards, so a
@@ -43,13 +51,25 @@ import io.github.fukusaka.keel.testing.InjectedFault
  * is about: a flush takes that pointer on the queued buffer and fails with a
  * cast error instead, which is not the failure under test.
  *
- * For the same reason `retain()` hands back the *wrapped* buffer, not this one,
- * so a caller that queues `buf.retain()` gets a release that succeeds.
+ * Note that `retain()` is delegated and hands back the *wrapped* buffer, not
+ * this one, so a caller that queues `buf.retain()` gets a release that
+ * succeeds.
  */
+@OptIn(ExperimentalForeignApi::class)
 public class FailingReleaseIoBuf(
     private val delegate: IoBuf,
     failures: Int = 1,
-) : IoBuf by delegate {
+) : IoBuf by delegate, NativePointerAccess {
+
+    /**
+     * The wrapped buffer's own pointer.
+     *
+     * Delegation carries [IoBuf] and nothing else, so without this the cast
+     * behind `IoBuf.unsafePointer` fails on this wrapper and no flush can reach
+     * the release it is standing in for.
+     */
+    @UnsafeIoBufApi
+    override val unsafePointer: CPointer<ByteVar> get() = delegate.unsafePointer
 
     private var remaining = failures
 
