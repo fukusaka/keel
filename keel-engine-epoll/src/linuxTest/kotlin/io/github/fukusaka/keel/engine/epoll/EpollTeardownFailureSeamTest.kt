@@ -38,6 +38,11 @@ import kotlin.time.Duration.Companion.seconds
  * only check on it was reading the code, which over three attempts kept
  * producing a different defect.
  *
+ * `teardownAfterLoopStopped` owes a narrowed version of the same list and is
+ * covered here too. It is the *only* thing left that can end a flush wait the
+ * stop sweep did not, so a release that throws ahead of it costs a caller the
+ * process lifetime.
+ *
  * Two things make it reachable here. **The scenario is driven from the
  * EventLoop thread**, so `flush()` leaves `flushScheduled` set and the very next
  * `close()` runs the teardown inline and finds it — no race with the flush task
@@ -183,6 +188,74 @@ class EpollTeardownFailureSeamTest {
                 -1,
                 fcntl(surrendered, F_GETFD),
                 "a release that threw must not strand the descriptor either",
+            )
+        }
+    }
+
+    @Test
+    fun `a release that throws after the loop stopped still wakes the parked caller`() = runBlocking {
+        withTimeout(IO_BUDGET) {
+            val fake = FakeNativeSocket()
+            // Deliberately not attached, unlike `newTransport`: the stop sweep
+            // only walks participants, and a transport joins when its channel
+            // attaches. One that never joined keeps its parked waiter across
+            // the sweep, which is the state this teardown is the last chance to
+            // end. Production reaches the same state by racing instead --
+            // `markClosing()` flips `opened` before the sweep gets here, and
+            // `onLoopStopped` returns on that first line -- so the route taken
+            // here is the deterministic one to an identical starting point.
+            val transport = EpollIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+            val failing = FailingReleaseIoBuf(
+                DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
+            )
+            val surrendered = readFd
+            readFd = -1
+
+            onLoop { transport.write(failing) }
+
+            val waiter = CompletableDeferred<Unit>()
+            val waiting = launch {
+                try {
+                    transport.awaitPendingFlush()
+                } finally {
+                    waiter.complete(Unit)
+                }
+            }
+            withTimeout(IO_BUDGET) {
+                while (!transport.hasFlushWaiter()) delay(POLL_MS)
+            }
+
+            eventLoop.close()
+            // The premise, asserted rather than assumed: a sweep that had ended
+            // this wait would leave the teardown nothing to fail to do, and
+            // every assertion below would hold against a build that never
+            // staged it.
+            assertTrue(
+                transport.hasFlushWaiter(),
+                "the sweep must have left the waiter for the teardown to find",
+            )
+
+            // Quiescent, so close() runs the stopped-loop teardown inline on
+            // this thread -- and re-raises what the release refused.
+            val raised = runCatching { transport.close() }.exceptionOrNull()
+
+            assertEquals(
+                1,
+                failing.refusedReleases,
+                "the seam must have reached the release for this test to mean anything",
+            )
+            assertTrue(
+                raised is InjectedFault,
+                "the refused release must still reach the caller, got: $raised",
+            )
+            withTimeout(IO_BUDGET) { waiter.await() }
+            waiting.cancel()
+            failing.releaseUnderlying()
+
+            assertEquals(
+                -1,
+                fcntl(surrendered, F_GETFD),
+                "nor may a release that threw strand the descriptor on this path",
             )
         }
     }
