@@ -377,7 +377,11 @@ class EpollOnReadableSeamTest {
             // parked in `awaitPendingFlush` is never woken. An earlier revision
             // caught this throw and re-raised only when the *notification* had
             // failed, which put back one call along the hole it had just fixed.
-            val fake = FakeNativeSocket()
+            // A write that succeeds, so that a flush which should not happen
+            // would reach a release rather than stalling on `WouldBlock` --
+            // otherwise the guard below is asserted against a path that could
+            // not have refused anything either way.
+            val fake = FakeNativeSocket().apply { defaultWrite = WriteResult.Written(4) }
             val transport = EpollIoTransport(readFd, eventLoop, FailingAllocator, fake)
             // The teardown under test aborts before it closes this, so the
             // fixture has to. Taken before surrendering, because that is what
@@ -390,9 +394,14 @@ class EpollOnReadableSeamTest {
             transport.readEnabled = true
 
             // Queued, not flushed: the teardown's release of the pending writes
-            // is what throws.
+            // is what throws. The second one is what the throw abandons -- the
+            // drain stops where it failed -- and it is how the write half is
+            // checked below, because a queue with nothing left in it cannot
+            // show whether anything walked back into it.
             val queued = FailingReleaseIoBuf(DefaultAllocator.allocate(16).apply { writerIndex = 4 })
+            val abandoned = FailingReleaseIoBuf(DefaultAllocator.allocate(16).apply { writerIndex = 4 })
             transport.write(queued)
+            transport.write(abandoned)
 
             val thrown = onLoopCatching { transport.onReady(Interest.READ) }
 
@@ -405,23 +414,25 @@ class EpollOnReadableSeamTest {
             assertEquals(1, reportedInactive, "the notification itself succeeded")
             assertEquals(1, queued.refusedReleases)
 
-            // The same readiness on the write half must not walk back into the
-            // wreckage: the queue still holds a buffer whose backing memory the
-            // cleanup below frees, and the WRITE registration outlives the
-            // aborted teardown -- the backstop takes back only the interest that
-            // fired. Level-triggered EPOLLOUT then arrives for as long as the fd
-            // is open, which is now forever.
+            // The same readiness on the write half must not walk back into what
+            // the aborted teardown left: `abandoned` is still queued, and the
+            // WRITE registration outlives the abort because the backstop takes
+            // back only the interest that fired. Level-triggered EPOLLOUT then
+            // arrives for as long as the fd is open, which is now forever.
             //
-            // The `opened` guard in `onWritable` is the only thing stopping it
-            // now: this buffer can hand out a native pointer, so a gather flush
-            // over that queue would reach its release rather than failing on
-            // the cast first.
+            // The `opened` guard in `onWritable` is the only thing stopping it,
+            // and this is what pins it: these buffers hand out a native pointer,
+            // so without the guard the flush reaches `abandoned`'s release
+            // rather than failing on a cast, and refuses -- which comes back out
+            // of the readiness call.
             val onWrite = onLoopCatching { transport.onReady(Interest.WRITE) }
 
             assertEquals(null, onWrite, "write readiness on an ended connection does nothing")
-            assertEquals(1, queued.refusedReleases, "the stale queue is not entered a second time")
+            assertEquals(1, queued.refusedReleases, "the drain is not entered a second time")
+            assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the abort left")
 
             assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the teardown could not")
+            assertTrue(abandoned.releaseUnderlying(), "and the one the abort left queued")
             // 0 rather than EBADF: the aborted teardown really did leave this
             // open, which is the cost the test is named for.
             assertEquals(0, close(abandonedFd), "the fixture closes what the teardown could not")

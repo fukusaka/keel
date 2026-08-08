@@ -259,15 +259,19 @@ abstract class AbstractIoTransport(
      *
      * [releaseAllPendingWrites] itself runs at most once per transport, after
      * the teardown claim is taken, so it has no next walker of its own; it uses
-     * this so that the two drains that share a body cannot drift apart. **The
-     * JVM, JS and io_uring transports still write the release-then-clear order
-     * out inline** — they inherit this and do not call it, so the class of
-     * defect is open there.
+     * this so that the two drains that share a body cannot drift apart. **Every
+     * other transport still writes the release-then-clear order out inline** —
+     * io_uring, NWConnection, Netty, NIO and Node all inherit this and none of
+     * them calls it, so the class of defect is open in all five.
      *
      * **It does not touch [pendingBytes].** A caller on a path that continues
-     * afterwards owes the matching [updatePendingBytes]; the two engine flush
-     * sites do it on the next line. Without it the count only ever grows, and
-     * `writable` latches `false` for the life of the connection.
+     * afterwards owes the matching [updatePendingBytes]. The two engine flush
+     * sites make that call on the next statement, which is to say **not when
+     * this throws** — on that path the count is left high and only the teardown
+     * that follows puts it right by zeroing it. A caller that means to carry on
+     * needs the update somewhere this cannot skip. Without it the count only
+     * ever grows, and `writable` latches `false` for the life of the
+     * connection.
      *
      * **It stops where the failure was.** The buffers behind a refused release
      * stay queued and this returns by throwing, so a caller that has more to do

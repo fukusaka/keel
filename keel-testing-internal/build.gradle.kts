@@ -39,7 +39,7 @@ plugins {
 //                 `FakeNativeSocketOps` / `PosixRawClient`) +
 //                 `posix_testing` cinterop + `FailingReleaseIoBuf`
 //                 (here because forwarding the native pointer needs
-//                 the interface that lives in this source set)
+//                 an interface that only `keel-io` nativeMain declares)
 //   - nativeTest: in-module sanity tests for the Native fakes
 //                 (`FakeNativeSocketTest`).
 //

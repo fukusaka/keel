@@ -28,6 +28,11 @@ interface FdReadyListener {
      * peer-close signal with no data behind it. A listener therefore sees the
      * end of the stream the ordinary way — its `read()` returns 0 — and does
      * not need to distinguish that case from a normal wakeup.
+     *
+     * **A throw out of here costs the registration**, including one made from
+     * inside this call — see [onPeerClosed], where the rule and its reason are
+     * written out. It applies to both callbacks; it is stated there because
+     * that is where the interest being dropped is least obvious.
      */
     fun onReady(interest: Interest)
 

@@ -47,11 +47,12 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * this one, so a caller that queues `buf.retain()` gets a release that
  * succeeds.
  *
- * **Native source set, so the engines whose drains are still inline cannot use
- * it.** It sits here because forwarding the pointer requires the interface that
- * lives here. The JVM and JS transports carry the same release-then-clear drain
- * this seam is for; reaching those means giving this a common form, which is
- * work for whoever fixes them.
+ * **Native source set, because forwarding the pointer requires an interface
+ * that only exists there.** The io_uring and NWConnection transports carry the
+ * same release-then-clear drain this seam is for and can use this today — both
+ * test source sets already depend on this module. The Netty, NIO and Node ones
+ * cannot, and reaching those means giving this a common form: the refusal and
+ * its counter in common code, the pointer in a native subclass.
  */
 @OptIn(ExperimentalForeignApi::class)
 public class FailingReleaseIoBuf(
