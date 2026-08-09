@@ -219,12 +219,16 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     private val regLockStuck = AtomicInt(0)
 
     /**
-     * Claims the one entry into [loop], and the one drain in flight.
+     * Claims the terminal sequence, and with it the ledgers.
      *
-     * [loop] is reachable from outside the two engines — the opt-in marker
-     * limits who, not how often — and publishing the thread identity is the
-     * first thing it does after this claim, so a second entry would re-point it
-     * while the real loop thread still runs on the old one.
+     * Two takers, never both: [loop] on its way in, and [finishWithoutRunning]
+     * closing a loop that has no thread. Whoever takes it publishes the thread
+     * identity next, so a second taker would re-point that identity while the
+     * first still runs on the old one — which is what this refuses.
+     *
+     * Taken through [claimLoopTermination]; [loop] is reachable from outside
+     * the two engines (the opt-in marker limits who, not how often), so the
+     * refusal is not merely defensive.
      *
      * Only that. The drain's own re-entrancy is [draining]'s, below.
      */
@@ -303,11 +307,18 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     fun isFinishing(): Boolean = handoff.isFinished()
 
     /**
-     * The loop's own thread, published by [loop] as the first thing it does
-     * after claiming entry.
+     * The thread that holds this loop's termination claim, published as the
+     * first thing either claimant does after taking it.
      *
-     * `null` until then, which is what makes [inEventLoop] answer `false` for
-     * a loop that was constructed but never started.
+     * Usually the loop's own pthread. It is the closing thread instead when
+     * [finishWithoutRunning] takes a loop apart that never had one — and that
+     * is the point: everything downstream reads this to ask "may I act on this
+     * loop's state directly", and while the claim is held the answer for that
+     * thread is yes. It is not a thread handle and nothing joins on it.
+     *
+     * `null` before either claimant publishes it, which is what makes
+     * [inEventLoop] answer `false` for a loop that has been constructed and
+     * neither started nor closed.
      *
      * `@Volatile` because the loop thread writes it and every other thread
      * reads it through [inEventLoop] to decide whether it may act directly or
@@ -1078,10 +1089,12 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * transport — and the channel and pipeline graph behind it — reachable for as
      * long as the loop object lived.
      *
-     * [loop] calls this from its own `finally`, after the final drain and before
-     * it publishes quiescence. Not the subclass: the ledger walked here is this
-     * class's, and so is the rule for when a waiter can no longer be
-     * served. It runs on the loop thread, so taking the lock is legal — and
+     * [terminate] calls this after the final drain and before it publishes
+     * quiescence, on whichever thread holds the termination claim — the loop's
+     * own, or a closer taking apart a loop that never ran. Not the subclass:
+     * the ledger walked here is this class's, and so is the rule for when a
+     * waiter can no longer be served. The claimant is the only thread that may
+     * walk it, so taking the lock is legal — and
      * the lock is valid here as it is everywhere, because nothing ever frees
      * it (see [regMutex]).
      *
@@ -1261,6 +1274,16 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     private fun claimLoopTermination(): Boolean = loopEntered.compareAndSet(0, 1)
 
     /**
+     * Whether this loop's termination is already spoken for — by a running or
+     * finished [loop], or by [finishWithoutRunning].
+     *
+     * For a subclass deciding whether starting a thread can still mean
+     * anything. A sequential answer: it says nothing about a caller racing a
+     * concurrent close.
+     */
+    protected fun isTerminationClaimed(): Boolean = loopEntered.value != 0
+
+    /**
      * Takes the loop apart, on the thread that claimed it.
      *
      * Split out of [loop] because a loop that never ran needs the same
@@ -1320,13 +1343,19 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * Runs the terminal sequence for a loop that never had a thread, on the
      * caller's.
      *
-     * A loop can be closed without ever having run: `start()` failing part way
-     * through a group leaves the rest of it constructed and idle, and tests
-     * build loops they never start. Nothing published `finished` or
-     * `quiescent` for such a loop, so [LoopHandoff.runOnLoop] reads "live",
-     * hands work over — and no drain ever comes. Anything dispatched at it is
-     * lost: a transport's teardown, and with it the descriptor it would have
-     * released; an accepted connection the accept path handed on.
+     * A loop can be closed without ever having run. Nothing published
+     * `finished` or `quiescent` for such a loop, so [LoopHandoff.runOnLoop]
+     * reads "live", hands work over — and no drain ever comes. Anything
+     * dispatched at it is lost: a transport's teardown, and with it the
+     * descriptor it would have released; an accepted connection the accept
+     * path handed on.
+     *
+     * **Who closes such a loop**: tests that build one and never start it, and
+     * any future caller that has to unwind a partly-built engine. Not, today,
+     * the case that motivated looking: a group whose `start()` throws part way
+     * takes the exception out through the engine constructor, so no reference
+     * escapes and nobody calls `close()` on anything. Making that path unwind
+     * is separate work, and this is its prerequisite rather than its fix.
      *
      * The caller may walk the ledgers here because it holds the claim, and
      * because it publishes itself as the loop thread for the duration: every

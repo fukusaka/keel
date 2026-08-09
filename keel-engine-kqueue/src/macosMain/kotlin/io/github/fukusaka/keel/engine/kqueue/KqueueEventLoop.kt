@@ -237,15 +237,22 @@ internal class KqueueEventLoop(
     /**
      * Starts the EventLoop thread. Must be called once after construction.
      * The thread runs [loop] until [close] is called.
+     *
+     * A call on a loop whose termination has already been claimed — by
+     * [close], or by a [loop] that ended on its own — is reported and ignored
+     * rather than starting anything: the resources a thread would need are
+     * already released, or about to be. The check is sequential, not a
+     * synchronisation point; nothing in the tree starts a loop concurrently
+     * with closing it, and this does not make that safe.
      */
     fun start() {
-        if (running.value == 0) {
-            // Closed before it ever ran, so its arena is already released --
-            // and `threadPtr` lives in that arena. Creating a thread here
-            // would write through a dangling pointer, and the thread would
-            // find the loop's termination already claimed and return anyway.
-            // Reported rather than thrown: `close()` is idempotent and this is
-            // the same kind of late call.
+        if (isTerminationClaimed()) {
+            // Someone already owns this loop's end: a `close()` that released
+            // the arena `threadPtr` lives in, or a `loop()` that ran and
+            // returned. Creating a thread here would write through that
+            // pointer -- and the thread would find the claim taken and return
+            // without doing anything anyway. Reported rather than thrown:
+            // `close()` is idempotent and this is the same kind of late call.
             logger.error { "${this::class.simpleName}.start() on a closed loop is ignored" }
             return
         }
@@ -484,7 +491,8 @@ internal class KqueueEventLoop(
      *
      * Signals the EventLoop thread to stop, joins it, then closes the
      * kqueue fd and wakeup pipe fds. Waiters still parked at that point are
-     * ended by the loop itself, on its way out.
+     * ended by the loop itself, on its way out — or, for a loop that never
+     * started, by this thread; see below.
      *
      * **Must not be called from the EventLoop thread.** `pthread_join` returns
      * `EDEADLK` at once when asked to join the caller, so everything below
@@ -495,16 +503,15 @@ internal class KqueueEventLoop(
      * failure falls through and releases anyway, since the `running` CAS above
      * has already fired and no later `close()` can pick it up.
      *
-     * **What this does not cover**: a loop that was constructed and never
-     * started. `threadPtr` comes from an `Arena`, which does not zero, and
-     * `pthread_t` is only a pointer on some targets. On macOS it is one and the
-     * slot measures as null, so `t != null` skips the join. On linuxX64 it is a
-     * `ULong` — the compiler reports that same check as always true — and the
-     * join is handed an uninitialised value whose return is undefined, so
-     * neither branch below is reasoning from anything. Production does not
-     * reach it (a failed `start()` throws out of the constructor) and the tests
-     * that do pass on fresh `malloc` memory reading as zero. Covering it needs
-     * an explicit started flag rather than this guard.
+     * **A loop that was never started takes a different path**: there is no
+     * thread to signal or join, and nothing will ever drain what was dispatched
+     * at it, so this runs the loop's terminal sequence itself before releasing.
+     * Which path is taken is decided by an explicit flag, not by inspecting
+     * `threadPtr`: that slot comes from an `Arena`, which does not zero, and
+     * `pthread_t` is only a pointer on some targets — on linuxX64 it is a
+     * `ULong` and the compiler reports the `t != null` guard below as always
+     * true. With the flag, that guard is reached only when `pthread_create` was
+     * called, so it no longer has to decide anything.
      */
     fun close() {
         if (running.compareAndSet(1, 0)) {
@@ -513,9 +520,24 @@ internal class KqueueEventLoop(
                 // for one. Whatever was dispatched at this loop -- a
                 // transport's teardown, an accepted connection -- runs here or
                 // never, and the descriptors it holds go with it.
-                finishWithoutRunning()
-                releaseLoopResources()
-                return
+                //
+                // Releasing in a `catch` as well: the terminal sequence runs
+                // application teardown, and a throw escaping it must not also
+                // cost this loop its fds. On the joined path below that
+                // question cannot arise -- a throw there leaves a pthread
+                // entry point and ends the process.
+                val claimed = try {
+                    finishWithoutRunning()
+                } catch (terminationFailure: Throwable) {
+                    releaseLoopResources()
+                    throw terminationFailure
+                }
+                if (claimed) {
+                    releaseLoopResources()
+                    return
+                }
+                // A thread took the claim after all, so it is running the
+                // sequence and owns these resources until it is joined.
             }
             wakeup()
             // Join the EventLoop thread. threadPtr was written by pthread_create.
