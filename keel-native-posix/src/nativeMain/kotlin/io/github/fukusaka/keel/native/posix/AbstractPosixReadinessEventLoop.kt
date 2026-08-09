@@ -264,13 +264,14 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      *
      * **Thread safety**: safe from any thread.
      *
-     * @return `true` when the fallback ran because [waitBudgetMicros] expired.
+     * @return which block ran, and whether the wait was cut short to get
+     *   there; see [HandoffOutcome].
      */
     fun runOnLoop(
         onLoop: () -> Unit,
         ifStopped: () -> Unit = onLoop,
         waitBudgetMicros: Long = LoopHandoff.WAIT_UNBOUNDED,
-    ): Boolean = handoff.runOnLoop(onLoop, ifStopped, waitBudgetMicros)
+    ): HandoffOutcome = handoff.runOnLoop(onLoop, ifStopped, waitBudgetMicros)
 
     /**
      * Whether this loop has stopped for good — it will run nothing more, so a

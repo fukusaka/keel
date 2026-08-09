@@ -147,18 +147,18 @@ class LoopHandoff(
      * **Thread safety**: safe from any thread.
      *
      * @param waitBudgetMicros how long to wait out a stopping loop's teardown
-     *   before running [ifStopped] anyway, or [WAIT_UNBOUNDED] to wait for as
-     *   long as it takes. Only consulted in that one window.
-     * @return `true` when [ifStopped] ran because the budget expired — the
-     *   descriptor was released without the ordering the wait exists to give,
-     *   which is worth reporting. `false` on every other outcome, including a
-     *   budget that expired after the loop had already claimed the work.
+     *   before running [ifStopped] anyway. Negative (see [WAIT_UNBOUNDED])
+     *   waits for as long as it takes; `0` takes the fallback without waiting
+     *   at all, for a caller that has already paid this wait once and will not
+     *   pay it again. Only consulted in that one window.
+     * @return which block ran, and — when it was the fallback — whether the
+     *   wait was cut short to get there. See [HandoffOutcome].
      */
     fun runOnLoop(
         onLoop: () -> Unit,
         ifStopped: () -> Unit = onLoop,
         waitBudgetMicros: Long = WAIT_UNBOUNDED,
-    ): Boolean {
+    ): HandoffOutcome {
         // Fully stopped: nothing drains the queue again, so offering buys
         // nothing and pins the task's captures in the dead queue for the loop
         // object's lifetime (the dispatcher itself already declines to write
@@ -175,11 +175,11 @@ class LoopHandoff(
         // up, on the loop.
         if (loopQuiescent.value == 1) {
             ifStopped()
-            return false
+            return HandoffOutcome.FELL_BACK
         }
         if (inEventLoop()) {
             onLoop()
-            return false
+            return HandoffOutcome.HANDED_TO_LOOP
         }
         val claimed = AtomicInt(0)
         dispatchToLoop {
@@ -188,7 +188,7 @@ class LoopHandoff(
         // Reading 0 here means this offer preceded the write, so the final
         // drain is guaranteed to pick it up — nothing more to do, and the
         // common path (a live loop) never waits.
-        if (loopFinished.value == 0) return false
+        if (loopFinished.value == 0) return HandoffOutcome.HANDED_TO_LOOP
 
         // The loop is shutting down. Wait out its final drain before deciding:
         // [loopFinished] is published *before* that drain, so acting on it
@@ -202,27 +202,31 @@ class LoopHandoff(
         // waits on application code, ending when that code does rather than
         // after some number of queued tasks — which is why a caller whose
         // thread others depend on hands in a budget instead.
+        //
+        // Any negative budget is unbounded, not just the sentinel: a computed
+        // value that goes negative reads as "no limit", which is the side that
+        // keeps the ordering rather than the side that quietly drops it.
         val start = TimeSource.Monotonic.markNow()
         var expired = false
         while (loopQuiescent.value == 0) {
-            if (waitBudgetMicros != WAIT_UNBOUNDED &&
-                start.elapsedNow().inWholeMicroseconds >= waitBudgetMicros
-            ) {
+            if (waitBudgetMicros >= 0 && start.elapsedNow().inWholeMicroseconds >= waitBudgetMicros) {
                 expired = true
                 break
             }
             usleep(LOOP_QUIESCE_POLL_MICROS)
         }
-        // Claim first, report after: the caller's report is arbitrary code and
-        // a throw from it must not cost the descriptor its release, which is
-        // the same order the accept path uses for close-then-warn.
-        if (!claimed.compareAndSet(0, 1)) return false
+        // The loop got there first: it owns the work and this caller reports
+        // nothing, whether or not its own wait had run out.
+        if (!claimed.compareAndSet(0, 1)) return HandoffOutcome.HANDED_TO_LOOP
         ifStopped()
-        return expired
+        return if (expired) HandoffOutcome.FELL_BACK_AFTER_EXPIRY else HandoffOutcome.FELL_BACK
     }
 
     companion object {
-        /** Passed as `waitBudgetMicros` to wait out the loop's teardown however long it takes. */
+        /**
+         * Passed as `waitBudgetMicros` to wait out the loop's teardown however
+         * long it takes. Any negative value means the same; this one names it.
+         */
         const val WAIT_UNBOUNDED: Long = -1L
 
         // Poll interval while waiting out the loop's final drain. The wait is

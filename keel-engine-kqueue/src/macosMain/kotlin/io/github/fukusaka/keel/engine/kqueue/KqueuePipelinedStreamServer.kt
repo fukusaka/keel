@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.HandoffOutcome
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
@@ -142,8 +143,17 @@ internal class KqueuePipelinedStreamServer(
 
     private fun acceptLoop(arm: AcceptArm) {
         val listener = arm.listener
-        while (true) {
-            when (val result = nativeSocket.accept(listener.serverFd)) {
+        // Per readiness callback, not per connection. The budget below bounds
+        // one hand-off; this loop can make as many as the backlog holds, so
+        // without carrying the verdict across iterations a stalled worker
+        // would cost 100ms *each* and hold this callback -- and with it the
+        // boss loop -- for as long as peers keep arriving. Once one hand-off
+        // has waited that worker out and given up, the rest of this callback
+        // does not pay the wait again.
+        var drops = DropTally()
+        try {
+            while (true) {
+                when (val result = nativeSocket.accept(listener.serverFd)) {
                 is AcceptResult.Accepted -> {
                     // Per accepted descriptor, because that is the unit that can
                     // fail here: `setNonBlocking` is `check(...)` over `fcntl`,
@@ -167,28 +177,99 @@ internal class KqueuePipelinedStreamServer(
                     // Choosing the worker is inside the guard and handing the
                     // descriptor to it is not: everything up to the hand-off can
                     // still close the fd, because nothing else has seen it yet.
-                    val worker = try {
-                        nativeSocketOps.setNonBlocking(result.fd)
-                        nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
-                        nextWorker()
-                    } catch (setupFailure: Throwable) {
-                        closeFdSafely(result.fd, logger, "accepted socket setup")
-                        logger.warn(setupFailure) {
-                            "preparing an accepted socket failed; dropping that connection: fd=${result.fd}"
+                        val worker = try {
+                            nativeSocketOps.setNonBlocking(result.fd)
+                            nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
+                            nextWorker()
+                        } catch (setupFailure: Throwable) {
+                            closeFdSafely(result.fd, logger, "accepted socket setup")
+                            logger.warn(setupFailure) {
+                                "preparing an accepted socket failed; dropping that connection: fd=${result.fd}"
+                            }
+                            continue
                         }
-                        continue
+                        drops = drops.record(result.fd, dispatchToWorker(worker, result.fd, listener, drops.budget()))
                     }
-                    dispatchToWorker(worker, result.fd, listener)
+                    AcceptResult.WouldBlock -> {
+                        arm.arm()
+                        return
+                    }
+                    is AcceptResult.Failed -> {
+                        logger.error { "accept() failed: ${errnoMessage(result.errno)}" }
+                        arm.arm()
+                        return
+                    }
                 }
-                AcceptResult.WouldBlock -> {
-                    arm.arm()
-                    return
-                }
-                is AcceptResult.Failed -> {
-                    logger.error { "accept() failed: ${errnoMessage(result.errno)}" }
-                    arm.arm()
-                    return
-                }
+            }
+        } finally {
+            // Reported once for the callback rather than once per connection:
+            // a worker that stays down drops every connection routed to it, and
+            // a line each turns a failure into a log flood at the accept rate.
+            // In a `finally` so a throw on the way out still says what was
+            // dropped before it.
+            reportDrops(drops)
+        }
+    }
+
+    /**
+     * How many connections this readiness callback dropped for want of a live
+     * worker, and whether any of those gave up on a worker that had not
+     * finished stopping.
+     *
+     * A value rather than counters in [acceptLoop] so the tally can be passed
+     * to [reportDrops] as one thing; the accept path allocates one of these per
+     * readiness callback, not per connection.
+     *
+     * `internal` for its test: the latch in [budget] is the whole of the
+     * boss-liveness guarantee, and the window it fires in — a worker that has
+     * finished polling but not yet gone quiet — is one the engine seam cannot
+     * hold open.
+     */
+    internal data class DropTally(
+        val dropped: Int = 0,
+        val gaveUp: Int = 0,
+        val firstFd: Int = -1,
+    ) {
+        /**
+         * The wait to hand in for the next hand-off: nothing, once a worker has
+         * already been waited out and given up on in this callback.
+         */
+        fun budget(): Long = if (gaveUp > 0) 0L else STOPPING_WORKER_WAIT_MICROS
+
+        fun record(fd: Int, outcome: HandoffOutcome): DropTally = when (outcome) {
+            HandoffOutcome.HANDED_TO_LOOP -> this
+            HandoffOutcome.FELL_BACK ->
+                copy(dropped = dropped + 1, firstFd = if (firstFd < 0) fd else firstFd)
+            HandoffOutcome.FELL_BACK_AFTER_EXPIRY ->
+                copy(dropped = dropped + 1, gaveUp = gaveUp + 1, firstFd = if (firstFd < 0) fd else firstFd)
+        }
+    }
+
+    /**
+     * Says what this callback dropped, in two lines at most.
+     *
+     * The two outcomes are reported apart because they describe opposite states
+     * of the same worker: [DropTally.dropped] counts connections whose worker
+     * had finished stopping, and the descriptors went with the ordering the
+     * hand-off provides. [DropTally.gaveUp] counts the ones where it had *not*
+     * finished and the wait was cut short — released without that ordering, so
+     * a queued arm on that worker may still name a number now handed on. One
+     * line covering both would have to claim the first about connections in the
+     * second.
+     */
+    private fun reportDrops(drops: DropTally) {
+        if (drops.dropped > drops.gaveUp) {
+            logger.warn {
+                "the worker EventLoop for ${drops.dropped - drops.gaveUp} accepted connection(s) " +
+                    "has stopped; dropping them: first fd=${drops.firstFd}"
+            }
+        }
+        if (drops.gaveUp > 0) {
+            logger.error {
+                "a worker EventLoop had not finished stopping after " +
+                    "${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms; released ${drops.gaveUp} " +
+                    "accepted descriptor(s) without waiting for it, so those numbers may still be " +
+                    "armed by a queued registration on that worker"
             }
         }
     }
@@ -250,18 +331,22 @@ internal class KqueuePipelinedStreamServer(
      * returning. One worker's failure would cost the whole engine its
      * liveness, to save one descriptor.
      *
-     * So the wait is bounded ([STOPPING_WORKER_WAIT_MICROS]) where every other
-     * caller of that hand-off leaves it unbounded — those block only their own
-     * closing thread. At expiry the descriptor is released anyway, without the
-     * ordering the wait exists to provide, and that is reported at ERROR: the
+     * So [waitBudgetMicros] is bounded where every other caller of that
+     * hand-off leaves it unbounded — those block only their own closing
+     * thread. At expiry the descriptor is released anyway, without the ordering
+     * the wait exists to provide, and [acceptLoop] reports that at ERROR: the
      * fd number may be one the worker still holds a queued arm for, so a
      * dispatched arm can land on a descriptor the kernel has since handed on.
-     * Rare, loud, and bounded beats silent and unbounded in either direction.
+     * **The bound belongs to the readiness callback, not to this call** — see
+     * [acceptLoop], which stops paying it once one hand-off has given up.
      *
      * The fallback closes the raw descriptor rather than building a transport
      * to close: nothing has been constructed for it yet, so nothing else owns
      * it and no later `close()` will arrive — the same reason the setup-failure
-     * branch in [acceptLoop] closes it directly.
+     * branch in [acceptLoop] closes it directly. It says nothing: what was
+     * dropped is reported once for the callback rather than once per
+     * connection, since a worker that stays down drops every connection routed
+     * to it.
      *
      * Per accepted connection this allocates the two blocks and the hand-off's
      * claim where the bare `dispatch` allocated one `Runnable`. Measured on the
@@ -271,27 +356,16 @@ internal class KqueuePipelinedStreamServer(
      * measurement of this cost; there is no accept-rate benchmark to take one
      * from.
      */
-    private fun dispatchToWorker(workerLoop: KqueueEventLoop, clientFd: Int, listener: Listener) {
-        val releasedWithoutWaiting = workerLoop.runOnLoop(
-            onLoop = { onWorkerAccept(clientFd, workerLoop, listener) },
-            ifStopped = {
-                closeFdSafely(clientFd, logger, "accept handed to a stopped worker")
-                logger.warn {
-                    "the worker EventLoop for an accepted connection has stopped; " +
-                        "dropping that connection: fd=$clientFd"
-                }
-            },
-            waitBudgetMicros = STOPPING_WORKER_WAIT_MICROS,
-        )
-        if (releasedWithoutWaiting) {
-            logger.error {
-                "a worker EventLoop did not finish stopping within " +
-                    "${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms; released fd=$clientFd " +
-                    "without waiting for it, so that number may still be armed by a queued " +
-                    "registration on that worker"
-            }
-        }
-    }
+    private fun dispatchToWorker(
+        workerLoop: KqueueEventLoop,
+        clientFd: Int,
+        listener: Listener,
+        waitBudgetMicros: Long,
+    ): HandoffOutcome = workerLoop.runOnLoop(
+        onLoop = { onWorkerAccept(clientFd, workerLoop, listener) },
+        ifStopped = { closeFdSafely(clientFd, logger, "accept handed to a stopped worker") },
+        waitBudgetMicros = waitBudgetMicros,
+    )
 
     private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop, listener: Listener) {
         val rbs = listener.config.readBufferSize ?: loop.readBufferSize
@@ -365,7 +439,7 @@ internal class KqueuePipelinedStreamServer(
         val config: BindConfig,
     )
 
-    private companion object {
+    internal companion object {
         /**
          * How long the accept hand-off waits for a stopping worker before
          * releasing the descriptor regardless.
@@ -380,7 +454,7 @@ internal class KqueuePipelinedStreamServer(
          * long enough that a worker with a few connections left finishes well
          * inside it.
          */
-        private const val STOPPING_WORKER_WAIT_MICROS = 100_000L
+        const val STOPPING_WORKER_WAIT_MICROS = 100_000L
 
         /** For rendering [STOPPING_WORKER_WAIT_MICROS] in a log line. */
         private const val MICROS_PER_MILLI = 1_000L
