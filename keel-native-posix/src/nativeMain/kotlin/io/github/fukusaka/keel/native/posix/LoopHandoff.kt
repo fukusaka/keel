@@ -132,7 +132,8 @@ class LoopHandoff(
      * The two blocks exist because the fallback runs off the loop. [onLoop] may
      * touch loop-owned state (registries the loop guards), because it only ever
      * runs on the loop thread. [ifStopped] runs on the caller once the loop has
-     * stopped, where those registries are moot — swept and closed — and reading
+     * stopped — or, for a caller that bounded its wait, while it is still
+     * draining — where those registries are moot or about to be, and reading
      * them from another thread buys nothing, so it must be self-contained:
      * releasing the fd is the one thing still required, and that is thread-safe
      * anywhere. (Their lock is safe to take from any thread; it is never

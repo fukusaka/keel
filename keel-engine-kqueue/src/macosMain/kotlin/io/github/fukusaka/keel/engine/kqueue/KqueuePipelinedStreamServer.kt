@@ -20,6 +20,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlin.concurrent.AtomicInt
+import kotlin.time.TimeSource
 
 /**
  * Pipeline server channel for kqueue-based connection acceptance.
@@ -143,13 +144,14 @@ internal class KqueuePipelinedStreamServer(
 
     private fun acceptLoop(arm: AcceptArm) {
         val listener = arm.listener
-        // Per readiness callback, not per connection. The budget below bounds
-        // one hand-off; this loop can make as many as the backlog holds, so
-        // without carrying the verdict across iterations a stalled worker
-        // would cost 100ms *each* and hold this callback -- and with it the
-        // boss loop -- for as long as peers keep arriving. Once one hand-off
-        // has waited that worker out and given up, the rest of this callback
-        // does not pay the wait again.
+        // The budget belongs to this callback, not to one hand-off. The loop
+        // makes as many hand-offs as the backlog holds, and each can wait on a
+        // worker that is stopping, so a per-hand-off bound is no bound at all:
+        // it multiplies by the number of stopping workers reachable through
+        // round-robin. What is carried across iterations is therefore the time
+        // already spent waiting, not merely whether some hand-off gave up --
+        // a wait that ends in quiescence one microsecond inside the budget
+        // costs this thread just as much as one that runs out.
         var drops = DropTally()
         try {
             while (true) {
@@ -188,7 +190,9 @@ internal class KqueuePipelinedStreamServer(
                             }
                             continue
                         }
-                        drops = drops.record(result.fd, dispatchToWorker(worker, result.fd, listener, drops.budget()))
+                        val startedAt = TimeSource.Monotonic.markNow()
+                        val outcome = dispatchToWorker(worker, result.fd, listener, drops.remainingBudget())
+                        drops = drops.record(result.fd, outcome, startedAt.elapsedNow().inWholeMicroseconds)
                     }
                     AcceptResult.WouldBlock -> {
                         arm.arm()
@@ -228,20 +232,41 @@ internal class KqueuePipelinedStreamServer(
     internal data class DropTally(
         val dropped: Int = 0,
         val gaveUp: Int = 0,
-        val firstFd: Int = -1,
+        val firstDroppedFd: Int = -1,
+        val firstGaveUpFd: Int = -1,
+        val waitedMicros: Long = 0,
     ) {
         /**
-         * The wait to hand in for the next hand-off: nothing, once a worker has
-         * already been waited out and given up on in this callback.
+         * What is left of this callback's wait.
+         *
+         * Every hand-off's wait comes out of one allowance, so the thread's
+         * total stall is [STOPPING_WORKER_WAIT_MICROS] however many stopping
+         * workers round-robin reaches. Spending it is what counts, not
+         * running out of it: a hand-off that waited 99ms and *then* saw
+         * quiescence has cost this thread the same 99ms as one that gave up.
          */
-        fun budget(): Long = if (gaveUp > 0) 0L else STOPPING_WORKER_WAIT_MICROS
+        fun remainingBudget(): Long = (STOPPING_WORKER_WAIT_MICROS - waitedMicros).coerceAtLeast(0)
 
-        fun record(fd: Int, outcome: HandoffOutcome): DropTally = when (outcome) {
-            HandoffOutcome.HANDED_TO_LOOP -> this
-            HandoffOutcome.FELL_BACK ->
-                copy(dropped = dropped + 1, firstFd = if (firstFd < 0) fd else firstFd)
-            HandoffOutcome.FELL_BACK_AFTER_EXPIRY ->
-                copy(dropped = dropped + 1, gaveUp = gaveUp + 1, firstFd = if (firstFd < 0) fd else firstFd)
+        /**
+         * Folds one hand-off in. [waitedMicros] is measured at the call site
+         * rather than reported by the hand-off: what this needs is wall time
+         * this thread did not spend accepting, which is the same quantity
+         * whichever branch the hand-off took.
+         */
+        fun record(fd: Int, outcome: HandoffOutcome, waitedMicros: Long): DropTally {
+            val spent = copy(waitedMicros = this.waitedMicros + waitedMicros)
+            return when (outcome) {
+                HandoffOutcome.HANDED_TO_LOOP -> spent
+                HandoffOutcome.FELL_BACK -> spent.copy(
+                    dropped = dropped + 1,
+                    firstDroppedFd = if (firstDroppedFd < 0) fd else firstDroppedFd,
+                )
+                HandoffOutcome.FELL_BACK_AFTER_EXPIRY -> spent.copy(
+                    dropped = dropped + 1,
+                    gaveUp = gaveUp + 1,
+                    firstGaveUpFd = if (firstGaveUpFd < 0) fd else firstGaveUpFd,
+                )
+            }
         }
     }
 
@@ -249,27 +274,29 @@ internal class KqueuePipelinedStreamServer(
      * Says what this callback dropped, in two lines at most.
      *
      * The two outcomes are reported apart because they describe opposite states
-     * of the same worker: [DropTally.dropped] counts connections whose worker
-     * had finished stopping, and the descriptors went with the ordering the
+     * of a worker: [DropTally.dropped] counts connections whose worker had
+     * finished stopping, and the descriptors went with the ordering the
      * hand-off provides. [DropTally.gaveUp] counts the ones where it had *not*
      * finished and the wait was cut short — released without that ordering, so
      * a queued arm on that worker may still name a number now handed on. One
      * line covering both would have to claim the first about connections in the
-     * second.
+     * second, and each names a descriptor from its own category for the same
+     * reason.
      */
     private fun reportDrops(drops: DropTally) {
         if (drops.dropped > drops.gaveUp) {
             logger.warn {
                 "the worker EventLoop for ${drops.dropped - drops.gaveUp} accepted connection(s) " +
-                    "has stopped; dropping them: first fd=${drops.firstFd}"
+                    "has stopped; dropping them: first fd=${drops.firstDroppedFd}"
             }
         }
         if (drops.gaveUp > 0) {
             logger.error {
-                "a worker EventLoop had not finished stopping after " +
-                    "${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms; released ${drops.gaveUp} " +
-                    "accepted descriptor(s) without waiting for it, so those numbers may still be " +
-                    "armed by a queued registration on that worker"
+                "this accept spent its ${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms allowance " +
+                    "waiting for worker EventLoops that had not finished stopping; released " +
+                    "${drops.gaveUp} accepted descriptor(s) without waiting them out, starting at " +
+                    "fd=${drops.firstGaveUpFd}, so those numbers may still be armed by a queued " +
+                    "registration on the worker each went to"
             }
         }
     }
@@ -338,7 +365,8 @@ internal class KqueuePipelinedStreamServer(
      * fd number may be one the worker still holds a queued arm for, so a
      * dispatched arm can land on a descriptor the kernel has since handed on.
      * **The bound belongs to the readiness callback, not to this call** — see
-     * [acceptLoop], which stops paying it once one hand-off has given up.
+     * [acceptLoop], which passes what is left of one allowance rather than a
+     * fresh one per connection.
      *
      * The fallback closes the raw descriptor rather than building a transport
      * to close: nothing has been constructed for it yet, so nothing else owns
