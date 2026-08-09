@@ -342,8 +342,12 @@ internal class EpollPipelinedStreamServer(
      * sat in a task no thread would run and stayed open until the process
      * exited — while the peer's `connect` had already succeeded and it waited
      * on a socket nobody would ever read. That is not the same window
-     * [onWorkerAccept]'s `joinedLoop` check covers: there the task *does* run,
-     * in the final drain, and finds the ledgers closed. This is after it.
+     * [onWorkerAccept]'s `joinedLoop` check covers: a task the final drain
+     * picks up still finds the ledgers open — they close in the stop sweep that
+     * follows — and is unwound by that sweep telling its participants instead;
+     * the `joinedLoop` branch belongs to the drain the sweep itself runs
+     * afterwards. Either way the loop runs the work. This window is after all
+     * of them, where nothing runs it at all.
      *
      * [io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop.runOnLoop]
      * rather than asking the loop whether it has stopped and branching on the
