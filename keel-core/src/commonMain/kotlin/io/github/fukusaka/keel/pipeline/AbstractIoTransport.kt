@@ -168,8 +168,7 @@ abstract class AbstractIoTransport(
         // the connection from a non-cooperating peer, so it must release the fd in
         // every mode. `close()` is idempotent, so this is a no-op when the channel
         // already closed itself in pipeline mode.
-        onReadClosed?.invoke()
-        close()
+        reclaimAfterIdle()
     }
 
     private var writeIdleHandle: TimerHandle? = null
@@ -203,8 +202,36 @@ abstract class AbstractIoTransport(
         // reading (slow-read / stalled receive window), holding the connection and
         // its buffered response. Reclaim it exactly like the read idle timeout —
         // notify inactivity, then force-close in every channel mode.
-        onReadClosed?.invoke()
+        reclaimAfterIdle()
+    }
+
+    /**
+     * Reports the connection inactive and then reclaims it, in that order and
+     * both regardless of the other.
+     *
+     * Two obligations, and the notification used to be able to skip the close.
+     * It runs user code — every handler's `onInactive`, and through it whatever
+     * a pipeline is built from — and a throw out of it reached the timer's own
+     * guard, which reports and moves on. The close never ran, so the descriptor
+     * the timeout exists to reclaim stayed open for the process lifetime, held
+     * by a peer that had already stopped cooperating. That is the shape an idle
+     * timeout is the last defence against, defeated by the report it makes on
+     * the way.
+     *
+     * The close is the obligation that must not be lost, so the notification's
+     * failure is carried out to the caller *after* it — where the timer's guard
+     * logs it, as it did before, rather than at the point that would skip the
+     * close. A throw from the close itself propagates as it always has.
+     */
+    private fun reclaimAfterIdle() {
+        var notifyFailure: Throwable? = null
+        try {
+            onReadClosed?.invoke()
+        } catch (t: Throwable) {
+            notifyFailure = t
+        }
         close()
+        notifyFailure?.let { throw it }
     }
 
     // --- Write path callbacks ---
@@ -297,12 +324,24 @@ abstract class AbstractIoTransport(
      * ever grows, and `writable` latches `false` for the life of the
      * connection.
      *
-     * **It stops where the failure was.** The buffers behind a refused release
-     * stay queued and this returns by throwing, so a caller that has more to do
-     * does not get to do it. Making a failed drain finish is a separate change.
+     * **It finishes.** A refused release no longer abandons the buffers behind
+     * it: the walk continues to the end of the deque and the first failure is
+     * raised afterwards, later ones attached to it — the same rule the POSIX
+     * teardowns follow between their stages, applied inside the one stage that
+     * has a queue to walk. Stopping cost every buffer behind the refusal for
+     * the process lifetime, and the deque itself: a caller that continues (the
+     * flush sites do) left entries behind for the next walker.
      */
     protected fun releaseQueuedWrites() {
-        while (pendingWrites.isNotEmpty()) pendingWrites.removeFirst().buf.release()
+        var failure: Throwable? = null
+        while (pendingWrites.isNotEmpty()) {
+            try {
+                pendingWrites.removeFirst().buf.release()
+            } catch (releaseFailure: Throwable) {
+                failure = failure?.also { it.addSuppressed(releaseFailure) } ?: releaseFailure
+            }
+        }
+        failure?.let { throw it }
     }
 
     /**

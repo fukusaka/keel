@@ -294,16 +294,15 @@ class EpollTeardownFailureSeamTest {
                 transport.pendingByteCount(),
                 "the ledger must be zeroed even though the release ahead of it threw",
             )
-            // The residual this change does not fix, pinned so that fixing it is
-            // a deliberate edit here rather than a silent one: the drain stops
-            // at the buffer that refused, so the one behind it stays queued and
-            // unreleased. Whoever makes the drain finish updates this to 0.
+            // The drain finishes past a refusal now, so the buffer behind the
+            // one that refused is released by the teardown rather than left to
+            // this test. `failing`'s own delegate is the only one outstanding,
+            // and the line above has just handed it back.
             assertEquals(
-                1,
+                0,
                 tracker.outstandingCount,
-                "the buffer behind the refused one is still outstanding",
+                "the drain must finish past the refusal rather than abandon what is behind it",
             )
-            assertTrue(trailing.release(), "the test still owns the buffer the teardown abandoned")
         }
     }
 
@@ -443,6 +442,7 @@ class EpollTeardownFailureSeamTest {
             // Two queued, so the drain gathers rather than taking the single
             // write path -- which removes its entry before writing it, leaving
             // the release stage nothing to fail on.
+            // Released by the teardown's drain, which finishes past the refusal.
             val trailing = DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
             readFd = -1
             var raised: Throwable? = null
@@ -474,12 +474,48 @@ class EpollTeardownFailureSeamTest {
                 first.suppressedExceptions.any { it is InjectedFault },
                 "and the later failure must be attached to it rather than dropped: ${first.suppressedExceptions}",
             )
-            failing.releaseUnderlying()
-            // The same residual the stopped-loop test pins explicitly: the
-            // release stops at the buffer that refused, so this one is still
-            // queued and unreleased. Whoever makes the drain finish past a
-            // refusal drops this line rather than watching it double-release.
-            assertTrue(trailing.release(), "the test still owns what the failed drain left queued")
+            assertTrue(failing.releaseUnderlying(), "the test still owns the buffer whose release refused")
+        }
+    }
+
+    @Test
+    fun `an inactivity report that throws still reclaims the connection`() = runBlocking {
+        withTimeout(IO_BUDGET) {
+            // The idle timeout exists to take a descriptor back from a peer that
+            // has stopped cooperating, and it announces that before it acts. The
+            // announcement runs user code -- every handler's `onInactive` -- and
+            // a throw out of it used to reach the timer's own guard, which
+            // reports and moves on. The close never ran, so the fd the timeout
+            // exists to reclaim stayed open for the process lifetime: the exact
+            // outcome this timeout is the last defence against, defeated by the
+            // report it makes on the way.
+            val fake = FakeNativeSocket()
+            val transport = EpollIoTransport(
+                readFd,
+                eventLoop,
+                DefaultAllocator,
+                fake,
+                idleTimeoutMillis = IDLE_TIMEOUT_MS,
+            ).also { it.onChannelAttached() }
+            val reported = CompletableDeferred<Unit>()
+            transport.onReadClosed = {
+                reported.complete(Unit)
+                throw InjectedFault("the inactivity report failed")
+            }
+            val surrendered = readFd
+            readFd = -1
+
+            // On the loop: the setter reaches the loop's own deadline scheduler.
+            onLoop { transport.readEnabled = true }
+
+            // The seam reached the report, or the descriptor below proves nothing.
+            assertTrue(
+                withTimeoutOrNull(WAITER_BUDGET) { reported.await() } != null,
+                "the idle timeout must have fired and reported for this test to mean anything",
+            )
+            withTimeout(WAITER_BUDGET) {
+                while (fcntl(surrendered, F_GETFD) != -1) delay(POLL_MS)
+            }
         }
     }
 

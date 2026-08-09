@@ -416,8 +416,9 @@ class EpollOnReadableSeamTest {
             assertEquals(1, queued.refusedReleases)
 
             // The same readiness on the write half must not walk back into what
-            // the failed stage left: `abandoned` is still queued, because the
-            // release stops where it failed even though the stages after it run.
+            // the failed stage left. The drain finishes past a refusal now, so
+            // both buffers have been offered their release and both refused --
+            // out of the deque, unreleased, and owned by nobody but this test.
             // The registration and the descriptor are gone by now -- the
             // teardown withdrew and closed them -- so what is checked here is
             // the transport's own refusal to act on a connection that ended.
@@ -430,6 +431,7 @@ class EpollOnReadableSeamTest {
             // so without the guard the flush reaches `abandoned`'s release
             // rather than failing on a cast, and refuses -- which comes back out
             // of the readiness call.
+            val refusalsBeforeWriteReadiness = abandoned.refusedReleases
             val onWrite = onLoopCatching { transport.onReady(Interest.WRITE) }
 
             assertEquals(null, onWrite, "write readiness on an ended connection does nothing")
@@ -438,7 +440,14 @@ class EpollOnReadableSeamTest {
             // scripted write succeeds, and one about the syscall bites whatever
             // the fake is set to answer.
             assertEquals(0, fake.writeCalls + fake.writevCalls, "no flush was attempted")
-            assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the release left")
+            // Unchanged by the readiness call, not zero: the teardown's own
+            // drain has already offered this one its release, and it refused.
+            // What is pinned here is that nothing offered it a second time.
+            assertEquals(
+                refusalsBeforeWriteReadiness,
+                abandoned.refusedReleases,
+                "nothing walked back into what the release left",
+            )
 
             assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the release could not")
             assertTrue(abandoned.releaseUnderlying(), "and the one behind the refusal")
