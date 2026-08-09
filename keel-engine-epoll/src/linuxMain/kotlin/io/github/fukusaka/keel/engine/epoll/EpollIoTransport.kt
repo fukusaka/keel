@@ -773,15 +773,16 @@ internal class EpollIoTransport(
         // resuming reads lands in the `readEnabled` setter. What declines the
         // arm there is `opened`, already false by the time a teardown runs --
         // a guard, not an absence of a path, and one the write side's arm does
-        // not have, which is why only that one ever fired. Cancelling after the
-        // drain holds whether or not a future arm site carries the guard; one
-        // that does not already exists on another engine.
+        // not have, which is why only that one ever fired. Every arm site in
+        // the tree carries it today except that one; cancelling after the drain
+        // is what keeps the order right for a site that stops carrying it.
         failure = runTeardownStage(failure) {
             if (flushScheduled) {
                 flushScheduled = false
                 performFlush()
             }
         }
+        failure = runTeardownStage(failure) { cancelIdleTimeout() }
         failure = runTeardownStage(failure) { cancelWriteIdleTimeout() }
         failure = runTeardownStage(failure) { releaseAllPendingWrites() }
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.

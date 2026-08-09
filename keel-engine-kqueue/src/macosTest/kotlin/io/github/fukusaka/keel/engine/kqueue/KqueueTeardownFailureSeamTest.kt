@@ -324,7 +324,13 @@ class KqueueTeardownFailureSeamTest {
                 DefaultAllocator,
                 fake,
                 idleTimeoutMillis = IDLE_TIMEOUT_MS,
-            ).also { it.onChannelAttached() }
+            ).also {
+                it.onChannelAttached()
+                // Arms the read-side deadline as well, which is the only way
+                // this test can see whether the teardown cancels that one: it
+                // is armed from this setter and from nowhere else.
+                it.readEnabled = true
+            }
             val buf = DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
             val reported = CompletableDeferred<Unit>()
             transport.onReadClosed = { reported.complete(Unit) }
@@ -392,10 +398,13 @@ class KqueueTeardownFailureSeamTest {
                 transport.flush()
             }
 
-            assertTrue(
-                eventLoop.hasCallbackRegistration(surrendered, Interest.WRITE),
-                "the stall must register for write readiness, or the withdrawal asserted above is vacuous",
-            )
+            // Polled, not read once: `flush()` coalesces, so the registration
+            // is made by a Runnable dispatched behind the one `onLoop` waited
+            // for -- and the timeout withdraws it again at IDLE_TIMEOUT_MS, so
+            // a single read races both ends.
+            withTimeout(IO_BUDGET) {
+                while (!eventLoop.hasCallbackRegistration(surrendered, Interest.WRITE)) delay(POLL_MS)
+            }
             withTimeout(IO_BUDGET) { reported.await() }
         }
     }
