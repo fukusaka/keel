@@ -10,6 +10,7 @@ import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.AcceptResult
+import io.github.fukusaka.keel.native.posix.HandoffOutcome
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -472,13 +473,117 @@ class KqueueAcceptSeamTest {
                 )
             } finally {
                 // Before the closes below, which can be handed this number: on a
-                // failing run production left it open. `dup` rather than a bare
-                // close, so a number that was already recycled is not closed out
-                // from under its new owner.
+                // failing run production left it open. `dup` only says the
+                // number is open, not that it is still this socket -- nothing
+                // here can tell the difference -- but between the assertions
+                // and this line the test opens nothing, and the boss loop is
+                // parked, so there is no recycling to be caught out by.
                 val leftOpen = dup(acceptedFd)
                 if (leftOpen >= 0) {
                     close(leftOpen)
                     close(acceptedFd)
+                }
+                server.close()
+                bossLoop.close()
+                workerGroup.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a stopped worker costs the accept callback one wait rather than one per connection`() {
+        // The budget bounds a single hand-off. This loop makes as many as the
+        // backlog holds, so without carrying the verdict across iterations a
+        // worker stuck between "finished polling" and "quiet" would cost the
+        // full wait *each* -- a listen backlog of 128 turns a 100ms bound into
+        // 12.8s inside one readiness callback, with the boss loop serving no
+        // other listener and draining no task for the whole of it. The bound
+        // has to belong to the callback.
+        val fresh = KqueuePipelinedStreamServer.DropTally()
+        assertEquals(
+            KqueuePipelinedStreamServer.STOPPING_WORKER_WAIT_MICROS,
+            fresh.budget(),
+            "the first hand-off of a callback pays the wait",
+        )
+
+        val afterDrop = fresh.record(7, HandoffOutcome.FELL_BACK)
+        assertEquals(
+            KqueuePipelinedStreamServer.STOPPING_WORKER_WAIT_MICROS,
+            afterDrop.budget(),
+            "a worker already quiet was not waited for, so nothing has been learned about waiting",
+        )
+
+        val afterGivingUp = afterDrop.record(8, HandoffOutcome.FELL_BACK_AFTER_EXPIRY)
+        assertEquals(
+            0L,
+            afterGivingUp.budget(),
+            "having waited one out and given up, this callback must not pay the wait again",
+        )
+        assertEquals(
+            0L,
+            afterGivingUp.record(9, HandoffOutcome.HANDED_TO_LOOP).budget(),
+            "and a live worker in between does not reset it",
+        )
+    }
+
+    @Test
+    fun `several accepts dropped by one stopped worker are reported once`() = runBlocking {
+        withTimeout(15.seconds) {
+            // One line per dropped connection turns a worker that stays down
+            // into a log flood at the accept rate, which is what this callback
+            // produces for as long as peers keep arriving.
+            val warns = RecordingLogger(LogLevel.WARN)
+            val bossLoop = KqueueEventLoop(warns)
+            val workerGroup = KqueueEventLoopGroup(1, warns, DefaultAllocator)
+            val sentinelFd = newSentinelFd()
+            val first = socket(AF_INET, SOCK_STREAM, 0)
+            val second = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(first >= 0 && second >= 0, "could not open sockets to be accepted")
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18090)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(first))
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
+                enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
+            }
+            val server = KqueuePipelinedStreamServer(
+                listeners = listOf(
+                    KqueuePipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                ),
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                logger = warns,
+                pipelineInitializer = { /* no-op initializer */ },
+                nativeSocket = fakeSocket,
+                nativeSocketOps = FakeNativeSocketOps(),
+            )
+            try {
+                bossLoop.start()
+                workerGroup.start()
+                workerGroup.close()
+
+                server.onAcceptable()
+
+                assertEquals(
+                    1,
+                    warns.messages.count { "has stopped" in it },
+                    "two drops, one line: ${warns.messages}",
+                )
+                assertTrue(
+                    warns.messages.any { "2 accepted connection(s)" in it },
+                    "and it must say how many, not just name one: ${warns.messages}",
+                )
+                for (fd in listOf(first, second)) {
+                    val probe = dup(fd)
+                    if (probe >= 0) close(probe)
+                    assertEquals(-1, probe, "every dropped descriptor is released, not only the first")
+                }
+            } finally {
+                for (fd in listOf(first, second)) {
+                    val leftOpen = dup(fd)
+                    if (leftOpen >= 0) {
+                        close(leftOpen)
+                        close(fd)
+                    }
                 }
                 server.close()
                 bossLoop.close()

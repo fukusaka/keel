@@ -10,7 +10,6 @@ import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
@@ -58,8 +57,9 @@ class LoopHandoffTest {
         var onLoop = 0
         var ifStopped = 0
 
-        handoff.runOnLoop(onLoop = { onLoop++ }, ifStopped = { ifStopped++ })
+        val outcome = handoff.runOnLoop(onLoop = { onLoop++ }, ifStopped = { ifStopped++ })
 
+        assertEquals(HandoffOutcome.HANDED_TO_LOOP, outcome, "the loop ran it, so the caller reports nothing")
         assertEquals(1, onLoop, "the caller already owns the loop, so it runs the work itself")
         assertEquals(0, ifStopped)
         assertTrue(loop.queue.isEmpty(), "nothing may be queued when it ran inline")
@@ -72,8 +72,9 @@ class LoopHandoffTest {
         var onLoop = 0
         var ifStopped = 0
 
-        handoff.runOnLoop(onLoop = { onLoop++ }, ifStopped = { ifStopped++ })
+        val outcome = handoff.runOnLoop(onLoop = { onLoop++ }, ifStopped = { ifStopped++ })
 
+        assertEquals(HandoffOutcome.HANDED_TO_LOOP, outcome, "the loop has it, even though it has not run yet")
         assertEquals(0, onLoop, "the caller must not run loop-owned work itself")
         assertEquals(1, loop.queue.size)
 
@@ -91,8 +92,9 @@ class LoopHandoffTest {
         var onLoop = 0
         var ifStopped = 0
 
-        handoff.runOnLoop(onLoop = { onLoop++ }, ifStopped = { ifStopped++ })
+        val outcome = handoff.runOnLoop(onLoop = { onLoop++ }, ifStopped = { ifStopped++ })
 
+        assertEquals(HandoffOutcome.FELL_BACK, outcome, "the fallback ran, and no wait was cut short to get there")
         assertEquals(1, ifStopped, "the loop is gone, so the caller must do the fallback")
         assertEquals(0, onLoop)
 
@@ -153,6 +155,7 @@ class LoopHandoffTest {
         // returns anyway.
         val loop = FakeLoop()
         val handoff = loop.handoff()
+        val onLoop = AtomicInt(0)
         val ifStopped = AtomicInt(0)
         val gaveUp = AtomicInt(0)
         val finished = AtomicInt(0)
@@ -165,12 +168,12 @@ class LoopHandoffTest {
         // failing this one test (the suite runs in a single process, so that is
         // a hang with no output, not a red build).
         CoroutineScope(Dispatchers.Default).launch {
-            val expired = handoff.runOnLoop(
-                onLoop = {},
+            val outcome = handoff.runOnLoop(
+                onLoop = { onLoop.value = onLoop.value + 1 },
                 ifStopped = { ifStopped.value = ifStopped.value + 1 },
                 waitBudgetMicros = SHORT_BUDGET_MICROS,
             )
-            if (expired) gaveUp.value = 1
+            if (outcome == HandoffOutcome.FELL_BACK_AFTER_EXPIRY) gaveUp.value = 1
             finished.value = 1
         }
 
@@ -189,41 +192,59 @@ class LoopHandoffTest {
 
         // The offer is still in the queue, and the claim already went to the
         // fallback: a drain arriving late must find the work taken rather than
-        // run it a second time.
+        // run it. Counting `onLoop` is what pins that -- asserting only that
+        // `ifStopped` stayed at 1 would pass with the claim deleted, since the
+        // drain runs the other block.
+        assertEquals(0, onLoop.value, "premise: the queued work has not run yet")
         loop.drain()
-        assertEquals(1, ifStopped.value, "the claim is what makes the two exclusive, budget or no budget")
+        assertEquals(0, onLoop.value, "the claim is what makes the two exclusive, budget or no budget")
+        assertEquals(1, ifStopped.value, "and the fallback is not re-run either")
     }
 
     @Test
-    fun `a loop that goes quiet inside the budget is waited out rather than given up on`() = runBlocking {
+    fun `a loop that goes quiet inside the budget is waited out rather than given up on`() {
         // The budget is a ceiling, not a delay: a teardown that finishes inside
         // it must still get the ordering, and the caller must not report having
         // gone without it.
+        //
+        // Detached and polled for the same reason as the test above, and the
+        // signalling is done here rather than from a second coroutine: a
+        // `while (queue.isEmpty())` spin in one would be as uncancellable as
+        // the wait itself, and owning it would hand the suite the very hang
+        // this shape exists to avoid.
         val loop = FakeLoop()
         val handoff = loop.handoff()
         val drained = AtomicInt(0)
         val ranBeforeDrain = AtomicInt(0)
+        val gaveUp = AtomicInt(0)
+        val finished = AtomicInt(0)
         handoff.markFinished()
 
-        var gaveUp = true
-        withTimeout(WAIT_BUDGET) {
-            val waiter = launch(Dispatchers.Default) {
-                gaveUp = handoff.runOnLoop(
-                    onLoop = {},
-                    ifStopped = { if (drained.value == 0) ranBeforeDrain.value = 1 },
-                    waitBudgetMicros = GENEROUS_BUDGET_MICROS,
-                )
-            }
-            launch(Dispatchers.Default) {
-                while (loop.queue.isEmpty()) { /* wait for the offer */ }
-                drained.value = 1
-                handoff.markQuiescent()
-            }
-            waiter.join()
+        CoroutineScope(Dispatchers.Default).launch {
+            val outcome = handoff.runOnLoop(
+                onLoop = {},
+                ifStopped = { if (drained.value == 0) ranBeforeDrain.value = 1 },
+                waitBudgetMicros = GENEROUS_BUDGET_MICROS,
+            )
+            if (outcome == HandoffOutcome.FELL_BACK_AFTER_EXPIRY) gaveUp.value = 1
+            finished.value = 1
         }
 
+        val deadline = TimeSource.Monotonic.markNow()
+        while (loop.queue.isEmpty() && deadline.elapsedNow() < WAIT_BUDGET) {
+            usleep(POLL_MICROS)
+        }
+        assertEquals(1, loop.queue.size, "premise: the waiter offered its work and is now in the wait")
+        drained.value = 1
+        handoff.markQuiescent()
+
+        while (finished.value == 0 && deadline.elapsedNow() < WAIT_BUDGET) {
+            usleep(POLL_MICROS)
+        }
+
+        assertEquals(1, finished.value, "quiescence must release the wait well inside the budget")
         assertEquals(0, ranBeforeDrain.value, "the fallback must not run before the drain completes")
-        assertFalse(gaveUp, "the wait ended on quiescence, so nothing was given up")
+        assertEquals(0, gaveUp.value, "the wait ended on quiescence, so nothing was given up")
     }
 
     private companion object {
