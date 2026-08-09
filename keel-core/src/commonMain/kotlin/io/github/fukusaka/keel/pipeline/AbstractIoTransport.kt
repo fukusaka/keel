@@ -221,12 +221,14 @@ abstract class AbstractIoTransport(
      * failure is carried out *after* it rather than at the point that would
      * skip the close. **Carried, not swallowed, and to exactly where it went
      * before** — out of the timer task, which is as far as this can reason:
-     * what receives it is the engine's timer driver, and they differ.
-     * `DeadlineScheduler`, behind the wait-loop engines, warns and moves on to
-     * the next due timer; the Node and NWConnection handles call the task
-     * unguarded, so there it stays uncaught, as it already was when the report
-     * threw. If the close throws too, the earlier failure is the one raised and
-     * the close's is attached to it — the same rule the POSIX teardowns follow
+     * what receives it is the engine's timer driver, and all three shapes
+     * differ. The four engines behind `DeadlineScheduler` get a warning and the
+     * next due timer. Netty's handle calls the task unguarded too, but it runs
+     * as a scheduled task on Netty's own executor, which captures what it
+     * throws. The Node and NWConnection handles call it unguarded with nothing
+     * behind them, so only there does it stay uncaught — as it already did when
+     * the report threw. If the close throws too, the earlier failure is the one
+     * raised and the close's is attached — the same rule the POSIX teardowns follow
      * between their stages — so adding the close takes nothing away from what
      * the report reported.
      */
