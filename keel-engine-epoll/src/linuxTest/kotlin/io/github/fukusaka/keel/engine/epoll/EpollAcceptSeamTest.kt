@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.InetSocketAddress
@@ -7,6 +8,7 @@ import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.SocketOptions
+import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
@@ -14,11 +16,13 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
+import platform.posix.EBADF
 import platform.posix.ECONNABORTED
 import platform.posix.EMFILE
 import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
 import platform.posix.close
+import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.socket
 import kotlin.test.Test
@@ -385,6 +389,82 @@ class EpollAcceptSeamTest {
                 throw t
             } finally {
                 engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `an accept handed to a stopped worker releases the descriptor`() = runBlocking {
+        withTimeout(15.seconds) {
+            // A worker's queue outlives the worker: `dispatch` takes a task
+            // whatever state the loop is in, and after the final drain nothing
+            // drains it again. An accepted descriptor handed over that way was
+            // neither served nor released -- it stayed open until the process
+            // exited, while the peer's `connect` had already succeeded and it
+            // waited on a socket nobody would ever read.
+            //
+            // The boss loop is left running: this is one half-stopped engine,
+            // not a closed one, which is the state a worker that broke out of
+            // its own loop leaves behind.
+            val warns = RecordingLogger(LogLevel.WARN)
+            val bossLoop = EpollEventLoop(warns)
+            val workerGroup = EpollEventLoopGroup(1, warns, DefaultAllocator)
+            bossLoop.start()
+            workerGroup.start()
+            val sentinelFd = newSentinelFd()
+            val acceptedFd = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(acceptedFd >= 0, "could not open a socket to be accepted")
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18189)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(acceptedFd))
+                enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
+            }
+            val server = EpollPipelinedStreamServer(
+                listeners = listOf(
+                    EpollPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                ),
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                logger = warns,
+                pipelineInitializer = { /* no-op initializer */ },
+                nativeSocket = fakeSocket,
+                nativeSocketOps = FakeNativeSocketOps(),
+            )
+            try {
+                // Deliberately not armed on the boss loop. An unbound listen
+                // socket reports readiness on it at once and goes on doing so,
+                // so an armed listener runs this accept loop from the boss
+                // thread too -- and the two threads then race for the one
+                // scripted `Accepted`, which the boss can take while the worker
+                // is still alive. The accept below is driven directly instead,
+                // which is what this seam does everywhere else.
+                //
+                // Joined and quiescent: nothing will drain this worker's queue
+                // again.
+                workerGroup.close()
+
+                server.onAcceptable()
+
+                val probe = fcntl(acceptedFd, F_GETFD)
+                val probeErrno = errno
+                assertEquals(
+                    -1,
+                    probe,
+                    "a worker that will never run this accept must not be left holding the descriptor",
+                )
+                assertEquals(EBADF, probeErrno, "closed, not fd-table exhaustion: the probe must fail with EBADF")
+                assertTrue(
+                    warns.messages.any { "worker" in it && "$acceptedFd" in it },
+                    "dropping a connection is worth saying: ${warns.messages}",
+                )
+            } finally {
+                // First, while nothing has opened a descriptor since: on a
+                // failing run production left this one open, and the closes
+                // below can be handed its number.
+                if (fcntl(acceptedFd, F_GETFD) >= 0) close(acceptedFd)
+                server.close()
+                bossLoop.close()
+                workerGroup.close()
             }
         }
     }
