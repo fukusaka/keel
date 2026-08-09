@@ -458,6 +458,11 @@ class EpollTeardownFailureSeamTest {
             // Both stages were really entered, or the ordering below is about
             // nothing.
             assertEquals(null, fake.flushThrowsOnce, "the drain must have thrown for this test to mean anything")
+            // Through the gather path specifically: the single-write path would
+            // have taken its entry out of the deque first, leaving the release
+            // stage nothing to refuse -- which is the premise the two buffers
+            // above exist for.
+            assertEquals(1, fake.writevCalls, "and it must have thrown from the gather path")
             assertEquals(1, failing.refusedReleases, "and the release after it must have thrown too")
 
             val first = raised
@@ -470,21 +475,27 @@ class EpollTeardownFailureSeamTest {
                 "and the later failure must be attached to it rather than dropped: ${first.suppressedExceptions}",
             )
             failing.releaseUnderlying()
+            // The same residual the stopped-loop test pins explicitly: the
+            // release stops at the buffer that refused, so this one is still
+            // queued and unreleased. Whoever makes the drain finish past a
+            // refusal drops this line rather than watching it double-release.
             assertTrue(trailing.release(), "the test still owns what the failed drain left queued")
         }
     }
 
     private companion object {
         /**
-         * Wall-clock budget for anything that goes through the loop. Matches the
-         * envelope the sibling seam tests use for a loopback dispatch hop.
+         * The outer envelope, and nothing else. Every test here wraps its body
+         * in this; nothing nested uses it, because a nested wait carrying the
+         * enclosing budget starts later and so can never expire first, leaving
+         * a failure that names nothing.
          */
         val IO_BUDGET = 15.seconds
 
         /**
-         * Budget for the one wait whose failure this file is about. Shorter
-         * than [IO_BUDGET] on purpose: it has to expire first for the failure
-         * to say which wait it was.
+         * Every wait nested inside [IO_BUDGET]: the dispatch hops, the polls,
+         * and the waits whose failure this file is about. Shorter on purpose —
+         * it has to expire first for the failure to say which wait it was.
          */
         val WAITER_BUDGET = 5.seconds
         const val POLL_MS = 10L
