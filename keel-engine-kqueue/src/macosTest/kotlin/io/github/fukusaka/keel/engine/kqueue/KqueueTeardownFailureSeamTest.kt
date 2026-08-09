@@ -405,7 +405,13 @@ class KqueueTeardownFailureSeamTest {
             withTimeout(IO_BUDGET) {
                 while (!eventLoop.hasCallbackRegistration(surrendered, Interest.WRITE)) delay(POLL_MS)
             }
-            withTimeout(IO_BUDGET) { reported.await() }
+            // Its own budget, as the waiter waits above have: nested inside
+            // the enclosing one with the same value, it could never expire
+            // first and the failure would name nothing.
+            assertTrue(
+                withTimeoutOrNull(WAITER_BUDGET) { reported.await() } != null,
+                "the stall must arm a write-idle timer, or the absence asserted above proves nothing",
+            )
         }
     }
 
