@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -214,10 +215,18 @@ class KqueueTeardownFailureSeamTest {
             val failing = FailingReleaseIoBuf(
                 tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
             )
+            // A second buffer behind the one that refuses. Without it the only
+            // buffer in the test is the one the test itself releases at the
+            // end, and every count would come out right whatever the teardown
+            // did.
+            val trailing = tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
             val surrendered = readFd
             readFd = -1
 
-            onLoop { transport.write(failing) }
+            onLoop {
+                transport.write(failing)
+                transport.write(trailing)
+            }
 
             val waiter = CompletableDeferred<Unit>()
             val waiting = launch {
@@ -278,8 +287,72 @@ class KqueueTeardownFailureSeamTest {
             )
             assertEquals(
                 0,
+                transport.pendingByteCount(),
+                "the ledger must be zeroed even though the release ahead of it threw",
+            )
+            // The residual this change does not fix, pinned so that fixing it is
+            // a deliberate edit here rather than a silent one: the drain stops
+            // at the buffer that refused, so the one behind it stays queued and
+            // unreleased. Whoever makes the drain finish updates this to 0.
+            assertEquals(
+                1,
                 tracker.outstandingCount,
-                "and nothing else may be left outstanding once the refused buffer is accounted for",
+                "the buffer behind the refused one is still outstanding",
+            )
+            assertTrue(trailing.release(), "the test still owns the buffer the teardown abandoned")
+        }
+    }
+
+    @Test
+    fun `a stalled drain does not leave a write-idle timer behind the teardown`() = runBlocking {
+        withTimeout(IO_BUDGET) {
+            // The drain can arm a timer: a flush that stalls re-registers for
+            // write readiness, and that starts the write-idle clock. With the
+            // cancels ahead of the drain, the timer armed here outlived the
+            // teardown -- holding this transport on the loop's scheduler until
+            // it fired, then reporting the connection inactive a second time,
+            // after it was gone.
+            val fake = FakeNativeSocket().apply { enqueueWrite(readFd, WriteResult.WouldBlock) }
+            val transport = KqueueIoTransport(
+                readFd,
+                eventLoop,
+                DefaultAllocator,
+                fake,
+                idleTimeoutMillis = IDLE_TIMEOUT_MS,
+            ).also { it.onChannelAttached() }
+            val buf = DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
+            var inactive = 0
+            transport.onReadClosed = { inactive++ }
+            val surrendered = readFd
+            readFd = -1
+
+            onLoop {
+                transport.write(buf)
+                // Leaves flushScheduled set, so the teardown finds a drain to run.
+                transport.flush()
+                transport.close()
+            }
+
+            // The seam reached the stall: the drain wrote and got WouldBlock,
+            // which is what arms the timer. Without this the wait below passes
+            // against a teardown that never drained at all.
+            assertEquals(
+                1,
+                fake.writeCalls + fake.writevCalls,
+                "teardown must have attempted the deferred flush for this test to mean anything",
+            )
+            assertTrue(
+                !eventLoop.hasCallbackRegistration(surrendered, Interest.WRITE),
+                "and the re-registration it made must have been withdrawn again",
+            )
+
+            // Long enough that a surviving timer has fired: it is scheduled for
+            // IDLE_TIMEOUT_MS, and the loop is still running to fire it.
+            delay(IDLE_TIMEOUT_MS * TIMER_WAIT_FACTOR)
+            assertEquals(
+                0,
+                inactive,
+                "a timer the teardown left armed reported the connection inactive after it was gone",
             )
         }
     }
@@ -299,5 +372,15 @@ class KqueueTeardownFailureSeamTest {
         val WAITER_BUDGET = 5.seconds
         const val POLL_MS = 10L
         const val PAYLOAD = 8
+
+        /**
+         * Short enough that the test does not sit on it, long enough that the
+         * teardown finishes well before a surviving timer would fire — so a
+         * failure means the timer outlived the teardown, not that it raced it.
+         */
+        const val IDLE_TIMEOUT_MS = 150L
+
+        /** Multiple of [IDLE_TIMEOUT_MS] to wait before concluding nothing fired. */
+        const val TIMER_WAIT_FACTOR = 4
     }
 }

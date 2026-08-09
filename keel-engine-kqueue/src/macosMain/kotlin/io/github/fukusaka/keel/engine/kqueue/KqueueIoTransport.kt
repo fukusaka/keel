@@ -230,13 +230,18 @@ internal class KqueueIoTransport(
      * parked reader. A close that throws loses only what the stage that failed was
      * for — the teardown runs its remaining stages and reaches its own
      * `closeFdSafely`. In practice the stages that can fail are the deferred
-     * flush and the release of the queue (a syscall wrapper, an allocator, a
-     * pointer). What the flush leaves behind for that release is not all of what
-     * it took: the single-write path removes the entry before writing it, so a
-     * throw there loses that one buffer outright and the release stage has
-     * nothing to find — tracked separately, and not something a stage boundary
-     * can reach. The ledger and registry stages neither throw nor report: they
-     * are map removals under the registration lock, no-ops on a miss. So the
+     * flush, the release of the queue (a syscall wrapper, an allocator, a
+     * pointer) and the waiter's cancel, which resumes user code — the reason
+     * `onLoopStopped` guards the identical call. What the flush leaves behind for that release is not all of what
+     * it took. Every flush path takes an entry out of the deque before releasing
+     * it — deliberately, since releasing first would leave a released buffer
+     * queued for the next walker to release again — so a refusal loses whatever
+     * had already left: one buffer on the single-write path, which empties the
+     * deque, and one of several on the gather path, which leaves the rest. Not
+     * something a stage boundary can reach, and out of scope here. The ledger and
+     * registry stages do not throw: they are removals from a map or a set under
+     * the registration lock, no-ops on a miss (the lock itself reports a failure
+     * and stops the loop rather than raising). So the
      * descriptor, the entries, the registry slot and the flush waiter are not
      * the cost. (In Pipeline mode the notification
      * performs that same teardown, so it can lose either set.)
@@ -407,6 +412,16 @@ internal class KqueueIoTransport(
      * treat a `true` as "was parked", which is all the tests need.
      */
     internal fun hasFlushWaiter(): Boolean = flushContinuation != null
+
+    /**
+     * The write ledger's current byte count.
+     *
+     * `internal` for the same reason as [hasFlushWaiter]: a test needs to see
+     * that a teardown zeroed it even though the release before that throws, and
+     * the count is otherwise reachable only through `isWritable`, which a closed
+     * transport reports `false` for whatever the ledger says.
+     */
+    internal fun pendingByteCount(): Int = pendingBytes
 
     // --- Read path ---
 
@@ -714,9 +729,13 @@ internal class KqueueIoTransport(
     /**
      * Releases all pending write buffers and closes the socket fd.
      *
-     * Unsent data is discarded, apart from a flush already deferred to this
-     * tick: the teardown runs that one and drops whatever it could not send.
-     * Nothing is waited for either way. The teardown withdraws
+     * Unsent data is discarded, and nothing is ever waited for. One exception,
+     * on one of the two paths below: while the loop is still running, a flush
+     * already deferred to this tick is attempted — once, without waiting — and
+     * whatever it could not send is dropped with the rest. The quiescent-loop
+     * teardown does not attempt it, because the buffers have nowhere ordered to
+     * go and the scratch the gather path writes through belongs to a loop that
+     * has closed it. The teardown withdraws
      * this fd's EVFILT_READ / EVFILT_WRITE callback registrations before
      * closing, so the loop stops referencing this transport once the connection
      * is gone; a callback that fires in between is harmless anyway, since they
@@ -756,15 +775,25 @@ internal class KqueueIoTransport(
         // would die logging the wrong cause. The first failure propagates and
         // the rest are attached to it.
         var failure: Throwable? = null
-        failure = runTeardownStage(failure) { cancelIdleTimeout() }
-        failure = runTeardownStage(failure) { cancelWriteIdleTimeout() }
         // Same-tick send→close: drain deferred writes before releasing.
+        //
+        // Ahead of the timer cancels, because it can arm one. A drain that
+        // stalls re-registers for write readiness, and that starts the
+        // write-idle clock; cancelling first left the new timer holding this
+        // transport -- and the channel and pipeline graph behind it -- on the
+        // loop's scheduler until it fired, which is the retention the withdraw
+        // stages below exist to prevent, and it fired `onReadClosed` on a
+        // connection already torn down. A stage that undoes an earlier one is
+        // the one thing this shape cannot express, so the order has to say it
+        // instead. The NIO transport has always drained first.
         failure = runTeardownStage(failure) {
             if (flushScheduled) {
                 flushScheduled = false
                 performFlush()
             }
         }
+        failure = runTeardownStage(failure) { cancelIdleTimeout() }
+        failure = runTeardownStage(failure) { cancelWriteIdleTimeout() }
         failure = runTeardownStage(failure) { releaseAllPendingWrites() }
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
         failure = runTeardownStage(failure) {
