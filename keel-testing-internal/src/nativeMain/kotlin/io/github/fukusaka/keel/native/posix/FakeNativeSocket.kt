@@ -158,8 +158,34 @@ public class FakeNativeSocket : NativeSocket {
         return readQueue[fd]?.removeFirstOrNull() ?: defaultRead
     }
 
+    /**
+     * Thrown by the next [write], [writev] or [send] call, then cleared.
+     *
+     * The seam for a flush that fails rather than returning a [WriteResult]. A
+     * scripted `WriteResult.Failed` exercises the engine's own error branch;
+     * this exercises the paths that assume flushing cannot throw at all —
+     * teardown drains one deferred flush before releasing, and had no answer
+     * for that call not returning.
+     *
+     * **All three write syscalls, not just the two the POSIX transports use.**
+     * `flushSingle` reaches `write` on epoll and kqueue and `send` on io_uring,
+     * with `writev` shared by the gather paths. A seam wired to only some of
+     * them fails silently on an engine that uses the others: the fake returns
+     * [defaultWrite], the drain succeeds, and a test written to assert what a
+     * failing drain costs goes green against a build that never fixed it.
+     */
+    public var flushThrowsOnce: Throwable? = null
+
+    private fun failFlushIfScripted() {
+        flushThrowsOnce?.let {
+            flushThrowsOnce = null
+            throw it
+        }
+    }
+
     override fun write(fd: Int, buf: CPointer<ByteVar>, length: Int): WriteResult {
         writeCalls++
+        failFlushIfScripted()
         return writeQueue[fd]?.removeFirstOrNull() ?: defaultWrite
     }
 
@@ -170,6 +196,7 @@ public class FakeNativeSocket : NativeSocket {
         count: Int,
     ): WriteResult {
         writevCalls++
+        failFlushIfScripted()
         return writevQueue[fd]?.removeFirstOrNull() ?: defaultWrite
     }
 
@@ -189,6 +216,7 @@ public class FakeNativeSocket : NativeSocket {
 
     override fun send(fd: Int, buf: CPointer<ByteVar>, length: Int, flags: Int): WriteResult {
         sendCalls++
+        failFlushIfScripted()
         return sendQueue[fd]?.removeFirstOrNull() ?: defaultWrite
     }
 

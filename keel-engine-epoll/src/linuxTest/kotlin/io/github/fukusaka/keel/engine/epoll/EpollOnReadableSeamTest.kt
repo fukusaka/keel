@@ -370,11 +370,11 @@ class EpollOnReadableSeamTest {
         withTimeout(15.seconds) {
             // The notification succeeds and the close is what fails. That is the
             // ordinary shape in Coroutine mode, where `onReadClosed` reports and
-            // does not close, so the close here is the entire teardown -- and a
-            // teardown that throws part-way is not retried: the claim is spent,
-            // so the fd is never closed, the ledger entries are never withdrawn,
-            // this transport stays in the participant registry, and a caller
-            // parked in `awaitPendingFlush` is never woken. An earlier revision
+            // does not close, so the close here is the entire teardown. The
+            // failure still reaches the loop -- the claim is spent, so nothing
+            // retries what the failed stage skipped -- but the stages after it
+            // run, so the descriptor, the ledger entries, the registry slot and
+            // the flush waiter are not the cost any more. An earlier revision
             // caught this throw and re-raised only when the *notification* had
             // failed, which put back one call along the hole it had just fixed.
             // A write that succeeds, so that a flush which should not happen
@@ -383,10 +383,11 @@ class EpollOnReadableSeamTest {
             // not have refused anything either way.
             val fake = FakeNativeSocket().apply { defaultWrite = WriteResult.Written(4) }
             val transport = EpollIoTransport(readFd, eventLoop, FailingAllocator, fake)
-            // The teardown under test aborts before it closes this, so the
-            // fixture has to. Taken before surrendering, because that is what
-            // stops `tearDown` from closing a descriptor the transport owns.
-            val abandonedFd = readFd
+            // The teardown closes this itself now, and the assertion at the
+            // end is that it did. Taken before surrendering, because that is
+            // what stops `tearDown` from closing a descriptor the transport
+            // owns -- and the number must be known to ask about it.
+            val transportFd = readFd
             surrenderReadFd()
             transport.onChannelAttached()
             var reportedInactive = 0
@@ -415,12 +416,14 @@ class EpollOnReadableSeamTest {
             assertEquals(1, queued.refusedReleases)
 
             // The same readiness on the write half must not walk back into what
-            // the aborted teardown left: `abandoned` is still queued. In
-            // production the WRITE registration outlives the abort too, because
-            // the backstop takes back only the interest that fired; this
-            // fixture never arms one, so what is checked here is the transport's
-            // own refusal to act, not the arrival. Level-triggered EPOLLOUT then
-            // arrives for as long as the fd is open, which is now forever.
+            // the failed stage left: `abandoned` is still queued, because the
+            // release stops where it failed even though the stages after it run.
+            // The registration and the descriptor are gone by now -- the
+            // teardown withdrew and closed them -- so what is checked here is
+            // the transport's own refusal to act on a connection that ended.
+            // Before the teardown finished past a failed stage, neither was
+            // gone and the readiness kept arriving for as long as the process
+            // ran.
             //
             // The `opened` guard in `onWritable` is the only thing stopping it,
             // and this is what pins it: these buffers hand out a native pointer,
@@ -435,13 +438,19 @@ class EpollOnReadableSeamTest {
             // scripted write succeeds, and one about the syscall bites whatever
             // the fake is set to answer.
             assertEquals(0, fake.writeCalls + fake.writevCalls, "no flush was attempted")
-            assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the abort left")
+            assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the release left")
 
-            assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the teardown could not")
-            assertTrue(abandoned.releaseUnderlying(), "and the one the abort left queued")
-            // 0 rather than EBADF: the aborted teardown really did leave this
-            // open, which is the cost the test is named for.
-            assertEquals(0, close(abandonedFd), "the fixture closes what the teardown could not")
+            assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the release could not")
+            assertTrue(abandoned.releaseUnderlying(), "and the one behind the refusal")
+            // EBADF rather than 0: the teardown reached its close despite the
+            // stage that threw. This assertion was the other way round when the
+            // teardown was a straight line -- a refused release abandoned the
+            // descriptor, and the test closed it on the teardown's behalf.
+            assertEquals(
+                -1,
+                fcntl(transportFd, F_GETFD),
+                "the teardown released the descriptor itself",
+            )
         }
     }
 

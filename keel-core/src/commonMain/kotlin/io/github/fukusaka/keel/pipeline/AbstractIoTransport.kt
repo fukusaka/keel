@@ -240,10 +240,23 @@ abstract class AbstractIoTransport(
      * invariant cannot drift apart; the other engines still carry inline
      * copies and can adopt this as they gain a stopped-loop path.
      * Caller must hold the teardown claim ([markTeardownStarted]).
+     *
+     * **Two obligations, and the second is owed whatever the first did.** A
+     * refused release used to skip the zeroing, leaving a count naming buffers
+     * that are no longer queued. The POSIX teardowns give one stage per
+     * obligation for exactly this reason, and calling this from a single stage
+     * would have smuggled the grouping they forbid back in through the helper
+     * they share. It is kept here rather than split across two stages at four
+     * call sites because the second obligation is one assignment: a `finally`
+     * that cannot throw cannot displace the release failure on its way out,
+     * which is the one thing the staging exists to prevent.
      */
     protected fun releaseAllPendingWrites() {
-        releaseQueuedWrites()
-        pendingBytes = 0
+        try {
+            releaseQueuedWrites()
+        } finally {
+            pendingBytes = 0
+        }
     }
 
     /**
@@ -254,8 +267,10 @@ abstract class AbstractIoTransport(
      * that throws leaves every buffer it already released **still queued** — and
      * whatever walks this queue next releases them a second time, which fails
      * the reference-count check. In a flush that next walker is the teardown, at
-     * its first step, so one refused release costs the fd, the ledger entries,
-     * the registry slot and the flush waiter.
+     * its first step — so before the POSIX engines staged theirs, one refused
+     * release cost the fd, the ledger entries, the registry slot and the flush
+     * waiter. They finish past a failed stage now; the transports that do not
+     * stage still pay the whole list.
      *
      * [releaseAllPendingWrites] itself runs at most once per transport, after
      * the teardown claim is taken, so it has no next walker of its own; it uses
