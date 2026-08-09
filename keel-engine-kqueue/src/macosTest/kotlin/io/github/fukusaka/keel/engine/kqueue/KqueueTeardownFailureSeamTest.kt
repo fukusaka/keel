@@ -328,6 +328,7 @@ class KqueueTeardownFailureSeamTest {
             val buf = DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
             val reported = CompletableDeferred<Unit>()
             transport.onReadClosed = { reported.complete(Unit) }
+            val readFdBeforeSurrender = readFd
             readFd = -1
 
             onLoop {
@@ -345,6 +346,11 @@ class KqueueTeardownFailureSeamTest {
                 fake.writeCalls + fake.writevCalls,
                 "teardown must have attempted the deferred flush for this test to mean anything",
             )
+            assertTrue(
+                !eventLoop.hasCallbackRegistration(readFdBeforeSurrender, Interest.WRITE),
+                "and the registration the stall made must have been withdrawn again",
+            )
+
             // Long enough that a surviving timer has fired: it is scheduled for
             // IDLE_TIMEOUT_MS, and the loop is still running to fire it.
             delay(IDLE_TIMEOUT_MS * TIMER_WAIT_FACTOR)
@@ -356,12 +362,15 @@ class KqueueTeardownFailureSeamTest {
     }
 
     @Test
-    fun `the stalled drain this fixture creates does arm the write-idle timer`() = runBlocking {
+    fun `a stalled flush arms the write-idle timer and registers for write readiness`() = runBlocking {
         withTimeout(IO_BUDGET) {
-            // The other half of the test above, which asserts that nothing
-            // fired: without this, a fixture that never armed a timer would
-            // satisfy it, and so would a `registerWriteCallback` that stopped
-            // arming one.
+            // The other half of the test above, which asserts two absences:
+            // without this, a fixture that never armed a timer or never
+            // registered would satisfy both, and so would a
+            // `registerWriteCallback` that stopped doing either. The stall is
+            // reached through the ordinary coalesced flush here rather than
+            // through a teardown's drain -- a different call site, converging
+            // on the same `WouldBlock` -> `registerWriteCallback`.
             val fake = FakeNativeSocket().apply { enqueueWrite(readFd, WriteResult.WouldBlock) }
             val transport = KqueueIoTransport(
                 readFd,
@@ -375,6 +384,7 @@ class KqueueTeardownFailureSeamTest {
             transport.onReadClosed = { reported.complete(Unit) }
             // The timeout closes the connection itself, which is what releases
             // the descriptor here -- no close() of our own.
+            val surrendered = readFd
             readFd = -1
 
             onLoop {
@@ -382,6 +392,10 @@ class KqueueTeardownFailureSeamTest {
                 transport.flush()
             }
 
+            assertTrue(
+                eventLoop.hasCallbackRegistration(surrendered, Interest.WRITE),
+                "the stall must register for write readiness, or the withdrawal asserted above is vacuous",
+            )
             withTimeout(IO_BUDGET) { reported.await() }
         }
     }

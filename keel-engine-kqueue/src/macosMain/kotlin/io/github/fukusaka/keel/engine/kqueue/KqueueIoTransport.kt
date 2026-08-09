@@ -776,7 +776,6 @@ internal class KqueueIoTransport(
         // would die logging the wrong cause. The first failure propagates and
         // the rest are attached to it.
         var failure: Throwable? = null
-        failure = runTeardownStage(failure) { cancelIdleTimeout() }
         // Same-tick send→close: drain deferred writes before releasing.
         //
         // Ahead of the write-idle cancel, because it can arm one. A drain that
@@ -789,9 +788,15 @@ internal class KqueueIoTransport(
         // the one thing this shape cannot express, so the order has to say it
         // instead. The NIO transport has always drained first.
         //
-        // Only this one moved: the read-side deadline is armed from the
-        // `readEnabled` setter and refreshed from `onReadable`, neither of
-        // which the drain can reach.
+        // Both cancels, not just the write one. The drain reaches the read
+        // side's arm too: draining moves the byte count, a low-water crossing
+        // notifies the pipeline synchronously, and a handler that answers by
+        // resuming reads lands in the `readEnabled` setter. What declines the
+        // arm there is `opened`, already false by the time a teardown runs --
+        // a guard, not an absence of a path, and one the write side's arm does
+        // not have, which is why only that one ever fired. Cancelling after the
+        // drain holds whether or not a future arm site carries the guard; one
+        // that does not already exists on another engine.
         failure = runTeardownStage(failure) {
             if (flushScheduled) {
                 flushScheduled = false

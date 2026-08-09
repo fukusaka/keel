@@ -82,9 +82,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `core`, `engine-epoll`, `engine-kqueue`: complete a connection's teardown when part of it throws.
-  The descriptor stayed open, a parked `awaitPendingFlush` caller was never woken, and the write
-  ledger kept counting buffers that had left the queue (#1040)
+- `core`, `engine-epoll`, `engine-kqueue`: complete a connection's teardown when part of it throws —
+  the descriptor stayed open, a parked `awaitPendingFlush` caller was never woken (#1040)
 - `engine-epoll`, `engine-kqueue`: cancel the write-idle timer after the teardown's final flush, not
   before — a stalled flush re-armed it, and the timer then held the torn-down connection until it
   fired (#1040)
