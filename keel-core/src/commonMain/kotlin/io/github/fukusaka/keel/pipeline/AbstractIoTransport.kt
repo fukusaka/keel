@@ -221,17 +221,23 @@ abstract class AbstractIoTransport(
      * The close is the obligation that must not be lost, so the notification's
      * failure is carried out to the caller *after* it — where the timer's guard
      * logs it, as it did before, rather than at the point that would skip the
-     * close. A throw from the close itself propagates as it always has.
+     * close. If the close throws too, the earlier failure is the one raised and
+     * the close's is attached to it, so running both costs neither: the same
+     * rule the POSIX teardowns follow between their stages.
      */
     private fun reclaimAfterIdle() {
-        var notifyFailure: Throwable? = null
+        var failure: Throwable? = null
         try {
             onReadClosed?.invoke()
-        } catch (t: Throwable) {
-            notifyFailure = t
+        } catch (notifyFailure: Throwable) {
+            failure = notifyFailure
         }
-        close()
-        notifyFailure?.let { throw it }
+        try {
+            close()
+        } catch (closeFailure: Throwable) {
+            failure = failure?.also { it.addSuppressed(closeFailure) } ?: closeFailure
+        }
+        failure?.let { throw it }
     }
 
     // --- Write path callbacks ---

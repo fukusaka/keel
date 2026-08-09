@@ -2,7 +2,8 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
-import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.WriteResult
@@ -63,13 +64,14 @@ import kotlin.time.Duration.Companion.seconds
 @OptIn(ExperimentalForeignApi::class)
 class KqueueTeardownFailureSeamTest {
 
-    private val logger = NoopLoggerFactory.logger("KqueueTeardownFailureSeamTest")
+    private lateinit var logger: RecordingLogger
     private lateinit var eventLoop: KqueueEventLoop
     private var readFd: Int = -1
     private var writeFd: Int = -1
 
     @BeforeTest
     fun setUp() {
+        logger = RecordingLogger()
         eventLoop = KqueueEventLoop(logger)
         eventLoop.start()
         val fds = IntArray(2)
@@ -500,7 +502,7 @@ class KqueueTeardownFailureSeamTest {
             val reported = CompletableDeferred<Unit>()
             transport.onReadClosed = {
                 reported.complete(Unit)
-                throw InjectedFault("the inactivity report failed")
+                throw InjectedFault(REPORT_FAULT)
             }
             val surrendered = readFd
             readFd = -1
@@ -516,6 +518,85 @@ class KqueueTeardownFailureSeamTest {
             withTimeout(WAITER_BUDGET) {
                 while (fcntl(surrendered, F_GETFD) != -1) delay(POLL_MS)
             }
+        }
+    }
+
+    @Test
+    fun `a report and a close that both fail are raised together`() = runBlocking {
+        withTimeout(IO_BUDGET) {
+            // Running the close regardless of the report costs nothing if the
+            // close throws too: the report's failure is the earlier one, so it
+            // is what reaches the guard, carrying the close's. Raising them
+            // one-or-the-other would trade the defect above for a quieter one.
+            val fake = FakeNativeSocket()
+            val tracker = TrackingAllocator()
+            val transport = KqueueIoTransport(
+                readFd,
+                eventLoop,
+                tracker,
+                fake,
+                idleTimeoutMillis = IDLE_TIMEOUT_MS,
+            ).also { it.onChannelAttached() }
+            // Queued and never flushed, so the teardown the close runs reaches
+            // its release, is refused, and the close throws in its turn.
+            val failing = FailingReleaseIoBuf(
+                tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
+            )
+            transport.onReadClosed = { throw InjectedFault(REPORT_FAULT) }
+            val surrendered = readFd
+            readFd = -1
+
+            onLoop {
+                transport.write(failing)
+                transport.readEnabled = true
+            }
+
+            // The scheduler's guard is the only observer either failure has --
+            // it catches what a timer task raises, warns, and moves on to the
+            // next due timer -- so the fixture's logger is what this reads.
+            val logged = withTimeoutOrNull(WAITER_BUDGET) { logger.firstWarning.await() }
+            assertEquals(
+                1,
+                failing.refusedReleases,
+                "the seam must have reached the release for this test to mean anything",
+            )
+            assertEquals(
+                REPORT_FAULT,
+                logged?.message,
+                "the report failed first, so its failure is the one raised, got: $logged",
+            )
+            assertTrue(
+                logged?.suppressedExceptions.orEmpty().any { it is InjectedFault && it.message != REPORT_FAULT },
+                "and the close's must be attached to it: ${logged?.suppressedExceptions}",
+            )
+            assertTrue(failing.releaseUnderlying(), "the test still owns the buffer whose release refused")
+            assertEquals(0, tracker.outstandingCount, "and nothing else was left behind")
+            assertEquals(
+                -1,
+                fcntl(surrendered, F_GETFD),
+                "a close that threw still owes the descriptor",
+            )
+        }
+    }
+
+    /**
+     * Records the throwable the deadline scheduler's guard logs.
+     *
+     * What an idle timeout raises has no other observer: the timer task is
+     * scheduled, not called, and the scheduler catches, warns, and continues.
+     * A test that wants to know which failure came out of one has to read it
+     * here.
+     */
+    private class RecordingLogger : Logger {
+        val firstWarning = CompletableDeferred<Throwable>()
+
+        override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.WARN
+
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            // First one wins, and a later unrelated warning cannot displace it.
+            // If an unrelated one gets here first the assertions fail on its
+            // message rather than passing on silence.
+            throwable?.let { firstWarning.complete(it) }
         }
     }
 
@@ -546,5 +627,11 @@ class KqueueTeardownFailureSeamTest {
 
         /** Multiple of [IDLE_TIMEOUT_MS] to wait before concluding nothing fired. */
         const val TIMER_WAIT_FACTOR = 4
+
+        /**
+         * What the injected inactivity report throws. Named because a test
+         * below has to tell it apart from the refused release attached to it.
+         */
+        const val REPORT_FAULT = "the inactivity report failed"
     }
 }
