@@ -335,8 +335,10 @@ abstract class AbstractIoTransport(
      * raised afterwards, later ones attached to it — the same rule the POSIX
      * teardowns follow between their stages, applied inside the one stage that
      * has a queue to walk. Stopping cost every buffer behind the refusal for
-     * the process lifetime, and the deque itself: a caller that continues (the
-     * flush sites do) left entries behind for the next walker.
+     * the process lifetime — and where that is: a teardown stage carries on
+     * past the failure, so nothing came back for what the stage abandoned,
+     * while a flush does not (see the paragraph above), so its entries stayed
+     * queued for the next walk to meet the same refusal again.
      */
     protected fun releaseQueuedWrites() {
         var failure: Throwable? = null
