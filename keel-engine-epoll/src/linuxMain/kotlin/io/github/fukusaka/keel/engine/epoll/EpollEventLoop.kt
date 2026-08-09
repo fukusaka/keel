@@ -190,6 +190,13 @@ internal class EpollEventLoop(
     private val wakeupFd: Int
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
 
+    // Whether `pthread_create` ever succeeded for this loop. A loop can be
+    // closed without one: a group whose `start()` fails part way leaves the
+    // rest of it constructed and idle, and tests build loops they never
+    // start. There is nothing to join in that case, and nothing that will
+    // ever run the teardown -- so `close()` runs it here instead.
+    private val threadCreated = AtomicInt(0)
+
     /** Backs [threadPtr]. Cleared in [close] once the loop thread is joined. */
     private val arena = Arena()
 
@@ -232,7 +239,23 @@ internal class EpollEventLoop(
      * The thread runs [loop] until [close] is called.
      */
     fun start() {
+        if (running.value == 0) {
+            // Closed before it ever ran, so its arena is already released --
+            // and `threadPtr` lives in that arena. Creating a thread here
+            // would write through a dangling pointer, and the thread would
+            // find the loop's termination already claimed and return anyway.
+            // Reported rather than thrown: `close()` is idempotent and this is
+            // the same kind of late call.
+            logger.error { "${this::class.simpleName}.start() on a closed loop is ignored" }
+            return
+        }
         val ref = StableRef.create(this)
+        // Before the call, not after: the new thread can run to completion
+        // while this one is still between the two statements, and a `close()`
+        // reading 0 in that window would skip the join and free the arena and
+        // the fds out from under a live loop. Set pessimistically and cleared
+        // if the thread never came into being.
+        threadCreated.value = 1
         val rc = pthread_create(
             threadPtr.ptr,
             null,
@@ -245,6 +268,9 @@ internal class EpollEventLoop(
             ref.asCPointer(),
         )
         if (rc != 0) {
+            // No thread came into being, so nothing will join it and nothing
+            // will run this loop's teardown unless `close()` does.
+            threadCreated.value = 0
             // pthread_create returns the errno-like code directly; errno is not set.
             ref.dispose()
             error("pthread_create() failed: ${errnoMessage(rc)}")
@@ -519,6 +545,15 @@ internal class EpollEventLoop(
      */
     fun close() {
         if (running.compareAndSet(1, 0)) {
+            if (threadCreated.value == 0) {
+                // No thread, so no drain is coming and nothing below can wait
+                // for one. Whatever was dispatched at this loop -- a
+                // transport's teardown, an accepted connection -- runs here or
+                // never, and the descriptors it holds go with it.
+                finishWithoutRunning()
+                releaseLoopResources()
+                return
+            }
             wakeup()
             // Join the EventLoop thread. threadPtr was written by pthread_create.
             val t = threadPtr.ptr[0]
@@ -535,31 +570,45 @@ internal class EpollEventLoop(
                     logger.warn { "pthread_join() failed: ${errnoMessage(joinRet)}" }
                 }
             }
-            closeFdSafely(wakeupFd, logger, "event loop teardown (wakeupFd)")
-            closeFdSafely(epFd, logger, "event loop teardown (epFd)")
-            // The registration lock is deliberately not destroyed or freed:
-            // a cancellation arriving after this point takes it, and those
-            // arrive without bound (see AbstractPosixReadinessEventLoop's
-            // regMutex). The task queue is lock-free, so it has none either.
-            arena.clear()
-            // Close the per-EL allocator child. By construction the
-            // EventLoopGroup hands each EL the result of
-            // `BufferAllocator.createChild()`, so closing here drains
-            // this loop's freelists and runs `Freelist.close()` (mutex
-            // destroy / nativeHeap.free for `MutexFreelist`). The joined EL
-            // thread can no longer allocate — but a returnToPool can still
-            // arrive from a post-quiescence closing caller (the stopped-loop
-            // transport teardown releases pending writes on its own thread);
-            // that race is the allocator's to absorb, via its cross-thread
-            // return queue's close-sentinel contract. Default no-op for
-            // `DefaultAllocator` (tests that instantiate this loop with the
-            // stateless allocator).
-            // Free the shared writev scratch arrays — the loop thread is
-            // joined above, so no transport flush can touch them anymore.
-            nativeHeap.free(writevBases)
-            nativeHeap.free(writevLens)
-            allocator.close()
+            releaseLoopResources()
         }
+    }
+
+    /**
+     * Releases what the loop owned once nothing will run on it again: its
+     * kernel interface, its wakeup channel, the arena behind them, and the
+     * per-loop allocator child.
+     *
+     * Shared by the two ways a loop ends — its thread returning and being
+     * joined, or [finishWithoutRunning] taking it apart for a loop that never
+     * had one. Both reach here only after the terminal sequence, so no
+     * dispatch and no arm can still be in flight against these.
+     */
+    private fun releaseLoopResources() {
+        closeFdSafely(wakeupFd, logger, "event loop teardown (wakeupFd)")
+        closeFdSafely(epFd, logger, "event loop teardown (epFd)")
+        // The registration lock is deliberately not destroyed or freed:
+        // a cancellation arriving after this point takes it, and those
+        // arrive without bound (see AbstractPosixReadinessEventLoop's
+        // regMutex). The task queue is lock-free, so it has none either.
+        arena.clear()
+        // Close the per-EL allocator child. By construction the
+        // EventLoopGroup hands each EL the result of
+        // `BufferAllocator.createChild()`, so closing here drains
+        // this loop's freelists and runs `Freelist.close()` (mutex
+        // destroy / nativeHeap.free for `MutexFreelist`). The joined EL
+        // thread can no longer allocate — but a returnToPool can still
+        // arrive from a post-quiescence closing caller (the stopped-loop
+        // transport teardown releases pending writes on its own thread);
+        // that race is the allocator's to absorb, via its cross-thread
+        // return queue's close-sentinel contract. Default no-op for
+        // `DefaultAllocator` (tests that instantiate this loop with the
+        // stateless allocator).
+        // Free the shared writev scratch arrays — the loop thread is
+        // joined above, so no transport flush can touch them anymore.
+        nativeHeap.free(writevBases)
+        nativeHeap.free(writevLens)
+        allocator.close()
     }
 
     // --- Helpers ---

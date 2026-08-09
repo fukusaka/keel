@@ -1228,66 +1228,121 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * take the loop apart in an order the rest of the class depends on.
      */
     fun loop() {
-        if (!loopEntered.compareAndSet(0, 1)) {
+        if (!claimLoopTermination()) {
             // Reported, not thrown. This runs as a pthread entry point with
             // nothing above it to catch, so throwing would end the process --
             // while the first, healthy loop is still serving every connection
-            // on this engine. Returning skips the quiescence publish below, and
-            // that is right: the entry that did claim the loop publishes it, and
-            // a second one has no loop to make quiet.
-            logger.error { "${this::class.simpleName}.loop() entered twice; the second entry is ignored" }
+            // on this engine. Returning skips the terminal sequence below, and
+            // that is right: whoever holds the claim runs it, and this entry
+            // has no loop left to take apart. The other holder is either a
+            // second `loop()` (a bug) or a `close()` that got here first
+            // because this thread had not started yet (not one).
+            logger.error { "${this::class.simpleName}.loop() found the loop already claimed; this entry is ignored" }
             return
         }
         eventLoopThread = pthread_self()
         try {
             loopBody()
         } finally {
-            // Order matters: publish "no longer draining" BEFORE the final
-            // drain. A caller that offers a teardown and then reads a 0 here
-            // knows its offer preceded this write, so the drain below is
-            // guaranteed to see it; one that reads 1 takes the work back
-            // itself. Draining first and publishing after would leave a gap
-            // where an offer lands after the drain but before the flag, and
-            // nobody runs it.
-            handoff.markFinished()
-            // markQuiescent() in its own finally: it is the only thing that
-            // releases a runOnLoop caller from an unbounded spin, so a throw
-            // anywhere below would live-lock whatever thread is closing a
-            // server on this loop.
-            try {
-                // Nested so a throw from the drain cannot skip the sweep
-                // while still publishing quiescence: that combination would
-                // strand every waiter, with nothing left to end them.
-                try {
-                    drainTasks()
-                } finally {
-                    // After the last drain, before quiescence is published:
-                    // anything still in the ledger is waiting for an arm that
-                    // can no longer issue. Ended here, on the loop thread,
-                    // while the ledger is still this loop's to walk. It drains
-                    // again itself: cancelling a waiter queues its resume back
-                    // onto taskQueue.
-                    failWaitersOnStoppedLoop()
-                }
-            } finally {
-                handoff.markQuiescent()
-                // Last, and on this thread while it still exists: after it
-                // returns the id can be handed to a new thread, and a stale
-                // non-null here would tell that thread it *is* the loop. It
-                // would then act directly on state only the loop may touch —
-                // walking the outbound chain, mutating pending writes, issuing
-                // syscalls on this fd — off any loop at all, against a teardown
-                // running elsewhere. Every caller that asks reads `null` from
-                // here on and takes its off-loop path, which is the truth.
-                //
-                // After [markQuiescent], not before: the final drain and the
-                // stop sweep run on this thread and assert they are on the
-                // loop. Nothing runs here afterwards but the thread's own
-                // return, so there is no window in which the id is needed and
-                // already gone.
-                eventLoopThread = null
-            }
+            terminate()
         }
+    }
+
+    /**
+     * Takes the claim that says who runs the terminal sequence.
+     *
+     * One claim for two takers — the loop thread on its way in, and a
+     * [finishWithoutRunning] caller closing a loop that has no thread. Whoever
+     * takes it owns the ledgers for the rest of the loop's life, which is what
+     * makes the confinement the sequence relies on a fact rather than an
+     * assumption: a `start()` arriving after a close cannot walk them, because
+     * its `loop()` finds the claim gone and returns.
+     */
+    private fun claimLoopTermination(): Boolean = loopEntered.compareAndSet(0, 1)
+
+    /**
+     * Takes the loop apart, on the thread that claimed it.
+     *
+     * Split out of [loop] because a loop that never ran needs the same
+     * sequence, in the same order, run by whoever closes it — see
+     * [finishWithoutRunning]. Every step here assumes it is the only thread
+     * touching this loop's state, which the claim is what guarantees.
+     */
+    private fun terminate() {
+        // Order matters: publish "no longer draining" BEFORE the final
+        // drain. A caller that offers a teardown and then reads a 0 here
+        // knows its offer preceded this write, so the drain below is
+        // guaranteed to see it; one that reads 1 takes the work back
+        // itself. Draining first and publishing after would leave a gap
+        // where an offer lands after the drain but before the flag, and
+        // nobody runs it.
+        handoff.markFinished()
+        // markQuiescent() in its own finally: it is the only thing that
+        // releases a runOnLoop caller from an unbounded spin, so a throw
+        // anywhere below would live-lock whatever thread is closing a
+        // server on this loop.
+        try {
+            // Nested so a throw from the drain cannot skip the sweep
+            // while still publishing quiescence: that combination would
+            // strand every waiter, with nothing left to end them.
+            try {
+                drainTasks()
+            } finally {
+                // After the last drain, before quiescence is published:
+                // anything still in the ledger is waiting for an arm that
+                // can no longer issue. Ended here, on the claiming thread,
+                // while the ledger is still this loop's to walk. It drains
+                // again itself: cancelling a waiter queues its resume back
+                // onto taskQueue.
+                failWaitersOnStoppedLoop()
+            }
+        } finally {
+            handoff.markQuiescent()
+            // Last, and on this thread while it still exists: after it
+            // returns the id can be handed to a new thread, and a stale
+            // non-null here would tell that thread it *is* the loop. It
+            // would then act directly on state only the loop may touch —
+            // walking the outbound chain, mutating pending writes, issuing
+            // syscalls on this fd — off any loop at all, against a teardown
+            // running elsewhere. Every caller that asks reads `null` from
+            // here on and takes its off-loop path, which is the truth.
+            //
+            // After [markQuiescent], not before: the final drain and the
+            // stop sweep run on this thread and assert they are on the
+            // loop. Nothing runs here afterwards but the thread's own
+            // return, so there is no window in which the id is needed and
+            // already gone.
+            eventLoopThread = null
+        }
+    }
+
+    /**
+     * Runs the terminal sequence for a loop that never had a thread, on the
+     * caller's.
+     *
+     * A loop can be closed without ever having run: `start()` failing part way
+     * through a group leaves the rest of it constructed and idle, and tests
+     * build loops they never start. Nothing published `finished` or
+     * `quiescent` for such a loop, so [LoopHandoff.runOnLoop] reads "live",
+     * hands work over — and no drain ever comes. Anything dispatched at it is
+     * lost: a transport's teardown, and with it the descriptor it would have
+     * released; an accepted connection the accept path handed on.
+     *
+     * The caller may walk the ledgers here because it holds the claim, and
+     * because it publishes itself as the loop thread for the duration: every
+     * assertion and every confinement argument in this class stays literally
+     * true, and a `start()` racing this call loses the claim and returns
+     * without touching anything.
+     *
+     * @return `true` when this call ran the sequence. `false` means a loop
+     *   thread claimed it — it has run it or is about to — and the caller
+     *   should join that thread instead.
+     */
+    fun finishWithoutRunning(): Boolean {
+        if (!claimLoopTermination()) return false
+        eventLoopThread = pthread_self()
+        terminate()
+        return true
     }
 
     /**
