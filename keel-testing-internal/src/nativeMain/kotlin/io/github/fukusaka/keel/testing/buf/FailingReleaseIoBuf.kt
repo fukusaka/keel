@@ -13,10 +13,13 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * An [IoBuf] whose [release] throws instead of releasing, [failures] times.
  *
  * The seam for teardown paths that release a queue of buffers. What a failing
- * release costs there is not one buffer: the loop stops, so every buffer behind
- * it stays queued, and so does whatever the caller was going to do on the next
- * line. Without a buffer that can fail, that whole class of teardown defect is
- * only reachable by reading the code.
+ * release costs there is more than one buffer, and how much more depends on the
+ * drain. Where the walk stops at the refusal, everything behind it stays queued
+ * — and so does whatever the caller was going to do on the next line. The
+ * shared drain the POSIX teardowns use walks to the end now, so what it loses
+ * is one buffer per refusal rather than the tail; the drains that still release
+ * inline as they go, and every transport with its own copy, keep the older
+ * shape. Without a buffer that can fail, none of that is reachable from a test.
  *
  * **It reaches the flush loops as well as the teardown drain.** A flush takes a
  * native pointer off each queued buffer before it writes, so this forwards

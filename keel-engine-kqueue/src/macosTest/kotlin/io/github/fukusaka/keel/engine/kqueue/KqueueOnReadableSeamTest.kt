@@ -340,10 +340,12 @@ class KqueueOnReadableSeamTest {
             // the flush waiter are not the cost any more. An earlier revision
             // caught this throw and re-raised only when the *notification* had
             // failed, which put back one call along the hole it had just fixed.
-            // A write that succeeds, so that a flush which should not happen
-            // would reach a release rather than stalling on `WouldBlock` --
-            // otherwise the guard below is asserted against a path that could
-            // not have refused anything either way.
+            // A write that succeeds, left from when the queue still had
+            // something in it at the write-readiness call below and the guard
+            // was pinned by a release the flush would have reached. The drain
+            // empties the queue now, so that flush returns before any syscall
+            // and this is never consulted -- which is what the syscall
+            // assertion down there has come to mean too.
             val fake = FakeNativeSocket().apply { defaultWrite = WriteResult.Written(4) }
             val transport = KqueueIoTransport(readFd, eventLoop, FailingAllocator, fake)
             // The teardown closes this itself now, and the assertion at the
@@ -358,14 +360,19 @@ class KqueueOnReadableSeamTest {
             transport.readEnabled = true
 
             // Queued, not flushed: the teardown's release of the pending writes
-            // is what throws. The second one is what the throw abandons -- the
-            // drain stops where it failed -- and it is how the write half is
-            // checked below, because a queue with nothing left in it cannot
-            // show whether anything walked back into it.
+            // is what throws. The second one is behind the refusal, and the
+            // drain finishes past it, so both are offered their release and
+            // both refuse.
             val queued = FailingReleaseIoBuf(DefaultAllocator.allocate(16).apply { writerIndex = 4 })
             val abandoned = FailingReleaseIoBuf(DefaultAllocator.allocate(16).apply { writerIndex = 4 })
             transport.write(queued)
             transport.write(abandoned)
+            // How the write half is checked below. The teardown leaves the
+            // queue empty, so a flush that should not run reaches nothing to
+            // release and would look like a flush that finished -- and report
+            // one, to a callback the teardown does not clear.
+            var flushCompletions = 0
+            transport.onFlushComplete = { flushCompletions++ }
 
             val thrown = onLoopCatching { transport.onReady(Interest.READ) }
 
@@ -379,8 +386,9 @@ class KqueueOnReadableSeamTest {
             assertEquals(1, queued.refusedReleases)
 
             // The same readiness on the write half must not walk back into what
-            // the failed stage left: `abandoned` is still queued, because the
-            // release stops where it failed even though the stages after it run.
+            // the failed stage left. The drain finishes past a refusal now, so
+            // both buffers have been offered their release and both refused --
+            // out of the deque, unreleased, and owned by nobody but this test.
             // The registration and the descriptor are gone by now -- the
             // teardown withdrew and closed them -- so what is checked here is
             // the transport's own refusal to act on a connection that ended.
@@ -389,19 +397,39 @@ class KqueueOnReadableSeamTest {
             // ran.
             //
             // The `opened` guard in `onWritable` is the only thing stopping it,
-            // and this is what pins it: these buffers hand out a native pointer,
-            // so without the guard the flush reaches `abandoned`'s release
-            // rather than failing on a cast, and refuses -- which comes back out
-            // of the readiness call.
+            // and the flush-completion report is what pins it: an empty queue
+            // makes `performFlush` return "drained" on its first line, so
+            // without the guard the readiness announces a flush that completed
+            // on a connection that ended -- to a callback the teardown leaves
+            // in place.
+            assertEquals(0, flushCompletions, "nothing has completed a flush yet")
+            val refusalsBeforeWriteReadiness = abandoned.refusedReleases
             val onWrite = onLoopCatching { transport.onReady(Interest.WRITE) }
 
             assertEquals(null, onWrite, "write readiness on an ended connection does nothing")
-            // Directly, not through what a flush would have done with the
-            // buffers: an assertion about the refusal only bites while the
-            // scripted write succeeds, and one about the syscall bites whatever
-            // the fake is set to answer.
+            assertEquals(
+                0,
+                flushCompletions,
+                "an ended connection must not report a flush the readiness found nothing to do",
+            )
+            // The other weak half. It bit while the queue still held something
+            // for an unguarded flush to write; against an empty one the flush
+            // returns before any syscall, so this passes either way. Kept
+            // because it would speak again if a queue ever survived a teardown,
+            // not because it is checking the guard.
             assertEquals(0, fake.writeCalls + fake.writevCalls, "no flush was attempted")
-            assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the release left")
+            // Unchanged by the readiness call, not zero: the teardown's own
+            // drain has already offered this one its release, and it refused.
+            // Held over from when the drain stopped at the refusal and left
+            // this one queued, where it was the whole check. It is the weaker
+            // half of the pair now -- an empty queue has nothing to walk back
+            // into either way -- and would speak again if the drain ever
+            // stopped short a second time.
+            assertEquals(
+                refusalsBeforeWriteReadiness,
+                abandoned.refusedReleases,
+                "nothing walked back into what the release left",
+            )
 
             assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the release could not")
             assertTrue(abandoned.releaseUnderlying(), "and the one behind the refusal")

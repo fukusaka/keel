@@ -1,8 +1,10 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
-import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.WriteResult
@@ -63,13 +65,14 @@ import kotlin.time.Duration.Companion.seconds
 @OptIn(ExperimentalForeignApi::class)
 class EpollTeardownFailureSeamTest {
 
-    private val logger = NoopLoggerFactory.logger("EpollTeardownFailureSeamTest")
+    private lateinit var logger: RecordingLogger
     private lateinit var eventLoop: EpollEventLoop
     private var readFd: Int = -1
     private var writeFd: Int = -1
 
     @BeforeTest
     fun setUp() {
+        logger = RecordingLogger()
         eventLoop = EpollEventLoop(logger)
         eventLoop.start()
         val fds = IntArray(2)
@@ -103,8 +106,11 @@ class EpollTeardownFailureSeamTest {
         withTimeout(WAITER_BUDGET) { done.await() }
     }
 
-    private fun newTransport(fake: FakeNativeSocket): EpollIoTransport =
-        EpollIoTransport(readFd, eventLoop, DefaultAllocator, fake).also {
+    private fun newTransport(
+        fake: FakeNativeSocket,
+        allocator: BufferAllocator = DefaultAllocator,
+    ): EpollIoTransport =
+        EpollIoTransport(readFd, eventLoop, allocator, fake).also {
             it.onChannelAttached()
             it.readEnabled = true
         }
@@ -294,16 +300,15 @@ class EpollTeardownFailureSeamTest {
                 transport.pendingByteCount(),
                 "the ledger must be zeroed even though the release ahead of it threw",
             )
-            // The residual this change does not fix, pinned so that fixing it is
-            // a deliberate edit here rather than a silent one: the drain stops
-            // at the buffer that refused, so the one behind it stays queued and
-            // unreleased. Whoever makes the drain finish updates this to 0.
+            // The drain finishes past a refusal now, so the buffer behind the
+            // one that refused is released by the teardown rather than left to
+            // this test. `failing`'s own delegate is the only one outstanding,
+            // and the line above has just handed it back.
             assertEquals(
-                1,
+                0,
                 tracker.outstandingCount,
-                "the buffer behind the refused one is still outstanding",
+                "the drain must finish past the refusal rather than abandon what is behind it",
             )
-            assertTrue(trailing.release(), "the test still owns the buffer the teardown abandoned")
         }
     }
 
@@ -436,14 +441,20 @@ class EpollTeardownFailureSeamTest {
             // until now: every other test here fails exactly one stage, so a
             // rewrite to last-failure-wins would leave them all green.
             val fake = FakeNativeSocket()
-            val transport = newTransport(fake)
+            // Tracked, so the drain behind the refusal is asserted here too and
+            // not only on the stopped-loop path: this is the on-loop teardown,
+            // and it uses the same shared drain.
+            val tracker = TrackingAllocator()
+            val transport = newTransport(fake, tracker)
             val failing = FailingReleaseIoBuf(
-                DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
+                tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
             )
             // Two queued, so the drain gathers rather than taking the single
             // write path -- which removes its entry before writing it, leaving
-            // the release stage nothing to fail on.
-            val trailing = DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
+            // the release stage nothing to fail on. The second is also what the
+            // refusal used to abandon, and the count below is what says it no
+            // longer does.
+            val trailing = tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
             readFd = -1
             var raised: Throwable? = null
 
@@ -474,12 +485,132 @@ class EpollTeardownFailureSeamTest {
                 first.suppressedExceptions.any { it is InjectedFault },
                 "and the later failure must be attached to it rather than dropped: ${first.suppressedExceptions}",
             )
-            failing.releaseUnderlying()
-            // The same residual the stopped-loop test pins explicitly: the
-            // release stops at the buffer that refused, so this one is still
-            // queued and unreleased. Whoever makes the drain finish past a
-            // refusal drops this line rather than watching it double-release.
-            assertTrue(trailing.release(), "the test still owns what the failed drain left queued")
+            assertTrue(failing.releaseUnderlying(), "the test still owns the buffer whose release refused")
+            assertEquals(
+                0,
+                tracker.outstandingCount,
+                "the drain must finish past the refusal here too, not only after the loop stopped",
+            )
+        }
+    }
+
+    @Test
+    fun `an inactivity report that throws still reclaims the connection`() = runBlocking {
+        withTimeout(IO_BUDGET) {
+            // The idle timeout exists to take a descriptor back from a peer that
+            // has stopped cooperating, and it announces that before it acts. The
+            // announcement runs user code -- every handler's `onInactive` -- and
+            // a throw out of it used to reach the timer's own guard, which
+            // reports and moves on. The close never ran, so the fd the timeout
+            // exists to reclaim stayed open for the process lifetime: the exact
+            // outcome this timeout is the last defence against, defeated by the
+            // report it makes on the way.
+            val fake = FakeNativeSocket()
+            val transport = EpollIoTransport(
+                readFd,
+                eventLoop,
+                DefaultAllocator,
+                fake,
+                idleTimeoutMillis = IDLE_TIMEOUT_MS,
+            ).also { it.onChannelAttached() }
+            val reported = CompletableDeferred<Unit>()
+            transport.onReadClosed = {
+                reported.complete(Unit)
+                throw InjectedFault(REPORT_FAULT)
+            }
+            val surrendered = readFd
+            readFd = -1
+
+            // On the loop: the setter reaches the loop's own deadline scheduler.
+            onLoop { transport.readEnabled = true }
+
+            // The seam reached the report, or the descriptor below proves nothing.
+            assertTrue(
+                withTimeoutOrNull(WAITER_BUDGET) { reported.await() } != null,
+                "the idle timeout must have fired and reported for this test to mean anything",
+            )
+            withTimeout(WAITER_BUDGET) {
+                while (fcntl(surrendered, F_GETFD) != -1) delay(POLL_MS)
+            }
+        }
+    }
+
+    @Test
+    fun `a report and a close that both fail are raised together`() = runBlocking {
+        withTimeout(IO_BUDGET) {
+            // Running the close regardless of the report costs nothing if the
+            // close throws too: the report's failure is the earlier one, so it
+            // is what reaches the guard, carrying the close's. Raising them
+            // one-or-the-other would trade the defect above for a quieter one.
+            val fake = FakeNativeSocket()
+            val tracker = TrackingAllocator()
+            val transport = EpollIoTransport(
+                readFd,
+                eventLoop,
+                tracker,
+                fake,
+                idleTimeoutMillis = IDLE_TIMEOUT_MS,
+            ).also { it.onChannelAttached() }
+            // Queued and never flushed, so the teardown the close runs reaches
+            // its release, is refused, and the close throws in its turn.
+            val failing = FailingReleaseIoBuf(
+                tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
+            )
+            transport.onReadClosed = { throw InjectedFault(REPORT_FAULT) }
+            val surrendered = readFd
+            readFd = -1
+
+            onLoop {
+                transport.write(failing)
+                transport.readEnabled = true
+            }
+
+            // The scheduler's guard is the only observer either failure has --
+            // it catches what a timer task raises, warns, and moves on to the
+            // next due timer -- so the fixture's logger is what this reads.
+            val logged = withTimeoutOrNull(WAITER_BUDGET) { logger.firstWarning.await() }
+            assertEquals(
+                1,
+                failing.refusedReleases,
+                "the seam must have reached the release for this test to mean anything",
+            )
+            assertEquals(
+                REPORT_FAULT,
+                logged?.message,
+                "the report failed first, so its failure is the one raised, got: $logged",
+            )
+            assertTrue(
+                logged?.suppressedExceptions.orEmpty().any { it is InjectedFault && it.message != REPORT_FAULT },
+                "and the close's must be attached to it: ${logged?.suppressedExceptions}",
+            )
+            assertTrue(failing.releaseUnderlying(), "the test still owns the buffer whose release refused")
+            assertEquals(0, tracker.outstandingCount, "and nothing else was left behind")
+            assertEquals(
+                -1,
+                fcntl(surrendered, F_GETFD),
+                "a close that threw still owes the descriptor",
+            )
+        }
+    }
+
+    /**
+     * Records the throwable the deadline scheduler's guard logs.
+     *
+     * What an idle timeout raises has no other observer: the timer task is
+     * scheduled, not called, and the scheduler catches, warns, and continues.
+     * A test that wants to know which failure came out of one has to read it
+     * here.
+     */
+    private class RecordingLogger : Logger {
+        val firstWarning = CompletableDeferred<Throwable>()
+
+        override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.WARN
+
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            // First one wins, and a later unrelated warning cannot displace it.
+            // If an unrelated one gets here first the assertions fail on its
+            // message rather than passing on silence.
+            throwable?.let { firstWarning.complete(it) }
         }
     }
 
@@ -510,5 +641,11 @@ class EpollTeardownFailureSeamTest {
 
         /** Multiple of [IDLE_TIMEOUT_MS] to wait before concluding nothing fired. */
         const val TIMER_WAIT_FACTOR = 4
+
+        /**
+         * What the injected inactivity report throws. Named because a test
+         * below has to tell it apart from the refused release attached to it.
+         */
+        const val REPORT_FAULT = "the inactivity report failed"
     }
 }

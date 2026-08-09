@@ -82,6 +82,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: an inactivity report that throws no longer costs the connection its close — the descriptor
+  the idle timeout exists to reclaim stayed open (#1041)
+- `core`: a refused buffer release no longer abandons the ones queued behind it — the drain walks to
+  the end and raises the first failure afterwards (#1041)
 - `core`, `engine-epoll`, `engine-kqueue`: complete a connection's teardown when part of it throws —
   the descriptor stayed open, a parked `awaitPendingFlush` caller was never woken, and the write
   ledger kept counting buffers that had left the queue (#1040)

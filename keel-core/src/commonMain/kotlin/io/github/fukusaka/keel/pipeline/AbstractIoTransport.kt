@@ -168,8 +168,7 @@ abstract class AbstractIoTransport(
         // the connection from a non-cooperating peer, so it must release the fd in
         // every mode. `close()` is idempotent, so this is a no-op when the channel
         // already closed itself in pipeline mode.
-        onReadClosed?.invoke()
-        close()
+        reclaimAfterIdle()
     }
 
     private var writeIdleHandle: TimerHandle? = null
@@ -203,8 +202,49 @@ abstract class AbstractIoTransport(
         // reading (slow-read / stalled receive window), holding the connection and
         // its buffered response. Reclaim it exactly like the read idle timeout —
         // notify inactivity, then force-close in every channel mode.
-        onReadClosed?.invoke()
-        close()
+        reclaimAfterIdle()
+    }
+
+    /**
+     * Reports the connection inactive and then reclaims it, in that order and
+     * both regardless of the other.
+     *
+     * Two obligations, and the notification used to be able to skip the close.
+     * It runs user code — every handler's `onInactive`, and through it whatever
+     * a pipeline is built from — and a throw out of it left this function
+     * before the close, so the descriptor the timeout exists to reclaim stayed
+     * open for the process lifetime, held by a peer that had already stopped
+     * cooperating. That is the shape an idle timeout is the last defence
+     * against, defeated by the report it makes on the way.
+     *
+     * The close is the obligation that must not be lost, so the notification's
+     * failure is carried out *after* it rather than at the point that would
+     * skip the close. **Carried, not swallowed, and to exactly where it went
+     * before** — out of the timer task, which is as far as this can reason:
+     * what receives it is the engine's timer driver, and all three shapes
+     * differ. The four engines behind `DeadlineScheduler` get a warning and the
+     * next due timer. Netty's handle calls the task unguarded too, but it runs
+     * as a scheduled task on Netty's own executor, which captures what it
+     * throws. The Node and NWConnection handles call it unguarded with nothing
+     * behind them, so only there does it stay uncaught — as it already did when
+     * the report threw. If the close throws too, the earlier failure is the one
+     * raised and the close's is attached — the same rule the POSIX teardowns follow
+     * between their stages — so adding the close takes nothing away from what
+     * the report reported.
+     */
+    private fun reclaimAfterIdle() {
+        var failure: Throwable? = null
+        try {
+            onReadClosed?.invoke()
+        } catch (notifyFailure: Throwable) {
+            failure = notifyFailure
+        }
+        try {
+            close()
+        } catch (closeFailure: Throwable) {
+            failure = failure?.also { it.addSuppressed(closeFailure) } ?: closeFailure
+        }
+        failure?.let { throw it }
     }
 
     // --- Write path callbacks ---
@@ -297,12 +337,27 @@ abstract class AbstractIoTransport(
      * ever grows, and `writable` latches `false` for the life of the
      * connection.
      *
-     * **It stops where the failure was.** The buffers behind a refused release
-     * stay queued and this returns by throwing, so a caller that has more to do
-     * does not get to do it. Making a failed drain finish is a separate change.
+     * **It finishes.** A refused release no longer abandons the buffers behind
+     * it: the walk continues to the end of the deque and the first failure is
+     * raised afterwards, later ones attached to it — the same rule the POSIX
+     * teardowns follow between their stages, applied inside the one stage that
+     * has a queue to walk. Stopping cost every buffer behind the refusal for
+     * the process lifetime — and where that is: a teardown stage carries on
+     * past the failure, so nothing came back for what the stage abandoned,
+     * while a flush does not (see the paragraph above), so its entries stayed
+     * queued for the next walk. Not for the same buffer to refuse again — that
+     * one had already left the deque — but for whatever made it refuse.
      */
     protected fun releaseQueuedWrites() {
-        while (pendingWrites.isNotEmpty()) pendingWrites.removeFirst().buf.release()
+        var failure: Throwable? = null
+        while (pendingWrites.isNotEmpty()) {
+            try {
+                pendingWrites.removeFirst().buf.release()
+            } catch (releaseFailure: Throwable) {
+                failure = failure?.also { it.addSuppressed(releaseFailure) } ?: releaseFailure
+            }
+        }
+        failure?.let { throw it }
     }
 
     /**
