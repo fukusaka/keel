@@ -200,11 +200,13 @@ internal class EpollIoTransport(
      * paths on the base transport use, for the same reason.
      *
      * Only the order is shared. Those two call [onReadClosed] directly and
-     * record nothing, so a throw out of one is absorbed by the deadline
-     * scheduler's own guard and the `close()` after it never runs — the same
-     * shape as the gap below, on a path this guard cannot reach because a
-     * different thing drives it. Closing it means deciding what that scheduler's
-     * guard owes a half-torn-down connection, which is a separate change.
+     * record nothing — there is no [windDownFailed] on that path, and a throw
+     * out of the report still ends at the deadline scheduler's own guard, which
+     * warns and moves on to the next due timer. What they no longer lose to it
+     * is the close: the base runs it whatever the report did and carries the
+     * report's failure out afterwards. What that guard owes a connection torn
+     * down mid-report beyond the warning is still open, on a path this guard
+     * cannot reach because a different thing drives it.
      *
      * `close()` alone is not the end of a connection, only the end of its
      * descriptor. It releases what it can reach — the pending writes, the
@@ -238,7 +240,9 @@ internal class EpollIoTransport(
      * it — deliberately, since releasing first would leave a released buffer
      * queued for the next walker to release again — so a refusal loses whatever
      * had already left: one buffer on the single-write path, which empties the
-     * deque, and one of several on the gather path, which leaves the rest. Not
+     * deque, and one for each refusal on the gather path, whose walk empties it
+     * too. Only the partial-write drain leaves the rest — it releases inline as
+     * it consumes, so a refusal there still stops where it failed. Not
      * something a stage boundary can reach, and out of scope here. The ledger and
      * registry stages do not throw: they are removals from a map or a set under
      * the registration lock, no-ops on a miss (the lock itself reports a failure
