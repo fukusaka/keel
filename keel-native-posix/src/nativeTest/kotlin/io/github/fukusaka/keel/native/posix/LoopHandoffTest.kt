@@ -218,6 +218,50 @@ class LoopHandoffTest {
     }
 
     @Test
+    fun `a spent-out budget takes the fallback without waiting at all`() {
+        // The value a caller reaches once its allowance is gone, and the one
+        // the accept path hands in for every connection after that. It has to
+        // mean "do not wait", not "wait forever": the guard is `budget >= 0`,
+        // and a `> 0` there would turn every spent-out hand-off into the
+        // unbounded wait the allowance exists to prevent -- worse than having
+        // no allowance at all, and invisible to every other test here.
+        val loop = FakeLoop()
+        val handoff = loop.handoff()
+        val ifStopped = AtomicInt(0)
+        handoff.markFinished()
+
+        // Detached and polled, like the budget tests below: nothing here
+        // publishes quiescence, so if zero ever sleeps the call never returns
+        // -- and running it on this thread would hang the suite rather than
+        // fail this test. Measured (and asserted) as "came back promptly",
+        // because "did not sleep" has no other observable.
+        val gaveUp = AtomicInt(0)
+        val finished = AtomicInt(0)
+        CoroutineScope(Dispatchers.Default).launch {
+            val outcome = handoff.runOnLoop(
+                onLoop = {},
+                ifStopped = { ifStopped.value = ifStopped.value + 1 },
+                waitBudgetMicros = 0,
+            )
+            if (outcome == HandoffOutcome.FELL_BACK_AFTER_EXPIRY) gaveUp.value = 1
+            finished.value = 1
+        }
+
+        val deadline = TimeSource.Monotonic.markNow()
+        while (finished.value == 0 && deadline.elapsedNow() < NO_WAIT_CEILING) {
+            usleep(POLL_MICROS)
+        }
+
+        assertEquals(
+            1,
+            finished.value,
+            "zero must not sleep: the loop never goes quiet, so any sleep at all is an unbounded one",
+        )
+        assertEquals(1, gaveUp.value, "a zero allowance is spent before it is used")
+        assertEquals(1, ifStopped.value, "and the fallback still runs")
+    }
+
+    @Test
     fun `a loop that goes quiet inside the budget is waited out rather than given up on`() {
         // The budget is a ceiling, not a delay: a teardown that finishes inside
         // it must still get the ordering, and the caller must not report having
@@ -301,5 +345,13 @@ class LoopHandoffTest {
          * companion assertion into a timing race.
          */
         const val SPIN_ENTRY_MICROS: UInt = 20_000u
+
+        /**
+         * What "did not wait" has to fit inside. Generous next to a poll
+         * quantum (50µs) so a loaded runner cannot fail it, and far below any
+         * wait a regression would introduce -- the loop it would enter has
+         * nothing to release it.
+         */
+        val NO_WAIT_CEILING = 2.seconds
     }
 }
