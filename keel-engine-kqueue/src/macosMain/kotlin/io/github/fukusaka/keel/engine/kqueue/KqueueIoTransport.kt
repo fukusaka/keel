@@ -734,8 +734,9 @@ internal class KqueueIoTransport(
      * already deferred to this tick is attempted — once, without waiting — and
      * whatever it could not send is dropped with the rest. The quiescent-loop
      * teardown does not attempt it, because the buffers have nowhere ordered to
-     * go and the scratch the gather path writes through belongs to a loop that
-     * has closed it. The teardown withdraws
+     * go and the scratch the gather path writes through is the loop's, freed as
+     * it shuts down — still there for part of the window this runs in, and not
+     * something to be writing through on the way out. The teardown withdraws
      * this fd's EVFILT_READ / EVFILT_WRITE callback registrations before
      * closing, so the loop stops referencing this transport once the connection
      * is gone; a callback that fires in between is harmless anyway, since they
@@ -775,9 +776,10 @@ internal class KqueueIoTransport(
         // would die logging the wrong cause. The first failure propagates and
         // the rest are attached to it.
         var failure: Throwable? = null
+        failure = runTeardownStage(failure) { cancelIdleTimeout() }
         // Same-tick send→close: drain deferred writes before releasing.
         //
-        // Ahead of the timer cancels, because it can arm one. A drain that
+        // Ahead of the write-idle cancel, because it can arm one. A drain that
         // stalls re-registers for write readiness, and that starts the
         // write-idle clock; cancelling first left the new timer holding this
         // transport -- and the channel and pipeline graph behind it -- on the
@@ -786,13 +788,16 @@ internal class KqueueIoTransport(
         // connection already torn down. A stage that undoes an earlier one is
         // the one thing this shape cannot express, so the order has to say it
         // instead. The NIO transport has always drained first.
+        //
+        // Only this one moved: the read-side deadline is armed from the
+        // `readEnabled` setter and refreshed from `onReadable`, neither of
+        // which the drain can reach.
         failure = runTeardownStage(failure) {
             if (flushScheduled) {
                 flushScheduled = false
                 performFlush()
             }
         }
-        failure = runTeardownStage(failure) { cancelIdleTimeout() }
         failure = runTeardownStage(failure) { cancelWriteIdleTimeout() }
         failure = runTeardownStage(failure) { releaseAllPendingWrites() }
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.

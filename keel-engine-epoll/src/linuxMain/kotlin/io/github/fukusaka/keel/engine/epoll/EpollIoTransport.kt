@@ -755,9 +755,10 @@ internal class EpollIoTransport(
         // would die logging the wrong cause. The first failure propagates and
         // the rest are attached to it.
         var failure: Throwable? = null
+        failure = runTeardownStage(failure) { cancelIdleTimeout() }
         // Same-tick send→close: drain deferred writes before releasing.
         //
-        // Ahead of the timer cancels, because it can arm one. A drain that
+        // Ahead of the write-idle cancel, because it can arm one. A drain that
         // stalls re-registers for write readiness, and that starts the
         // write-idle clock; cancelling first left the new timer holding this
         // transport -- and the channel and pipeline graph behind it -- on the
@@ -766,13 +767,16 @@ internal class EpollIoTransport(
         // connection already torn down. A stage that undoes an earlier one is
         // the one thing this shape cannot express, so the order has to say it
         // instead. The NIO transport has always drained first.
+        //
+        // Only this one moved: the read-side deadline is armed from the
+        // `readEnabled` setter and refreshed from `onReadable`, neither of
+        // which the drain can reach.
         failure = runTeardownStage(failure) {
             if (flushScheduled) {
                 flushScheduled = false
                 performFlush()
             }
         }
-        failure = runTeardownStage(failure) { cancelIdleTimeout() }
         failure = runTeardownStage(failure) { cancelWriteIdleTimeout() }
         failure = runTeardownStage(failure) { releaseAllPendingWrites() }
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
