@@ -100,7 +100,7 @@ class KqueueTeardownFailureSeamTest {
                 }
             },
         )
-        withTimeout(IO_BUDGET) { done.await() }
+        withTimeout(WAITER_BUDGET) { done.await() }
     }
 
     private fun newTransport(fake: FakeNativeSocket): KqueueIoTransport =
@@ -173,7 +173,7 @@ class KqueueTeardownFailureSeamTest {
                     waiter.complete(Unit)
                 }
             }
-            withTimeout(IO_BUDGET) {
+            withTimeout(WAITER_BUDGET) {
                 while (!transport.hasFlushWaiter()) delay(POLL_MS)
             }
 
@@ -240,7 +240,7 @@ class KqueueTeardownFailureSeamTest {
                     waiter.complete(Unit)
                 }
             }
-            withTimeout(IO_BUDGET) {
+            withTimeout(WAITER_BUDGET) {
                 while (!transport.hasFlushWaiter()) delay(POLL_MS)
             }
 
@@ -422,6 +422,55 @@ class KqueueTeardownFailureSeamTest {
                 withTimeoutOrNull(WAITER_BUDGET) { reported.await() } != null,
                 "the stall must arm a write-idle timer, or the test above asserts an absence that proves nothing",
             )
+        }
+    }
+
+    @Test
+    fun `the first stage failure is raised and the later one is attached to it`() = runBlocking {
+        withTimeout(IO_BUDGET) {
+            // Two stages fail in one teardown. Which one the connection dies
+            // reporting is the whole reason this is stages and not nested
+            // `finally` blocks -- a throw from a `finally` discards the
+            // exception that entered it, so the release failure would replace
+            // the drain failure that started the wind-down. Nothing held that
+            // until now: every other test here fails exactly one stage, so a
+            // rewrite to last-failure-wins would leave them all green.
+            val fake = FakeNativeSocket()
+            val transport = newTransport(fake)
+            val failing = FailingReleaseIoBuf(
+                DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
+            )
+            // Two queued, so the drain gathers rather than taking the single
+            // write path -- which removes its entry before writing it, leaving
+            // the release stage nothing to fail on.
+            val trailing = DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
+            readFd = -1
+            var raised: Throwable? = null
+
+            onLoop {
+                transport.write(failing)
+                transport.write(trailing)
+                transport.flush()
+                fake.flushThrowsOnce = InjectedFault("the deferred flush failed")
+                raised = runCatching { transport.close() }.exceptionOrNull()
+            }
+
+            // Both stages were really entered, or the ordering below is about
+            // nothing.
+            assertEquals(null, fake.flushThrowsOnce, "the drain must have thrown for this test to mean anything")
+            assertEquals(1, failing.refusedReleases, "and the release after it must have thrown too")
+
+            val first = raised
+            assertTrue(
+                first is InjectedFault && first.message == "the deferred flush failed",
+                "the connection must die reporting the failure that started the teardown, got: $raised",
+            )
+            assertTrue(
+                first.suppressedExceptions.any { it is InjectedFault },
+                "and the later failure must be attached to it rather than dropped: ${first.suppressedExceptions}",
+            )
+            failing.releaseUnderlying()
+            assertTrue(trailing.release(), "the test still owns what the failed drain left queued")
         }
     }
 
