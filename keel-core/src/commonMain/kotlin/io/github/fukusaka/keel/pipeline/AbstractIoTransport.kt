@@ -211,19 +211,24 @@ abstract class AbstractIoTransport(
      *
      * Two obligations, and the notification used to be able to skip the close.
      * It runs user code — every handler's `onInactive`, and through it whatever
-     * a pipeline is built from — and a throw out of it reached the timer's own
-     * guard, which reports and moves on. The close never ran, so the descriptor
-     * the timeout exists to reclaim stayed open for the process lifetime, held
-     * by a peer that had already stopped cooperating. That is the shape an idle
-     * timeout is the last defence against, defeated by the report it makes on
-     * the way.
+     * a pipeline is built from — and a throw out of it left this function
+     * before the close, so the descriptor the timeout exists to reclaim stayed
+     * open for the process lifetime, held by a peer that had already stopped
+     * cooperating. That is the shape an idle timeout is the last defence
+     * against, defeated by the report it makes on the way.
      *
      * The close is the obligation that must not be lost, so the notification's
-     * failure is carried out to the caller *after* it — where the timer's guard
-     * logs it, as it did before, rather than at the point that would skip the
-     * close. If the close throws too, the earlier failure is the one raised and
-     * the close's is attached to it, so running both costs neither: the same
-     * rule the POSIX teardowns follow between their stages.
+     * failure is carried out *after* it rather than at the point that would
+     * skip the close. **Carried, not swallowed, and to exactly where it went
+     * before** — out of the timer task, which is as far as this can reason:
+     * what receives it is the engine's timer driver, and they differ.
+     * `DeadlineScheduler`, behind the wait-loop engines, warns and moves on to
+     * the next due timer; the Node and NWConnection handles call the task
+     * unguarded, so there it stays uncaught, as it already was when the report
+     * threw. If the close throws too, the earlier failure is the one raised and
+     * the close's is attached to it — the same rule the POSIX teardowns follow
+     * between their stages — so adding the close takes nothing away from what
+     * the report reported.
      */
     private fun reclaimAfterIdle() {
         var failure: Throwable? = null
@@ -338,7 +343,8 @@ abstract class AbstractIoTransport(
      * the process lifetime — and where that is: a teardown stage carries on
      * past the failure, so nothing came back for what the stage abandoned,
      * while a flush does not (see the paragraph above), so its entries stayed
-     * queued for the next walk to meet the same refusal again.
+     * queued for the next walk. Not for the same buffer to refuse again — that
+     * one had already left the deque — but for whatever made it refuse.
      */
     protected fun releaseQueuedWrites() {
         var failure: Throwable? = null

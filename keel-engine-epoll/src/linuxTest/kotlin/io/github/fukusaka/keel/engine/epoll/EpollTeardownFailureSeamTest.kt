@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.LogLevel
@@ -105,8 +106,11 @@ class EpollTeardownFailureSeamTest {
         withTimeout(WAITER_BUDGET) { done.await() }
     }
 
-    private fun newTransport(fake: FakeNativeSocket): EpollIoTransport =
-        EpollIoTransport(readFd, eventLoop, DefaultAllocator, fake).also {
+    private fun newTransport(
+        fake: FakeNativeSocket,
+        allocator: BufferAllocator = DefaultAllocator,
+    ): EpollIoTransport =
+        EpollIoTransport(readFd, eventLoop, allocator, fake).also {
             it.onChannelAttached()
             it.readEnabled = true
         }
@@ -437,15 +441,20 @@ class EpollTeardownFailureSeamTest {
             // until now: every other test here fails exactly one stage, so a
             // rewrite to last-failure-wins would leave them all green.
             val fake = FakeNativeSocket()
-            val transport = newTransport(fake)
+            // Tracked, so the drain behind the refusal is asserted here too and
+            // not only on the stopped-loop path: this is the on-loop teardown,
+            // and it uses the same shared drain.
+            val tracker = TrackingAllocator()
+            val transport = newTransport(fake, tracker)
             val failing = FailingReleaseIoBuf(
-                DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
+                tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
             )
             // Two queued, so the drain gathers rather than taking the single
             // write path -- which removes its entry before writing it, leaving
-            // the release stage nothing to fail on.
-            // Released by the teardown's drain, which finishes past the refusal.
-            val trailing = DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
+            // the release stage nothing to fail on. The second is also what the
+            // refusal used to abandon, and the count below is what says it no
+            // longer does.
+            val trailing = tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
             readFd = -1
             var raised: Throwable? = null
 
@@ -477,6 +486,11 @@ class EpollTeardownFailureSeamTest {
                 "and the later failure must be attached to it rather than dropped: ${first.suppressedExceptions}",
             )
             assertTrue(failing.releaseUnderlying(), "the test still owns the buffer whose release refused")
+            assertEquals(
+                0,
+                tracker.outstandingCount,
+                "the drain must finish past the refusal here too, not only after the loop stopped",
+            )
         }
     }
 

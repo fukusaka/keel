@@ -82,9 +82,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `core`: an inactivity report that throws no longer costs the connection its close — an idle timeout
-  exists to reclaim a descriptor from a peer that stopped cooperating, and the report it makes on the
-  way could defeat it (#1041)
+- `core`: an inactivity report that throws no longer costs the connection its close — the descriptor
+  the idle timeout exists to reclaim stayed open (#1041)
 - `core`: a refused buffer release no longer abandons the ones queued behind it — the drain walks to
   the end and raises the first failure afterwards (#1041)
 - `core`, `engine-epoll`, `engine-kqueue`: complete a connection's teardown when part of it throws —

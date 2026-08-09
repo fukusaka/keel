@@ -377,10 +377,12 @@ class EpollOnReadableSeamTest {
             // the flush waiter are not the cost any more. An earlier revision
             // caught this throw and re-raised only when the *notification* had
             // failed, which put back one call along the hole it had just fixed.
-            // A write that succeeds, so that a flush which should not happen
-            // would reach a release rather than stalling on `WouldBlock` --
-            // otherwise the guard below is asserted against a path that could
-            // not have refused anything either way.
+            // A write that succeeds, left from when the queue still had
+            // something in it at the write-readiness call below and the guard
+            // was pinned by a release the flush would have reached. The drain
+            // empties the queue now, so that flush returns before any syscall
+            // and this is never consulted -- which is what the syscall
+            // assertion down there has come to mean too.
             val fake = FakeNativeSocket().apply { defaultWrite = WriteResult.Written(4) }
             val transport = EpollIoTransport(readFd, eventLoop, FailingAllocator, fake)
             // The teardown closes this itself now, and the assertion at the
@@ -447,10 +449,11 @@ class EpollOnReadableSeamTest {
                 flushCompletions,
                 "an ended connection must not report a flush the readiness found nothing to do",
             )
-            // Directly, not through what a flush would have done with the
-            // buffers: an assertion about the refusal only bites while the
-            // scripted write succeeds, and one about the syscall bites whatever
-            // the fake is set to answer.
+            // The other weak half. It bit while the queue still held something
+            // for an unguarded flush to write; against an empty one the flush
+            // returns before any syscall, so this passes either way. Kept
+            // because it would speak again if a queue ever survived a teardown,
+            // not because it is checking the guard.
             assertEquals(0, fake.writeCalls + fake.writevCalls, "no flush was attempted")
             // Unchanged by the readiness call, not zero: the teardown's own
             // drain has already offered this one its release, and it refused.
