@@ -499,31 +499,40 @@ class EpollAcceptSeamTest {
         // 12.8s inside one readiness callback, with the boss loop serving no
         // other listener and draining no task for the whole of it. The bound
         // has to belong to the callback.
+        val full = EpollPipelinedStreamServer.STOPPING_WORKER_WAIT_MICROS
         val fresh = EpollPipelinedStreamServer.DropTally()
+        assertEquals(full, fresh.remainingBudget(), "the first hand-off of a callback has the whole allowance")
+
+        // A hand-off that waits and then sees quiescence costs this thread just
+        // as much as one that gives up. Keying the carry-over on expiry alone
+        // let a group of stopping workers charge the callback once each.
+        val afterWaiting = fresh.record(7, HandoffOutcome.FELL_BACK, waitedMicros = full * 2 / 5)
         assertEquals(
-            EpollPipelinedStreamServer.STOPPING_WORKER_WAIT_MICROS,
-            fresh.budget(),
-            "the first hand-off of a callback pays the wait",
+            full - full * 2 / 5,
+            afterWaiting.remainingBudget(),
+            "a wait that ended in quiescence still spent the allowance",
         )
 
-        val afterDrop = fresh.record(7, HandoffOutcome.FELL_BACK)
+        val afterHandingOver = afterWaiting.record(8, HandoffOutcome.HANDED_TO_LOOP, waitedMicros = full * 2 / 5)
         assertEquals(
-            EpollPipelinedStreamServer.STOPPING_WORKER_WAIT_MICROS,
-            afterDrop.budget(),
-            "a worker already quiet was not waited for, so nothing has been learned about waiting",
+            full - full * 4 / 5,
+            afterHandingOver.remainingBudget(),
+            "a hand-off the loop took still charges whatever this thread waited for it",
         )
 
-        val afterGivingUp = afterDrop.record(8, HandoffOutcome.FELL_BACK_AFTER_EXPIRY)
+        val afterGivingUp = afterHandingOver.record(9, HandoffOutcome.FELL_BACK_AFTER_EXPIRY, waitedMicros = full)
         assertEquals(
             0L,
-            afterGivingUp.budget(),
-            "having waited one out and given up, this callback must not pay the wait again",
+            afterGivingUp.remainingBudget(),
+            "the allowance floors at nothing rather than going negative",
         )
         assertEquals(
             0L,
-            afterGivingUp.record(9, HandoffOutcome.HANDED_TO_LOOP).budget(),
-            "and a live worker in between does not reset it",
+            afterGivingUp.record(10, HandoffOutcome.HANDED_TO_LOOP, waitedMicros = 0).remainingBudget(),
+            "and nothing gives it back",
         )
+        assertEquals(9, afterGivingUp.firstGaveUpFd, "the descriptor released without the ordering is named")
+        assertEquals(7, afterGivingUp.firstDroppedFd, "and it is not the one the clean drop reports")
     }
 
     @Test

@@ -8,6 +8,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -32,20 +33,35 @@ import kotlin.time.TimeSource
 @OptIn(InternalPosixEventLoopApi::class, ExperimentalForeignApi::class)
 class LoopHandoffTest {
 
-    /** Records dispatched tasks so a test can run them when it chooses. */
+    /**
+     * Records dispatched tasks so a test can run them when it chooses.
+     *
+     * The queue is an immutable list swapped under CAS rather than a
+     * `MutableList`: the tests that drive the wait offer from one thread and
+     * observe the offer from another, and an unsynchronised list gives the
+     * reader no ordering edge to see it through — the same reason the engines'
+     * recording loggers are built this way.
+     */
     private class FakeLoop {
-        val queue = mutableListOf<() -> Unit>()
+        private val tasks = AtomicReference<List<() -> Unit>>(emptyList())
         var onLoopThread = false
+
+        val queue: List<() -> Unit> get() = tasks.value
 
         fun handoff(): LoopHandoff = LoopHandoff(
             inEventLoop = { onLoopThread },
-            dispatchToLoop = { task -> queue.add(task) },
+            dispatchToLoop = { task ->
+                while (true) {
+                    val current = tasks.value
+                    if (tasks.compareAndSet(current, current + task)) break
+                }
+            },
         )
 
         /** Runs everything queued, as the loop's drain would. */
         fun drain() {
-            val pending = queue.toList()
-            queue.clear()
+            val pending = tasks.value
+            tasks.value = emptyList()
             pending.forEach { it() }
         }
     }
@@ -234,7 +250,13 @@ class LoopHandoffTest {
         while (loop.queue.isEmpty() && deadline.elapsedNow() < WAIT_BUDGET) {
             usleep(POLL_MICROS)
         }
-        assertEquals(1, loop.queue.size, "premise: the waiter offered its work and is now in the wait")
+        assertEquals(1, loop.queue.size, "premise: the waiter offered its work")
+        // The offer happens several statements before the spin is entered, so
+        // publishing quiescence the moment it appears usually wins that race
+        // and the waiter never sleeps at all -- the test would then pass
+        // without exercising the wait it is named for. This does not make the
+        // assertions depend on timing; it only stops them passing vacuously.
+        usleep(SPIN_ENTRY_MICROS)
         drained.value = 1
         handoff.markQuiescent()
 
@@ -271,5 +293,13 @@ class LoopHandoffTest {
 
         /** Poll interval while waiting for the detached waiter to come back. */
         const val POLL_MICROS: UInt = 1_000u
+
+        /**
+         * Long enough for the waiter to get from its offer into the spin, so
+         * the quiescence it is released by arrives while it is actually
+         * waiting. Well inside [GENEROUS_BUDGET_MICROS], so it cannot turn the
+         * companion assertion into a timing race.
+         */
+        const val SPIN_ENTRY_MICROS: UInt = 20_000u
     }
 }
