@@ -13,7 +13,10 @@ import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.native.posix.HandoffOutcome
+import io.github.fukusaka.keel.native.posix.LoopParticipant
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
@@ -27,11 +30,15 @@ import platform.posix.dup
 import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.socket
+import platform.posix.usleep
+import kotlin.concurrent.AtomicInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Seam-level tests for `accept`-path branches on the epoll engine:
@@ -602,6 +609,101 @@ class EpollAcceptSeamTest {
     }
 
     @Test
+    fun `two accepts routed to a worker stuck stopping share one allowance`() = runBlocking {
+        withTimeout(30.seconds) {
+            // The wiring the change exists for, driven end to end: the tally is
+            // only worth having if `acceptLoop` hands each hand-off what is
+            // left of it. Holding the worker inside its stop sweep is what
+            // makes that observable -- it is the one state where the hand-off
+            // waits at all, and the seam cannot reach it through `close()`
+            // alone, which returns only once the sweep is done.
+            val warns = RecordingLogger(LogLevel.WARN)
+            val bossLoop = EpollEventLoop(warns)
+            val workerGroup = EpollEventLoopGroup(1, warns, DefaultAllocator)
+            val sentinelFd = newSentinelFd()
+            val first = socket(AF_INET, SOCK_STREAM, 0)
+            val second = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(first >= 0 && second >= 0, "could not open sockets to be accepted")
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18191)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(first))
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
+                enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
+            }
+            val server = EpollPipelinedStreamServer(
+                listeners = listOf(
+                    EpollPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                ),
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                logger = warns,
+                pipelineInitializer = { /* no-op initializer */ },
+                nativeSocket = fakeSocket,
+                nativeSocketOps = FakeNativeSocketOps(),
+            )
+            val release = AtomicInt(0)
+            val wedge = WedgingParticipant(release)
+            try {
+                bossLoop.start()
+                workerGroup.start()
+                workerGroup.at(0).addParticipant(wedge)
+                // Closing from another thread: the sweep runs the participant
+                // above, which does not return until this test says so, so the
+                // worker sits published-as-finished and never quiescent.
+                val closer = launch(Dispatchers.Default) { workerGroup.close() }
+                val armed = TimeSource.Monotonic.markNow()
+                while (!workerGroup.at(0).isFinishing() && armed.elapsedNow() < WEDGE_SETUP_BUDGET) {
+                    usleep(POLL_MICROS)
+                }
+                assertTrue(workerGroup.at(0).isFinishing(), "premise: the worker is stopping and wedged in its sweep")
+
+                val startedAt = TimeSource.Monotonic.markNow()
+                server.onAcceptable()
+                val spent = startedAt.elapsedNow()
+
+                // One allowance for the callback, not one per connection: two
+                // hand-offs, each of which would wait the full budget on its
+                // own. The margin is half a budget, so this cannot fail for
+                // scheduling noise -- the failure it is looking for doubles it.
+                assertTrue(
+                    spent < ONE_AND_A_HALF_BUDGETS,
+                    "two hand-offs to a stuck worker must share one allowance, not take one each ($spent)",
+                )
+                for (fd in listOf(first, second)) {
+                    val probe = dup(fd)
+                    if (probe >= 0) close(probe)
+                    assertEquals(-1, probe, "both descriptors are released rather than left to the wedged worker")
+                }
+                release.value = 1
+                closer.join()
+            } finally {
+                release.value = 1
+                for (fd in listOf(first, second)) {
+                    val leftOpen = dup(fd)
+                    if (leftOpen >= 0) {
+                        close(leftOpen)
+                        close(fd)
+                    }
+                }
+                server.close()
+                bossLoop.close()
+                workerGroup.close()
+            }
+        }
+    }
+
+    /**
+     * A participant whose stop notification does not return until released,
+     * holding its loop between "finished polling" and "quiet" — the only
+     * window in which the accept hand-off waits at all.
+     */
+    private class WedgingParticipant(private val release: AtomicInt) : LoopParticipant {
+        override fun onLoopStopped() {
+            while (release.value == 0) usleep(POLL_MICROS)
+        }
+    }
+
+    @Test
     fun `onAcceptable WouldBlock re-arms without side effects`() = runBlocking {
         withTimeout(15.seconds) {
             val sentinelFd = newSentinelFd()
@@ -674,5 +776,20 @@ class EpollAcceptSeamTest {
                 engine.close()
             }
         }
+    }
+
+    private companion object {
+        /** Poll interval while waiting for another thread to reach a state. */
+        const val POLL_MICROS: UInt = 1_000u
+
+        /** Long enough for the closing thread to publish "finished" on a loaded runner. */
+        val WEDGE_SETUP_BUDGET = 10.seconds
+
+        /**
+         * The ceiling for two hand-offs sharing one allowance. Half a budget of
+         * slack over the one wait they should cost, and half a budget short of
+         * the two the regression would cost.
+         */
+        val ONE_AND_A_HALF_BUDGETS = 150.milliseconds
     }
 }
