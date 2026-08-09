@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.native.posix
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
+import kotlin.time.TimeSource
 
 /**
  * Off-loop → EventLoop hand-off for the POSIX readiness engines (epoll,
@@ -114,9 +115,19 @@ class LoopHandoff(
      * user code — and then runs [ifStopped] synchronously. A caller that
      * blocks inside that window while holding something the sweep's handlers
      * need turns the wait into a deadlock; close paths must not hold
-     * application locks. The accept hand-off holds none, but it does block a
-     * boss loop, and with it every listener that loop serves, for as long as
-     * one worker's teardown takes.
+     * application locks.
+     *
+     * **[waitBudgetMicros] bounds that block, and the default does not.** The
+     * wait is unbounded because giving up early is the recycled-fd hazard
+     * itself, which is the right trade for a caller that blocks only its own
+     * thread — every close path here does. It is the wrong trade for a caller
+     * whose thread other work depends on: the accept hand-off runs on a boss
+     * EventLoop, so an unbounded wait there stops that loop wholesale — every
+     * listener it serves, every task queued for it (a `close()` teardown
+     * dispatched to it included), and its own `pthread_join`. Such a caller
+     * passes a budget and accepts the descriptor hazard at expiry rather than
+     * trading one worker's failure for the whole engine's. The return value
+     * says which happened.
      *
      * The two blocks exist because the fallback runs off the loop. [onLoop] may
      * touch loop-owned state (registries the loop guards), because it only ever
@@ -130,11 +141,24 @@ class LoopHandoff(
      * Exactly one of the two runs, enforced by a shared CAS, and neither can be
      * missed: the loop publishes [markFinished] before its final drain, so a
      * caller that reads 0 has already been queued for that drain, and one that
-     * reads 1 claims the work here.
+     * reads 1 claims the work here. That holds whether or not the wait was cut
+     * short — a budget decides how long this waits, never how many blocks run.
      *
      * **Thread safety**: safe from any thread.
+     *
+     * @param waitBudgetMicros how long to wait out a stopping loop's teardown
+     *   before running [ifStopped] anyway, or [WAIT_UNBOUNDED] to wait for as
+     *   long as it takes. Only consulted in that one window.
+     * @return `true` when [ifStopped] ran because the budget expired — the
+     *   descriptor was released without the ordering the wait exists to give,
+     *   which is worth reporting. `false` on every other outcome, including a
+     *   budget that expired after the loop had already claimed the work.
      */
-    fun runOnLoop(onLoop: () -> Unit, ifStopped: () -> Unit = onLoop) {
+    fun runOnLoop(
+        onLoop: () -> Unit,
+        ifStopped: () -> Unit = onLoop,
+        waitBudgetMicros: Long = WAIT_UNBOUNDED,
+    ): Boolean {
         // Fully stopped: nothing drains the queue again, so offering buys
         // nothing and pins the task's captures in the dead queue for the loop
         // object's lifetime (the dispatcher itself already declines to write
@@ -151,11 +175,11 @@ class LoopHandoff(
         // up, on the loop.
         if (loopQuiescent.value == 1) {
             ifStopped()
-            return
+            return false
         }
         if (inEventLoop()) {
             onLoop()
-            return
+            return false
         }
         val claimed = AtomicInt(0)
         dispatchToLoop {
@@ -164,7 +188,7 @@ class LoopHandoff(
         // Reading 0 here means this offer preceded the write, so the final
         // drain is guaranteed to pick it up — nothing more to do, and the
         // common path (a live loop) never waits.
-        if (loopFinished.value == 0) return
+        if (loopFinished.value == 0) return false
 
         // The loop is shutting down. Wait out its final drain before deciding:
         // [loopFinished] is published *before* that drain, so acting on it
@@ -175,19 +199,32 @@ class LoopHandoff(
         // What is waited on is no longer only already-queued work: the loop
         // also ends its stranded waiters on the way out, which runs their
         // cancellation handlers and then the coroutines those resume. So this
-        // waits on application code, bounded by that code terminating rather
-        // than by a queue length. It stays a spin rather than a timeout because
-        // giving up early is the recycled-fd hazard itself; if that trade needs
-        // revisiting, it is the loop's teardown that has to become bounded.
+        // waits on application code, ending when that code does rather than
+        // after some number of queued tasks — which is why a caller whose
+        // thread others depend on hands in a budget instead.
+        val start = TimeSource.Monotonic.markNow()
+        var expired = false
         while (loopQuiescent.value == 0) {
+            if (waitBudgetMicros != WAIT_UNBOUNDED &&
+                start.elapsedNow().inWholeMicroseconds >= waitBudgetMicros
+            ) {
+                expired = true
+                break
+            }
             usleep(LOOP_QUIESCE_POLL_MICROS)
         }
-        if (claimed.compareAndSet(0, 1)) {
-            ifStopped()
-        }
+        // Claim first, report after: the caller's report is arbitrary code and
+        // a throw from it must not cost the descriptor its release, which is
+        // the same order the accept path uses for close-then-warn.
+        if (!claimed.compareAndSet(0, 1)) return false
+        ifStopped()
+        return expired
     }
 
-    private companion object {
+    companion object {
+        /** Passed as `waitBudgetMicros` to wait out the loop's teardown however long it takes. */
+        const val WAIT_UNBOUNDED: Long = -1L
+
         // Poll interval while waiting out the loop's final drain. The wait is
         // rare (only a close racing shutdown) and ends when that teardown does,
         // so a short sleep keeps it responsive without busy-spinning.

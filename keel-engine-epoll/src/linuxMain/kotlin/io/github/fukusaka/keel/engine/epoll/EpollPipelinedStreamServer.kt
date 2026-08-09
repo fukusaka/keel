@@ -239,20 +239,40 @@ internal class EpollPipelinedStreamServer(
      * quiescent between them takes the task into the dead queue after all. The
      * hand-off's claim makes exactly one of the two run.
      *
-     * **This thread pays for it.** A worker that has stopped polling but has
-     * not yet published quiescence makes the caller wait out that worker's
-     * final drain and stop sweep — which run user code. The caller here is the
-     * boss loop, so accepts on *every* listener pause for as long as that
-     * takes. It is the wait every other caller of that hand-off already takes
-     * on a stopping loop, now reached from the accept path too.
+     * **This thread pays for it, and it is the boss loop.** A worker that has
+     * stopped polling but has not yet published quiescence makes its caller
+     * wait out that worker's final drain and stop sweep, which run user code —
+     * every live connection on that worker torn down through its handlers.
+     * Waiting that out here would stop far more than this accept: the boss loop
+     * would leave neither its readiness wait nor its task queue, so every
+     * listener it serves stops accepting, work dispatched to it (a `close()`
+     * teardown among it) stops running, and its own `pthread_join` stops
+     * returning. One worker's failure would cost the whole engine its
+     * liveness, to save one descriptor.
+     *
+     * So the wait is bounded ([STOPPING_WORKER_WAIT_MICROS]) where every other
+     * caller of that hand-off leaves it unbounded — those block only their own
+     * closing thread. At expiry the descriptor is released anyway, without the
+     * ordering the wait exists to provide, and that is reported at ERROR: the
+     * fd number may be one the worker still holds a queued arm for, so a
+     * dispatched arm can land on a descriptor the kernel has since handed on.
+     * Rare, loud, and bounded beats silent and unbounded in either direction.
      *
      * The fallback closes the raw descriptor rather than building a transport
      * to close: nothing has been constructed for it yet, so nothing else owns
      * it and no later `close()` will arrive — the same reason the setup-failure
      * branch in [acceptLoop] closes it directly.
+     *
+     * Per accepted connection this allocates the two blocks and the hand-off's
+     * claim where the bare `dispatch` allocated one `Runnable`. Measured on the
+     * only shape available (a keep-alive `/hello` A/B on both engines) it does
+     * not move throughput, but that shape accepts once per connection and
+     * reuses it thereafter, so it is a no-regression guard rather than a
+     * measurement of this cost; there is no accept-rate benchmark to take one
+     * from.
      */
     private fun dispatchToWorker(workerLoop: EpollEventLoop, clientFd: Int, listener: Listener) {
-        workerLoop.runOnLoop(
+        val releasedWithoutWaiting = workerLoop.runOnLoop(
             onLoop = { onWorkerAccept(clientFd, workerLoop, listener) },
             ifStopped = {
                 closeFdSafely(clientFd, logger, "accept handed to a stopped worker")
@@ -261,7 +281,16 @@ internal class EpollPipelinedStreamServer(
                         "dropping that connection: fd=$clientFd"
                 }
             },
+            waitBudgetMicros = STOPPING_WORKER_WAIT_MICROS,
         )
+        if (releasedWithoutWaiting) {
+            logger.error {
+                "a worker EventLoop did not finish stopping within " +
+                    "${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms; released fd=$clientFd " +
+                    "without waiting for it, so that number may still be armed by a queued " +
+                    "registration on that worker"
+            }
+        }
     }
 
     private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop, listener: Listener) {
@@ -334,4 +363,25 @@ internal class EpollPipelinedStreamServer(
         val localAddress: SocketAddress,
         val config: BindConfig,
     )
+
+    private companion object {
+        /**
+         * How long the accept hand-off waits for a stopping worker before
+         * releasing the descriptor regardless.
+         *
+         * Reaching this wait at all means an abnormal state: an orderly
+         * `close()` stops the boss loop before the workers, so nothing is
+         * accepting by the time a worker publishes `finished`. What is left is
+         * a worker that broke out of its own loop while the boss kept serving,
+         * and there the boss's liveness is worth more than the ordering
+         * guarantee for one descriptor. Short enough that a stalled worker
+         * teardown cannot hold the accept path for a human-noticeable time,
+         * long enough that a worker with a few connections left finishes well
+         * inside it.
+         */
+        private const val STOPPING_WORKER_WAIT_MICROS = 100_000L
+
+        /** For rendering [STOPPING_WORKER_WAIT_MICROS] in a log line. */
+        private const val MICROS_PER_MILLI = 1_000L
+    }
 }

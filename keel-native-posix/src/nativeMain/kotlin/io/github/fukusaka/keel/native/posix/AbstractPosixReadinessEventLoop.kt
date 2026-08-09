@@ -258,14 +258,19 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * Hands [onLoop] to this EventLoop's thread; runs [ifStopped] on the caller
      * if the loop is already gone. On a live loop this returns before the work
      * runs; a caller landing mid-shutdown blocks until the loop is quiet — see
-     * [LoopHandoff.runOnLoop] for the wait's shape, and for what each block
-     * may touch.
+     * [LoopHandoff.runOnLoop] for the wait's shape, for what each block may
+     * touch, and for when a caller should bound that wait with
+     * [waitBudgetMicros] rather than take the default.
      *
      * **Thread safety**: safe from any thread.
+     *
+     * @return `true` when the fallback ran because [waitBudgetMicros] expired.
      */
-    fun runOnLoop(onLoop: () -> Unit, ifStopped: () -> Unit = onLoop) {
-        handoff.runOnLoop(onLoop, ifStopped)
-    }
+    fun runOnLoop(
+        onLoop: () -> Unit,
+        ifStopped: () -> Unit = onLoop,
+        waitBudgetMicros: Long = LoopHandoff.WAIT_UNBOUNDED,
+    ): Boolean = handoff.runOnLoop(onLoop, ifStopped, waitBudgetMicros)
 
     /**
      * Whether this loop has stopped for good — it will run nothing more, so a
