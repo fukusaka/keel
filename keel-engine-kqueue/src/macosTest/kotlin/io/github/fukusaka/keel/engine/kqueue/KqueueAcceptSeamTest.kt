@@ -10,9 +10,9 @@ import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.AcceptResult
-import io.github.fukusaka.keel.native.posix.HandoffOutcome
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
+import io.github.fukusaka.keel.native.posix.HandoffOutcome
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout

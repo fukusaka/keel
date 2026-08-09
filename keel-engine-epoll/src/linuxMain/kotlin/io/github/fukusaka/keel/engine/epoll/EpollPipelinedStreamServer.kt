@@ -7,8 +7,8 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FdReadyListener
-import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.HandoffOutcome
+import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
@@ -154,29 +154,29 @@ internal class EpollPipelinedStreamServer(
         try {
             while (true) {
                 when (val result = nativeSocket.accept(listener.serverFd)) {
-                is AcceptResult.Accepted -> {
-                    // Per accepted descriptor, because that is the unit that can
-                    // fail here: `setNonBlocking` is `check(...)` over `fcntl`,
-                    // so one connection whose descriptor cannot be made
-                    // non-blocking threw all the way out of this loop, out of
-                    // the readiness dispatch and off the loop's pthread entry
-                    // -- ending the process over a single socket.
-                    // (`applySocketOptions` logs and swallows, so it is not a
-                    // second source; the point is that one exists at all.) The
-                    // listener has done nothing wrong and neither have the
-                    // other connections.
-                    //
-                    // Closing rather than dispatching: setup did not finish, so
-                    // no transport owns this descriptor and nothing else will
-                    // release it. Then `continue` rather than the `arm()` and
-                    // `return` the sibling `Failed` branch does, because the
-                    // queue may still hold peers this listener can serve -- the
-                    // repeat rate is bounded by them connecting, not by
-                    // readiness re-firing.
-                    //
-                    // Choosing the worker is inside the guard and handing the
-                    // descriptor to it is not: everything up to the hand-off can
-                    // still close the fd, because nothing else has seen it yet.
+                    is AcceptResult.Accepted -> {
+                        // Per accepted descriptor, because that is the unit that can
+                        // fail here: `setNonBlocking` is `check(...)` over `fcntl`,
+                        // so one connection whose descriptor cannot be made
+                        // non-blocking threw all the way out of this loop, out of
+                        // the readiness dispatch and off the loop's pthread entry
+                        // -- ending the process over a single socket.
+                        // (`applySocketOptions` logs and swallows, so it is not a
+                        // second source; the point is that one exists at all.) The
+                        // listener has done nothing wrong and neither have the
+                        // other connections.
+                        //
+                        // Closing rather than dispatching: setup did not finish, so
+                        // no transport owns this descriptor and nothing else will
+                        // release it. Then `continue` rather than the `arm()` and
+                        // `return` the sibling `Failed` branch does, because the
+                        // queue may still hold peers this listener can serve -- the
+                        // repeat rate is bounded by them connecting, not by
+                        // readiness re-firing.
+                        //
+                        // Choosing the worker is inside the guard and handing the
+                        // descriptor to it is not: everything up to the hand-off can
+                        // still close the fd, because nothing else has seen it yet.
                         val worker = try {
                             nativeSocketOps.setNonBlocking(result.fd)
                             nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
