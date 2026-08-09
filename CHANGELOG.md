@@ -85,6 +85,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-epoll`, `engine-kqueue`: release an accepted descriptor when the worker EventLoop it is
   handed to has stopped — the connection was queued to a loop that would never drain it, so the
   socket stayed open for the process's life while its peer waited on it (#1042)
+- `native-posix`: bound how long that hand-off waits for a worker that is still stopping, so one
+  worker's teardown cannot stall the boss EventLoop and every listener it serves; giving up is
+  logged at ERROR (#1042)
 - `core`: an inactivity report that throws no longer costs the connection its close — the descriptor
   the idle timeout exists to reclaim stayed open (#1041)
 - `core`: a refused buffer release no longer abandons the ones queued behind it — the drain walks to
