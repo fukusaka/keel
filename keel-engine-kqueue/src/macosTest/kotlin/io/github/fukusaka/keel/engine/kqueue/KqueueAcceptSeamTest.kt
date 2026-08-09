@@ -22,6 +22,7 @@ import platform.posix.EMFILE
 import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
 import platform.posix.close
+import platform.posix.dup
 import platform.posix.errno
 import platform.posix.fcntl
 import platform.posix.socket
@@ -409,12 +410,10 @@ class KqueueAcceptSeamTest {
             val warns = RecordingLogger(LogLevel.WARN)
             val bossLoop = KqueueEventLoop(warns)
             val workerGroup = KqueueEventLoopGroup(1, warns, DefaultAllocator)
-            bossLoop.start()
-            workerGroup.start()
             val sentinelFd = newSentinelFd()
             val acceptedFd = socket(AF_INET, SOCK_STREAM, 0)
             assertTrue(acceptedFd >= 0, "could not open a socket to be accepted")
-            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18189)
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18089)
             val fakeSocket = FakeNativeSocket().apply {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(acceptedFd))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
@@ -430,14 +429,21 @@ class KqueueAcceptSeamTest {
                 nativeSocket = fakeSocket,
                 nativeSocketOps = FakeNativeSocketOps(),
             )
+            // Both loops start inside the `try`: a pthread each, and an assert
+            // failing before the `finally` is reached would leave them running
+            // for the rest of the suite -- one process runs all of it.
             try {
+                bossLoop.start()
+                workerGroup.start()
                 // Deliberately not armed on the boss loop. An unbound listen
                 // socket reports readiness on it at once and goes on doing so,
                 // so an armed listener runs this accept loop from the boss
                 // thread too -- and the two threads then race for the one
                 // scripted `Accepted`, which the boss can take while the worker
                 // is still alive. The accept below is driven directly instead,
-                // which is what this seam does everywhere else.
+                // which is what this seam does everywhere else. (`acceptLoop`
+                // does arm the listener on its way out, so the boss picks the
+                // storm up from there -- by then the script is drained.)
                 //
                 // Joined and quiescent: nothing will drain this worker's queue
                 // again.
@@ -445,23 +451,35 @@ class KqueueAcceptSeamTest {
 
                 server.onAcceptable()
 
-                val probe = fcntl(acceptedFd, F_GETFD)
+                val probe = dup(acceptedFd)
                 val probeErrno = errno
+                if (probe >= 0) close(probe)
                 assertEquals(
                     -1,
                     probe,
                     "a worker that will never run this accept must not be left holding the descriptor",
                 )
                 assertEquals(EBADF, probeErrno, "closed, not fd-table exhaustion: the probe must fail with EBADF")
-                assertTrue(
-                    warns.messages.any { "worker" in it && "$acceptedFd" in it },
-                    "dropping a connection is worth saying: ${warns.messages}",
+                assertEquals(
+                    2,
+                    fakeSocket.acceptCalls,
+                    "dropping one connection must not unwind the loop: the peers queued behind it are not at fault",
+                )
+                assertEquals(
+                    1,
+                    warns.messages.count { "fd=$acceptedFd" in it && "has stopped" in it },
+                    "the drop is reported once, naming the descriptor: ${warns.messages}",
                 )
             } finally {
-                // First, while nothing has opened a descriptor since: on a
-                // failing run production left this one open, and the closes
-                // below can be handed its number.
-                if (fcntl(acceptedFd, F_GETFD) >= 0) close(acceptedFd)
+                // Before the closes below, which can be handed this number: on a
+                // failing run production left it open. `dup` rather than a bare
+                // close, so a number that was already recycled is not closed out
+                // from under its new owner.
+                val leftOpen = dup(acceptedFd)
+                if (leftOpen >= 0) {
+                    close(leftOpen)
+                    close(acceptedFd)
+                }
                 server.close()
                 bossLoop.close()
                 workerGroup.close()

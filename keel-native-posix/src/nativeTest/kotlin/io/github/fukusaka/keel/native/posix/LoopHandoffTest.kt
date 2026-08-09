@@ -1,14 +1,19 @@
 package io.github.fukusaka.keel.native.posix
 
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * Unit tests for [LoopHandoff] — the off-loop to EventLoop hand-off the POSIX
@@ -25,7 +30,7 @@ import kotlin.time.Duration.Companion.seconds
  * a second thread and carries a wall-clock bound, because a regression that
  * never publishes quiescence would otherwise hang rather than fail.
  */
-@OptIn(InternalPosixEventLoopApi::class)
+@OptIn(InternalPosixEventLoopApi::class, ExperimentalForeignApi::class)
 class LoopHandoffTest {
 
     /** Records dispatched tasks so a test can run them when it chooses. */
@@ -135,6 +140,92 @@ class LoopHandoffTest {
         assertEquals(0, ranBeforeDrain.value, "the fallback must not run before the drain completes")
     }
 
+    @Test
+    fun `a caller that hands in a budget stops waiting for a loop that never goes quiet`() {
+        // The default wait ends only when the loop publishes quiescence, which
+        // is right for a caller that blocks its own closing thread and wrong for
+        // one whose thread other work depends on -- the accept hand-off runs on
+        // a boss EventLoop, and waiting there stops every listener that loop
+        // serves and everything queued for it. A budget trades the ordering the
+        // wait provides for a bound on how long anything can be held.
+        //
+        // Quiescence is never published here: the whole point is that the caller
+        // returns anyway.
+        val loop = FakeLoop()
+        val handoff = loop.handoff()
+        val ifStopped = AtomicInt(0)
+        val gaveUp = AtomicInt(0)
+        val finished = AtomicInt(0)
+        handoff.markFinished()
+
+        // Deliberately launched outside this test's scope, and polled rather
+        // than joined. If the budget ever stops being honoured, this waiter
+        // sits in `usleep` where no coroutine cancellation reaches it -- and a
+        // `runBlocking` that owns it would then hang the whole suite instead of
+        // failing this one test (the suite runs in a single process, so that is
+        // a hang with no output, not a red build).
+        CoroutineScope(Dispatchers.Default).launch {
+            val expired = handoff.runOnLoop(
+                onLoop = {},
+                ifStopped = { ifStopped.value = ifStopped.value + 1 },
+                waitBudgetMicros = SHORT_BUDGET_MICROS,
+            )
+            if (expired) gaveUp.value = 1
+            finished.value = 1
+        }
+
+        val deadline = TimeSource.Monotonic.markNow()
+        while (finished.value == 0 && deadline.elapsedNow() < WAIT_BUDGET) {
+            usleep(POLL_MICROS)
+        }
+
+        assertEquals(
+            1,
+            finished.value,
+            "the budget must end the wait: nothing here can interrupt a spin that ignores it",
+        )
+        assertEquals(1, gaveUp.value, "the caller must say it released without the ordering the wait would have given")
+        assertEquals(1, ifStopped.value, "giving up means running the fallback, not skipping it")
+
+        // The offer is still in the queue, and the claim already went to the
+        // fallback: a drain arriving late must find the work taken rather than
+        // run it a second time.
+        loop.drain()
+        assertEquals(1, ifStopped.value, "the claim is what makes the two exclusive, budget or no budget")
+    }
+
+    @Test
+    fun `a loop that goes quiet inside the budget is waited out rather than given up on`() = runBlocking {
+        // The budget is a ceiling, not a delay: a teardown that finishes inside
+        // it must still get the ordering, and the caller must not report having
+        // gone without it.
+        val loop = FakeLoop()
+        val handoff = loop.handoff()
+        val drained = AtomicInt(0)
+        val ranBeforeDrain = AtomicInt(0)
+        handoff.markFinished()
+
+        var gaveUp = true
+        withTimeout(WAIT_BUDGET) {
+            val waiter = launch(Dispatchers.Default) {
+                gaveUp = handoff.runOnLoop(
+                    onLoop = {},
+                    ifStopped = { if (drained.value == 0) ranBeforeDrain.value = 1 },
+                    waitBudgetMicros = GENEROUS_BUDGET_MICROS,
+                )
+            }
+            launch(Dispatchers.Default) {
+                while (loop.queue.isEmpty()) { /* wait for the offer */ }
+                drained.value = 1
+                handoff.markQuiescent()
+            }
+            waiter.join()
+        }
+
+        assertEquals(0, ranBeforeDrain.value, "the fallback must not run before the drain completes")
+        assertFalse(gaveUp, "the wait ended on quiescence, so nothing was given up")
+    }
+
     private companion object {
         /**
          * Wall-clock bound for the one test that blocks. The spin it waits on is
@@ -142,5 +233,22 @@ class LoopHandoffTest {
          * regression that never publishes quiescence fails instead of hanging.
          */
         val WAIT_BUDGET = 15.seconds
+
+        /**
+         * Short enough that the give-up test does not slow the suite, long
+         * enough not to expire on a loaded runner before the waiter has even
+         * reached the spin — which would pass for the wrong reason.
+         */
+        const val SHORT_BUDGET_MICROS = 20_000L
+
+        /**
+         * Far longer than the other thread needs to publish quiescence, so the
+         * companion test fails rather than flakes if the budget starts cutting
+         * a wait short that it should not.
+         */
+        const val GENEROUS_BUDGET_MICROS = 10_000_000L
+
+        /** Poll interval while waiting for the detached waiter to come back. */
+        const val POLL_MICROS: UInt = 1_000u
     }
 }
