@@ -858,9 +858,13 @@ internal class KqueueIoTransport(
 
     /**
      * Teardown on the closing caller's thread, for a loop that has stopped:
-     * [runOnLoop][KqueueEventLoop.runOnLoop] only takes this branch after the
-     * loop published quiescence, so nothing on the loop side runs concurrently
-     * and the loop-written fields are read through that flag's acquire edge.
+     * [runOnLoop][KqueueEventLoop.runOnLoop] takes this branch only after the loop
+     * published quiescence **for a caller that hands in no wait budget**, which
+     * this one is: nothing on the loop side then runs concurrently, and the
+     * loop-written fields are read through that flag's acquire edge. A caller
+     * that does bound its wait can reach the same branch with the loop still
+     * draining, and would not have that argument — this teardown must keep the
+     * default wait to keep it.
      *
      * What the on-loop teardown does is deliberately narrowed here:
      * - **No ledger withdrawal, no registry leave**: the stop sweep emptied

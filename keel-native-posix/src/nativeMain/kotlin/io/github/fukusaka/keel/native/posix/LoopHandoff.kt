@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.native.posix
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
+import kotlin.time.TimeSource
 
 /**
  * Off-loop → EventLoop hand-off for the POSIX readiness engines (epoll,
@@ -98,6 +99,15 @@ class LoopHandoff(
      * registration already queued for the same fd, so a dispatched arm cannot
      * land on a descriptor number the kernel has since handed to someone else.
      *
+     * The accept hand-off uses it for the same descriptor hazard read the
+     * other way round: a freshly accepted fd carries a number the kernel may
+     * just have taken back from a connection on that very worker, so releasing
+     * it while the worker still holds a queued arm for the old owner is the
+     * same collision. A worker that will run nothing more therefore has the
+     * descriptor released here rather than handed to it — Netty's `forceClose`
+     * on a rejected `execute`, reached by a hand-off that waits instead of
+     * refusing.
+     *
      * **On a live loop this returns before the work runs** — waiting would
      * block the caller on a loop that may be mid-syscall. **On a stopping
      * loop it blocks**: a caller landing between [markFinished] and
@@ -107,10 +117,23 @@ class LoopHandoff(
      * need turns the wait into a deadlock; close paths must not hold
      * application locks.
      *
+     * **[waitBudgetMicros] bounds that block, and the default does not.** The
+     * wait is unbounded because giving up early is the recycled-fd hazard
+     * itself, which is the right trade for a caller that blocks only its own
+     * thread — every close path here does. It is the wrong trade for a caller
+     * whose thread other work depends on: the accept hand-off runs on a boss
+     * EventLoop, so an unbounded wait there stops that loop wholesale — every
+     * listener it serves, every task queued for it (a `close()` teardown
+     * dispatched to it included), and its own `pthread_join`. Such a caller
+     * passes a budget and accepts the descriptor hazard at expiry rather than
+     * trading one worker's failure for the whole engine's. The return value
+     * says which happened.
+     *
      * The two blocks exist because the fallback runs off the loop. [onLoop] may
      * touch loop-owned state (registries the loop guards), because it only ever
      * runs on the loop thread. [ifStopped] runs on the caller once the loop has
-     * stopped, where those registries are moot — swept and closed — and reading
+     * stopped — or, for a caller that bounded its wait, while it is still
+     * draining — where those registries are moot or about to be, and reading
      * them from another thread buys nothing, so it must be self-contained:
      * releasing the fd is the one thing still required, and that is thread-safe
      * anywhere. (Their lock is safe to take from any thread; it is never
@@ -119,11 +142,24 @@ class LoopHandoff(
      * Exactly one of the two runs, enforced by a shared CAS, and neither can be
      * missed: the loop publishes [markFinished] before its final drain, so a
      * caller that reads 0 has already been queued for that drain, and one that
-     * reads 1 claims the work here.
+     * reads 1 claims the work here. That holds whether or not the wait was cut
+     * short — a budget decides how long this waits, never how many blocks run.
      *
      * **Thread safety**: safe from any thread.
+     *
+     * @param waitBudgetMicros how long to wait out a stopping loop's teardown
+     *   before running [ifStopped] anyway. Negative (see [WAIT_UNBOUNDED])
+     *   waits for as long as it takes; `0` takes the fallback without waiting
+     *   at all, for a caller that has already paid this wait once and will not
+     *   pay it again. Only consulted in that one window.
+     * @return which block ran, and — when it was the fallback — whether the
+     *   wait was cut short to get there. See [HandoffOutcome].
      */
-    fun runOnLoop(onLoop: () -> Unit, ifStopped: () -> Unit = onLoop) {
+    fun runOnLoop(
+        onLoop: () -> Unit,
+        ifStopped: () -> Unit = onLoop,
+        waitBudgetMicros: Long = WAIT_UNBOUNDED,
+    ): HandoffOutcome {
         // Fully stopped: nothing drains the queue again, so offering buys
         // nothing and pins the task's captures in the dead queue for the loop
         // object's lifetime (the dispatcher itself already declines to write
@@ -140,11 +176,11 @@ class LoopHandoff(
         // up, on the loop.
         if (loopQuiescent.value == 1) {
             ifStopped()
-            return
+            return HandoffOutcome.FELL_BACK
         }
         if (inEventLoop()) {
             onLoop()
-            return
+            return HandoffOutcome.HANDED_TO_LOOP
         }
         val claimed = AtomicInt(0)
         dispatchToLoop {
@@ -153,7 +189,7 @@ class LoopHandoff(
         // Reading 0 here means this offer preceded the write, so the final
         // drain is guaranteed to pick it up — nothing more to do, and the
         // common path (a live loop) never waits.
-        if (loopFinished.value == 0) return
+        if (loopFinished.value == 0) return HandoffOutcome.HANDED_TO_LOOP
 
         // The loop is shutting down. Wait out its final drain before deciding:
         // [loopFinished] is published *before* that drain, so acting on it
@@ -164,19 +200,36 @@ class LoopHandoff(
         // What is waited on is no longer only already-queued work: the loop
         // also ends its stranded waiters on the way out, which runs their
         // cancellation handlers and then the coroutines those resume. So this
-        // waits on application code, bounded by that code terminating rather
-        // than by a queue length. It stays a spin rather than a timeout because
-        // giving up early is the recycled-fd hazard itself; if that trade needs
-        // revisiting, it is the loop's teardown that has to become bounded.
+        // waits on application code, ending when that code does rather than
+        // after some number of queued tasks — which is why a caller whose
+        // thread others depend on hands in a budget instead.
+        //
+        // Any negative budget is unbounded, not just the sentinel: a computed
+        // value that goes negative reads as "no limit", which is the side that
+        // keeps the ordering rather than the side that quietly drops it.
+        val start = TimeSource.Monotonic.markNow()
+        var expired = false
         while (loopQuiescent.value == 0) {
+            if (waitBudgetMicros >= 0 && start.elapsedNow().inWholeMicroseconds >= waitBudgetMicros) {
+                expired = true
+                break
+            }
             usleep(LOOP_QUIESCE_POLL_MICROS)
         }
-        if (claimed.compareAndSet(0, 1)) {
-            ifStopped()
-        }
+        // The loop got there first: it owns the work and this caller reports
+        // nothing, whether or not its own wait had run out.
+        if (!claimed.compareAndSet(0, 1)) return HandoffOutcome.HANDED_TO_LOOP
+        ifStopped()
+        return if (expired) HandoffOutcome.FELL_BACK_AFTER_EXPIRY else HandoffOutcome.FELL_BACK
     }
 
-    private companion object {
+    companion object {
+        /**
+         * Passed as `waitBudgetMicros` to wait out the loop's teardown however
+         * long it takes. Any negative value means the same; this one names it.
+         */
+        const val WAIT_UNBOUNDED: Long = -1L
+
         // Poll interval while waiting out the loop's final drain. The wait is
         // rare (only a close racing shutdown) and ends when that teardown does,
         // so a short sleep keeps it responsive without busy-spinning.

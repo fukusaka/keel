@@ -82,6 +82,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll`, `engine-kqueue`: release an accepted descriptor when the worker EventLoop it is
+  handed to has stopped, instead of queueing it to a loop that will never drain it (#1042)
+- `engine-epoll`, `engine-kqueue`: bound one accept callback's total wait on workers that are still
+  stopping, so a wedged worker cannot stall the boss EventLoop without limit (#1042)
 - `core`: an inactivity report that throws no longer costs the connection its close — the descriptor
   the idle timeout exists to reclaim stayed open (#1041)
 - `core`: a refused buffer release no longer abandons the ones queued behind it — the drain walks to

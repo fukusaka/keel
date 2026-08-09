@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FdReadyListener
+import io.github.fukusaka.keel.native.posix.HandoffOutcome
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
@@ -19,6 +20,7 @@ import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlin.concurrent.AtomicInt
+import kotlin.time.TimeSource
 
 /**
  * Pipeline server channel for epoll-based connection acceptance on Linux.
@@ -142,53 +144,163 @@ internal class EpollPipelinedStreamServer(
 
     private fun acceptLoop(arm: AcceptArm) {
         val listener = arm.listener
-        while (true) {
-            when (val result = nativeSocket.accept(listener.serverFd)) {
-                is AcceptResult.Accepted -> {
-                    // Per accepted descriptor, because that is the unit that can
-                    // fail here: `setNonBlocking` is `check(...)` over `fcntl`,
-                    // so one connection whose descriptor cannot be made
-                    // non-blocking threw all the way out of this loop, out of
-                    // the readiness dispatch and off the loop's pthread entry
-                    // -- ending the process over a single socket.
-                    // (`applySocketOptions` logs and swallows, so it is not a
-                    // second source; the point is that one exists at all.) The
-                    // listener has done nothing wrong and neither have the
-                    // other connections.
-                    //
-                    // Closing rather than dispatching: setup did not finish, so
-                    // no transport owns this descriptor and nothing else will
-                    // release it. Then `continue` rather than the `arm()` and
-                    // `return` the sibling `Failed` branch does, because the
-                    // queue may still hold peers this listener can serve -- the
-                    // repeat rate is bounded by them connecting, not by
-                    // readiness re-firing.
-                    //
-                    // Choosing the worker is inside the guard and handing the
-                    // descriptor to it is not: everything up to the hand-off can
-                    // still close the fd, because nothing else has seen it yet.
-                    val worker = try {
-                        nativeSocketOps.setNonBlocking(result.fd)
-                        nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
-                        nextWorker()
-                    } catch (setupFailure: Throwable) {
-                        closeFdSafely(result.fd, logger, "accepted socket setup")
-                        logger.warn(setupFailure) {
-                            "preparing an accepted socket failed; dropping that connection: fd=${result.fd}"
+        // The budget belongs to this callback, not to one hand-off. The loop
+        // makes as many hand-offs as the backlog holds, and each can wait on a
+        // worker that is stopping, so a per-hand-off bound is no bound at all:
+        // it multiplies by the number of stopping workers reachable through
+        // round-robin. What is carried across iterations is therefore the time
+        // already spent waiting, not merely whether some hand-off gave up --
+        // a wait that ends in quiescence one microsecond inside the budget
+        // costs this thread just as much as one that runs out.
+        var drops = DropTally()
+        try {
+            while (true) {
+                when (val result = nativeSocket.accept(listener.serverFd)) {
+                    is AcceptResult.Accepted -> {
+                        // Per accepted descriptor, because that is the unit that can
+                        // fail here: `setNonBlocking` is `check(...)` over `fcntl`,
+                        // so one connection whose descriptor cannot be made
+                        // non-blocking threw all the way out of this loop, out of
+                        // the readiness dispatch and off the loop's pthread entry
+                        // -- ending the process over a single socket.
+                        // (`applySocketOptions` logs and swallows, so it is not a
+                        // second source; the point is that one exists at all.) The
+                        // listener has done nothing wrong and neither have the
+                        // other connections.
+                        //
+                        // Closing rather than dispatching: setup did not finish, so
+                        // no transport owns this descriptor and nothing else will
+                        // release it. Then `continue` rather than the `arm()` and
+                        // `return` the sibling `Failed` branch does, because the
+                        // queue may still hold peers this listener can serve -- the
+                        // repeat rate is bounded by them connecting, not by
+                        // readiness re-firing.
+                        //
+                        // Choosing the worker is inside the guard and handing the
+                        // descriptor to it is not: everything up to the hand-off can
+                        // still close the fd, because nothing else has seen it yet.
+                        val worker = try {
+                            nativeSocketOps.setNonBlocking(result.fd)
+                            nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
+                            nextWorker()
+                        } catch (setupFailure: Throwable) {
+                            closeFdSafely(result.fd, logger, "accepted socket setup")
+                            logger.warn(setupFailure) {
+                                "preparing an accepted socket failed; dropping that connection: fd=${result.fd}"
+                            }
+                            continue
                         }
-                        continue
+                        val startedAt = TimeSource.Monotonic.markNow()
+                        val outcome = dispatchToWorker(worker, result.fd, listener, drops.remainingBudget())
+                        drops = drops.record(result.fd, outcome, startedAt.elapsedNow().inWholeMicroseconds)
                     }
-                    dispatchToWorker(worker, result.fd, listener)
+                    AcceptResult.WouldBlock -> {
+                        arm.arm()
+                        return
+                    }
+                    is AcceptResult.Failed -> {
+                        logger.error { "accept() failed: ${errnoMessage(result.errno)}" }
+                        arm.arm()
+                        return
+                    }
                 }
-                AcceptResult.WouldBlock -> {
-                    arm.arm()
-                    return
-                }
-                is AcceptResult.Failed -> {
-                    logger.error { "accept() failed: ${errnoMessage(result.errno)}" }
-                    arm.arm()
-                    return
-                }
+            }
+        } finally {
+            // Reported once for the callback rather than once per connection:
+            // a worker that stays down drops every connection routed to it, and
+            // a line each turns a failure into a log flood at the accept rate.
+            // In a `finally` so a throw on the way out still says what was
+            // dropped before it.
+            reportDrops(drops)
+        }
+    }
+
+    /**
+     * How many connections this readiness callback dropped for want of a live
+     * worker, and whether any of those gave up on a worker that had not
+     * finished stopping.
+     *
+     * A value rather than counters in [acceptLoop] so the tally can be passed
+     * to [reportDrops] as one thing; the accept path allocates one of these per
+     * readiness callback, not per connection.
+     *
+     * `internal` for its test: [remainingBudget] is the whole of the
+     * boss-liveness guarantee, and the window it governs — a worker that has
+     * finished polling but not yet gone quiet — is one the engine seam cannot
+     * hold open.
+     */
+    internal data class DropTally(
+        val dropped: Int = 0,
+        val gaveUp: Int = 0,
+        val firstDroppedFd: Int = -1,
+        val firstGaveUpFd: Int = -1,
+        val waitedMicros: Long = 0,
+    ) {
+        /**
+         * What is left of this callback's wait.
+         *
+         * Every hand-off's wait comes out of one allowance, so **this
+         * callback's** total stall is [STOPPING_WORKER_WAIT_MICROS] however
+         * many stopping workers round-robin reaches — plus at most one poll
+         * quantum, since the wait checks its allowance before sleeping rather
+         * than after. The next callback gets a fresh allowance: a worker
+         * wedged in that window costs the boss loop that much per readiness,
+         * not once. Spending it is what counts, not running out of it: a
+         * hand-off that waited 99ms and *then* saw quiescence has cost this
+         * thread the same 99ms as one that gave up.
+         */
+        fun remainingBudget(): Long = (STOPPING_WORKER_WAIT_MICROS - waitedMicros).coerceAtLeast(0)
+
+        /**
+         * Folds one hand-off in. [waitedMicros] is measured at the call site
+         * rather than reported by the hand-off: what this needs is wall time
+         * this thread did not spend accepting, which is the same quantity
+         * whichever branch the hand-off took.
+         */
+        fun record(fd: Int, outcome: HandoffOutcome, waitedMicros: Long): DropTally {
+            val spent = copy(waitedMicros = this.waitedMicros + waitedMicros)
+            return when (outcome) {
+                HandoffOutcome.HANDED_TO_LOOP -> spent
+                HandoffOutcome.FELL_BACK -> spent.copy(
+                    dropped = dropped + 1,
+                    firstDroppedFd = if (firstDroppedFd < 0) fd else firstDroppedFd,
+                )
+                HandoffOutcome.FELL_BACK_AFTER_EXPIRY -> spent.copy(
+                    dropped = dropped + 1,
+                    gaveUp = gaveUp + 1,
+                    firstGaveUpFd = if (firstGaveUpFd < 0) fd else firstGaveUpFd,
+                )
+            }
+        }
+    }
+
+    /**
+     * Says what this callback dropped, in two lines at most.
+     *
+     * The two outcomes are reported apart because they describe opposite states
+     * of a worker: [DropTally.dropped] counts connections whose worker had
+     * finished stopping, and the descriptors went with the ordering the
+     * hand-off provides. [DropTally.gaveUp] counts the ones where it had *not*
+     * finished and the wait was cut short — released without that ordering, so
+     * a queued arm on that worker may still name a number now handed on. One
+     * line covering both would have to claim the first about connections in the
+     * second, and each names a descriptor from its own category for the same
+     * reason.
+     */
+    private fun reportDrops(drops: DropTally) {
+        if (drops.dropped > drops.gaveUp) {
+            logger.warn {
+                "the worker EventLoop for ${drops.dropped - drops.gaveUp} accepted connection(s) " +
+                    "has stopped; dropping them: first fd=${drops.firstDroppedFd}"
+            }
+        }
+        if (drops.gaveUp > 0) {
+            logger.error {
+                "this accept spent its ${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms allowance " +
+                    "waiting for worker EventLoops that had not finished stopping; released " +
+                    "${drops.gaveUp} accepted descriptor(s) without waiting them out, starting at " +
+                    "fd=${drops.firstGaveUpFd}, so those numbers may still be armed by a queued " +
+                    "registration on the worker each went to"
             }
         }
     }
@@ -221,14 +333,80 @@ internal class EpollPipelinedStreamServer(
     private fun nextWorker(): EpollEventLoop =
         workerGroup.at((workerIndex++ and Int.MAX_VALUE) % workerGroup.size)
 
-    private fun dispatchToWorker(workerLoop: EpollEventLoop, clientFd: Int, listener: Listener) {
-        workerLoop.dispatch(
-            kotlin.coroutines.EmptyCoroutineContext,
-            kotlinx.coroutines.Runnable {
-                onWorkerAccept(clientFd, workerLoop, listener)
-            },
-        )
-    }
+    /**
+     * Hands the accepted descriptor to [workerLoop], or releases it if that
+     * worker will never run anything again.
+     *
+     * A plain `dispatch` is taken by the queue whatever state the loop is in,
+     * and after the loop's final drain nothing drains it again: the descriptor
+     * sat in a task no thread would run and stayed open until the process
+     * exited — while the peer's `connect` had already succeeded and it waited
+     * on a socket nobody would ever read. That is not the same window
+     * [onWorkerAccept]'s `joinedLoop` check covers: a task the final drain
+     * picks up still finds the ledgers open — they close in the stop sweep that
+     * follows — and is unwound by that sweep telling its participants instead;
+     * the `joinedLoop` branch belongs to the drain the sweep itself runs
+     * afterwards. Either way the loop runs the work. This window is after all
+     * of them, where nothing runs it at all.
+     *
+     * [io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop.runOnLoop]
+     * rather than asking the loop whether it has stopped and branching on the
+     * answer: the ask and the offer are two steps, and a loop that goes
+     * quiescent between them takes the task into the dead queue after all. The
+     * hand-off's claim makes exactly one of the two run.
+     *
+     * **This thread pays for it, and it is the boss loop.** A worker that has
+     * stopped polling but has not yet published quiescence makes its caller
+     * wait out that worker's final drain and stop sweep, which run user code —
+     * every live connection on that worker torn down through its handlers.
+     * Waiting that out here would stop far more than this accept: the boss loop
+     * would leave neither its readiness wait nor its task queue, so every
+     * listener it serves stops accepting, work dispatched to it (a `close()`
+     * teardown among it) stops running, and its own `pthread_join` stops
+     * returning. One worker's failure would cost the whole engine its
+     * liveness, to save one descriptor.
+     *
+     * So [waitBudgetMicros] is bounded where every other caller of that
+     * hand-off leaves it unbounded — those block only their own closing
+     * thread. At expiry the descriptor is released anyway, without the ordering
+     * the wait exists to provide, and [acceptLoop] reports that at ERROR: the
+     * fd number may be one the worker still holds a queued arm for, so a
+     * dispatched arm can land on a descriptor the kernel has since handed on.
+     * **The bound belongs to the readiness callback, not to this call** — see
+     * [acceptLoop], which passes what is left of one allowance rather than a
+     * fresh one per connection.
+     *
+     * The fallback closes the raw descriptor rather than building a transport
+     * to close: nothing has been constructed for it yet, so nothing else owns
+     * it and no later `close()` will arrive — the same reason the setup-failure
+     * branch in [acceptLoop] closes it directly. It says nothing: what was
+     * dropped is reported once for the callback rather than once per
+     * connection, since a worker that stays down drops every connection routed
+     * to it.
+     *
+     * Per accepted connection this allocates the two blocks and the hand-off's
+     * claim where the bare `dispatch` allocated one `Runnable`, and [acceptLoop]
+     * reads the monotonic clock twice around the call — the quantity they
+     * measure can only be non-zero in the abnormal window, but the reads
+     * happen on every accept. Measured on the only shape available (a
+     * keep-alive `/hello` A/B on both engines) none of it moves throughput,
+     * but that shape accepts once per connection and reuses it thereafter, so
+     * it is a no-regression guard rather than a measurement of this cost;
+     * there is no accept-rate benchmark to take one from.
+     *
+     * A throw out of here (only a logger could) skips the tally, so that one
+     * connection goes unreported — the descriptor is already released by then.
+     */
+    private fun dispatchToWorker(
+        workerLoop: EpollEventLoop,
+        clientFd: Int,
+        listener: Listener,
+        waitBudgetMicros: Long,
+    ): HandoffOutcome = workerLoop.runOnLoop(
+        onLoop = { onWorkerAccept(clientFd, workerLoop, listener) },
+        ifStopped = { closeFdSafely(clientFd, logger, "accept handed to a stopped worker") },
+        waitBudgetMicros = waitBudgetMicros,
+    )
 
     private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop, listener: Listener) {
         val rbs = listener.config.readBufferSize ?: loop.readBufferSize
@@ -300,4 +478,25 @@ internal class EpollPipelinedStreamServer(
         val localAddress: SocketAddress,
         val config: BindConfig,
     )
+
+    internal companion object {
+        /**
+         * How long the accept hand-off waits for a stopping worker before
+         * releasing the descriptor regardless.
+         *
+         * Reaching this wait at all means an abnormal state: an orderly
+         * `close()` stops the boss loop before the workers, so nothing is
+         * accepting by the time a worker publishes `finished`. What is left is
+         * a worker that broke out of its own loop while the boss kept serving,
+         * and there the boss's liveness is worth more than the ordering
+         * guarantee for one descriptor. Short enough that a stalled worker
+         * teardown cannot hold the accept path for a human-noticeable time,
+         * long enough that a worker with a few connections left finishes well
+         * inside it.
+         */
+        const val STOPPING_WORKER_WAIT_MICROS = 100_000L
+
+        /** For rendering [STOPPING_WORKER_WAIT_MICROS] in a log line. */
+        private const val MICROS_PER_MILLI = 1_000L
+    }
 }

@@ -258,14 +258,20 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * Hands [onLoop] to this EventLoop's thread; runs [ifStopped] on the caller
      * if the loop is already gone. On a live loop this returns before the work
      * runs; a caller landing mid-shutdown blocks until the loop is quiet — see
-     * [LoopHandoff.runOnLoop] for the wait's shape, and for what each block
-     * may touch.
+     * [LoopHandoff.runOnLoop] for the wait's shape, for what each block may
+     * touch, and for when a caller should bound that wait with
+     * [waitBudgetMicros] rather than take the default.
      *
      * **Thread safety**: safe from any thread.
+     *
+     * @return which block ran, and whether the wait was cut short to get
+     *   there; see [HandoffOutcome].
      */
-    fun runOnLoop(onLoop: () -> Unit, ifStopped: () -> Unit = onLoop) {
-        handoff.runOnLoop(onLoop, ifStopped)
-    }
+    fun runOnLoop(
+        onLoop: () -> Unit,
+        ifStopped: () -> Unit = onLoop,
+        waitBudgetMicros: Long = LoopHandoff.WAIT_UNBOUNDED,
+    ): HandoffOutcome = handoff.runOnLoop(onLoop, ifStopped, waitBudgetMicros)
 
     /**
      * Whether this loop has stopped for good — it will run nothing more, so a
@@ -894,8 +900,9 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * it always did.
      *
      * Named apart from `LoopHandoff.runOnLoop` on purpose: that one takes an
-     * `ifStopped` fallback and waits out the loop's final drain before choosing
-     * between them. This one does not, and the difference is the hazard below.
+     * `ifStopped` fallback and, unless its caller hands in a wait budget, waits
+     * out the loop's final drain before choosing between them. This one does
+     * not, and the difference is the hazard below.
      *
      * A caller arriving *before* the loop starts is fine: the task queues and
      * the loop drains it on its first iteration.
