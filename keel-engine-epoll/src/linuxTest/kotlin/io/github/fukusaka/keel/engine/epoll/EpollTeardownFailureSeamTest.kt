@@ -308,7 +308,7 @@ class EpollTeardownFailureSeamTest {
     }
 
     @Test
-    fun `a stalled drain does not leave a write-idle timer behind the teardown`() = runBlocking {
+    fun `a stalled drain leaves neither idle timer behind the teardown`() = runBlocking {
         withTimeout(IO_BUDGET) {
             // The drain can arm a timer: a flush that stalls re-registers for
             // write readiness, and that starts the write-idle clock. With the
@@ -324,13 +324,7 @@ class EpollTeardownFailureSeamTest {
                 DefaultAllocator,
                 fake,
                 idleTimeoutMillis = IDLE_TIMEOUT_MS,
-            ).also {
-                it.onChannelAttached()
-                // Arms the read-side deadline as well, which is the only way
-                // this test can see whether the teardown cancels that one: it
-                // is armed from this setter and from nowhere else.
-                it.readEnabled = true
-            }
+            ).also { it.onChannelAttached() }
             val buf = DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
             val reported = CompletableDeferred<Unit>()
             transport.onReadClosed = { reported.complete(Unit) }
@@ -338,6 +332,12 @@ class EpollTeardownFailureSeamTest {
             readFd = -1
 
             onLoop {
+                // Arms the read-side deadline too, which is the only way this
+                // test can see whether the teardown cancels that one: it is
+                // armed from this setter and from nowhere else. On the loop,
+                // because the setter reaches the loop's own deadline scheduler,
+                // which is documented as having no thread safety at all.
+                transport.readEnabled = true
                 transport.write(buf)
                 // Leaves flushScheduled set, so the teardown finds a drain to run.
                 transport.flush()
@@ -402,15 +402,25 @@ class EpollTeardownFailureSeamTest {
             // is made by a Runnable dispatched behind the one `onLoop` waited
             // for -- and the timeout withdraws it again at IDLE_TIMEOUT_MS, so
             // a single read races both ends.
-            withTimeout(IO_BUDGET) {
-                while (!eventLoop.hasCallbackRegistration(surrendered, Interest.WRITE)) delay(POLL_MS)
+            // Bounded by the timeout that ends this connection, not by the
+            // enclosing budget: the registration exists only between the
+            // stalled flush and the teardown that withdraws it, so a poll that
+            // misses the window would otherwise spin to the outer deadline and
+            // fail with a message naming nothing.
+            var registered = false
+            withTimeout(WAITER_BUDGET) {
+                while (!registered && !reported.isCompleted) {
+                    registered = eventLoop.hasCallbackRegistration(surrendered, Interest.WRITE)
+                    if (!registered) delay(POLL_MS)
+                }
             }
+            assertTrue(registered, "the stall must register for write readiness before the timeout withdraws it")
             // Its own budget, as the waiter waits above have: nested inside
             // the enclosing one with the same value, it could never expire
             // first and the failure would name nothing.
             assertTrue(
                 withTimeoutOrNull(WAITER_BUDGET) { reported.await() } != null,
-                "the stall must arm a write-idle timer, or the absence asserted above proves nothing",
+                "the stall must arm a write-idle timer, or the test above asserts an absence that proves nothing",
             )
         }
     }

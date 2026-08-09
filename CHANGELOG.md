@@ -86,8 +86,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the descriptor stayed open, a parked `awaitPendingFlush` caller was never woken, and the write
   ledger kept counting buffers that had left the queue (#1040)
 - `engine-epoll`, `engine-kqueue`: cancel the idle timers after the teardown's final flush, not
-  before — a stalled flush re-armed it, and the timer then held the torn-down connection until it
-  fired (#1040)
+  before — a stalled flush re-arms the write-idle one, which then held the torn-down connection
+  until it fired (#1040)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: a throw while preparing an accepted socket or
   handling readiness no longer ends the EventLoop's thread — the connection that raised it is the
   casualty instead (#1039)

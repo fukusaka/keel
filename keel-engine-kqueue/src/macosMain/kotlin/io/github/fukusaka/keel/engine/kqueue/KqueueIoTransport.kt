@@ -794,9 +794,9 @@ internal class KqueueIoTransport(
         // resuming reads lands in the `readEnabled` setter. What declines the
         // arm there is `opened`, already false by the time a teardown runs --
         // a guard, not an absence of a path, and one the write side's arm does
-        // not have, which is why only that one ever fired. Every arm site in
-        // the tree carries it today except that one; cancelling after the drain
-        // is what keeps the order right for a site that stops carrying it.
+        // not have -- nor does any other engine's write-side arm, while every
+        // read-side arm in the tree is guarded. Cancelling after the drain is
+        // what keeps the order right whichever side a future arm lands on.
         failure = runTeardownStage(failure) {
             if (flushScheduled) {
                 flushScheduled = false
