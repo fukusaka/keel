@@ -186,7 +186,11 @@ class KqueueTeardownFailureSeamTest {
                 failing.refusedReleases,
                 "the seam must have reached the release for this test to mean anything",
             )
-            withTimeout(IO_BUDGET) { waiter.await() }
+            // Its own budget, inside the enclosing one, for the reason the
+            // stopped-loop test below has one: sharing IO_BUDGET means the
+            // outer deadline always expires first and the failure names nothing.
+            val woken = withTimeoutOrNull(WAITER_BUDGET) { waiter.await() } != null
+            assertTrue(woken, "the refused release must not take the waiter's wake with it")
             waiting.cancel()
             failing.releaseUnderlying()
 
@@ -309,9 +313,10 @@ class KqueueTeardownFailureSeamTest {
             // The drain can arm a timer: a flush that stalls re-registers for
             // write readiness, and that starts the write-idle clock. With the
             // cancels ahead of the drain, the timer armed here outlived the
-            // teardown -- holding this transport on the loop's scheduler until
-            // it fired, then reporting the connection inactive a second time,
-            // after it was gone.
+            // teardown -- holding this transport, and the channel and pipeline
+            // graph behind it, on the loop's scheduler until it fired. Not a
+            // second inactive notification: the pipeline's is idempotent, so a
+            // stray one is either swallowed or, after a local close, the first.
             val fake = FakeNativeSocket().apply { enqueueWrite(readFd, WriteResult.WouldBlock) }
             val transport = KqueueIoTransport(
                 readFd,
@@ -323,7 +328,6 @@ class KqueueTeardownFailureSeamTest {
             val buf = DefaultAllocator.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
             val reported = CompletableDeferred<Unit>()
             transport.onReadClosed = { reported.complete(Unit) }
-            val surrendered = readFd
             readFd = -1
 
             onLoop {

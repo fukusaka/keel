@@ -380,7 +380,7 @@ class KqueueOnReadableSeamTest {
 
             // The same readiness on the write half must not walk back into what
             // the failed stage left: `abandoned` is still queued, because the
-            // drain stops where it failed even though the stages after it run.
+            // release stops where it failed even though the stages after it run.
             // The registration and the descriptor are gone by now -- the
             // teardown withdrew and closed them -- so what is checked here is
             // the transport's own refusal to act on a connection that ended.
@@ -401,9 +401,9 @@ class KqueueOnReadableSeamTest {
             // scripted write succeeds, and one about the syscall bites whatever
             // the fake is set to answer.
             assertEquals(0, fake.writeCalls + fake.writevCalls, "no flush was attempted")
-            assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the drain left")
+            assertEquals(0, abandoned.refusedReleases, "nothing walked back into what the release left")
 
-            assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the drain could not")
+            assertTrue(queued.releaseUnderlying(), "the fixture cleans up what the release could not")
             assertTrue(abandoned.releaseUnderlying(), "and the one behind the refusal")
             // EBADF rather than 0: the teardown reached its close despite the
             // stage that threw. This assertion was the other way round when the
