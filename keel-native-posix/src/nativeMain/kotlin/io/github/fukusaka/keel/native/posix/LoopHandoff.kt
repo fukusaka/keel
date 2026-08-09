@@ -98,6 +98,15 @@ class LoopHandoff(
      * registration already queued for the same fd, so a dispatched arm cannot
      * land on a descriptor number the kernel has since handed to someone else.
      *
+     * The accept hand-off uses it for the same descriptor hazard read the
+     * other way round: a freshly accepted fd carries a number the kernel may
+     * just have taken back from a connection on that very worker, so releasing
+     * it while the worker still holds a queued arm for the old owner is the
+     * same collision. A worker that will run nothing more therefore has the
+     * descriptor released here rather than handed to it — Netty's `forceClose`
+     * on a rejected `execute`, reached by a hand-off that waits instead of
+     * refusing.
+     *
      * **On a live loop this returns before the work runs** — waiting would
      * block the caller on a loop that may be mid-syscall. **On a stopping
      * loop it blocks**: a caller landing between [markFinished] and
@@ -105,7 +114,9 @@ class LoopHandoff(
      * user code — and then runs [ifStopped] synchronously. A caller that
      * blocks inside that window while holding something the sweep's handlers
      * need turns the wait into a deadlock; close paths must not hold
-     * application locks.
+     * application locks. The accept hand-off holds none, but it does block a
+     * boss loop, and with it every listener that loop serves, for as long as
+     * one worker's teardown takes.
      *
      * The two blocks exist because the fallback runs off the loop. [onLoop] may
      * touch loop-owned state (registries the loop guards), because it only ever

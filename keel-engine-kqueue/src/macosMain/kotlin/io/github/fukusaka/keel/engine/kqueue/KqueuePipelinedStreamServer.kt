@@ -221,11 +221,45 @@ internal class KqueuePipelinedStreamServer(
     private fun nextWorker(): KqueueEventLoop =
         workerGroup.at((workerIndex++ and Int.MAX_VALUE) % workerGroup.size)
 
+    /**
+     * Hands the accepted descriptor to [workerLoop], or releases it if that
+     * worker will never run anything again.
+     *
+     * A plain `dispatch` is taken by the queue whatever state the loop is in,
+     * and after the loop's final drain nothing drains it again: the descriptor
+     * sat in a task no thread would run and stayed open until the process
+     * exited — while the peer's `connect` had already succeeded and it waited
+     * on a socket nobody would ever read. That is not the same window
+     * [onWorkerAccept]'s `joinedLoop` check covers: there the task *does* run,
+     * in the final drain, and finds the ledgers closed. This is after it.
+     *
+     * [io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop.runOnLoop]
+     * rather than asking the loop whether it has stopped and branching on the
+     * answer: the ask and the offer are two steps, and a loop that goes
+     * quiescent between them takes the task into the dead queue after all. The
+     * hand-off's claim makes exactly one of the two run.
+     *
+     * **This thread pays for it.** A worker that has stopped polling but has
+     * not yet published quiescence makes the caller wait out that worker's
+     * final drain and stop sweep — which run user code. The caller here is the
+     * boss loop, so accepts on *every* listener pause for as long as that
+     * takes. It is the wait every other caller of that hand-off already takes
+     * on a stopping loop, now reached from the accept path too.
+     *
+     * The fallback closes the raw descriptor rather than building a transport
+     * to close: nothing has been constructed for it yet, so nothing else owns
+     * it and no later `close()` will arrive — the same reason the setup-failure
+     * branch in [acceptLoop] closes it directly.
+     */
     private fun dispatchToWorker(workerLoop: KqueueEventLoop, clientFd: Int, listener: Listener) {
-        workerLoop.dispatch(
-            kotlin.coroutines.EmptyCoroutineContext,
-            kotlinx.coroutines.Runnable {
-                onWorkerAccept(clientFd, workerLoop, listener)
+        workerLoop.runOnLoop(
+            onLoop = { onWorkerAccept(clientFd, workerLoop, listener) },
+            ifStopped = {
+                closeFdSafely(clientFd, logger, "accept handed to a stopped worker")
+                logger.warn {
+                    "the worker EventLoop for an accepted connection has stopped; " +
+                        "dropping that connection: fd=$clientFd"
+                }
             },
         )
     }
