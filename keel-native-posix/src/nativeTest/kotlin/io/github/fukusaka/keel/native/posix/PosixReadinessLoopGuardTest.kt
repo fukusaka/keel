@@ -6,6 +6,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -187,5 +188,54 @@ internal class PosixReadinessLoopGuardTest : AbstractPosixReadinessEventLoopFixt
             "the party that now owns the key keeps its registration",
         )
         assertEquals(emptyList(), loop.disarmed, "and keeps the interest armed with it")
+    }
+
+    @Test
+    fun `a loop that never ran is taken apart by whoever closes it`() {
+        // Nothing published `finished` or `quiescent` for such a loop, so the
+        // hand-off reads it as live and offers work no drain would ever run.
+        // The closing thread runs the loop's terminal sequence instead.
+        val loop = RealQueueLoop(onLoopThread = false)
+        var ran = 0
+        loop.runOnLoop(onLoop = { ran++ }, ifStopped = { })
+
+        assertEquals(0, ran, "premise: nothing runs it -- there is no thread")
+        assertEquals(0, loop.drainCalls, "premise: no drain has happened")
+
+        assertTrue(loop.finishWithoutRunning(), "an unclaimed loop is this caller's to take apart")
+
+        assertEquals(1, ran, "the queued work runs, in the terminal sequence's drain")
+        // Two drains per completed sequence -- the final one, then the
+        // sweep's unconditional one. The same count the double-entry guard
+        // uses, and what says the sequence ran exactly once.
+        assertEquals(2, loop.drainCalls, "the sequence ran once, not twice")
+        assertTrue(loop.isStopped(), "and published quiescence, so nothing waits on it")
+        assertNull(loop.recordedLoopThread, "the claiming thread's identity is cleared on the way out")
+    }
+
+    @Test
+    fun `only one thread takes a loop apart and it is whichever gets there first`() {
+        // The claim is what makes the confinement a fact: the sequence walks
+        // ledgers, and two walkers would do it against each other.
+        val closed = RealQueueLoop(onLoopThread = false)
+        assertTrue(closed.finishWithoutRunning(), "the first caller takes it")
+
+        assertFalse(closed.finishWithoutRunning(), "a second caller is refused")
+        assertEquals(2, closed.drainCalls, "and does not run the sequence again")
+
+        closed.loop()
+        assertEquals(2, closed.drainCalls, "nor does a `loop()` arriving afterwards")
+        assertTrue(
+            closed.logged.any { it.first == LogLevel.ERROR && it.second.contains("already claimed") },
+            "which is reported: ${closed.logged}",
+        )
+
+        // And the other way round: a loop that ran owns its own end.
+        val ran = RealQueueLoop()
+        ran.loop()
+        assertEquals(2, ran.drainCalls, "premise: the loop ran its sequence")
+
+        assertFalse(ran.finishWithoutRunning(), "a closer arriving after the loop is told to join instead")
+        assertEquals(2, ran.drainCalls, "and runs nothing")
     }
 }

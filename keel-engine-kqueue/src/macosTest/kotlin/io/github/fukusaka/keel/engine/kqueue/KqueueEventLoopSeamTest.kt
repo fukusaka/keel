@@ -484,7 +484,12 @@ class KqueueEventLoopSeamTest {
 
         loop.close()
 
-        assertEquals(1, onLoop + ifStopped, "close must run what was handed over, by one route or the other")
+        // The route matters, not just that something ran: the work was queued
+        // for the loop, so the terminal sequence's drain must run it. Falling
+        // back on the caller instead would be a different contract -- the
+        // fallback is documented as not acting on state the loop owned.
+        assertEquals(1, onLoop, "the queued work runs, on the thread that claimed the loop")
+        assertEquals(0, ifStopped, "and not as the off-loop fallback")
     }
 
     @Test
@@ -493,19 +498,24 @@ class KqueueEventLoopSeamTest {
         // A `start()` arriving afterwards must find it gone: a second walker
         // would run the terminal sequence against ledgers already swept, on a
         // thread the first one does not know about.
-        val loop = KqueueEventLoop(NoopLoggerFactory.logger("KqueueEventLoopSeamTest"))
+        val errors = mutableListOf<String>()
+        val loop = KqueueEventLoop(levelRecordingLogger(LogLevel.ERROR, errors))
         loop.close()
 
         assertTrue(loop.isStopped(), "premise: the closing thread ran the terminal sequence")
 
         loop.start()
 
-        // No thread is created at all. It is not enough for one to start and
-        // find the claim taken: `threadPtr` lives in the arena that `close()`
-        // has already released, so `pthread_create` would write through a
-        // dangling pointer -- which showed up as a crash three tests later,
-        // not here.
-        assertTrue(loop.isStopped(), "a loop closed before it ever ran must not come back")
+        // Asserted on the refusal, not on the loop still being stopped:
+        // `isStopped()` reads a latch that `start()` never touches, so it
+        // holds whether or not a thread was created. What must not happen is
+        // the creation itself -- `threadPtr` lives in the arena `close()` has
+        // already released, so `pthread_create` writes through a dangling
+        // pointer. That showed up as a crash three tests later, never here.
+        assertTrue(
+            errors.any { "start() on a closed loop is ignored" in it },
+            "starting a closed loop must be refused outright: $errors",
+        )
         loop.close()
     }
 
