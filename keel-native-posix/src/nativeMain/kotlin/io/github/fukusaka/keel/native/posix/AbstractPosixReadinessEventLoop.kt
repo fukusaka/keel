@@ -900,8 +900,9 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * it always did.
      *
      * Named apart from `LoopHandoff.runOnLoop` on purpose: that one takes an
-     * `ifStopped` fallback and waits out the loop's final drain before choosing
-     * between them. This one does not, and the difference is the hazard below.
+     * `ifStopped` fallback and, unless its caller hands in a wait budget, waits
+     * out the loop's final drain before choosing between them. This one does
+     * not, and the difference is the hazard below.
      *
      * A caller arriving *before* the loop starts is fine: the task queues and
      * the loop drains it on its first iteration.

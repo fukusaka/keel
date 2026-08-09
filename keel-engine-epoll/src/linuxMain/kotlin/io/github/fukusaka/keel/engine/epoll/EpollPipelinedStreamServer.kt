@@ -224,8 +224,8 @@ internal class EpollPipelinedStreamServer(
      * to [reportDrops] as one thing; the accept path allocates one of these per
      * readiness callback, not per connection.
      *
-     * `internal` for its test: the latch in [budget] is the whole of the
-     * boss-liveness guarantee, and the window it fires in — a worker that has
+     * `internal` for its test: [remainingBudget] is the whole of the
+     * boss-liveness guarantee, and the window it governs — a worker that has
      * finished polling but not yet gone quiet — is one the engine seam cannot
      * hold open.
      */
@@ -239,11 +239,15 @@ internal class EpollPipelinedStreamServer(
         /**
          * What is left of this callback's wait.
          *
-         * Every hand-off's wait comes out of one allowance, so the thread's
-         * total stall is [STOPPING_WORKER_WAIT_MICROS] however many stopping
-         * workers round-robin reaches. Spending it is what counts, not
-         * running out of it: a hand-off that waited 99ms and *then* saw
-         * quiescence has cost this thread the same 99ms as one that gave up.
+         * Every hand-off's wait comes out of one allowance, so **this
+         * callback's** total stall is [STOPPING_WORKER_WAIT_MICROS] however
+         * many stopping workers round-robin reaches — plus at most one poll
+         * quantum, since the wait checks its allowance before sleeping rather
+         * than after. The next callback gets a fresh allowance: a worker
+         * wedged in that window costs the boss loop that much per readiness,
+         * not once. Spending it is what counts, not running out of it: a
+         * hand-off that waited 99ms and *then* saw quiescence has cost this
+         * thread the same 99ms as one that gave up.
          */
         fun remainingBudget(): Long = (STOPPING_WORKER_WAIT_MICROS - waitedMicros).coerceAtLeast(0)
 
@@ -377,12 +381,17 @@ internal class EpollPipelinedStreamServer(
      * to it.
      *
      * Per accepted connection this allocates the two blocks and the hand-off's
-     * claim where the bare `dispatch` allocated one `Runnable`. Measured on the
-     * only shape available (a keep-alive `/hello` A/B on both engines) it does
-     * not move throughput, but that shape accepts once per connection and
-     * reuses it thereafter, so it is a no-regression guard rather than a
-     * measurement of this cost; there is no accept-rate benchmark to take one
-     * from.
+     * claim where the bare `dispatch` allocated one `Runnable`, and [acceptLoop]
+     * reads the monotonic clock twice around the call — the quantity they
+     * measure can only be non-zero in the abnormal window, but the reads
+     * happen on every accept. Measured on the only shape available (a
+     * keep-alive `/hello` A/B on both engines) none of it moves throughput,
+     * but that shape accepts once per connection and reuses it thereafter, so
+     * it is a no-regression guard rather than a measurement of this cost;
+     * there is no accept-rate benchmark to take one from.
+     *
+     * A throw out of here (only a logger could) skips the tally, so that one
+     * connection goes unreported — the descriptor is already released by then.
      */
     private fun dispatchToWorker(
         workerLoop: EpollEventLoop,
