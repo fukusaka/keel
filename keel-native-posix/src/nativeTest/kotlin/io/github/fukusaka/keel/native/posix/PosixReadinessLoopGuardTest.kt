@@ -75,8 +75,11 @@ internal class PosixReadinessLoopGuardTest : AbstractPosixReadinessEventLoopFixt
     @Test
     fun `entering the loop a second time is refused without throwing`() {
         // loop() runs as a pthread entry point with nothing above it to catch,
-        // so a second entry is reported and ignored rather than thrown -- and it
-        // must not re-point the thread identity the whole class reads.
+        // so an entry that does not get the termination claim is reported and
+        // ignored rather than thrown -- and it must not re-point the thread
+        // identity the whole class reads. A second `loop()` is one way to
+        // arrive without the claim; a `close()` that ran the teardown first is
+        // the other.
         val loop = RealQueueLoop()
         loop.loop()
         val errorsAfterFirst = loop.logged.count { it.first == LogLevel.ERROR }
@@ -85,7 +88,7 @@ internal class PosixReadinessLoopGuardTest : AbstractPosixReadinessEventLoopFixt
 
         assertEquals(0, errorsAfterFirst, "the first entry is not an error")
         assertTrue(
-            loop.logged.any { it.first == LogLevel.ERROR && it.second.contains("entered twice") },
+            loop.logged.any { it.first == LogLevel.ERROR && it.second.contains("already claimed") },
             "the second entry must be reported: ${loop.logged}",
         )
         // The log line alone would pass for a guard that reports and then

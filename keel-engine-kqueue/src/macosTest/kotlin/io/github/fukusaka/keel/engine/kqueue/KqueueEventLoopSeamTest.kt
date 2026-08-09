@@ -465,6 +465,50 @@ class KqueueEventLoopSeamTest {
         }
     }
 
+    @Test
+    fun `closing a loop that never started still runs what was handed to it`() {
+        // A loop can be closed without ever having run: a group whose `start()`
+        // fails part way leaves the rest constructed and idle. Nothing has
+        // published `finished` or `quiescent` for it, so the hand-off reads
+        // "live" and offers -- and no drain ever comes. Before this, the work
+        // sat in that queue for the loop object's lifetime: a transport's
+        // teardown, and with it the descriptor it would have released.
+        val loop = KqueueEventLoop(NoopLoggerFactory.logger("KqueueEventLoopSeamTest"))
+        var onLoop = 0
+        var ifStopped = 0
+
+        loop.runOnLoop(onLoop = { onLoop++ }, ifStopped = { ifStopped++ })
+
+        assertEquals(0, onLoop, "premise: nothing runs it yet -- there is no thread to run it")
+        assertEquals(0, ifStopped, "premise: the loop does not look stopped, because nothing said so")
+
+        loop.close()
+
+        assertEquals(1, onLoop + ifStopped, "close must run what was handed over, by one route or the other")
+    }
+
+    @Test
+    fun `a loop started after it was closed does not take the ledgers back`() {
+        // The claim is what lets the closing thread walk state the loop owns.
+        // A `start()` arriving afterwards must find it gone: a second walker
+        // would run the terminal sequence against ledgers already swept, on a
+        // thread the first one does not know about.
+        val loop = KqueueEventLoop(NoopLoggerFactory.logger("KqueueEventLoopSeamTest"))
+        loop.close()
+
+        assertTrue(loop.isStopped(), "premise: the closing thread ran the terminal sequence")
+
+        loop.start()
+
+        // No thread is created at all. It is not enough for one to start and
+        // find the claim taken: `threadPtr` lives in the arena that `close()`
+        // has already released, so `pthread_create` would write through a
+        // dangling pointer -- which showed up as a crash three tests later,
+        // not here.
+        assertTrue(loop.isStopped(), "a loop closed before it ever ran must not come back")
+        loop.close()
+    }
+
     private companion object {
         /** Poll step while waiting for the loop to perform a claimed release. */
         const val FD_CLOSE_POLL_US = 2_000u
