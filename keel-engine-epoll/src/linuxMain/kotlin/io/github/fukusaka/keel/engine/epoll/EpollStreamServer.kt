@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
@@ -88,10 +89,29 @@ internal class EpollStreamServer(
             when (val result = nativeSocket.accept(serverFd)) {
                 is AcceptResult.Accepted -> {
                     val clientFd = result.fd
-                    nativeSocketOps.setNonBlocking(clientFd)
-                    nativeSocketOps.applySocketOptions(clientFd, bindConfig.childSocketOptions)
-                    val remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
-                    val localAddr = nativeSocketOps.getLocalAddress(clientFd)
+                    // Nothing owns this descriptor yet, and all three of these
+                    // throw on a failed syscall: `setNonBlocking` is `check`
+                    // over `fcntl`, and both address queries are `check` over
+                    // `getpeername` / `getsockname`. A peer that resets between
+                    // `accept()` returning and the query gets `ENOTCONN` --
+                    // which is why the pipelined twin wraps the same call. The
+                    // throw reaches the accept loop, which logs, backs off and
+                    // retries, so an unreleased descriptor here is one per
+                    // accept until the table is full.
+                    val remoteAddr: SocketAddress
+                    val localAddr: SocketAddress
+                    try {
+                        nativeSocketOps.setNonBlocking(clientFd)
+                        nativeSocketOps.applySocketOptions(clientFd, bindConfig.childSocketOptions)
+                        remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
+                        localAddr = nativeSocketOps.getLocalAddress(clientFd)
+                    } catch (setupFailure: Throwable) {
+                        logger.warn(setupFailure) {
+                            "preparing an accepted socket failed; dropping that connection: fd=$clientFd"
+                        }
+                        closeFdSafely(clientFd, logger, "accepted socket setup")
+                        throw setupFailure
+                    }
                     val workerLoop = workerGroup.next()
                     val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
                     val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis

@@ -413,8 +413,9 @@ internal class KqueuePipelinedStreamServer(
      *
      * Each step that can fail is guarded, because the descriptor has an owner
      * only from partway through. Not every statement: `readEnabled = true` at
-     * the end arms the read and the idle timer, and a throw from *inside* it
-     * reaches the same end state this guards against — only an
+     * the end is unguarded, and a throw from inside it leaves the connection
+     * short of an idle timer rather than unread — the flag is assigned first,
+     * and READ was already armed when the channel attached. Only an
      * allocation-class failure gets there, and nothing here would know what to
      * do about one. Before the transport exists nothing else will release
      * it; after it exists but before the channel attaches, the transport is not
