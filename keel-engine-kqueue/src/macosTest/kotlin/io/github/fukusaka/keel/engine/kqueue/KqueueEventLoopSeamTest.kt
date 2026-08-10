@@ -487,7 +487,7 @@ class KqueueEventLoopSeamTest {
 
         assertTrue(
             warnings.none { "pthread_join" in it },
-            "no join may be attempted for a thread that was never created: $$warnings",
+            "no join may be attempted for a thread that was never created: $warnings",
         )
     }
 

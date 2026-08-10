@@ -834,7 +834,7 @@ class EpollEventLoopSeamTest {
 
         assertTrue(
             errors.none { "pthread_join" in it },
-            "no join may be attempted for a thread that was never created: $$errors",
+            "no join may be attempted for a thread that was never created: $errors",
         )
     }
 
