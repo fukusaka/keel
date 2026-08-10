@@ -182,7 +182,20 @@ public class FakeNativeSocketOps : NativeSocketOps {
         return connectQueue[fd]?.removeFirstOrNull() ?: defaultConnect
     }
 
+    /**
+     * Thrown by the next [getSocketError], then cleared.
+     *
+     * `getsockopt(SO_ERROR)` is a `check` over the syscall in the real ops, and
+     * it is read on the in-progress connect path once write-readiness arrives —
+     * with the descriptor back in the caller's hands and nobody else holding it.
+     */
+    public var getSocketErrorThrowsOnce: Throwable? = null
+
     override fun getSocketError(fd: Int): Int {
+        getSocketErrorThrowsOnce?.let {
+            getSocketErrorThrowsOnce = null
+            throw it
+        }
         getSocketErrorCalls++
         return socketErrorQueue[fd]?.removeFirstOrNull() ?: defaultSocketError
     }

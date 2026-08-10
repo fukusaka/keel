@@ -9,13 +9,17 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.AF_INET
+import platform.posix.AF_UNIX
 import platform.posix.SOCK_STREAM
 import platform.posix.close
 import platform.posix.dup
 import platform.posix.socket
+import platform.posix.socketpair
 import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -80,11 +84,52 @@ class KqueueConnectGuardSeamTest {
                     "the connect never produced a channel, so nothing else will ever close this",
                 )
             } finally {
-                val leftOpen = dup(doomed)
-                if (leftOpen >= 0) {
-                    close(leftOpen)
-                    close(doomed)
+                // Deliberately not reclaimed. On the passing path the guard has
+                // already closed this number, and it is the lowest free one in
+                // the process while the engine's threads are still running --
+                // closing it again would be closing whatever took it. A failing
+                // run leaks it instead, which is the failure being reported.
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a connect whose socket error cannot be read releases the descriptor`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The in-progress path: the descriptor comes back from the await
+            // owned by this frame again, and `getsockopt(SO_ERROR)` is the
+            // first thing that touches it. A throw there is the same loss as
+            // the address query, one await later.
+            // One end of a socketpair, not a bare socket: the engine waits for
+            // write-readiness on this descriptor before reading SO_ERROR, and
+            // an unconnected socket never becomes writable.
+            val pair = IntArray(2)
+            val paired = pair.usePinned { socketpair(AF_UNIX, SOCK_STREAM, 0, it.addressOf(0)) == 0 }
+            assertTrue(paired, "could not open a socket pair for the engine to connect with")
+            val doomed = pair[0]
+            val peer = pair[1]
+            val fakeOps = FakeNativeSocketOps().apply {
+                nextCreatedFd = doomed
+                defaultConnect = ConnectResult.InProgress
+                getSocketErrorThrowsOnce = InjectedFault("getsockopt(SO_ERROR) failed: EBADF")
+            }
+            val engine = KqueueEngine(
+                config = IoEngineConfig(threads = 1),
+                nativeSocket = FakeNativeSocket(),
+                nativeSocketOps = fakeOps,
+            )
+            try {
+                assertFailsWith<InjectedFault> {
+                    engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 9))
                 }
+
+                assertFalse(
+                    stillOpen(doomed),
+                    "the connect never produced a channel, so nothing else will ever close this",
+                )
+            } finally {
+                close(peer)
                 engine.close()
             }
         }
