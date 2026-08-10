@@ -249,6 +249,13 @@ internal class KqueueStreamServer(
             // The pipelined path guards the same window; this one
             // rethrows as well, because unlike there, somebody is
             // waiting on this call and can be told.
+            //
+            // What neither does is tell the pipeline: handlers the
+            // initialiser installed before it threw get no
+            // `onInactive`, so whatever they hold ends with them. That
+            // is how `close()` behaves everywhere in the tree rather
+            // than something this path chose; changing it is a contract
+            // question, filed separately.
             releaseAndRaise(
                 clientFd,
                 transport,
@@ -272,20 +279,28 @@ internal class KqueueStreamServer(
      * for the raw close. Raised last, carrying [cause] rather than whatever the
      * release hit -- see [releaseAfterFailedAccept].
      *
-     * Every failure of a Channel-mode accept goes through here, so "the order
-     * it owes them" is a property of this function rather than a convention
-     * the call sites keep. Not the pipelined server: its guards still write the
-     * three steps out by hand, and already differ from these -- its own
-     * stopped-loop branch reports nothing at the server level where this one
-     * does.
+     * Every failure of a Channel-mode accept **that has a descriptor to lose**
+     * goes through here, so "the order it owes them" is a property of this
+     * function rather than a convention the call sites keep. The failures
+     * before that -- a closed server, a declined registration, `accept(2)`
+     * itself failing -- have nothing to release and do not. Nor does the
+     * pipelined server: its guards still write the three steps out by hand,
+     * and already differ from these, its stopped-loop branch reporting nothing
+     * at the server level where this one does.
      */
     private fun releaseAndRaise(
         clientFd: Int,
         transport: KqueueIoTransport?,
         cause: Throwable,
         what: String,
+        // Only consulted on the `transport == null` path; once one exists the
+        // teardown names its own stages.
         closeContext: String = "accepted connection construction",
     ): Nothing {
+        // Ahead of the release, which is what makes the descriptor's fate
+        // depend on this call returning. The engines wrap the configured
+        // factory so a `Logger` cannot throw out of here; a server built with
+        // an unwrapped one -- which the tests do -- would strand the fd.
         logger.warn(cause) { "$what: fd=$clientFd" }
         if (transport == null) {
             // Nothing owns it yet, so this is the raw close rather than a
@@ -327,6 +342,12 @@ internal class KqueueStreamServer(
         try {
             transport.close()
         } catch (releaseFailure: Throwable) {
+            // Logged as well as attached. Attaching alone is what the paragraph
+            // above admits may never be read -- and on the cancellation path it
+            // certainly is not -- which would leave a teardown that failed
+            // entirely unreported. The transport's own teardown logs its stage
+            // failures the same way rather than only re-raising them.
+            logger.warn(releaseFailure) { "releasing a dropped accepted connection failed as well: fd=${transport.fd}" }
             cause.addSuppressed(releaseFailure)
         }
     }
