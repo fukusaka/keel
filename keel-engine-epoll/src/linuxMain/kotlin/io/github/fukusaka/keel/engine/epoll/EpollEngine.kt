@@ -156,14 +156,14 @@ class EpollEngine(
 
         val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog)
 
-        try {
+        return releaseOnFailure(serverFd, "bindUnix cleanup") {
             // The listener is left unregistered here; accept() registers it
             // through [EpollEventLoop.register] once it has a waiter to hand the
             // event to. Registering earlier would break the loop's
             // registered-implies-handler invariant, whose no-handler branch
             // removes the interest again.
             logger.debug { "Bound to $address" }
-            return EpollStreamServer(
+            EpollStreamServer(
                 serverFd,
                 bossLoop,
                 workerGroup,
@@ -173,9 +173,6 @@ class EpollEngine(
                 nativeSocket,
                 nativeSocketOps,
             )
-        } catch (t: Throwable) {
-            closeFdSafely(serverFd, logger, "bindUnix cleanup")
-            throw t
         }
     }
 
@@ -186,7 +183,7 @@ class EpollEngine(
         val port = address.port
         val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog)
 
-        try {
+        return releaseOnFailure(serverFd, "bindInet cleanup") {
             // The listener is left unregistered here; accept() registers it
             // through [EpollEventLoop.register] once it has a waiter to hand the
             // event to. Registering earlier would break the loop's
@@ -194,7 +191,7 @@ class EpollEngine(
             // removes the interest again.
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            return EpollStreamServer(
+            EpollStreamServer(
                 serverFd,
                 bossLoop,
                 workerGroup,
@@ -204,9 +201,6 @@ class EpollEngine(
                 nativeSocket,
                 nativeSocketOps,
             )
-        } catch (t: Throwable) {
-            closeFdSafely(serverFd, logger, "bindInet cleanup")
-            throw t
         }
     }
 
@@ -392,27 +386,35 @@ class EpollEngine(
      * Runs [build] and returns its value, closing [fd] and re-raising if it
      * throws.
      *
-     * The connect path holds a descriptor nobody else can name from the moment
-     * the socket is opened until the channel is returned: the transport is not
-     * in the loop's registry until the channel attaches, so no stop
-     * notification reaches it either. Every step in that stretch that can fail
-     * goes through here or through [releaseTransport] -- with two exceptions
-     * that release for themselves, the `SO_ERROR` and connect-failure branches,
-     * and one that cannot fail: the debug line's message is a `sealed`
-     * address's generated `toString`, so no caller-supplied `NativeSocketOps`
-     * can put its own code there. What is left when a step does fail is the
-     * caller's exception rather than a descriptor open for the process's life
-     * on a socket whose peer believes it is connected.
+     * Every path that opens a descriptor holds one nobody else can name until
+     * it is handed to something that will close it -- a channel for `connect`,
+     * a server or a listener for `bind`. On the connect path that stretch
+     * reaches past the transport, which is not in the loop's registry until the
+     * channel attaches, so no stop notification reaches it either. What is left
+     * when a step in it fails is the caller's exception rather than a
+     * descriptor open for the process's life on a socket whose peer believes it
+     * is connected.
+     *
+     * On the connect path every step that can fail goes through here or through
+     * [releaseTransport], with two exceptions that release for themselves --
+     * the `SO_ERROR` and connect-failure branches -- and one that cannot fail:
+     * the debug line renders a [SocketAddress], which is `sealed` in this
+     * library, so its `toString` is keel's own however the address was
+     * obtained. A caller-supplied `NativeSocketOps` cannot put its code there.
      *
      * `crossinline` for the reason the transport's teardown stages carry it: a
      * `return` written inside a future [build] would leave the `try` without
      * entering the `catch`, and the descriptor would go unreleased -- which is
      * the whole contract.
      *
-     * **Not the stretch spent waiting for write-readiness.** That await owns
-     * the descriptor while it holds it and releases it on cancellation and on
-     * failure, under a claim so the two endings cannot both close. Closing
-     * here as well would be closing a number the kernel may have handed on.
+     * **Not the stretch spent waiting for write-readiness** (connect only).
+     * That await owns the descriptor while it holds it and releases it on
+     * cancellation and on failure, under a claim so the two endings cannot
+     * both close. Closing here as well would be closing a number the kernel
+     * may have handed on.
+     *
+     * [context] names the stage in the close's own report, and defaults to the
+     * connect window because that is where most of these are.
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun <T> releaseOnFailure(
