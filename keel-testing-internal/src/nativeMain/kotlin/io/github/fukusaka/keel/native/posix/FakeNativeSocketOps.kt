@@ -192,8 +192,23 @@ public class FakeNativeSocketOps : NativeSocketOps {
         return localAddressQueue[fd]?.removeFirstOrNull() ?: defaultAddresses.second
     }
 
+    /**
+     * Thrown by the next [getRemoteAddress], then cleared.
+     *
+     * `getpeername` is a `check` over the syscall in the real ops, and a peer
+     * that resets between the connection completing and the query answers
+     * `ENOTCONN` — the one failure in the accept and connect construction
+     * windows that is reachable rather than defensive. Consumed once so a test
+     * can assert the seam reached it.
+     */
+    public var getRemoteAddressThrowsOnce: Throwable? = null
+
     override fun getRemoteAddress(fd: Int): SocketAddress {
         getRemoteAddressCalls++
+        getRemoteAddressThrowsOnce?.let {
+            getRemoteAddressThrowsOnce = null
+            throw it
+        }
         return remoteAddressQueue[fd]?.removeFirstOrNull() ?: defaultAddresses.first
     }
 
