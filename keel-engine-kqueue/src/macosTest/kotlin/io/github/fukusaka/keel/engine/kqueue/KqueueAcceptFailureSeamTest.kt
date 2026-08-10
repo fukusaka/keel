@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.native.posix.HandoffOutcome
 import io.github.fukusaka.keel.native.posix.LoopParticipant
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -537,9 +538,99 @@ class KqueueAcceptFailureSeamTest {
         }
     }
 
+    @Test
+    fun `a drop whose own release throws is still reported`() = runBlocking {
+        withTimeout(15.seconds) {
+            // Each guard reports before it releases, because the release is
+            // itself a throw source: the transport's teardown re-raises what
+            // its stages failed with. Reported after, a teardown that threw
+            // would take the cause with it and leave the operator the generic
+            // drain warning the guard exists to replace.
+            //
+            // Reachable through the drain stage, and only from the initializer
+            // guard: an initializer that writes before it fails leaves the
+            // flush deferred -- it runs on the worker's own thread, so the
+            // flush is queued rather than performed -- and the teardown two
+            // lines later finds it and drains it inline. The other two guards
+            // release through `closeFdSafely`, which reports rather than
+            // throws, so their ordering has nothing to observe it with.
+            val warns = RecordingLogger(LogLevel.WARN)
+            val bossLoop = KqueueEventLoop(warns)
+            val workerGroup = KqueueEventLoopGroup(1, warns, DefaultAllocator)
+            val sentinelFd = newSentinelFd()
+            val doomed = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(doomed >= 0, "could not open a socket to be accepted")
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18094)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(doomed))
+                enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
+            }
+            val server = KqueuePipelinedStreamServer(
+                listeners = listOf(
+                    KqueuePipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                ),
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                logger = warns,
+                pipelineInitializer = { channel ->
+                    val greeting = DefaultAllocator.allocate(GREETING_BYTES)
+                        .also { it.writerIndex = GREETING_BYTES }
+                    channel.pipeline.requestWriteAndFlush(greeting)
+                    // Armed here rather than before the drive, so nothing but
+                    // this connection's own teardown can consume it.
+                    fakeSocket.flushThrowsOnce = InjectedFault("the deferred flush failed")
+                    error("the initializer for this connection failed")
+                },
+                nativeSocket = fakeSocket,
+                nativeSocketOps = FakeNativeSocketOps(),
+            )
+            try {
+                workerGroup.start()
+
+                server.onAcceptable()
+
+                val deadline = TimeSource.Monotonic.markNow()
+                while (deadline.elapsedNow() < CLOSE_BUDGET && stillOpen(doomed)) {
+                    usleep(CLOSE_POLL_MICROS)
+                }
+                workerGroup.close()
+
+                // The seam reached the drain. Without this the release never
+                // threw and the assertion below holds against a build that
+                // reports afterwards.
+                assertEquals(
+                    null,
+                    fakeSocket.flushThrowsOnce,
+                    "the teardown must have drained the deferred flush for this test to mean anything",
+                )
+                assertEquals(
+                    1,
+                    warns.messages.count { "initialising an accepted connection failed" in it },
+                    "a release that threw must not take the report of why with it: ${warns.messages}",
+                )
+                assertFalse(
+                    stillOpen(doomed),
+                    "and the descriptor still goes: the teardown closes it whatever its stages did",
+                )
+            } finally {
+                val leftOpen = dup(doomed)
+                if (leftOpen >= 0) {
+                    close(leftOpen)
+                    close(doomed)
+                }
+                server.close()
+                bossLoop.close()
+                workerGroup.close()
+            }
+        }
+    }
+
     private companion object {
         /** Poll interval while waiting for another thread to reach a state. */
         const val POLL_MICROS: UInt = 1_000u
+
+        /** Payload an initializer writes before failing, to leave a flush deferred. */
+        const val GREETING_BYTES: Int = 8
 
         /** Poll interval while waiting for a worker thread to release a descriptor. */
         const val CLOSE_POLL_MICROS: UInt = 1_000u
