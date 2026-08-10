@@ -186,4 +186,39 @@ class EpollConnectGuardSeamTest {
             }
         }
     }
+
+    @Test
+    fun `a connect whose local address cannot be read releases the descriptor`() = runBlocking {
+        withTimeout(15.seconds) {
+            // One line below the peer-address guard, and its own guard: a
+            // `getsockname` that fails after a `getpeername` that did not is
+            // the same loss, and the test above cannot see it because it throws
+            // on the line before.
+            val doomed = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(doomed >= 0, "could not open a socket for the engine to connect with")
+            val fakeOps = FakeNativeSocketOps().apply {
+                nextCreatedFd = doomed
+                defaultConnect = ConnectResult.Connected
+                getLocalAddressThrowsOnce = InjectedFault("getsockname() failed: ENOTCONN")
+            }
+            val engine = EpollEngine(
+                config = IoEngineConfig(threads = 1),
+                nativeSocket = FakeNativeSocket(),
+                nativeSocketOps = fakeOps,
+            )
+            try {
+                assertFailsWith<InjectedFault> {
+                    engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 9))
+                }
+
+                engine.close()
+                assertFalse(
+                    stillOpen(doomed),
+                    "the connect never produced a channel, so nothing else will ever close this",
+                )
+            } finally {
+                engine.close()
+            }
+        }
+    }
 }
