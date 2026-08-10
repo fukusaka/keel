@@ -82,8 +82,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-epoll`, `engine-kqueue`: close an accepted connection whose pipeline initialiser throws —
-  it stayed joined to the loop, holding its descriptor, never read and unreachable (#1044)
+- `engine-epoll`, `engine-kqueue`: close an accepted connection when its construction or either of
+  its initialisers throws — it stayed joined to the loop, holding its descriptor, never read and
+  unreachable (#1044)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: run a loop's teardown when it is closed without
   ever having started — work dispatched at it was queued to a drain that never came (#1043)
 - `engine-epoll`, `engine-kqueue`: ignore `start()` on an EventLoop whose termination is already
