@@ -704,6 +704,19 @@ class EpollEventLoopSeamTest {
         }
     }
 
+    /**
+     * Records every level, unlike [recordingLogger].
+     *
+     * The join failure a test may need to rule out is logged at WARN, and an
+     * ERROR-only sink would pass whatever happened.
+     */
+    private fun allLevelRecordingLogger(sink: MutableList<String>): Logger = object : Logger {
+        override fun isLoggable(level: LogLevel): Boolean = true
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            sink.add(message.toString())
+        }
+    }
+
     private fun recordingLogger(sink: MutableList<String>): Logger = object : Logger {
         override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.ERROR
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
@@ -799,6 +812,91 @@ class EpollEventLoopSeamTest {
             )
             usleep(POLL_US)
         }
+    }
+
+    @Test
+    fun `closing a loop that ran on the caller's own thread does not try to join one`() {
+        // `loop()` is callable directly -- the seam suites do it -- and such a
+        // loop has no thread. Closing it finds the termination already claimed,
+        // and the mistake to avoid is treating that like "a thread has it":
+        // `threadPtr` was never written, so handing that slot to `pthread_join`
+        // reads whatever the arena held. There is nothing to join; there is
+        // only something to release.
+        val errors = mutableListOf<String>()
+        val fake = FakeEpollSyscallOps().apply {
+            scriptAddResult(0) // init ADD (wakeupFd)
+            scriptWaitFailure(EBADF) // terminate loop()
+        }
+        val loop = EpollEventLoop(logger = allLevelRecordingLogger(errors), syscallOps = fake)
+        loop.loop()
+
+        loop.close()
+
+        // The join itself is not observable here: on one target the always-true
+        // guard hands `pthread_join` a null and the process dies rather than
+        // logging, and on the other the guard skips the join anyway, so the
+        // pre-fix code is just as quiet. What the fix does change on every
+        // target is that this branch never reaches the wakeup the join path
+        // issues first -- and the fake counts it.
+        assertEquals(0, fake.wakeupWriteCalls, "the never-started branch neither wakes nor joins")
+        assertTrue(
+            errors.none { "pthread_join" in it },
+            "and reports no join failure either: $errors",
+        )
+    }
+
+    @Test
+    fun `closing a loop that never started still runs what was handed to it`() {
+        // A loop can be closed without ever having run: a group whose `start()`
+        // fails part way leaves the rest constructed and idle. Nothing has
+        // published `finished` or `quiescent` for it, so the hand-off reads
+        // "live" and offers -- and no drain ever comes. Before this, the work
+        // sat in that queue for the loop object's lifetime: a transport's
+        // teardown, and with it the descriptor it would have released.
+        val loop = EpollEventLoop(NoopLoggerFactory.logger("EpollEventLoopSeamTest"))
+        var onLoop = 0
+        var ifStopped = 0
+
+        loop.runOnLoop(onLoop = { onLoop++ }, ifStopped = { ifStopped++ })
+
+        assertEquals(0, onLoop, "premise: nothing runs it yet -- there is no thread to run it")
+        assertEquals(0, ifStopped, "premise: the loop does not look stopped, because nothing said so")
+
+        loop.close()
+
+        // The route matters, not just that something ran: the work was queued
+        // for the loop, so the terminal sequence's drain must run it. Falling
+        // back on the caller instead would be a different contract -- the
+        // fallback is documented as not acting on state the loop owned.
+        assertEquals(1, onLoop, "the queued work runs, on the thread that claimed the loop")
+        assertEquals(0, ifStopped, "and not as the off-loop fallback")
+    }
+
+    @Test
+    fun `a loop started after it was closed does not take the ledgers back`() {
+        // The claim is what lets the closing thread walk state the loop owns.
+        // A `start()` arriving afterwards must find it gone: a second walker
+        // would run the terminal sequence against ledgers already swept, on a
+        // thread the first one does not know about.
+        val errors = mutableListOf<String>()
+        val loop = EpollEventLoop(recordingLogger(errors))
+        loop.close()
+
+        assertTrue(loop.isStopped(), "premise: the closing thread ran the terminal sequence")
+
+        loop.start()
+
+        // Asserted on the refusal, not on the loop still being stopped:
+        // `isStopped()` reads a latch that `start()` never touches, so it
+        // holds whether or not a thread was created. What must not happen is
+        // the creation itself -- `threadPtr` lives in the arena `close()` has
+        // already released, so `pthread_create` writes through a dangling
+        // pointer. That showed up as a crash three tests later, never here.
+        assertTrue(
+            errors.any { "termination is already claimed is ignored" in it },
+            "starting a closed loop must be refused outright: $errors",
+        )
+        loop.close()
     }
 
     private companion object {

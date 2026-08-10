@@ -219,12 +219,16 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     private val regLockStuck = AtomicInt(0)
 
     /**
-     * Claims the one entry into [loop], and the one drain in flight.
+     * Claims the terminal sequence, and with it the ledgers.
      *
-     * [loop] is reachable from outside the two engines — the opt-in marker
-     * limits who, not how often — and publishing the thread identity is the
-     * first thing it does after this claim, so a second entry would re-point it
-     * while the real loop thread still runs on the old one.
+     * Two takers, never both: [loop] on its way in, and [finishWithoutRunning]
+     * closing a loop that has no thread. Whoever takes it publishes the thread
+     * identity next, so a second taker would re-point that identity while the
+     * first still runs on the old one — which is what this refuses.
+     *
+     * Taken through [claimLoopTermination]; [loop] is reachable from outside
+     * the two engines (the opt-in marker limits who, not how often), so the
+     * refusal is not merely defensive.
      *
      * Only that. The drain's own re-entrancy is [draining]'s, below.
      */
@@ -303,11 +307,18 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     fun isFinishing(): Boolean = handoff.isFinished()
 
     /**
-     * The loop's own thread, published by [loop] as the first thing it does
-     * after claiming entry.
+     * The thread that holds this loop's termination claim, published as the
+     * first thing either claimant does after taking it.
      *
-     * `null` until then, which is what makes [inEventLoop] answer `false` for
-     * a loop that was constructed but never started.
+     * Usually the loop's own pthread. It is the closing thread instead when
+     * [finishWithoutRunning] takes a loop apart that never had one — and that
+     * is the point: everything downstream reads this to ask "may I act on this
+     * loop's state directly", and while the claim is held the answer for that
+     * thread is yes. It is not a thread handle and nothing joins on it.
+     *
+     * `null` before either claimant publishes it, which is what makes
+     * [inEventLoop] answer `false` for a loop that has been constructed and
+     * neither started nor closed.
      *
      * `@Volatile` because the loop thread writes it and every other thread
      * reads it through [inEventLoop] to decide whether it may act directly or
@@ -315,7 +326,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * queue, and a stale non-null sends off-loop work straight at state only
      * the loop may touch.
      *
-     * **Cleared when the loop exits**, as the last thing that thread does. A
+     * **Cleared when the terminal sequence ends**, as the last thing the
+     * claiming thread does with it. On the loop's own thread that is also its
+     * death; on a closer's it is not, and clearing matters there for a second
+     * reason — otherwise that thread goes on answering [inEventLoop] `true`
+     * for a loop it has finished taking apart. A
      * `pthread_t` is only unique among live threads, so holding the value past
      * the thread's lifetime would let an unrelated thread that inherits the id
      * answer [inEventLoop] with `true` — the second of the two failures above,
@@ -1078,10 +1093,12 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * transport — and the channel and pipeline graph behind it — reachable for as
      * long as the loop object lived.
      *
-     * [loop] calls this from its own `finally`, after the final drain and before
-     * it publishes quiescence. Not the subclass: the ledger walked here is this
-     * class's, and so is the rule for when a waiter can no longer be
-     * served. It runs on the loop thread, so taking the lock is legal — and
+     * [terminate] calls this after the final drain and before it publishes
+     * quiescence, on whichever thread holds the termination claim — the loop's
+     * own, or a closer taking apart a loop that never ran. Not the subclass:
+     * the ledger walked here is this class's, and so is the rule for when a
+     * waiter can no longer be served. The claimant is the only thread that may
+     * walk it, so taking the lock is legal — and
      * the lock is valid here as it is everywhere, because nothing ever frees
      * it (see [regMutex]).
      *
@@ -1228,66 +1245,159 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * take the loop apart in an order the rest of the class depends on.
      */
     fun loop() {
-        if (!loopEntered.compareAndSet(0, 1)) {
+        if (!claimLoopTermination()) {
             // Reported, not thrown. This runs as a pthread entry point with
             // nothing above it to catch, so throwing would end the process --
             // while the first, healthy loop is still serving every connection
-            // on this engine. Returning skips the quiescence publish below, and
-            // that is right: the entry that did claim the loop publishes it, and
-            // a second one has no loop to make quiet.
-            logger.error { "${this::class.simpleName}.loop() entered twice; the second entry is ignored" }
+            // on this engine. Returning skips the terminal sequence below, and
+            // that is right: whoever holds the claim runs it, and this entry
+            // has no loop left to take apart. Reaching here with a `close()`
+            // holding the claim means this `loop()` was invoked directly after
+            // that close: a thread `start()` spawned cannot, since `close()`
+            // takes the join path whenever one exists and a post-close
+            // `start()` is refused before it creates anything. Either way it is
+            // a caller bug.
+            logger.error { "${this::class.simpleName}.loop() found the loop already claimed; this entry is ignored" }
             return
         }
         eventLoopThread = pthread_self()
         try {
             loopBody()
         } finally {
-            // Order matters: publish "no longer draining" BEFORE the final
-            // drain. A caller that offers a teardown and then reads a 0 here
-            // knows its offer preceded this write, so the drain below is
-            // guaranteed to see it; one that reads 1 takes the work back
-            // itself. Draining first and publishing after would leave a gap
-            // where an offer lands after the drain but before the flag, and
-            // nobody runs it.
-            handoff.markFinished()
-            // markQuiescent() in its own finally: it is the only thing that
-            // releases a runOnLoop caller from an unbounded spin, so a throw
-            // anywhere below would live-lock whatever thread is closing a
-            // server on this loop.
-            try {
-                // Nested so a throw from the drain cannot skip the sweep
-                // while still publishing quiescence: that combination would
-                // strand every waiter, with nothing left to end them.
-                try {
-                    drainTasks()
-                } finally {
-                    // After the last drain, before quiescence is published:
-                    // anything still in the ledger is waiting for an arm that
-                    // can no longer issue. Ended here, on the loop thread,
-                    // while the ledger is still this loop's to walk. It drains
-                    // again itself: cancelling a waiter queues its resume back
-                    // onto taskQueue.
-                    failWaitersOnStoppedLoop()
-                }
-            } finally {
-                handoff.markQuiescent()
-                // Last, and on this thread while it still exists: after it
-                // returns the id can be handed to a new thread, and a stale
-                // non-null here would tell that thread it *is* the loop. It
-                // would then act directly on state only the loop may touch —
-                // walking the outbound chain, mutating pending writes, issuing
-                // syscalls on this fd — off any loop at all, against a teardown
-                // running elsewhere. Every caller that asks reads `null` from
-                // here on and takes its off-loop path, which is the truth.
-                //
-                // After [markQuiescent], not before: the final drain and the
-                // stop sweep run on this thread and assert they are on the
-                // loop. Nothing runs here afterwards but the thread's own
-                // return, so there is no window in which the id is needed and
-                // already gone.
-                eventLoopThread = null
-            }
+            terminate()
         }
+    }
+
+    /**
+     * Takes the claim that says who runs the terminal sequence.
+     *
+     * One claim for two takers — the loop thread on its way in, and a
+     * [finishWithoutRunning] caller closing a loop that has no thread. Whoever
+     * takes it owns the ledgers for the rest of the loop's life, which is what
+     * makes the confinement the sequence relies on a fact rather than an
+     * assumption: a `loop()` arriving after a close finds the claim taken and
+     * returns without walking anything. That is not what makes a post-close
+     * `start()` safe, though — by the time its `loop()` could refuse, the
+     * thread and its handle already exist. The engines refuse `start()` on a
+     * claimed loop for that.
+     */
+    private fun claimLoopTermination(): Boolean = loopEntered.compareAndSet(0, 1)
+
+    /**
+     * Whether this loop's termination is already spoken for — by a running or
+     * finished [loop], or by [finishWithoutRunning].
+     *
+     * For a subclass deciding whether starting a thread can still mean
+     * anything. A sequential answer: it says nothing about a caller racing a
+     * concurrent close.
+     */
+    protected fun isTerminationClaimed(): Boolean = loopEntered.value != 0
+
+    /**
+     * Takes the loop apart, on the thread that claimed it.
+     *
+     * Split out of [loop] because a loop that never ran needs the same
+     * sequence, in the same order, run by whoever closes it — see
+     * [finishWithoutRunning]. Every step here assumes it is the only thread
+     * touching this loop's state, which the claim is what guarantees.
+     */
+    private fun terminate() {
+        // Order matters: publish "no longer draining" BEFORE the final
+        // drain. A caller that offers a teardown and then reads a 0 here
+        // knows its offer preceded this write, so the drain below is
+        // guaranteed to see it; one that reads 1 takes the work back
+        // itself. Draining first and publishing after would leave a gap
+        // where an offer lands after the drain but before the flag, and
+        // nobody runs it.
+        handoff.markFinished()
+        // markQuiescent() in its own finally: it is the only thing that
+        // releases a runOnLoop caller from an unbounded spin, so a throw
+        // anywhere below would live-lock whatever thread is closing a
+        // server on this loop.
+        try {
+            // Nested so a throw from the drain cannot skip the sweep
+            // while still publishing quiescence: that combination would
+            // strand every waiter, with nothing left to end them.
+            try {
+                drainTasks()
+            } finally {
+                // After the last drain, before quiescence is published:
+                // anything still in the ledger is waiting for an arm that
+                // can no longer issue. Ended here, on the claiming thread,
+                // while the ledger is still this loop's to walk. It drains
+                // again itself: cancelling a waiter queues its resume back
+                // onto taskQueue.
+                failWaitersOnStoppedLoop()
+            }
+        } finally {
+            handoff.markQuiescent()
+            // Last, and on this thread while it still exists: after it
+            // returns the id can be handed to a new thread, and a stale
+            // non-null here would tell that thread it *is* the loop. It
+            // would then act directly on state only the loop may touch —
+            // walking the outbound chain, mutating pending writes, issuing
+            // syscalls on this fd — off any loop at all, against a teardown
+            // running elsewhere. Every caller that asks reads `null` from
+            // here on and takes its off-loop path, which is the truth.
+            //
+            // After [markQuiescent], not before: the final drain and the
+            // stop sweep run on this thread and assert they are on the
+            // loop. Nothing runs here afterwards but the thread's own
+            // return, so there is no window in which the id is needed and
+            // already gone.
+            eventLoopThread = null
+        }
+    }
+
+    /**
+     * Runs the terminal sequence for a loop that never had a thread, on the
+     * caller's.
+     *
+     * A loop can be closed without ever having run. Nothing published
+     * `finished` or `quiescent` for such a loop, so [LoopHandoff.runOnLoop]
+     * reads "live", hands work over — and no drain ever comes. Anything
+     * dispatched at it is lost: a transport's teardown, and with it the
+     * descriptor it would have released; an accepted connection the accept
+     * path handed on.
+     *
+     * **Who closes such a loop**: tests that build one and never start it, and
+     * any future caller that has to unwind a partly-built engine. Not, today,
+     * the case that motivated looking: a group whose `start()` throws part way
+     * takes the exception out through the engine constructor, so no reference
+     * escapes and nobody calls `close()` on anything. Making that path unwind
+     * is separate work, and this is its prerequisite rather than its fix.
+     *
+     * The caller may walk the ledgers here because it holds the claim, and
+     * because it publishes itself as the loop thread for the duration: every
+     * assertion and every confinement argument in this class stays literally
+     * true.
+     *
+     * **A `start()` racing this call is not made safe by the claim.** It reads
+     * the claim before this takes it, so it goes on to create a thread and
+     * write the handle into the arena this call is about to release; what
+     * loses the claim is the spawned `loop()`, after both have happened. The
+     * engines refuse `start()` on a claimed loop for the sequential case and
+     * say there that it is ordering, not synchronisation. Nothing in the tree
+     * starts a loop concurrently with closing it.
+     *
+     * **Call it from `close()`, after the flag that says the loop is closing.**
+     * The sequence runs application teardown, and a participant that closes
+     * the engine from its own stop notification re-enters `close()` — which
+     * no-ops there only because that flag is already down. Called directly,
+     * that re-entry reaches the resource release while this sequence is still
+     * walking the registry.
+     *
+     * @return `true` when this call ran the sequence. `false` means it was
+     *   already claimed — by a running or finished [loop], or by another
+     *   [finishWithoutRunning]. The caller owns deciding what that means: a
+     *   thread it created is one it must join, while a [loop] invoked directly
+     *   and a second closer both leave nothing to join at all.
+     */
+    fun finishWithoutRunning(): Boolean {
+        if (!claimLoopTermination()) return false
+        eventLoopThread = pthread_self()
+        terminate()
+        return true
     }
 
     /**

@@ -155,8 +155,9 @@ internal class KqueueEventLoop(
      * EventLoop rather than per connection so every flush on this thread
      * touches the same hot memory — mirroring the locality of the memScoped
      * arena this replaced — while performing no per-flush allocation.
-     * EL-confined like [eventBuffer]; freed once in [close] (safe: the loop
-     * thread is joined there, so no flush can be in flight).
+     * EL-confined like [eventBuffer]; freed once in [close] (safe: the loop's
+     * terminal sequence has finished by then, whoever ran it, so no flush can
+     * be in flight).
      */
     internal var writevBases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
         private set
@@ -190,7 +191,21 @@ internal class KqueueEventLoop(
     private val wakeupReadBuf = ByteArray(WAKEUP_DRAIN_SIZE)
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
 
-    /** Backs [threadPtr]. Cleared in [close] once the loop thread is joined. */
+    // Whether `pthread_create` has been called for this loop and is not
+    // known to have failed. Deliberately not "succeeded": it is set before the
+    // call (see there), so between the two it is ahead of reality. A loop can be
+    // closed without one: a group whose `start()` fails part way leaves the
+    // rest of it constructed and idle, and tests build loops they never
+    // start. There is nothing to join in that case, and nothing that will
+    // ever run the teardown -- so `close()` runs it here instead.
+    private val threadCreated = AtomicInt(0)
+
+    /**
+     * Backs [threadPtr]. Cleared in [close], after the loop's terminal sequence
+     * has run — by the joined thread, or by the closing one when there was
+     * none. Not cleared at all when that sequence is still running elsewhere
+     * and [close] refuses to release.
+     */
     private val arena = Arena()
 
     private val threadPtr = arena.alloc<pthread_tVar>()
@@ -230,9 +245,38 @@ internal class KqueueEventLoop(
     /**
      * Starts the EventLoop thread. Must be called once after construction.
      * The thread runs [loop] until [close] is called.
+     *
+     * A call on a loop whose termination has already been claimed — by
+     * [close], or by a [loop] that ended on its own — is reported and ignored
+     * rather than starting anything: the resources a thread would need are
+     * already released, or about to be. The check is sequential, not a
+     * synchronisation point; nothing in the tree starts a loop concurrently
+     * with closing it, and this does not make that safe.
      */
     fun start() {
+        if (isTerminationClaimed()) {
+            // Someone already owns this loop's end: a `close()` that released
+            // the arena `threadPtr` lives in, or a `loop()` that ran and
+            // returned. Creating a thread here would write through that
+            // pointer -- and the thread would find the claim taken and return
+            // without doing anything anyway. Reported rather than thrown:
+            // `close()` is idempotent and this is the same kind of late call.
+            logger.error { "${this::class.simpleName}.start() on a loop whose termination is already claimed is ignored" }
+            return
+        }
         val ref = StableRef.create(this)
+        // Before the call, not after: the new thread can run to completion
+        // while this one is still between the two statements, and a `close()`
+        // reading 0 in that window would skip the join and free the arena and
+        // the fds out from under a live loop. Set pessimistically and cleared
+        // if the thread never came into being.
+        //
+        // The inverse window is open and not closed by this: a `close()`
+        // landing between here and `pthread_create` returning reads 1 and
+        // joins a slot not yet written. Neither window is reachable while
+        // `start()` is only called from an engine constructor, before any
+        // reference has escaped; this is ordering, not synchronisation.
+        threadCreated.value = 1
         val rc = pthread_create(
             threadPtr.ptr,
             null,
@@ -245,6 +289,9 @@ internal class KqueueEventLoop(
             ref.asCPointer(),
         )
         if (rc != 0) {
+            // No thread came into being, so nothing will join it and nothing
+            // will run this loop's teardown unless `close()` does.
+            threadCreated.value = 0
             // pthread_create returns the errno-like code directly; errno is not set.
             ref.dispose()
             error("pthread_create() failed: ${errnoMessage(rc)}")
@@ -456,9 +503,10 @@ internal class KqueueEventLoop(
     /**
      * Stops the EventLoop and releases all resources.
      *
-     * Signals the EventLoop thread to stop, joins it, then closes the
-     * kqueue fd and wakeup pipe fds. Waiters still parked at that point are
-     * ended by the loop itself, on its way out.
+     * A loop with a thread is signalled and joined; one that never started is
+     * taken apart here. Then the kqueue fd and wakeup pipe fds are closed. Waiters still
+     * parked at that point are ended by the loop itself on its way out, or by
+     * this thread when there was no loop; see below.
      *
      * **Must not be called from the EventLoop thread.** `pthread_join` returns
      * `EDEADLK` at once when asked to join the caller, so everything below
@@ -469,21 +517,74 @@ internal class KqueueEventLoop(
      * failure falls through and releases anyway, since the `running` CAS above
      * has already fired and no later `close()` can pick it up.
      *
-     * **What this does not cover**: a loop that was constructed and never
-     * started. `threadPtr` comes from an `Arena`, which does not zero, and
-     * `pthread_t` is only a pointer on some targets. On macOS it is one and the
-     * slot measures as null, so `t != null` skips the join. On linuxX64 it is a
-     * `ULong` — the compiler reports that same check as always true — and the
-     * join is handed an uninitialised value whose return is undefined, so
-     * neither branch below is reasoning from anything. Production does not
-     * reach it (a failed `start()` throws out of the constructor) and the tests
-     * that do pass on fresh `malloc` memory reading as zero. Covering it needs
-     * an explicit started flag rather than this guard.
+     * **A loop that was never started takes a different path**: there is no
+     * thread to signal or join, and nothing will ever drain what was dispatched
+     * at it, so this runs the loop's terminal sequence itself before releasing.
+     * Which path is taken is decided by an explicit flag, not by inspecting
+     * `threadPtr`: that slot comes from an `Arena`, which does not zero, and
+     * on this target `pthread_t` is a pointer, so the `t != null` guard below
+     * would be deciding from whatever the slot happened to hold. The flag keeps
+     * that guard off the never-started path entirely, so it is only asked about
+     * a slot `pthread_create` was called for — which is not quite "written":
+     * the flag is set just before that call, and the comment on it describes
+     * the window that leaves open.
      */
     fun close() {
         if (running.compareAndSet(1, 0)) {
+            if (threadCreated.value == 0) {
+                // No thread, so no drain is coming and nothing below can wait
+                // for one. Whatever was dispatched at this loop -- a
+                // transport's teardown, an accepted connection -- runs here or
+                // never, and the descriptors it holds go with it.
+                //
+                // Releasing in a `catch` as well: the terminal sequence runs
+                // application teardown, and a throw escaping it must not also
+                // cost this loop its fds. On the joined path below that
+                // question cannot arise -- a throw there leaves a pthread
+                // entry point and ends the process.
+                try {
+                    finishWithoutRunning()
+                } catch (terminationFailure: Throwable) {
+                    releaseLoopResources()
+                    throw terminationFailure
+                }
+                // Never fall through to the join. A `false` above means the
+                // claim was already taken -- and with no thread created, the
+                // only taker is a direct `loop()` call, which leaves nothing
+                // to join: `threadPtr` was never written, and handing that
+                // slot to `pthread_join` reads whatever the `Arena` happened
+                // to hold. The seam suites take exactly this path, calling
+                // `loop()` on their own thread and then `close()`.
+                //
+                // Checked rather than assumed: that `loop()` must have
+                // returned before this call. If it has not, releasing here
+                // would close the fds and free the arena underneath it, and
+                // the `EDEADLK` guard that catches "closing from the loop
+                // thread" is on the join path, which this branch skips.
+                // Quiescence is what says the sequence finished, whoever ran
+                // it.
+                if (!isStopped()) {
+                    // Someone else's sequence is still running. Nudge it: this
+                    // is the only thing that tells a loop parked in the kernel
+                    // wait that `running` went down, and without it the
+                    // quiescence this branch is refusing over may never
+                    // arrive. Then leave everything open -- a later `close()`
+                    // cannot retry, since the flag is already down, but a
+                    // running loop that finishes will at least have finished.
+                    wakeup()
+                    logger.error {
+                        "${this::class.simpleName}.close() found the loop still being taken apart -- " +
+                            "possibly by this thread, re-entered -- so it is releasing nothing, " +
+                            "because releasing is what would corrupt"
+                    }
+                    return
+                }
+                releaseLoopResources()
+                return
+            }
             wakeup()
-            // Join the EventLoop thread. threadPtr was written by pthread_create.
+            // Join the EventLoop thread. Reached only with `threadCreated` set,
+            // so `pthread_create` was called and wrote `threadPtr`.
             val t = threadPtr.ptr[0]
             if (t != null) {
                 val joinRet = pthread_join(t, null)
@@ -498,32 +599,52 @@ internal class KqueueEventLoop(
                     logger.warn { "pthread_join() failed: ${errnoMessage(joinRet)}" }
                 }
             }
-            closeFdSafely(wakeupFds[0], logger, "event loop teardown (wakeupFds[0])")
-            closeFdSafely(wakeupFds[1], logger, "event loop teardown (wakeupFds[1])")
-            closeFdSafely(kqFd, logger, "event loop teardown (kqFd)")
-            // The registration lock is deliberately not destroyed or freed:
-            // a cancellation arriving after this point takes it, and those
-            // arrive without bound (see AbstractPosixReadinessEventLoop's
-            // regMutex). The task queue is lock-free, so it has none either.
-            arena.clear()
-            // Close the per-EL allocator child. By construction the
-            // EventLoopGroup hands each EL the result of
-            // `BufferAllocator.createChild()`, so closing here drains
-            // this loop's freelists and runs `Freelist.close()` (mutex
-            // destroy / nativeHeap.free for `MutexFreelist`). The joined EL
-            // thread can no longer allocate — but a returnToPool can still
-            // arrive from a post-quiescence closing caller (the stopped-loop
-            // transport teardown releases pending writes on its own thread);
-            // that race is the allocator's to absorb, via its cross-thread
-            // return queue's close-sentinel contract. Default no-op for
-            // `DefaultAllocator` (tests that instantiate this loop with the
-            // stateless allocator).
-            // Free the shared writev scratch arrays — the loop thread is
-            // joined above, so no transport flush can touch them anymore.
-            nativeHeap.free(writevBases)
-            nativeHeap.free(writevLens)
-            allocator.close()
+            releaseLoopResources()
         }
+    }
+
+    /**
+     * Releases what the loop owned once nothing will run on it again: its
+     * kernel interface, its wakeup channel, the arena behind them, and the
+     * per-loop allocator child.
+     *
+     * Shared by the two ways a loop ends — its thread returning and being
+     * joined, or [finishWithoutRunning] taking it apart for a loop that never
+     * had one. The joined path reaches here only after the terminal sequence
+     * has run and the thread is gone. The other reaches it after *a* sequence
+     * has run, which is this caller's unless something else claimed it first —
+     * see the obligation stated at that call site.
+     */
+    private fun releaseLoopResources() {
+        closeFdSafely(wakeupFds[0], logger, "event loop teardown (wakeupFds[0])")
+        closeFdSafely(wakeupFds[1], logger, "event loop teardown (wakeupFds[1])")
+        closeFdSafely(kqFd, logger, "event loop teardown (kqFd)")
+        // The registration lock is deliberately not destroyed or freed:
+        // a cancellation arriving after this point takes it, and those
+        // arrive without bound (see AbstractPosixReadinessEventLoop's
+        // regMutex). The task queue is lock-free, so it has none either.
+        arena.clear()
+        // Close the per-EL allocator child. By construction the
+        // EventLoopGroup hands each EL the result of
+        // `BufferAllocator.createChild()`, so closing here drains
+        // this loop's freelists and runs `Freelist.close()` (mutex
+        // destroy / nativeHeap.free for `MutexFreelist`). The thread that ran
+        // this loop -- joined by now, or this very thread having run it --
+        // completed the terminal sequence, so it can no longer allocate — but a returnToPool can still
+        // arrive from a post-quiescence closing caller (the stopped-loop
+        // transport teardown releases pending writes on its own thread);
+        // that race is the allocator's to absorb, via its cross-thread
+        // return queue's close-sentinel contract. Default no-op for
+        // `DefaultAllocator` (tests that instantiate this loop with the
+        // stateless allocator).
+        // Free the shared writev scratch arrays. What makes that safe on every
+        // route here is quiescence, not a join: the thread may be joined, may
+        // never have existed, or may be another caller's that ran the sequence
+        // and is not joined at all. In each, the sequence has finished, so no
+        // transport flush can be in it.
+        nativeHeap.free(writevBases)
+        nativeHeap.free(writevLens)
+        allocator.close()
     }
 
     // --- KqueueSuspendRegister impl (seam for connect InProgress) ---

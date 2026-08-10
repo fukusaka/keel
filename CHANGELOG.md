@@ -82,6 +82,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`, `engine-epoll`, `engine-kqueue`: run a loop's teardown when it is closed without
+  ever having started — work dispatched at it was queued to a drain that never came (#1043)
+- `engine-epoll`, `engine-kqueue`: ignore `start()` on an EventLoop whose termination is already
+  claimed, which wrote a thread handle into an already-released arena (#1043)
 - `engine-epoll`, `engine-kqueue`: release an accepted descriptor when the worker EventLoop it is
   handed to has stopped, instead of queueing it to a loop that will never drain it (#1042)
 - `engine-epoll`, `engine-kqueue`: bound one accept callback's total wait on workers that are still

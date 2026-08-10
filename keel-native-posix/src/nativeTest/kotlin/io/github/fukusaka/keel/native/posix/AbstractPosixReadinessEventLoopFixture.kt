@@ -17,6 +17,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import platform.posix.pthread_equal
+import platform.posix.pthread_self
 import platform.posix.pthread_t
 import kotlin.coroutines.CoroutineContext
 import kotlin.test.assertFailsWith
@@ -353,14 +355,25 @@ internal abstract class AbstractPosixReadinessEventLoopFixture {
             private set
 
         /**
-         * The id the base recorded for its loop thread, so a test can see it
-         * released when the loop exits. [inEventLoop] is overridden here, so
-         * nothing else in this double reads it.
+         * The id the base recorded for whichever thread holds the termination
+         * claim, so a test can see it published and released.
          */
         @OptIn(ExperimentalForeignApi::class)
         val recordedLoopThread: pthread_t? get() = eventLoopThread
 
-        override fun inEventLoop(): Boolean = onLoopThread
+        /**
+         * `true` when the test says so, and also while this thread is the one
+         * the base published — which is how the real engines answer it
+         * (`pthread_equal(pthread_self(), eventLoopThread)`).
+         *
+         * The second half matters for the paths that run the terminal sequence
+         * on a closing thread: with a fixed answer, a double could not observe
+         * that the base published an identity at all, and the assertions that
+         * sequence makes would fail here for a reason production does not have.
+         */
+        @OptIn(ExperimentalForeignApi::class)
+        override fun inEventLoop(): Boolean =
+            onLoopThread || eventLoopThread?.let { pthread_equal(pthread_self(), it) != 0 } == true
         override fun loopBody() = Unit
 
         override fun wakeup() {
