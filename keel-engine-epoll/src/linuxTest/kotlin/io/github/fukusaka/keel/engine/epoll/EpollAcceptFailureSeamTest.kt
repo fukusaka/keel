@@ -718,9 +718,11 @@ class EpollAcceptFailureSeamTest {
     fun `a Channel-mode accept whose worker swept before the attach releases the descriptor`() = runBlocking {
         withTimeout(15.seconds) {
             // The worker's ledgers close between the accept and the attach, so
-            // `joinLoop` refuses and the connection is joined to nothing. It has
-            // no owner to hand it to and no caller has seen the channel, so this
-            // is the one drop that both releases and raises.
+            // `joinLoop` refuses and the connection is joined to nothing. Every
+            // Channel-mode guard releases and raises; what is particular here is
+            // that the transport exists but joined nothing, so its teardown runs
+            // inline on this thread rather than being handed to a live loop --
+            // which is why the descriptor is gone by the assertion with no wait.
             val warns = RecordingLogger(LogLevel.WARN)
             val bossLoop = EpollEventLoop(warns)
             val sweptGroup = EpollEventLoopGroup(1, warns, DefaultAllocator)
