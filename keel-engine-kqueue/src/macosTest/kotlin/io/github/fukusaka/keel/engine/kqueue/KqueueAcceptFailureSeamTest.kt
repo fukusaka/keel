@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
@@ -29,6 +30,7 @@ import platform.posix.errno
 import platform.posix.socket
 import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -775,6 +777,105 @@ class KqueueAcceptFailureSeamTest {
                 }
                 bossLoop.close()
                 sweptGroup.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a swept-worker drop whose own release throws reports that too`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The release here is a teardown that runs inline -- the worker is
+            // quiescent, so there is no loop to hand it to -- and a teardown
+            // re-raises what its stages hit. Attaching that to the cause is not
+            // enough on this path: the cause is a CancellationException, which
+            // the coroutine machinery reports to nobody, so without a line of
+            // its own a failed teardown would go unrecorded entirely.
+            //
+            // Reached by handing the accept a descriptor that is already
+            // closed, so the teardown's own `close(2)` fails and reports --
+            // through the loop's logger, which throws for that one message.
+            // Nothing else on the path produces it.
+            val warns = ThrowingCloseLogger()
+            val bossLoop = KqueueEventLoop(warns)
+            val sweptGroup = KqueueEventLoopGroup(1, warns, DefaultAllocator)
+            val sentinelFd = newSentinelFd()
+            val alreadyClosed = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(alreadyClosed >= 0, "could not open a socket to be accepted")
+            close(alreadyClosed)
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18098)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(alreadyClosed))
+            }
+            val server = KqueueStreamServer(
+                serverFd = sentinelFd,
+                bossLoop = bossLoop,
+                workerGroup = sweptGroup,
+                localAddress = scriptedLocal,
+                bindConfig = BindConfig(),
+                logger = warns,
+                nativeSocket = fakeSocket,
+                nativeSocketOps = FakeNativeSocketOps(),
+            )
+            try {
+                sweptGroup.start()
+                sweptGroup.close()
+
+                assertFailsWith<CancellationException> { server.accept() }
+
+                // The seam reached a throwing release. Without this the
+                // assertion below would hold on a build where nothing threw.
+                assertTrue(
+                    warns.threwOnClose,
+                    "the teardown's close must have failed for this test to mean anything",
+                )
+                assertEquals(
+                    1,
+                    warns.messages.count { "releasing a dropped accepted connection failed as well" in it },
+                    "a release that threw is reported rather than only attached: ${warns.messages}",
+                )
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                bossLoop.close()
+                sweptGroup.close()
+            }
+        }
+    }
+
+    /**
+     * Records like [RecordingLogger], but throws from the one message the
+     * transport teardown emits when its `close(2)` fails.
+     *
+     * That line is unstaged in the teardown, so throwing from it is how a
+     * teardown failure reaches the accept path's release guard. Every other
+     * message is recorded, which is what lets the assertions read the guard's
+     * own line back.
+     */
+    private class ThrowingCloseLogger : Logger {
+
+        private val sink = AtomicReference<List<String>>(emptyList())
+
+        private val refused = AtomicInt(0)
+
+        /** Whether the teardown's close report was seen, and refused. */
+        val threwOnClose: Boolean get() = refused.value == 1
+
+        val messages: List<String> get() = sink.value
+
+        override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.WARN
+
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            if (level != LogLevel.WARN) return
+            val text = message.toString()
+            if ("transport teardown" in text) {
+                refused.value = 1
+                throw InjectedFault("the teardown could not release the descriptor")
+            }
+            while (true) {
+                val current = sink.value
+                if (sink.compareAndSet(current, current + text)) return
             }
         }
     }
