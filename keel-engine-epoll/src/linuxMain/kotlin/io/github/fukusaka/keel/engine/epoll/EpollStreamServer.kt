@@ -118,7 +118,19 @@ internal class EpollStreamServer(
                             "accept unavailable: the EventLoop stopped while accepting",
                         )
                     }
-                    bindConfig.initializeConnection(channel)
+                    try {
+                        bindConfig.initializeConnection(channel)
+                    } catch (initializerFailure: Throwable) {
+                        // The caller's code, and the channel has not been
+                        // returned yet -- so a throw here would leave a
+                        // connection joined to the loop, holding its
+                        // descriptor, that nobody holds and nothing will read.
+                        // The pipelined path guards the same window; this one
+                        // rethrows as well, because unlike there, somebody is
+                        // waiting on this call and can be told.
+                        transport.close()
+                        throw initializerFailure
+                    }
                     return channel
                 }
                 AcceptResult.WouldBlock -> {

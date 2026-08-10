@@ -411,8 +411,12 @@ internal class KqueuePipelinedStreamServer(
     /**
      * Builds the connection on the worker's thread and hands it to the pipeline.
      *
-     * Every step here is guarded, because the descriptor has an owner only from
-     * partway through. Before the transport exists nothing else will release
+     * Each step that can fail is guarded, because the descriptor has an owner
+     * only from partway through. Not every statement: `readEnabled = true` at
+     * the end arms the read and the idle timer, and a throw from *inside* it
+     * reaches the same end state this guards against — only an
+     * allocation-class failure gets there, and nothing here would know what to
+     * do about one. Before the transport exists nothing else will release
      * it; after it exists but before the channel attaches, the transport is not
      * in the registry, so no stop notification reaches it either. A throw
      * anywhere in that stretch used to leave the descriptor open for the
@@ -439,10 +443,20 @@ internal class KqueuePipelinedStreamServer(
         } catch (constructionFailure: Throwable) {
             // Nothing owns the descriptor yet, so this is the raw close the
             // accept loop's setup-failure branch makes for the same reason.
-            closeFdSafely(clientFd, logger, "accepted connection construction")
+            // That holds while the constructor acquires nothing but fields; a
+            // step that gains a resource has to gain `transport.close()` here
+            // with it, which is the rule the other construction sites follow.
+            // Reported before the release, not after: a release is itself a
+            // throw source (the transport's teardown re-raises what its stages
+            // failed with), and a throw between the two would discard the cause
+            // that got us here -- leaving the operator the generic drain
+            // warning this guard exists to replace. The engines wrap the
+            // configured logger so it cannot throw, so nothing is lost the
+            // other way.
             logger.warn(constructionFailure) {
                 "building the transport for an accepted connection failed; dropping it: fd=$clientFd"
             }
+            closeFdSafely(clientFd, logger, "accepted connection construction")
             return
         }
         // The accepted socket's own local endpoint: for a specific-address
@@ -463,10 +477,10 @@ internal class KqueuePipelinedStreamServer(
             // The transport exists, so it owns the descriptor and closing it is
             // how the descriptor goes. Whether the attach got as far as joining
             // the loop does not change that -- `close()` handles both.
-            transport.close()
             logger.warn(attachFailure) {
                 "attaching an accepted connection failed; dropping it: fd=$clientFd"
             }
+            transport.close()
             return
         }
         if (!transport.joinedLoop) {
@@ -483,11 +497,20 @@ internal class KqueuePipelinedStreamServer(
         } catch (initializerFailure: Throwable) {
             // The caller's code, on our thread. Without this the connection is
             // joined to the loop, holds its descriptor and is never read, and
-            // the channel it would be closed through was never handed anywhere.
-            transport.close()
+            // the channel it would be closed through was never handed on by us
+            // -- an initializer that stashed it somewhere before the throw is
+            // the one case where somebody else could still close it, and
+            // closing here is right for that one too.
+            //
+            // What this does not do is tell the pipeline: handlers installed
+            // before the throw get no `onInactive`, so whatever they hold ends
+            // with them. That is how `close()` behaves everywhere in the tree,
+            // not something this path chose; changing it is a contract
+            // question, filed separately.
             logger.warn(initializerFailure) {
                 "initialising an accepted connection failed; dropping it: fd=$clientFd"
             }
+            transport.close()
             return
         }
         transport.readEnabled = true
