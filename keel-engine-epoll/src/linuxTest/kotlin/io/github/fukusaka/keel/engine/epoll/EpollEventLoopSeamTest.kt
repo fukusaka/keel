@@ -704,6 +704,19 @@ class EpollEventLoopSeamTest {
         }
     }
 
+    /**
+     * Records every level, unlike [recordingLogger].
+     *
+     * The join failure a test may need to rule out is logged at WARN, and an
+     * ERROR-only sink would pass whatever happened.
+     */
+    private fun allLevelRecordingLogger(sink: MutableList<String>): Logger = object : Logger {
+        override fun isLoggable(level: LogLevel): Boolean = true
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            sink.add(message.toString())
+        }
+    }
+
     private fun recordingLogger(sink: MutableList<String>): Logger = object : Logger {
         override fun isLoggable(level: LogLevel): Boolean = level == LogLevel.ERROR
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
@@ -799,6 +812,30 @@ class EpollEventLoopSeamTest {
             )
             usleep(POLL_US)
         }
+    }
+
+    @Test
+    fun `closing a loop that ran on the caller's own thread does not try to join one`() {
+        // `loop()` is callable directly -- the seam suites do it -- and such a
+        // loop has no thread. Closing it finds the termination already claimed,
+        // and the mistake to avoid is treating that like "a thread has it":
+        // `threadPtr` was never written, so handing that slot to `pthread_join`
+        // reads whatever the arena held. There is nothing to join; there is
+        // only something to release.
+        val errors = mutableListOf<String>()
+        val fake = FakeEpollSyscallOps().apply {
+            scriptAddResult(0) // init ADD (wakeupFd)
+            scriptWaitFailure(EBADF) // terminate loop()
+        }
+        val loop = EpollEventLoop(logger = allLevelRecordingLogger(errors), syscallOps = fake)
+        loop.loop()
+
+        loop.close()
+
+        assertTrue(
+            errors.none { "pthread_join" in it },
+            "no join may be attempted for a thread that was never created: $$errors",
+        )
     }
 
     @Test

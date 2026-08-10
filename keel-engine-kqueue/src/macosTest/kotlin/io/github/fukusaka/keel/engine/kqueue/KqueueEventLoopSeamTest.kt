@@ -466,6 +466,32 @@ class KqueueEventLoopSeamTest {
     }
 
     @Test
+    fun `closing a loop that ran on the caller's own thread does not try to join one`() {
+        // `loop()` is callable directly -- the seam suites do it -- and such a
+        // loop has no thread. Closing it finds the termination already claimed,
+        // and the mistake to avoid is treating that like "a thread has it":
+        // `threadPtr` was never written, so handing that slot to `pthread_join`
+        // reads whatever the arena held. There is nothing to join; there is
+        // only something to release.
+        val warnings = mutableListOf<String>()
+        val fake = FakeKqueueSyscallOps().apply {
+            scriptKqueueCreateFd(fd = 1000)
+            scriptMakePipeFds(readFd = 1001, writeFd = 1002)
+            scriptAddFilterResult(0) // loop init arms its own wakeup fd
+            scriptWaitFailure(EBADF) // terminate loop()
+        }
+        val loop = KqueueEventLoop(levelRecordingLogger(LogLevel.WARN, warnings), syscallOps = fake)
+        loop.loop()
+
+        loop.close()
+
+        assertTrue(
+            warnings.none { "pthread_join" in it },
+            "no join may be attempted for a thread that was never created: $$warnings",
+        )
+    }
+
+    @Test
     fun `closing a loop that never started still runs what was handed to it`() {
         // A loop can be closed without ever having run: a group whose `start()`
         // fails part way leaves the rest constructed and idle. Nothing has
