@@ -84,8 +84,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `native-posix`, `engine-epoll`, `engine-kqueue`: release a connecting descriptor when preparing it,
   reading the peer address, or building the connection throws — `getpeername` answers `ENOTCONN` for a
-  peer that resets, and the descriptor was left open for the process's life once per connect. Listener
-  descriptors are guarded the same way from the socket opening until a server owns them (#1045)
+  peer that resets, and the descriptor was left open for the process's life once per connect. A
+  pipeline listener is released the same way when the server that would own it cannot be built (#1045)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: release an accepted descriptor when setting
   `FD_CLOEXEC` on it, preparing it, or running the caller's connection initialiser throws (#1044)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: run a loop's teardown when it is closed without
