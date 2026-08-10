@@ -101,8 +101,10 @@ internal class KqueueStreamServer(
                     // throw on a failed syscall: `setNonBlocking` is `check`
                     // over `fcntl`, and both address queries are `check` over
                     // `getpeername` / `getsockname`. A peer that resets between
-                    // `accept()` returning and the query gets `ENOTCONN` --
-                    // which is why the pipelined twin wraps the same call. The
+                    // `accept()` returning and `getpeername` gets `ENOTCONN`
+                    // -- the pipelined twin wraps its own address query for a
+                    // neighbouring reason, an fd torn down in the window it
+                    // dispatches across, rather than for this one. The
                     // throw reaches the accept loop, which logs, backs off and
                     // retries, so an unreleased descriptor here is one per
                     // accept until the table is full.
@@ -114,11 +116,13 @@ internal class KqueueStreamServer(
                         remoteAddr = nativeSocketOps.getRemoteAddress(clientFd)
                         localAddr = nativeSocketOps.getLocalAddress(clientFd)
                     } catch (setupFailure: Throwable) {
-                        logger.warn(setupFailure) {
-                            "preparing an accepted socket failed; dropping that connection: fd=$clientFd"
-                        }
-                        closeFdSafely(clientFd, logger, "accepted socket setup")
-                        throw setupFailure
+                        releaseAndRaise(
+                            clientFd,
+                            transport = null,
+                            cause = setupFailure,
+                            what = "preparing an accepted socket failed; dropping that connection",
+                            closeContext = "accepted socket setup",
+                        )
                     }
                     return buildAcceptedConnection(clientFd, remoteAddr, localAddr)
                 }
@@ -210,17 +214,30 @@ internal class KqueueStreamServer(
             )
         }
         if (!transport.joinedLoop) {
-            // Same cause as the null-registration branch below, so the
-            // same exception: AcceptLoop rethrows only
-            // CancellationException and otherwise logs and retries with
-            // backoff, and `_active` is still true here because the
-            // server was never closed — the loop stopped under it.
-            // The channel is discarded uninitialised.
-            val stopped = CancellationException(
-                "accept unavailable: the EventLoop stopped while accepting",
+            // Same cause as the null-registration branch in [accept], so the
+            // same exception: AcceptLoop rethrows only CancellationException
+            // and otherwise logs and retries with backoff, and `_active` is
+            // still true here because the server was never closed — the loop
+            // stopped under it. The channel is discarded uninitialised.
+            //
+            // Through the funnel like the rest, for uniformity rather than
+            // for the report: the refusal is already logged one level down.
+            // `joinLoop` warns naming the same fd when it declines, and it is
+            // the only way this flag is false, so what this line adds is the
+            // accept-side framing -- that a connection was dropped, not that a
+            // registration was refused. One line per accept-loop lifetime,
+            // since the raised cancellation ends that loop, so the duplicate
+            // cannot accumulate. The release failure the funnel attaches is
+            // what does not arrive here: suppressed exceptions on a
+            // cancellation cause do not generally surface.
+            releaseAndRaise(
+                clientFd,
+                transport,
+                cause = CancellationException(
+                    "accept unavailable: the EventLoop stopped while accepting",
+                ),
+                what = "the EventLoop stopped while accepting; dropping the connection",
             )
-            releaseAfterFailedAccept(transport, stopped)
-            throw stopped
         }
         try {
             bindConfig.initializeConnection(channel)
@@ -251,14 +268,23 @@ internal class KqueueStreamServer(
      * one site reported and another did not, and one released before it
      * reported. Reported first, since the warning names the descriptor and the
      * raised exception does not. Released through [transport] once one exists
-     * and by descriptor number until then. Raised last, carrying [cause] rather
-     * than whatever the release hit -- see [releaseAfterFailedAccept].
+     * and by descriptor number until then, with [closeContext] naming the stage
+     * for the raw close. Raised last, carrying [cause] rather than whatever the
+     * release hit -- see [releaseAfterFailedAccept].
+     *
+     * Every failure of a Channel-mode accept goes through here, so "the order
+     * it owes them" is a property of this function rather than a convention
+     * the call sites keep. Not the pipelined server: its guards still write the
+     * three steps out by hand, and already differ from these -- its own
+     * stopped-loop branch reports nothing at the server level where this one
+     * does.
      */
     private fun releaseAndRaise(
         clientFd: Int,
         transport: KqueueIoTransport?,
         cause: Throwable,
         what: String,
+        closeContext: String = "accepted connection construction",
     ): Nothing {
         logger.warn(cause) { "$what: fd=$clientFd" }
         if (transport == null) {
@@ -266,7 +292,7 @@ internal class KqueueStreamServer(
             // teardown -- the same one the accept loop's setup-failure branch
             // makes. A construction step that gains a resource has to start
             // passing the transport here instead.
-            closeFdSafely(clientFd, logger, "accepted connection construction")
+            closeFdSafely(clientFd, logger, closeContext)
         } else {
             releaseAfterFailedAccept(transport, cause)
         }
@@ -282,7 +308,19 @@ internal class KqueueStreamServer(
      * release's own failure -- the loss the pipelined server avoids by
      * reporting before it releases. This path has a caller to raise to instead,
      * so the release's failure is attached to [cause] and [cause] is what goes
-     * on.
+     * on. How far the attachment travels is the caller's: it survives to
+     * whoever catches [cause], but reaching a log depends on that catcher's
+     * `Logger` printing suppressed exceptions, which nothing here can require.
+     *
+     * Not the usual outcome: the in-tree caller resumes [accept] off the worker
+     * loop, so the close hands the teardown over and returns, and a teardown
+     * that fails does so on that loop where the loop's own guard logs it. The
+     * catch is for the cases where there is no loop left to hand it to -- a
+     * worker already quiescent, whether that is seen as a refused join or by
+     * the initialiser throwing after a join that did get through -- and the
+     * teardown then runs on this thread. A caller that resumes on a worker's
+     * own dispatcher reaches it the same way; nothing here can require
+     * otherwise of a public accept.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun releaseAfterFailedAccept(transport: KqueueIoTransport, cause: Throwable) {
