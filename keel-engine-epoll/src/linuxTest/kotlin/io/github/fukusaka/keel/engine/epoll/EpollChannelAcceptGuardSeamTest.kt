@@ -40,8 +40,8 @@ import kotlin.time.TimeSource
  * Split from [EpollAcceptFailureSeamTest], which covers the pipelined
  * server's hand-off to a worker. These cover the other server: preparing
  * the socket, a worker that swept before the attach, the caller's own
- * connection initialiser, and the two ways a guard can lose what it was
- * meant to report -- a release that throws, and a report that does.
+ * connection initialiser, and a release that throws while the guard is
+ * dropping the connection.
  */
 @OptIn(ExperimentalForeignApi::class)
 class EpollChannelAcceptGuardSeamTest {

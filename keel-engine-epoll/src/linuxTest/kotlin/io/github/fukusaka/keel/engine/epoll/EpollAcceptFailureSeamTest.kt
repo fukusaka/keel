@@ -42,10 +42,11 @@ import kotlin.time.TimeSource
  * itself, and from [EpollChannelAcceptGuardSeamTest], which covers the other
  * server. These are the pipelined server's hand-off to a worker: one that will
  * never run the work, one still stopping, a connection whose own initialiser
- * throws, and one whose release throws while it is being dropped. Each leaves
- * a descriptor open for the process's life if unguarded, on a socket whose
- * peer thinks it is connected — except the allowance arithmetic, which is a
- * value test over the tally those drops keep.
+ * throws, and one whose release throws while it is being dropped. What each
+ * pins differs: the first three, a descriptor left open for the process's life
+ * on a socket whose peer thinks it is connected; the fourth, the report of why
+ * it went, which the release can take with it; the allowance arithmetic, the
+ * tally those drops keep; and the wedged worker, the boss loop's liveness.
  */
 @OptIn(ExperimentalForeignApi::class)
 class EpollAcceptFailureSeamTest {
