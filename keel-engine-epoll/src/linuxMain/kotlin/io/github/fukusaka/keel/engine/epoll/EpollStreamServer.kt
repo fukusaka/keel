@@ -112,46 +112,7 @@ internal class EpollStreamServer(
                         closeFdSafely(clientFd, logger, "accepted socket setup")
                         throw setupFailure
                     }
-                    val workerLoop = workerGroup.next()
-                    val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
-                    val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
-                    val transport = EpollIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
-                    // Built before the check: the transport joins the loop
-                    // when the channel attaches, so this connection is in the
-                    // registry only once there is something to deliver a stop
-                    // notification to.
-                    val channel = EpollPipelinedChannel(
-                        transport,
-                        logger,
-                        remoteAddr,
-                        localAddr,
-                    )
-                    if (!transport.joinedLoop) {
-                        // Same cause as the null-registration branch below, so the
-                        // same exception: AcceptLoop rethrows only
-                        // CancellationException and otherwise logs and retries with
-                        // backoff, and `_active` is still true here because the
-                        // server was never closed — the loop stopped under it.
-                        // The channel is discarded uninitialised.
-                        transport.close()
-                        throw CancellationException(
-                            "accept unavailable: the EventLoop stopped while accepting",
-                        )
-                    }
-                    try {
-                        bindConfig.initializeConnection(channel)
-                    } catch (initializerFailure: Throwable) {
-                        // The caller's code, and the channel has not been
-                        // returned yet -- so a throw here would leave a
-                        // connection joined to the loop, holding its
-                        // descriptor, that nobody holds and nothing will read.
-                        // The pipelined path guards the same window; this one
-                        // rethrows as well, because unlike there, somebody is
-                        // waiting on this call and can be told.
-                        transport.close()
-                        throw initializerFailure
-                    }
-                    return channel
+                    return buildAcceptedConnection(clientFd, remoteAddr, localAddr)
                 }
                 AcceptResult.WouldBlock -> {
                     suspendCancellableCoroutine<Unit> { cont ->
@@ -193,6 +154,135 @@ internal class EpollStreamServer(
                 }
                 is AcceptResult.Failed -> error("accept() failed: ${errnoMessage(result.errno)}")
             }
+        }
+    }
+
+    /**
+     * Builds the connection for an accepted [clientFd] and runs the bind
+     * config's initialiser over it.
+     *
+     * Split out of [accept] for its length. Every step that can fail releases
+     * the descriptor on the way out, because it has an owner only from partway
+     * through: before the transport exists nothing else will release it, and
+     * after it exists but before the channel attaches it is not in the
+     * registry, so no stop notification reaches it either. Each raises rather
+     * than swallowing -- unlike the pipelined server's equivalent, this one has
+     * a caller waiting on the result and able to be told.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun buildAcceptedConnection(
+        clientFd: Int,
+        remoteAddr: SocketAddress,
+        localAddr: SocketAddress,
+    ): PipelinedChannel {
+        val workerLoop = workerGroup.next()
+        val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
+        val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
+        val transport = try {
+            EpollIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        } catch (constructionFailure: Throwable) {
+            releaseAndRaise(
+                clientFd,
+                transport = null,
+                cause = constructionFailure,
+                what = "building the transport for an accepted connection failed; dropping it",
+            )
+        }
+        // Built before the check: the transport joins the loop
+        // when the channel attaches, so this connection is in the
+        // registry only once there is something to deliver a stop
+        // notification to.
+        val channel = try {
+            EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
+        } catch (attachFailure: Throwable) {
+            releaseAndRaise(
+                clientFd,
+                transport,
+                cause = attachFailure,
+                what = "attaching an accepted connection failed; dropping it",
+            )
+        }
+        if (!transport.joinedLoop) {
+            // Same cause as the null-registration branch below, so the
+            // same exception: AcceptLoop rethrows only
+            // CancellationException and otherwise logs and retries with
+            // backoff, and `_active` is still true here because the
+            // server was never closed — the loop stopped under it.
+            // The channel is discarded uninitialised.
+            val stopped = CancellationException(
+                "accept unavailable: the EventLoop stopped while accepting",
+            )
+            releaseAfterFailedAccept(transport, stopped)
+            throw stopped
+        }
+        try {
+            bindConfig.initializeConnection(channel)
+        } catch (initializerFailure: Throwable) {
+            // The caller's code, and the channel has not been
+            // returned yet -- so a throw here would leave a
+            // connection joined to the loop, holding its
+            // descriptor, that nobody holds and nothing will read.
+            // The pipelined path guards the same window; this one
+            // rethrows as well, because unlike there, somebody is
+            // waiting on this call and can be told.
+            releaseAndRaise(
+                clientFd,
+                transport,
+                cause = initializerFailure,
+                what = "initialising an accepted connection failed; dropping it",
+            )
+        }
+        return channel
+    }
+
+    /**
+     * Reports [cause] against [clientFd], lets go of whatever owns the
+     * descriptor, and raises [cause] to the caller of [accept].
+     *
+     * One place for the three things every failed accept owes, in the order it
+     * owes them, because writing them out per guard is how they came to differ:
+     * one site reported and another did not, and one released before it
+     * reported. Reported first, since the warning names the descriptor and the
+     * raised exception does not. Released through [transport] once one exists
+     * and by descriptor number until then. Raised last, carrying [cause] rather
+     * than whatever the release hit -- see [releaseAfterFailedAccept].
+     */
+    private fun releaseAndRaise(
+        clientFd: Int,
+        transport: EpollIoTransport?,
+        cause: Throwable,
+        what: String,
+    ): Nothing {
+        logger.warn(cause) { "$what: fd=$clientFd" }
+        if (transport == null) {
+            // Nothing owns it yet, so this is the raw close rather than a
+            // teardown -- the same one the accept loop's setup-failure branch
+            // makes. A construction step that gains a resource has to start
+            // passing the transport here instead.
+            closeFdSafely(clientFd, logger, "accepted connection construction")
+        } else {
+            releaseAfterFailedAccept(transport, cause)
+        }
+        throw cause
+    }
+
+    /**
+     * Closes [transport] on the way out of a failed accept, without letting the
+     * release speak over [cause].
+     *
+     * The teardown re-raises what its stages failed with. Thrown from here that
+     * would replace the answer the caller of [accept] is waiting for with the
+     * release's own failure -- the loss the pipelined server avoids by
+     * reporting before it releases. This path has a caller to raise to instead,
+     * so the release's failure is attached to [cause] and [cause] is what goes
+     * on.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun releaseAfterFailedAccept(transport: EpollIoTransport, cause: Throwable) {
+        try {
+            transport.close()
+        } catch (releaseFailure: Throwable) {
+            cause.addSuppressed(releaseFailure)
         }
     }
 

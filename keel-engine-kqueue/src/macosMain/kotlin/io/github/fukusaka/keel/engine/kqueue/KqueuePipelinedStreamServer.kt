@@ -184,10 +184,10 @@ internal class KqueuePipelinedStreamServer(
                             nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
                             nextWorker()
                         } catch (setupFailure: Throwable) {
-                            closeFdSafely(result.fd, logger, "accepted socket setup")
                             logger.warn(setupFailure) {
                                 "preparing an accepted socket failed; dropping that connection: fd=${result.fd}"
                             }
+                            closeFdSafely(result.fd, logger, "accepted socket setup")
                             continue
                         }
                         val startedAt = TimeSource.Monotonic.markNow()
@@ -446,12 +446,15 @@ internal class KqueuePipelinedStreamServer(
             // accept loop's setup-failure branch makes for the same reason.
             // That holds while the constructor acquires nothing but fields; a
             // step that gains a resource has to gain `transport.close()` here
-            // with it, which is the rule the other construction sites follow.
-            // Reported before the release, not after: a release is itself a
-            // throw source (the transport's teardown re-raises what its stages
-            // failed with), and a throw between the two would discard the cause
-            // that got us here -- leaving the operator the generic drain
-            // warning this guard exists to replace. The engines wrap the
+            // with it, the way the attach guard below has it.
+            // Reported before the release, not after. Not because this
+            // particular release can fail -- `closeFdSafely` reports rather
+            // than throws -- but because the guard below releases through a
+            // teardown that re-raises what its stages failed with, and a throw
+            // between the two there would discard the cause that got us here,
+            // leaving the operator the generic drain warning these guards exist
+            // to replace. One order for all three, so which of them is the
+            // dangerous one does not have to be remembered. The engines wrap the
             // configured logger so it cannot throw, so nothing is lost the
             // other way.
             logger.warn(constructionFailure) {
