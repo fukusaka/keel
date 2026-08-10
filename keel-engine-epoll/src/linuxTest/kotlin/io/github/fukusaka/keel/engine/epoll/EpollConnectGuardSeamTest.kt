@@ -79,16 +79,22 @@ class EpollConnectGuardSeamTest {
                     engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 9))
                 }
 
+                // Closed before the probe, not after. Until the loops are
+                // joined they can open a descriptor, and the number the guard
+                // just released is the lowest free one -- `dup` would then
+                // answer for a stranger's socket and this would fail for the
+                // wrong reason.
+                //
+                // Deliberately not reclaimed afterwards either: on a passing
+                // run the guard has closed it, and closing it again would be
+                // closing whatever took it. A failing run leaks it, which is
+                // the failure being reported.
+                engine.close()
                 assertFalse(
                     stillOpen(doomed),
                     "the connect never produced a channel, so nothing else will ever close this",
                 )
             } finally {
-                // Deliberately not reclaimed. On the passing path the guard has
-                // already closed this number, and it is the lowest free one in
-                // the process while the engine's threads are still running --
-                // closing it again would be closing whatever took it. A failing
-                // run leaks it instead, which is the failure being reported.
                 engine.close()
             }
         }
@@ -124,6 +130,17 @@ class EpollConnectGuardSeamTest {
                     engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 9))
                 }
 
+                // Closed before the probe, not after. Until the loops are
+                // joined they can open a descriptor, and the number the guard
+                // just released is the lowest free one -- `dup` would then
+                // answer for a stranger's socket and this would fail for the
+                // wrong reason.
+                //
+                // Deliberately not reclaimed afterwards either: on a passing
+                // run the guard has closed it, and closing it again would be
+                // closing whatever took it. A failing run leaks it, which is
+                // the failure being reported.
+                engine.close()
                 assertFalse(
                     stillOpen(doomed),
                     "the connect never produced a channel, so nothing else will ever close this",

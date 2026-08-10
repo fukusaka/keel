@@ -192,11 +192,11 @@ public class FakeNativeSocketOps : NativeSocketOps {
     public var getSocketErrorThrowsOnce: Throwable? = null
 
     override fun getSocketError(fd: Int): Int {
+        getSocketErrorCalls++
         getSocketErrorThrowsOnce?.let {
             getSocketErrorThrowsOnce = null
             throw it
         }
-        getSocketErrorCalls++
         return socketErrorQueue[fd]?.removeFirstOrNull() ?: defaultSocketError
     }
 
