@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.native.posix.LoopParticipant
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -711,6 +712,69 @@ class EpollAcceptFailureSeamTest {
     private object FailingInitializerBindConfig : BindConfig() {
         override fun initializeConnection(channel: PipelinedChannel): Unit =
             throw InjectedFault("the bind config initialiser for this connection failed")
+    }
+
+    @Test
+    fun `a Channel-mode accept whose worker swept before the attach releases the descriptor`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The worker's ledgers close between the accept and the attach, so
+            // `joinLoop` refuses and the connection is joined to nothing. It has
+            // no owner to hand it to and no caller has seen the channel, so this
+            // is the one drop that both releases and raises.
+            val warns = RecordingLogger(LogLevel.WARN)
+            val bossLoop = EpollEventLoop(warns)
+            val sweptGroup = EpollEventLoopGroup(1, warns, DefaultAllocator)
+            val sentinelFd = newSentinelFd()
+            val doomed = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(doomed >= 0, "could not open a socket to be accepted")
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18197)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(doomed))
+            }
+            val server = EpollStreamServer(
+                serverFd = sentinelFd,
+                bossLoop = bossLoop,
+                workerGroup = sweptGroup,
+                localAddress = scriptedLocal,
+                bindConfig = BindConfig(),
+                logger = warns,
+                nativeSocket = fakeSocket,
+                nativeSocketOps = FakeNativeSocketOps(),
+            )
+            try {
+                // Started and closed: the sweep runs, so the ledgers are shut
+                // and every later join is refused. The same state the sibling
+                // hand-off tests build for a stopped worker.
+                sweptGroup.start()
+                sweptGroup.close()
+
+                assertFailsWith<CancellationException> { server.accept() }
+
+                assertFalse(
+                    stillOpen(doomed),
+                    "a connection joined to nothing must not be left holding its descriptor",
+                )
+                // Pins which branch answered: the raised cancellation alone
+                // cannot say, since the registration path raises the same type.
+                assertEquals(
+                    1,
+                    warns.messages.count { "the EventLoop stopped while accepting" in it && "fd=$doomed" in it },
+                    "the drop is reported from the accept side, naming the descriptor: ${warns.messages}",
+                )
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                val leftOpen = dup(doomed)
+                if (leftOpen >= 0) {
+                    close(leftOpen)
+                    close(doomed)
+                }
+                bossLoop.close()
+                sweptGroup.close()
+            }
+        }
     }
 
     private companion object {
