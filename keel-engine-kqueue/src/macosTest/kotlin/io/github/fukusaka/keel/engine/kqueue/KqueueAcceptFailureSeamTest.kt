@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.native.posix.HandoffOutcome
 import io.github.fukusaka.keel.native.posix.LoopParticipant
+import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Dispatchers
@@ -410,8 +411,9 @@ class KqueueAcceptFailureSeamTest {
                 enqueueLocalAddress(sentinelFd, scriptedLocal)
                 setNonBlockingThrowsOnce = IllegalStateException("fcntl(F_SETFL, O_NONBLOCK) failed: boom")
             }
+            val warns = RecordingLogger(LogLevel.WARN)
             val engine = KqueueEngine(
-                config = IoEngineConfig(threads = 1),
+                config = IoEngineConfig(threads = 1, loggerFactory = { warns }),
                 nativeSocket = fakeSocket,
                 nativeSocketOps = fakeOps,
             )
@@ -426,6 +428,14 @@ class KqueueAcceptFailureSeamTest {
                 assertFalse(
                     stillOpen(doomed),
                     "setup did not finish, so nothing owns that descriptor and this must release it",
+                )
+                // The release is only half of it, and the raised exception does
+                // not name the descriptor -- this is what lets an operator tie
+                // the failure to the connection it lost.
+                assertEquals(
+                    1,
+                    warns.messages.count { "preparing an accepted socket failed" in it && "fd=$doomed" in it },
+                    "the drop is reported, naming the descriptor: ${warns.messages}",
                 )
                 server.close()
             } catch (t: Throwable) {
@@ -457,10 +467,12 @@ class KqueueAcceptFailureSeamTest {
             assertTrue(first >= 0 && second >= 0, "could not open sockets to be accepted")
             val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18092)
             // Two, because one failing initializer must not cost the peer
-            // behind it. The accept loop goes round either way -- the hand-off
-            // returns before the worker runs anything -- so what the second
-            // descriptor answers is whether the worker's own drain contained
-            // the first throw and still ran the task behind it.
+            // behind it. Neither the accept loop nor the worker's drain is
+            // what this is about -- the guard catches, so nothing is thrown
+            // for either of them to contain, and the loop goes round before
+            // the worker runs anything either way. What the second descriptor
+            // answers is narrower: that the guard is per connection, and not
+            // a one-shot that stops guarding after it has fired once.
             val fakeSocket = FakeNativeSocket().apply {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(first))
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
@@ -493,8 +505,8 @@ class KqueueAcceptFailureSeamTest {
                 // The hand-off is to a live worker, so the construction runs on
                 // its thread: wait for the descriptors to go rather than
                 // reading them straight away. Both, because the second is the
-                // task queued behind the first one's failure -- it runs only if
-                // the worker's drain contained that throw.
+                // connection the guard has to still be guarding after it has
+                // fired once.
                 //
                 // The worker group is closed before the probes, so nothing can
                 // be handed a descriptor number these are about to test. The
@@ -513,7 +525,7 @@ class KqueueAcceptFailureSeamTest {
                 )
                 assertFalse(
                     stillOpen(second),
-                    "and one failing initializer must not cost the peer queued behind it",
+                    "and the guard is per connection: it must still guard the peer queued behind the first",
                 )
                 // The release is only half of it. Reporting is what tells an
                 // operator which connection went and why, and it is the half a
@@ -551,9 +563,11 @@ class KqueueAcceptFailureSeamTest {
             // guard: an initializer that writes before it fails leaves the
             // flush deferred -- it runs on the worker's own thread, so the
             // flush is queued rather than performed -- and the teardown two
-            // lines later finds it and drains it inline. The other two guards
-            // release through `closeFdSafely`, which reports rather than
-            // throws, so their ordering has nothing to observe it with.
+            // lines later finds it and drains it inline. The attach guard
+            // releases through the same teardown and so has the same exposure;
+            // what it lacks is a way in, since nothing on that path throws
+            // today. The construction guard releases through `closeFdSafely`,
+            // which reports rather than throws.
             val warns = RecordingLogger(LogLevel.WARN)
             val bossLoop = KqueueEventLoop(warns)
             val workerGroup = KqueueEventLoopGroup(1, warns, DefaultAllocator)
@@ -623,6 +637,80 @@ class KqueueAcceptFailureSeamTest {
                 workerGroup.close()
             }
         }
+    }
+
+    @Test
+    fun `a Channel-mode accept whose bind config initialiser throws releases the descriptor`() = runBlocking {
+        withTimeout(15.seconds) {
+            // `BindConfig.initializeConnection` is an `open fun`, so this is the
+            // caller's code running between the attach and the return. A throw
+            // there leaves the connection joined to the loop, holding its
+            // descriptor and never read, and the channel it would be closed
+            // through has not been returned to anyone yet.
+            val warns = RecordingLogger(LogLevel.WARN)
+            val sentinelFd = newSentinelFd()
+            val doomed = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(doomed >= 0, "could not open a socket to be accepted")
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18096)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(doomed))
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+            }
+            val engine = KqueueEngine(
+                config = IoEngineConfig(threads = 1, loggerFactory = { warns }),
+                nativeSocket = fakeSocket,
+                nativeSocketOps = fakeOps,
+            )
+            try {
+                val server = engine.bind(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    FailingInitializerBindConfig,
+                )
+
+                val raised = assertFailsWith<InjectedFault> { server.accept() }
+                // Named rather than typed: the release runs a teardown that
+                // re-raises its own stage failures, and the caller must be told
+                // what it asked about rather than what the cleanup hit.
+                assertEquals(
+                    "the bind config initialiser for this connection failed",
+                    raised.message,
+                    "the caller waiting on accept() is told the initialiser's own failure",
+                )
+
+                // The transport exists, so the release is its teardown -- handed
+                // to the worker loop rather than run here, unlike the
+                // setup-window guard's raw close. Waited for rather than read
+                // straight away.
+                val deadline = TimeSource.Monotonic.markNow()
+                while (deadline.elapsedNow() < CLOSE_BUDGET && stillOpen(doomed)) {
+                    usleep(CLOSE_POLL_MICROS)
+                }
+                assertFalse(
+                    stillOpen(doomed),
+                    "a connection nobody holds and nothing will read must not keep its descriptor",
+                )
+                assertEquals(
+                    1,
+                    warns.messages.count { "initialising an accepted connection failed" in it && "fd=$doomed" in it },
+                    "and the drop is reported, naming the descriptor: ${warns.messages}",
+                )
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
+        }
+    }
+
+    /** A bind config whose connection initialiser always fails. */
+    private object FailingInitializerBindConfig : BindConfig() {
+        override fun initializeConnection(channel: PipelinedChannel): Unit =
+            throw InjectedFault("the bind config initialiser for this connection failed")
     }
 
     private companion object {
