@@ -161,7 +161,8 @@ internal class EpollEventLoop(
      * touches the same hot memory — mirroring the locality of the memScoped
      * arena this replaced — while performing no per-flush allocation.
      * EL-confined like [eventBuffer]; freed once in [close] (safe: the loop
-     * thread is joined there, so no flush can be in flight).
+     * loop's terminal sequence has finished by then, whoever ran it, so no
+     * flush can be in flight).
      */
     internal var writevBases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
         private set
@@ -190,14 +191,21 @@ internal class EpollEventLoop(
     private val wakeupFd: Int
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
 
-    // Whether `pthread_create` ever succeeded for this loop. A loop can be
+    // Whether `pthread_create` has been called for this loop and is not
+    // known to have failed. Deliberately not "succeeded": it is set before the
+    // call (see there), so between the two it is ahead of reality. A loop can be
     // closed without one: a group whose `start()` fails part way leaves the
     // rest of it constructed and idle, and tests build loops they never
     // start. There is nothing to join in that case, and nothing that will
     // ever run the teardown -- so `close()` runs it here instead.
     private val threadCreated = AtomicInt(0)
 
-    /** Backs [threadPtr]. Cleared in [close] — after joining the loop thread, or at once when none was created. */
+    /**
+     * Backs [threadPtr]. Cleared in [close], after the loop's terminal sequence
+     * has run — by the joined thread, or by the closing one when there was
+     * none. Not cleared at all when that sequence is still running elsewhere
+     * and [close] refuses to release.
+     */
     private val arena = Arena()
 
     private val threadPtr = arena.alloc<pthread_tVar>()
@@ -532,12 +540,10 @@ internal class EpollEventLoop(
     /**
      * Stops the EventLoop and releases all resources.
      *
-     * Stops the loop, then closes the
-     * epoll fd and eventfd. A loop with a thread is signalled and joined;
-     * one that never started is taken apart here. Waiters still parked at
-     * that point are
-     * the loop itself, on its way out — or, for a loop that never started, by
-     * this thread; see below.
+     * A loop with a thread is signalled and joined; one that never started is
+     * taken apart here. Then the epoll fd and eventfd are closed. Waiters still
+     * parked at that point are ended by the loop itself on its way out, or by
+     * this thread when there was no loop; see below.
      *
      * **Must not be called from the EventLoop thread.** `pthread_join` returns
      * `EDEADLK` at once when asked to join the caller, so everything below
@@ -603,7 +609,8 @@ internal class EpollEventLoop(
                     wakeup()
                     logger.error {
                         "${this::class.simpleName}.close() found the loop still being taken apart by " +
-                            "another caller; releasing nothing, because releasing is what would corrupt"
+                            "someone -- possibly this thread, re-entered -- still taking it apart; " +
+                            "releasing nothing, because releasing is what would corrupt"
                     }
                     return
                 }
@@ -664,9 +671,11 @@ internal class EpollEventLoop(
         // return queue's close-sentinel contract. Default no-op for
         // `DefaultAllocator` (tests that instantiate this loop with the
         // stateless allocator).
-        // Free the shared writev scratch arrays. Either the loop thread is
-        // joined by the caller above, or there never was one, so no transport
-        // flush can touch them.
+        // Free the shared writev scratch arrays. What makes that safe on every
+        // route here is quiescence, not a join: the thread may be joined, may
+        // never have existed, or may be another caller's that ran the sequence
+        // and is not joined at all. In each, the sequence has finished, so no
+        // transport flush can be in it.
         nativeHeap.free(writevBases)
         nativeHeap.free(writevLens)
         allocator.close()

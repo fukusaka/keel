@@ -1251,9 +1251,12 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
             // while the first, healthy loop is still serving every connection
             // on this engine. Returning skips the terminal sequence below, and
             // that is right: whoever holds the claim runs it, and this entry
-            // has no loop left to take apart. The other holder is either a
-            // second `loop()` (a bug) or a `close()` that got here first
-            // because this thread had not started yet (not one).
+            // has no loop left to take apart. Reaching here with a `close()`
+            // holding the claim means this `loop()` was invoked directly after
+            // that close: a thread `start()` spawned cannot, since `close()`
+            // takes the join path whenever one exists and a post-close
+            // `start()` is refused before it creates anything. Either way it is
+            // a caller bug.
             logger.error { "${this::class.simpleName}.loop() found the loop already claimed; this entry is ignored" }
             return
         }
@@ -1272,8 +1275,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * [finishWithoutRunning] caller closing a loop that has no thread. Whoever
      * takes it owns the ledgers for the rest of the loop's life, which is what
      * makes the confinement the sequence relies on a fact rather than an
-     * assumption: a `start()` arriving after a close cannot walk them, because
-     * its `loop()` finds the claim gone and returns.
+     * assumption: a `loop()` arriving after a close finds the claim taken and
+     * returns without walking anything. That is not what makes a post-close
+     * `start()` safe, though — by the time its `loop()` could refuse, the
+     * thread and its handle already exist. The engines refuse `start()` on a
+     * claimed loop for that.
      */
     private fun claimLoopTermination(): Boolean = loopEntered.compareAndSet(0, 1)
 
@@ -1382,9 +1388,10 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * walking the registry.
      *
      * @return `true` when this call ran the sequence. `false` means it was
-     *   already claimed — by a running or finished [loop]. The caller owns
-     *   deciding what that means: a thread it created is one it must join,
-     *   while a [loop] invoked directly leaves nothing to join at all.
+     *   already claimed — by a running or finished [loop], or by another
+     *   [finishWithoutRunning]. The caller owns deciding what that means: a
+     *   thread it created is one it must join, while a [loop] invoked directly
+     *   and a second closer both leave nothing to join at all.
      */
     fun finishWithoutRunning(): Boolean {
         if (!claimLoopTermination()) return false
