@@ -25,7 +25,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -463,26 +462,5 @@ class EpollAcceptSeamTest {
                 engine.close()
             }
         }
-    }
-
-    private companion object {
-        /** Poll interval while waiting for another thread to reach a state. */
-        const val POLL_MICROS: UInt = 1_000u
-
-        /** Poll interval while waiting for a worker thread to release a descriptor. */
-        const val CLOSE_POLL_MICROS: UInt = 1_000u
-
-        /** Wall-clock bound on that wait; generous, since it only has to exclude a hang. */
-        val CLOSE_BUDGET = 10.seconds
-
-        /** Long enough for the closing thread to publish "finished" on a loaded runner. */
-        val WEDGE_SETUP_BUDGET = 10.seconds
-
-        /**
-         * The ceiling for two hand-offs sharing one allowance. Half a budget of
-         * slack over the one wait they should cost, and half a budget short of
-         * the two the regression would cost.
-         */
-        val ONE_AND_A_HALF_BUDGETS = 150.milliseconds
     }
 }

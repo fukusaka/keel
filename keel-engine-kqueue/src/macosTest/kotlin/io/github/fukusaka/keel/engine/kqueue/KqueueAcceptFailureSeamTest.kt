@@ -27,6 +27,7 @@ import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -49,6 +50,17 @@ class KqueueAcceptFailureSeamTest {
      * Creates a real but unbound `socket(AF_INET, SOCK_STREAM, 0)` fd so
      * `bindListener` and the arm calls succeed. Mirrors the sibling suite.
      */
+    /**
+     * Whether [fd] still names an open descriptor, without keeping the
+     * duplicate it asks with.
+     */
+    private fun stillOpen(fd: Int): Boolean {
+        val probe = dup(fd)
+        if (probe < 0) return false
+        close(probe)
+        return true
+    }
+
     private fun newSentinelFd(): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
         check(fd >= 0) { "failed to create sentinel socket" }
@@ -65,9 +77,11 @@ class KqueueAcceptFailureSeamTest {
             // exited, while the peer's `connect` had already succeeded and it
             // waited on a socket nobody would ever read.
             //
-            // The boss loop is left running: this is one half-stopped engine,
-            // not a closed one, which is the state a worker that broke out of
-            // its own loop leaves behind.
+            // The state under test is one half-stopped engine, not a closed
+            // one -- what a worker that broke out of its own loop leaves
+            // behind. Only the worker has to be stopped for that; the accept
+            // is driven from this thread, so the boss stays unstarted (see the
+            // note in the try below).
             val warns = RecordingLogger(LogLevel.WARN)
             val bossLoop = KqueueEventLoop(warns)
             val workerGroup = KqueueEventLoopGroup(1, warns, DefaultAllocator)
@@ -90,9 +104,9 @@ class KqueueAcceptFailureSeamTest {
                 nativeSocket = fakeSocket,
                 nativeSocketOps = FakeNativeSocketOps(),
             )
-            // Both loops start inside the `try`: a pthread each, and an assert
-            // failing before the `finally` is reached would leave them running
-            // for the rest of the suite -- one process runs all of it.
+            // The worker starts inside the `try`: it is a pthread, and an
+            // assert failing before the `finally` is reached would leave it
+            // running for the rest of the suite -- one process runs all of it.
             try {
                 // The boss is deliberately not started. `acceptLoop` arms the
                 // listener from inside the drive, and an unbound listen socket
@@ -103,27 +117,16 @@ class KqueueAcceptFailureSeamTest {
                 // listener fd is still released, because closing an unstarted
                 // loop now drains what was queued for it.
                 workerGroup.start()
-                // Deliberately not armed on the boss loop. An unbound listen
-                // socket reports readiness on it at once and goes on doing so,
-                // so an armed listener runs this accept loop from the boss
-                // thread too -- and the two threads then race for the one
-                // scripted `Accepted`, which the boss can take while the worker
-                // is still alive. The accept below is driven directly instead,
-                // which is what this seam does everywhere else. (`acceptLoop`
-                // does arm the listener on its way out, so the boss picks the
-                // storm up from there -- by then the script is drained.)
-                //
                 // Joined and quiescent: nothing will drain this worker's queue
                 // again.
                 workerGroup.close()
 
                 server.onAcceptable()
-                // Snapshotted here, not read at the assertion: `acceptLoop`
-                // re-arms the listener on its way out, and an unbound listen
-                // socket reports readiness at once and keeps doing so, so the
-                // boss thread drives this loop again for as long as the test
-                // stands still. Only the count this drive left answers the
-                // question.
+                // Snapshotted rather than read at the assertion. Nothing
+                // drives this loop again while the boss stays unstarted, so the
+                // two are equal today -- but the count belongs to the drive,
+                // and reading it there keeps it that way if a later change
+                // gives this test a running boss again.
                 val callsAfterDrive = fakeSocket.acceptCalls
 
                 val probe = dup(acceptedFd)
@@ -399,11 +402,16 @@ class KqueueAcceptFailureSeamTest {
             val bossLoop = KqueueEventLoop(warns)
             val workerGroup = KqueueEventLoopGroup(1, warns, DefaultAllocator)
             val sentinelFd = newSentinelFd()
-            val accepted = socket(AF_INET, SOCK_STREAM, 0)
-            assertTrue(accepted >= 0, "could not open a socket to be accepted")
+            val first = socket(AF_INET, SOCK_STREAM, 0)
+            val second = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(first >= 0 && second >= 0, "could not open sockets to be accepted")
             val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18092)
+            // Two, because one failing initializer must not cost the peer
+            // behind it: the second is accepted only if the loop went round,
+            // and released only if its own failure was contained too.
             val fakeSocket = FakeNativeSocket().apply {
-                enqueueAccept(sentinelFd, AcceptResult.Accepted(accepted))
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(first))
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
             val server = KqueuePipelinedStreamServer(
@@ -429,41 +437,48 @@ class KqueueAcceptFailureSeamTest {
                 workerGroup.start()
 
                 server.onAcceptable()
-                // Read before the wait below. `acceptLoop` re-arms the listener
-                // on its way out, and an unbound listen socket reports
-                // readiness at once and keeps doing so, so the boss thread
-                // drives this loop again for as long as the test stands still.
-                // The count that answers "did one failure unwind the batch" is
-                // the one the drive itself left.
-                val callsAfterDrive = fakeSocket.acceptCalls
 
                 // The hand-off is to a live worker, so the construction runs on
-                // its thread: wait for the descriptor to go rather than reading
-                // it straight away.
+                // its thread: wait for the descriptors to go rather than
+                // reading them straight away. Both, because the second is the
+                // peer queued behind the first one's failure -- it is accepted
+                // only if the loop went round, and released only if its own
+                // failure was contained as well.
+                //
+                // The worker group is closed before the probes, so nothing can
+                // be handed a descriptor number these are about to test. The
+                // sibling tests get that from a parked boss; this one has a
+                // live worker until it is stopped.
                 val deadline = TimeSource.Monotonic.markNow()
                 while (deadline.elapsedNow() < CLOSE_BUDGET) {
-                    val probe = dup(accepted)
-                    if (probe < 0) break
-                    close(probe)
+                    if (!stillOpen(first) && !stillOpen(second)) break
                     usleep(CLOSE_POLL_MICROS)
                 }
-                val probe = dup(accepted)
-                if (probe >= 0) close(probe)
-                assertEquals(
-                    -1,
-                    probe,
+                workerGroup.close()
+
+                assertFalse(
+                    stillOpen(first),
                     "a connection nobody will read and nobody holds must not keep its descriptor",
                 )
+                assertFalse(
+                    stillOpen(second),
+                    "and one failing initializer must not cost the peer queued behind it",
+                )
+                // The release is only half of it. Reporting is what tells an
+                // operator which connection went and why, and it is the half a
+                // throwing teardown could silently take away.
                 assertEquals(
                     2,
-                    callsAfterDrive,
-                    "and one failing initializer must not stop the loop serving the peers behind it",
+                    warns.messages.count { "initialising an accepted connection failed" in it },
+                    "each dropped connection is reported: ${warns.messages}",
                 )
             } finally {
-                val leftOpen = dup(accepted)
-                if (leftOpen >= 0) {
-                    close(leftOpen)
-                    close(accepted)
+                for (fd in listOf(first, second)) {
+                    val leftOpen = dup(fd)
+                    if (leftOpen >= 0) {
+                        close(leftOpen)
+                        close(fd)
+                    }
                 }
                 server.close()
                 bossLoop.close()
