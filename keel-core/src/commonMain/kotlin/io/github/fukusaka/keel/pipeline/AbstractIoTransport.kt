@@ -91,7 +91,11 @@ abstract class AbstractIoTransport(
      * concurrent teardown attempts into a single cleanup pass.
      */
     @OptIn(ExperimentalAtomicApi::class)
-    protected fun markTeardownStarted(): Boolean = teardownStarted.compareAndSet(0, 1)
+    protected fun markTeardownStarted(): Boolean {
+        if (teardownStarted.load() != 0) return false
+        teardownStarted.store(1)
+        return true
+    }
 
     // --- Read path callbacks ---
 
