@@ -253,7 +253,7 @@ internal class KqueueEventLoop(
             // pointer -- and the thread would find the claim taken and return
             // without doing anything anyway. Reported rather than thrown:
             // `close()` is idempotent and this is the same kind of late call.
-            logger.error { "${this::class.simpleName}.start() on a closed loop is ignored" }
+            logger.error { "${this::class.simpleName}.start() on a loop whose termination is already claimed is ignored" }
             return
         }
         val ref = StableRef.create(this)
@@ -495,8 +495,10 @@ internal class KqueueEventLoop(
     /**
      * Stops the EventLoop and releases all resources.
      *
-     * Signals the EventLoop thread to stop, joins it, then closes the
-     * kqueue fd and wakeup pipe fds. Waiters still parked at that point are
+     * Stops the loop, then closes the
+     * kqueue fd and wakeup pipe fds. A loop with a thread is signalled and joined;
+     * one that never started is taken apart here. Waiters still parked at
+     * that point are
      * ended by the loop itself, on its way out — or, for a loop that never
      * started, by this thread; see below.
      *
@@ -554,6 +556,14 @@ internal class KqueueEventLoop(
                 // Quiescence is what says the sequence finished, whoever ran
                 // it.
                 if (!isStopped()) {
+                    // Someone else's sequence is still running. Nudge it: this
+                    // is the only thing that tells a loop parked in the kernel
+                    // wait that `running` went down, and without it the
+                    // quiescence this branch is refusing over may never
+                    // arrive. Then leave everything open -- a later `close()`
+                    // cannot retry, since the flag is already down, but a
+                    // running loop that finishes will at least have finished.
+                    wakeup()
                     logger.error {
                         "${this::class.simpleName}.close() found the loop still being taken apart by " +
                             "another caller; releasing nothing, because releasing is what would corrupt"
@@ -610,7 +620,8 @@ internal class KqueueEventLoop(
         // `BufferAllocator.createChild()`, so closing here drains
         // this loop's freelists and runs `Freelist.close()` (mutex
         // destroy / nativeHeap.free for `MutexFreelist`). The thread that ran
-        // this loop, if there was one, is joined by now and can no longer allocate — but a returnToPool can still
+        // this loop -- joined by now, or this very thread having run it --
+        // completed the terminal sequence, so it can no longer allocate — but a returnToPool can still
         // arrive from a post-quiescence closing caller (the stopped-loop
         // transport teardown releases pending writes on its own thread);
         // that race is the allocator's to absorb, via its cross-thread
