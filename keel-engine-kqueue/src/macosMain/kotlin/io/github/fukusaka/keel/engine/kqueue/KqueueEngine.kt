@@ -249,10 +249,13 @@ class KqueueEngine(
         )
 
         val fd = nativeSocketOps.openUnixClientSocket()
-        nativeSocketOps.applySocketOptions(fd, socketOptions)
-        val workerLoop = workerGroup.next()
+        val workerLoop = releaseOnFailure(fd) {
+            nativeSocketOps.applySocketOptions(fd, socketOptions)
+            workerGroup.next()
+        }
 
-        when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
+        val connectResult = releaseOnFailure(fd) { nativeSocketOps.connectUnixNonBlocking(fd, address) }
+        when (connectResult) {
             ConnectResult.Connected -> Unit
             ConnectResult.InProgress -> {
                 (suspendRegisterOverride ?: workerLoop).awaitWriteReady(fd, logger)
@@ -266,7 +269,7 @@ class KqueueEngine(
             }
             is ConnectResult.Failed -> {
                 closeFdSafely(fd, logger, "connect cleanup")
-                error("connect($address) failed: ${errnoMessage(result.errno)}")
+                error("connect($address) failed: ${errnoMessage(connectResult.errno)}")
             }
         }
 
@@ -288,8 +291,16 @@ class KqueueEngine(
             // idempotent and releases the fd itself, so nothing here can close a
             // number the loop might still hold or that a later close would close
             // twice. The channel is discarded unreturned.
-            transport.close()
-            error("connect(address) failed: the EventLoop stopped during connect")
+            val stopped = IllegalStateException(
+                "connect(address) failed: the EventLoop stopped during connect",
+            )
+            // Through the same release as the guards, because this branch is the
+            // one where the loop has already swept: `close()` then runs the teardown
+            // inline on this thread, and a stage that fails re-raises -- which would
+            // hand the caller a buffer-release failure with nothing saying the loop
+            // stopped.
+            releaseTransport(transport, stopped)
+            throw stopped
         }
         return channel
     }
@@ -314,10 +325,19 @@ class KqueueEngine(
         idleTimeoutOverride: Long?,
     ): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
-        nativeSocketOps.applySocketOptions(fd, socketOptions)
-        val workerLoop = workerGroup.next()
+        // Inside the guard, not above it. `NativeSocketOps` is a public
+        // constructor parameter, so neither of these is keel's code to promise
+        // about: the in-tree implementation swallows a failed `setsockopt` and
+        // returns a result rather than throwing, but an implementation that
+        // does otherwise would strand a descriptor here -- and `connectWithFallback`
+        // retries the next resolved address, so one per A-record.
+        val workerLoop = releaseOnFailure(fd) {
+            nativeSocketOps.applySocketOptions(fd, socketOptions)
+            workerGroup.next()
+        }
 
-        when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {
+        val connectResult = releaseOnFailure(fd) { nativeSocketOps.connectNonBlocking(fd, ip, port) }
+        when (connectResult) {
             ConnectResult.Connected -> Unit
             ConnectResult.InProgress -> {
                 // Connection in progress — suspend until fd is writable.
@@ -336,7 +356,7 @@ class KqueueEngine(
             }
             is ConnectResult.Failed -> {
                 closeFdSafely(fd, logger, "connect cleanup")
-                error("connect() failed: ${errnoMessage(result.errno)}")
+                error("connect() failed: ${errnoMessage(connectResult.errno)}")
             }
         }
 
@@ -362,8 +382,16 @@ class KqueueEngine(
             // idempotent and releases the fd itself, so nothing here can close a
             // number the loop might still hold or that a later close would close
             // twice. The channel is discarded unreturned.
-            transport.close()
-            error("connect(remoteAddr) failed: the EventLoop stopped during connect")
+            val stopped = IllegalStateException(
+                "connect(remoteAddr) failed: the EventLoop stopped during connect",
+            )
+            // Through the same release as the guards, because this branch is the
+            // one where the loop has already swept: `close()` then runs the teardown
+            // inline on this thread, and a stage that fails re-raises -- which would
+            // hand the caller a buffer-release failure with nothing saying the loop
+            // stopped.
+            releaseTransport(transport, stopped)
+            throw stopped
         }
         return channel
     }
@@ -375,10 +403,15 @@ class KqueueEngine(
      * The connect path holds a descriptor nobody else can name from the moment
      * the socket is opened until the channel is returned: the transport is not
      * in the loop's registry until the channel attaches, so no stop
-     * notification reaches it either. Every step in that stretch that can fail
-     * goes through here, so what is left when one does is the caller's
-     * exception rather than a descriptor open for the process's life on a
-     * socket whose peer believes it is connected.
+     * notification reaches it either. Every step in that stretch goes through
+     * here or through [releaseTransport], so what is left when one fails is the
+     * caller's exception rather than a descriptor open for the process's life
+     * on a socket whose peer believes it is connected.
+     *
+     * `crossinline` for the reason the transport's teardown stages carry it: a
+     * `return` written inside a future [build] would leave the `try` without
+     * entering the `catch`, and the descriptor would go unreleased -- which is
+     * the whole contract.
      *
      * **Not the stretch spent waiting for write-readiness.** That await owns
      * the descriptor while it holds it and releases it on cancellation and on
@@ -386,7 +419,7 @@ class KqueueEngine(
      * here as well would be closing a number the kernel may have handed on.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun <T> releaseOnFailure(fd: Int, build: () -> T): T =
+    private inline fun <T> releaseOnFailure(fd: Int, crossinline build: () -> T): T =
         try {
             build()
         } catch (buildFailure: Throwable) {
@@ -406,18 +439,32 @@ class KqueueEngine(
      * `connect` is waiting for. Attached to that answer instead.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun <T> releaseOnFailure(transport: KqueueIoTransport, build: () -> T): T =
+    private inline fun <T> releaseOnFailure(transport: KqueueIoTransport, crossinline build: () -> T): T =
         try {
             build()
         } catch (buildFailure: Throwable) {
-            try {
-                transport.close()
-            } catch (releaseFailure: Throwable) {
-                buildFailure.addSuppressed(releaseFailure)
-                logger.warn(releaseFailure) { "releasing a failed connect threw as well: fd=${transport.fd}" }
-            }
+            releaseTransport(transport, buildFailure)
             throw buildFailure
         }
+
+    /**
+     * Closes [transport] on the way out of a failed connect, without letting
+     * the release speak over [cause].
+     *
+     * The teardown re-raises what its stages failed with, and thrown from here
+     * that would replace the answer the caller of `connect` is waiting for --
+     * which on the swept-loop branch would be a buffer-release failure with
+     * nothing saying the loop stopped. Attached to [cause] and logged instead.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun releaseTransport(transport: KqueueIoTransport, cause: Throwable) {
+        try {
+            transport.close()
+        } catch (releaseFailure: Throwable) {
+            cause.addSuppressed(releaseFailure)
+            logger.warn(releaseFailure) { "releasing a failed connect threw as well: fd=${transport.fd}" }
+        }
+    }
 
     /**
      * Binds a pipeline-based server on [host]:[port].

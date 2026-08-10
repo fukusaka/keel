@@ -541,7 +541,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
      * failure is what reaches the caller.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun withCloseOnFailure(fd: Int, context: String, prepare: () -> Unit): Int {
+    private inline fun withCloseOnFailure(fd: Int, context: String, crossinline prepare: () -> Unit): Int {
         try {
             prepare()
         } catch (prepareFailure: Throwable) {
