@@ -275,25 +275,6 @@ internal class KqueueStreamServer(
     }
 
     /**
-     * Logs [message] against [cause] without letting the log end the caller.
-     *
-     * Both reports a failed accept makes stand between a descriptor and its
-     * release, or between [releaseAndRaise] and the `throw` that answers the
-     * caller. `Logger` is a public SPI, so a throw out of one is the caller's
-     * code running in the middle of a cleanup: it would strand the descriptor
-     * and replace the cause with a logging failure. Attached to [cause]
-     * instead, which is the same answer the release itself gets.
-     */
-    @Suppress("TooGenericExceptionCaught")
-    private inline fun report(cause: Throwable, message: () -> String) {
-        try {
-            logger.warn(cause, message)
-        } catch (reportFailure: Throwable) {
-            cause.addSuppressed(reportFailure)
-        }
-    }
-
-    /**
      * Reports [cause] against [clientFd], lets go of whatever owns the
      * descriptor, and raises [cause] to the caller of [accept].
      *
@@ -325,12 +306,12 @@ internal class KqueueStreamServer(
         closeContext: String = "accepted connection construction",
     ): Nothing {
         // Ahead of the release, which is what makes the descriptor's fate
-        // depend on this call returning -- so the report is not allowed to end
-        // it. `Logger` is a public SPI; the engines wrap the configured factory
-        // so one cannot throw here, but a server built with an unwrapped one
-        // (which the tests do) would otherwise strand the descriptor and
-        // replace the answer its caller is waiting for.
-        report(cause) { "$what: fd=$clientFd" }
+        // depend on this statement returning. Written bare, like every other
+        // log in a cleanup here: `Logger` is a public SPI, and the guarantee
+        // that one cannot throw is kept once where the engine reads the
+        // factory rather than at each of the thirty-odd statements that would
+        // otherwise have to remember it.
+        logger.warn(cause) { "$what: fd=$clientFd" }
         if (transport == null) {
             // Nothing owns it yet, so this is the raw close rather than a
             // teardown -- the same one the accept loop's setup-failure branch
@@ -355,8 +336,8 @@ internal class KqueueStreamServer(
      * on, with the failure logged here as well. The attachment alone would not
      * have been enough: it travels, but being read is another matter -- that
      * depends on whoever catches [cause] printing suppressed exceptions, and
-     * on the cancellation path the coroutine machinery hands [cause] to
-     * nobody at all.
+     * on the cancellation path the coroutine machinery hands [cause] to nobody
+     * at all. The log is what makes it observable either way.
      *
      * Not the usual outcome: the in-tree caller resumes [accept] off the worker
      * loop, so the close hands the teardown over and returns, and a teardown
@@ -382,7 +363,7 @@ internal class KqueueStreamServer(
             // closes a connection it is winding down; its teardown stages only
             // carry their failures, but those are re-raised to a caller that
             // logs.
-            report(releaseFailure) { "releasing a dropped accepted connection failed as well: fd=${transport.fd}" }
+            logger.warn(releaseFailure) { "releasing a dropped accepted connection failed as well: fd=${transport.fd}" }
         }
     }
 

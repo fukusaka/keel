@@ -39,10 +39,13 @@ import kotlin.time.TimeSource
  * behind it fails.
  *
  * Split from [EpollAcceptSeamTest], which covers the branches of `accept`
- * itself. These cover the other half: a worker that will never run the work,
- * one that is still stopping, and a connection whose own initialiser throws.
- * Each ends the same way if unguarded — a descriptor open for the process's
- * life, on a socket whose peer thinks it is connected.
+ * itself, and from [EpollChannelAcceptGuardSeamTest], which covers the other
+ * server. These are the pipelined server's hand-off to a worker: one that will
+ * never run the work, one still stopping, a connection whose own initialiser
+ * throws, and one whose release throws while it is being dropped. Each leaves
+ * a descriptor open for the process's life if unguarded, on a socket whose
+ * peer thinks it is connected — except the allowance arithmetic, which is a
+ * value test over the tally those drops keep.
  */
 @OptIn(ExperimentalForeignApi::class)
 class EpollAcceptFailureSeamTest {
