@@ -517,15 +517,23 @@ class KqueueEngine(
                 closeFdSafely(listener.serverFd, logger, "multi-address bind rollback")
             },
         ) { spec -> openPipelineListener(spec) }
-        val serverChannel = KqueuePipelinedStreamServer(
-            listeners = listeners,
-            bossLoop = bossLoop,
-            workerGroup = workerGroup,
-            logger = logger,
-            pipelineInitializer = pipelineInitializer,
-            nativeSocket = nativeSocket,
-            nativeSocketOps = nativeSocketOps,
-        )
+        // Guarded like every other stretch that holds an open descriptor
+        // nobody owns. `bindAllOrRollback` has returned by here, so its rollback
+        // is spent, and the server that will close these does not exist yet --
+        // a throw between the two leaves every listener open with its port
+        // still bound. Nothing in the constructor is known to throw, which is
+        // the same footing the listener branches below stand on.
+        val serverChannel = releaseListenersOnFailure(listeners) {
+            KqueuePipelinedStreamServer(
+                listeners = listeners,
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                logger = logger,
+                pipelineInitializer = pipelineInitializer,
+                nativeSocket = nativeSocket,
+                nativeSocketOps = nativeSocketOps,
+            )
+        }
         try {
             serverChannel.start()
         } catch (t: Throwable) {
@@ -534,6 +542,28 @@ class KqueueEngine(
         }
         return serverChannel
     }
+
+    /**
+     * Runs [build] over already-open [listeners] and returns its value, closing
+     * every listener descriptor and re-raising if it throws.
+     *
+     * The one stretch in a pipeline bind where the descriptors have no owner at
+     * all: `bindAllOrRollback` has returned, so its rollback is spent, and the
+     * server that will close them does not exist yet.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun <T> releaseListenersOnFailure(
+        listeners: List<KqueuePipelinedStreamServer.Listener>,
+        crossinline build: () -> T,
+    ): T =
+        try {
+            build()
+        } catch (buildFailure: Throwable) {
+            for (listener in listeners) {
+                closeFdSafely(listener.serverFd, logger, "pipeline server construction")
+            }
+            throw buildFailure
+        }
 
     /**
      * Opens and binds one pipeline listen socket. Cleans up its own fd on
