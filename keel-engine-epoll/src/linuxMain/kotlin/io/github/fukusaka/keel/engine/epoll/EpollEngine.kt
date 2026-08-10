@@ -18,6 +18,7 @@ import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.guarded
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
@@ -155,14 +156,14 @@ class EpollEngine(
 
         val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog)
 
-        try {
+        return releaseOnFailure(serverFd, "bindUnix cleanup") {
             // The listener is left unregistered here; accept() registers it
             // through [EpollEventLoop.register] once it has a waiter to hand the
             // event to. Registering earlier would break the loop's
             // registered-implies-handler invariant, whose no-handler branch
             // removes the interest again.
             logger.debug { "Bound to $address" }
-            return EpollStreamServer(
+            EpollStreamServer(
                 serverFd,
                 bossLoop,
                 workerGroup,
@@ -172,9 +173,6 @@ class EpollEngine(
                 nativeSocket,
                 nativeSocketOps,
             )
-        } catch (t: Throwable) {
-            closeFdSafely(serverFd, logger, "bindUnix cleanup")
-            throw t
         }
     }
 
@@ -185,7 +183,7 @@ class EpollEngine(
         val port = address.port
         val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog)
 
-        try {
+        return releaseOnFailure(serverFd, "bindInet cleanup") {
             // The listener is left unregistered here; accept() registers it
             // through [EpollEventLoop.register] once it has a waiter to hand the
             // event to. Registering earlier would break the loop's
@@ -193,7 +191,7 @@ class EpollEngine(
             // removes the interest again.
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            return EpollStreamServer(
+            EpollStreamServer(
                 serverFd,
                 bossLoop,
                 workerGroup,
@@ -203,9 +201,6 @@ class EpollEngine(
                 nativeSocket,
                 nativeSocketOps,
             )
-        } catch (t: Throwable) {
-            closeFdSafely(serverFd, logger, "bindInet cleanup")
-            throw t
         }
     }
 
@@ -240,14 +235,19 @@ class EpollEngine(
         check(!closed) { "Engine is closed" }
 
         val fd = nativeSocketOps.openUnixClientSocket()
-        nativeSocketOps.applySocketOptions(fd, socketOptions)
-        val workerLoop = workerGroup.next()
+        val workerLoop = releaseOnFailure(fd) {
+            nativeSocketOps.applySocketOptions(fd, socketOptions)
+            workerGroup.next()
+        }
 
-        when (val result = nativeSocketOps.connectUnixNonBlocking(fd, address)) {
+        val connectResult = releaseOnFailure(fd) { nativeSocketOps.connectUnixNonBlocking(fd, address) }
+        when (connectResult) {
             ConnectResult.Connected -> Unit
             ConnectResult.InProgress -> {
                 (suspendRegisterOverride ?: workerLoop).awaitWriteReady(fd, logger)
-                val error = nativeSocketOps.getSocketError(fd)
+                // Guarded from here on; see the sibling path for why the
+                // await's own stretch is left out.
+                val error = releaseOnFailure(fd) { nativeSocketOps.getSocketError(fd) }
                 if (error != 0) {
                     closeFdSafely(fd, logger, "connect cleanup")
                     error("connect($address) failed: ${errnoMessage(error)}")
@@ -255,26 +255,38 @@ class EpollEngine(
             }
             is ConnectResult.Failed -> {
                 closeFdSafely(fd, logger, "connect cleanup")
-                error("connect($address) failed: ${errnoMessage(result.errno)}")
+                error("connect($address) failed: ${errnoMessage(connectResult.errno)}")
             }
         }
 
         logger.debug { "Connected to $address" }
-        val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
-        val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
-        val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        val transport = releaseOnFailure(fd) {
+            val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
+            val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
+            EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        }
         // Built before the check: the transport joins the loop when the channel
         // attaches, so that this connection is in the registry only once there
         // is something to deliver a stop notification to.
-        val channel = EpollPipelinedChannel(transport, logger, address, null)
+        val channel = releaseOnFailure(transport) {
+            EpollPipelinedChannel(transport, logger, address, null)
+        }
         if (!transport.joinedLoop) {
             // The loop swept between this call's check at the top and that join.
             // Closing the transport rather than the descriptor: close() is
             // idempotent and releases the fd itself, so nothing here can close a
             // number the loop might still hold or that a later close would close
             // twice. The channel is discarded unreturned.
-            transport.close()
-            error("connect(address) failed: the EventLoop stopped during connect")
+            val stopped = IllegalStateException(
+                "connect(address) failed: the EventLoop stopped during connect",
+            )
+            // Through the same release as the guards, because this branch is the
+            // one where the loop has already swept: `close()` then runs the teardown
+            // inline on this thread, and a stage that fails re-raises -- which would
+            // hand the caller a buffer-release failure with nothing saying the loop
+            // stopped.
+            releaseTransport(transport, stopped)
+            throw stopped
         }
         return channel
     }
@@ -299,16 +311,30 @@ class EpollEngine(
         idleTimeoutOverride: Long?,
     ): Channel {
         val fd = nativeSocketOps.openClientSocket(ip)
-        nativeSocketOps.applySocketOptions(fd, socketOptions)
-        val workerLoop = workerGroup.next()
+        // Inside the guard, not above it. `NativeSocketOps` is a public
+        // constructor parameter, so neither of these is keel's code to promise
+        // about: the in-tree implementation swallows a failed `setsockopt` and
+        // returns a result rather than throwing, but an implementation that
+        // does otherwise would strand a descriptor here -- and `connectWithFallback`
+        // retries the next resolved address, so one per A-record.
+        val workerLoop = releaseOnFailure(fd) {
+            nativeSocketOps.applySocketOptions(fd, socketOptions)
+            workerGroup.next()
+        }
 
-        when (val result = nativeSocketOps.connectNonBlocking(fd, ip, port)) {
+        val connectResult = releaseOnFailure(fd) { nativeSocketOps.connectNonBlocking(fd, ip, port) }
+        when (connectResult) {
             ConnectResult.Connected -> Unit
             ConnectResult.InProgress -> {
                 // Connection in progress — suspend until fd is writable.
                 (suspendRegisterOverride ?: workerLoop).awaitWriteReady(fd, logger)
                 // Verify connection succeeded via SO_ERROR.
-                val error = nativeSocketOps.getSocketError(fd)
+                // Guarded from here on. Until the await returns the
+                // descriptor belongs to it -- it releases on cancellation and
+                // on failure, under a claim CAS -- so closing it here as well
+                // would be closing a number the kernel may already have
+                // handed on. Ownership comes back with the return.
+                val error = releaseOnFailure(fd) { nativeSocketOps.getSocketError(fd) }
                 if (error != 0) {
                     closeFdSafely(fd, logger, "connect cleanup")
                     error("connect() failed: ${errnoMessage(error)}")
@@ -316,28 +342,131 @@ class EpollEngine(
             }
             is ConnectResult.Failed -> {
                 closeFdSafely(fd, logger, "connect cleanup")
-                error("connect() failed: ${errnoMessage(result.errno)}")
+                error("connect() failed: ${errnoMessage(connectResult.errno)}")
             }
         }
 
-        val remoteAddr = nativeSocketOps.getRemoteAddress(fd)
-        val localAddr = nativeSocketOps.getLocalAddress(fd)
+        // `getpeername` on a peer that reset between the connect completing
+        // and this call answers ENOTCONN, and both queries are `check`s over
+        // the syscall. The throw used to leave the descriptor open for the
+        // process's life, once per connect attempt.
+        val remoteAddr = releaseOnFailure(fd) { nativeSocketOps.getRemoteAddress(fd) }
+        val localAddr = releaseOnFailure(fd) { nativeSocketOps.getLocalAddress(fd) }
         logger.debug { "Connected to $remoteAddr" }
-        val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
-        val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
-        val transport = EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        val transport = releaseOnFailure(fd) {
+            val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
+            val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
+            EpollIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        }
         // Built before the check; see the sibling connect path.
-        val channel = EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
+        val channel = releaseOnFailure(transport) {
+            EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
+        }
         if (!transport.joinedLoop) {
             // The loop swept between this call's check at the top and that join.
             // Closing the transport rather than the descriptor: close() is
             // idempotent and releases the fd itself, so nothing here can close a
             // number the loop might still hold or that a later close would close
             // twice. The channel is discarded unreturned.
-            transport.close()
-            error("connect(remoteAddr) failed: the EventLoop stopped during connect")
+            val stopped = IllegalStateException(
+                "connect(remoteAddr) failed: the EventLoop stopped during connect",
+            )
+            // Through the same release as the guards, because this branch is the
+            // one where the loop has already swept: `close()` then runs the teardown
+            // inline on this thread, and a stage that fails re-raises -- which would
+            // hand the caller a buffer-release failure with nothing saying the loop
+            // stopped.
+            releaseTransport(transport, stopped)
+            throw stopped
         }
         return channel
+    }
+
+    /**
+     * Runs [build] and returns its value, closing [fd] and re-raising if it
+     * throws.
+     *
+     * Every path that opens a descriptor holds one nobody else can name until
+     * it is handed to something that will close it -- a channel for `connect`,
+     * a server or a listener for `bind`. On the connect path that stretch
+     * reaches past the transport, which is not in the loop's registry until the
+     * channel attaches, so no stop notification reaches it either. What is left
+     * when a step in it fails is the caller's exception rather than a
+     * descriptor open for the process's life on a socket whose peer believes it
+     * is connected.
+     *
+     * On the connect path every step that can fail goes through here or through
+     * [releaseTransport], with three exceptions that release for themselves --
+     * the `SO_ERROR` and connect-failure branches, and the await below -- and
+     * one that cannot fail:
+     * the debug line renders a [SocketAddress], which is `sealed` in this
+     * library, so its `toString` is keel's own however the address was
+     * obtained. A caller-supplied `NativeSocketOps` cannot put its code there.
+     *
+     * `crossinline` for the reason the transport's teardown stages carry it: a
+     * `return` written inside a future [build] would leave the `try` without
+     * entering the `catch`, and the descriptor would go unreleased -- which is
+     * the whole contract.
+     *
+     * **Not the stretch spent waiting for write-readiness** (connect only).
+     * That await owns the descriptor while it holds it and releases it on
+     * cancellation and on failure, under a claim so the two endings cannot
+     * both close. Closing here as well would be closing a number the kernel
+     * may have handed on.
+     *
+     * [context] names the stage in the close's own report, and defaults to the
+     * connect window because that is where most of these are.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun <T> releaseOnFailure(
+        fd: Int,
+        context: String = "connect construction",
+        crossinline build: () -> T,
+    ): T =
+        try {
+            build()
+        } catch (buildFailure: Throwable) {
+            // Raw, because nothing owns the descriptor yet -- the same close
+            // the connect-failure branches above make.
+            closeFdSafely(fd, logger, context)
+            throw buildFailure
+        }
+
+    /**
+     * Runs [build] and returns its value, closing [transport] and re-raising
+     * if it throws.
+     *
+     * Once the transport exists it owns the descriptor, so this is its
+     * teardown rather than a raw close -- and the teardown re-raises what its
+     * stages failed with, which would replace the answer the caller of
+     * `connect` is waiting for. Attached to that answer instead.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun <T> releaseOnFailure(transport: EpollIoTransport, crossinline build: () -> T): T =
+        try {
+            build()
+        } catch (buildFailure: Throwable) {
+            releaseTransport(transport, buildFailure)
+            throw buildFailure
+        }
+
+    /**
+     * Closes [transport] on the way out of a failed connect, without letting
+     * the release speak over [cause].
+     *
+     * The teardown re-raises what its stages failed with, and thrown from here
+     * that would replace the answer the caller of `connect` is waiting for --
+     * which on the swept-loop branch would be a buffer-release failure with
+     * nothing saying the loop stopped. Attached to [cause] and logged instead.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun releaseTransport(transport: EpollIoTransport, cause: Throwable) {
+        try {
+            transport.close()
+        } catch (releaseFailure: Throwable) {
+            cause.addSuppressed(releaseFailure)
+            logger.warn(releaseFailure) { "releasing a failed connect threw as well: fd=${transport.fd}" }
+        }
     }
 
     /**
@@ -373,15 +502,23 @@ class EpollEngine(
                 closeFdSafely(listener.serverFd, logger, "multi-address bind rollback")
             },
         ) { spec -> openPipelineListener(spec) }
-        val serverChannel = EpollPipelinedStreamServer(
-            listeners = listeners,
-            bossLoop = bossLoop,
-            workerGroup = workerGroup,
-            logger = logger,
-            pipelineInitializer = pipelineInitializer,
-            nativeSocket = nativeSocket,
-            nativeSocketOps = nativeSocketOps,
-        )
+        // Guarded like every other stretch that holds an open descriptor
+        // nobody owns. `bindAllOrRollback` has returned by here, so its rollback
+        // is spent, and the server that will close these does not exist yet --
+        // a throw between the two leaves every listener open with its port
+        // still bound. Nothing in the constructor is known to throw, which is
+        // the same footing the listener branches below stand on.
+        val serverChannel = releaseListenersOnFailure(listeners) {
+            EpollPipelinedStreamServer(
+                listeners = listeners,
+                bossLoop = bossLoop,
+                workerGroup = workerGroup,
+                logger = logger,
+                pipelineInitializer = pipelineInitializer,
+                nativeSocket = nativeSocket,
+                nativeSocketOps = nativeSocketOps,
+            )
+        }
         try {
             serverChannel.start()
         } catch (t: Throwable) {
@@ -392,6 +529,28 @@ class EpollEngine(
     }
 
     /**
+     * Runs [build] over already-open [listeners] and returns its value, closing
+     * every listener descriptor and re-raising if it throws.
+     *
+     * The one stretch in a pipeline bind where the descriptors have no owner at
+     * all: `bindAllOrRollback` has returned, so its rollback is spent, and the
+     * server that will close them does not exist yet.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun <T> releaseListenersOnFailure(
+        listeners: List<EpollPipelinedStreamServer.Listener>,
+        crossinline build: () -> T,
+    ): T =
+        try {
+            build()
+        } catch (buildFailure: Throwable) {
+            for (listener in listeners) {
+                closeFdSafely(listener.serverFd, logger, "pipeline server construction")
+            }
+            throw buildFailure
+        }
+
+    /**
      * Opens and binds one pipeline listen socket. Cleans up its own fd on
      * failure so [bindAllOrRollback] only has to roll back the listeners
      * that were fully opened before it.
@@ -400,19 +559,22 @@ class EpollEngine(
         return when (val address = spec.address) {
             is InetSocketAddress -> {
                 val serverFd = nativeSocketOps.bindListener(address.requireIp(), address.port, spec.config.backlog)
-                try {
+                releaseOnFailure(serverFd, "bindPipeline listener cleanup") {
                     val localAddr = nativeSocketOps.getLocalAddress(serverFd)
                     logger.debug { "Pipeline bound to $localAddr" }
                     EpollPipelinedStreamServer.Listener(serverFd, localAddr, spec.config)
-                } catch (t: Throwable) {
-                    closeFdSafely(serverFd, logger, "bindPipeline listener cleanup")
-                    throw t
                 }
             }
             is UnixSocketAddress -> {
                 val serverFd = nativeSocketOps.bindUnixListener(address, spec.config.backlog)
-                logger.debug { "Pipeline bound to $address" }
-                EpollPipelinedStreamServer.Listener(serverFd, address, spec.config)
+                // Guarded like its sibling above. Nothing here is known to
+                // throw -- the holder takes three fields -- but the two
+                // branches open the same kind of descriptor into the same
+                // window, and only one of them was answering for it.
+                releaseOnFailure(serverFd, "bindPipeline listener cleanup") {
+                    logger.debug { "Pipeline bound to $address" }
+                    EpollPipelinedStreamServer.Listener(serverFd, address, spec.config)
+                }
             }
         }
     }

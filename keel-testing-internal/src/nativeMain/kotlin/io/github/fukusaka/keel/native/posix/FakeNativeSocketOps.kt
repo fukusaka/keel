@@ -182,18 +182,59 @@ public class FakeNativeSocketOps : NativeSocketOps {
         return connectQueue[fd]?.removeFirstOrNull() ?: defaultConnect
     }
 
+    /**
+     * Thrown by the next [getSocketError], then cleared.
+     *
+     * `getsockopt(SO_ERROR)` is a `check` over the syscall in the real ops, and
+     * it is read on the in-progress connect path once write-readiness arrives —
+     * with the descriptor back in the caller's hands and nobody else holding it.
+     */
+    public var getSocketErrorThrowsOnce: Throwable? = null
+
     override fun getSocketError(fd: Int): Int {
         getSocketErrorCalls++
+        getSocketErrorThrowsOnce?.let {
+            getSocketErrorThrowsOnce = null
+            throw it
+        }
         return socketErrorQueue[fd]?.removeFirstOrNull() ?: defaultSocketError
     }
 
+    /**
+     * Thrown by the next [getLocalAddress], then cleared.
+     *
+     * `getsockname` is a `check` over the syscall in the real ops, and it is
+     * the one step inside a `bind` guard that can fail — the listener fd is
+     * open by then and nothing else holds it until the server is built.
+     */
+    public var getLocalAddressThrowsOnce: Throwable? = null
+
     override fun getLocalAddress(fd: Int): SocketAddress {
         getLocalAddressCalls++
+        getLocalAddressThrowsOnce?.let {
+            getLocalAddressThrowsOnce = null
+            throw it
+        }
         return localAddressQueue[fd]?.removeFirstOrNull() ?: defaultAddresses.second
     }
 
+    /**
+     * Thrown by the next [getRemoteAddress], then cleared.
+     *
+     * `getpeername` is a `check` over the syscall in the real ops, and a peer
+     * that resets between the connection completing and the query answers
+     * `ENOTCONN` — the one failure in the accept and connect construction
+     * windows that is reachable rather than defensive. Consumed once so a test
+     * can assert the seam reached it.
+     */
+    public var getRemoteAddressThrowsOnce: Throwable? = null
+
     override fun getRemoteAddress(fd: Int): SocketAddress {
         getRemoteAddressCalls++
+        getRemoteAddressThrowsOnce?.let {
+            getRemoteAddressThrowsOnce = null
+            throw it
+        }
         return remoteAddressQueue[fd]?.removeFirstOrNull() ?: defaultAddresses.first
     }
 
