@@ -155,9 +155,9 @@ internal class KqueueEventLoop(
      * EventLoop rather than per connection so every flush on this thread
      * touches the same hot memory — mirroring the locality of the memScoped
      * arena this replaced — while performing no per-flush allocation.
-     * EL-confined like [eventBuffer]; freed once in [close] (safe: the loop
-     * loop's terminal sequence has finished by then, whoever ran it, so no
-     * flush can be in flight).
+     * EL-confined like [eventBuffer]; freed once in [close] (safe: the loop's
+     * terminal sequence has finished by then, whoever ran it, so no flush can
+     * be in flight).
      */
     internal var writevBases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
         private set
@@ -524,8 +524,10 @@ internal class KqueueEventLoop(
      * `threadPtr`: that slot comes from an `Arena`, which does not zero, and
      * on this target `pthread_t` is a pointer, so the `t != null` guard below
      * would be deciding from whatever the slot happened to hold. The flag keeps
-     * that guard off the never-started path entirely, so it is only ever asked
-     * about a slot `pthread_create` has written.
+     * that guard off the never-started path entirely, so it is only asked about
+     * a slot `pthread_create` was called for — which is not quite "written":
+     * the flag is set just before that call, and the comment on it describes
+     * the window that leaves open.
      */
     fun close() {
         if (running.compareAndSet(1, 0)) {
@@ -571,9 +573,9 @@ internal class KqueueEventLoop(
                     // running loop that finishes will at least have finished.
                     wakeup()
                     logger.error {
-                        "${this::class.simpleName}.close() found the loop still being taken apart by " +
-                            "someone -- possibly this thread, re-entered -- still taking it apart; " +
-                            "releasing nothing, because releasing is what would corrupt"
+                        "${this::class.simpleName}.close() found the loop still being taken apart -- " +
+                            "possibly by this thread, re-entered -- so it is releasing nothing, " +
+                            "because releasing is what would corrupt"
                     }
                     return
                 }
