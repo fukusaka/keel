@@ -186,10 +186,17 @@ internal class KqueueStreamServer(
         remoteAddr: SocketAddress,
         localAddr: SocketAddress,
     ): PipelinedChannel {
-        val workerLoop = workerGroup.next()
-        val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
-        val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
         val transport = try {
+            // Inside the guard, not above it. None of the three can throw
+            // today -- the group is non-empty by construction and masks its
+            // index, and the two overrides are constructor `val`s -- but they
+            // run with a descriptor already open and nobody holding it, which
+            // is the same standard the construction and attach guards below
+            // are held to. Keeping them out would also make the claim in
+            // [releaseAndRaise] false.
+            val workerLoop = workerGroup.next()
+            val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
+            val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
             KqueueIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
         } catch (constructionFailure: Throwable) {
             releaseAndRaise(
@@ -225,9 +232,10 @@ internal class KqueueStreamServer(
             // `joinLoop` warns naming the same fd when it declines, and it is
             // the only way this flag is false, so what this line adds is the
             // accept-side framing -- that a connection was dropped, not that a
-            // registration was refused. One line per accept-loop lifetime,
-            // since the raised cancellation ends that loop, so the duplicate
-            // cannot accumulate. The release failure the funnel attaches is
+            // registration was refused. The pair costs one accept-loop
+            // lifetime, since the raised cancellation ends that loop; a caller
+            // driving this public accept from a retry loop of its own would
+            // see both lines per attempt. The release failure the funnel attaches is
             // what does not arrive here: suppressed exceptions on a
             // cancellation cause do not generally surface.
             releaseAndRaise(
@@ -323,9 +331,11 @@ internal class KqueueStreamServer(
      * release's own failure -- the loss the pipelined server avoids by
      * reporting before it releases. This path has a caller to raise to instead,
      * so the release's failure is attached to [cause] and [cause] is what goes
-     * on. How far the attachment travels is the caller's: it survives to
-     * whoever catches [cause], but reaching a log depends on that catcher's
-     * `Logger` printing suppressed exceptions, which nothing here can require.
+     * on, with the failure logged here as well. The attachment alone would
+     * not have been enough: it survives to whoever catches [cause], but
+     * reaching a log from there depends on that catcher's `Logger` printing
+     * suppressed exceptions -- and on the cancellation path it does not
+     * travel at all.
      *
      * Not the usual outcome: the in-tree caller resumes [accept] off the worker
      * loop, so the close hands the teardown over and returns, and a teardown
@@ -342,13 +352,16 @@ internal class KqueueStreamServer(
         try {
             transport.close()
         } catch (releaseFailure: Throwable) {
+            // Attached first, so a logger that throws cannot take the
+            // attachment with it as well as the line.
+            cause.addSuppressed(releaseFailure)
             // Logged as well as attached. Attaching alone is what the paragraph
             // above admits may never be read -- and on the cancellation path it
             // certainly is not -- which would leave a teardown that failed
-            // entirely unreported. The transport's own teardown logs its stage
-            // failures the same way rather than only re-raising them.
+            // entirely unreported. The transport does the same where it closes
+            // a connection it is winding down; its teardown stages only carry
+            // their failures, but those are re-raised to a caller that logs.
             logger.warn(releaseFailure) { "releasing a dropped accepted connection failed as well: fd=${transport.fd}" }
-            cause.addSuppressed(releaseFailure)
         }
     }
 
