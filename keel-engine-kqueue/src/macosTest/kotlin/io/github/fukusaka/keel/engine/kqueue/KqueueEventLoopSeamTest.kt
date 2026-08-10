@@ -485,9 +485,16 @@ class KqueueEventLoopSeamTest {
 
         loop.close()
 
+        // The join itself is not observable here: on one target the always-true
+        // guard hands `pthread_join` a null and the process dies rather than
+        // logging, and on the other the guard skips the join anyway, so the
+        // pre-fix code is just as quiet. What the fix does change on every
+        // target is that this branch never reaches the wakeup the join path
+        // issues first -- and the fake counts it.
+        assertEquals(0, fake.wakeupWriteCalls, "the never-started branch neither wakes nor joins")
         assertTrue(
             warnings.none { "pthread_join" in it },
-            "no join may be attempted for a thread that was never created: $warnings",
+            "and reports no join failure either: $warnings",
         )
     }
 
@@ -539,7 +546,7 @@ class KqueueEventLoopSeamTest {
         // already released, so `pthread_create` writes through a dangling
         // pointer. That showed up as a crash three tests later, never here.
         assertTrue(
-            errors.any { "start() on a closed loop is ignored" in it },
+            errors.any { "termination is already claimed is ignored" in it },
             "starting a closed loop must be refused outright: $errors",
         )
         loop.close()
