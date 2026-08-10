@@ -101,6 +101,13 @@ public interface NativeSocket {
      * Address / length are resolved separately via
      * [NativeSocketOps.getRemoteAddress] / [NativeSocketOps.getLocalAddress]
      * because most engine call sites don't need them at accept time.
+     *
+     * **An implementation that throws owes the descriptor its own release.**
+     * A descriptor the kernel has handed over reaches the caller only inside
+     * [AcceptResult.Accepted]; a throw instead leaves nobody able to name it,
+     * so the caller cannot close what it was never told about. Engines call
+     * this outside their own accept guards and answer a throw by logging and
+     * retrying, which turns a descriptor kept here into one lost per accept.
      */
     public fun accept(serverFd: Int): AcceptResult
 
