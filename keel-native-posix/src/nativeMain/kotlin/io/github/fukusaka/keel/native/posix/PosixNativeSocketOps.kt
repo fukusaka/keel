@@ -163,9 +163,17 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
     override fun openClientSocket(family: IpAddress): Int {
         val fd = socket(familyOf(family), SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
-        setCloexec(fd)
-        setNonBlocking(fd)
-        return fd
+        // Guarded like [bindListener], for the same reason: the descriptor
+        // exists from `socket(2)` onwards but its number reaches the caller
+        // only by returning, so a throw from either call below leaves nobody
+        // able to name it. Neither can fail on a descriptor just created --
+        // that is why this is a guard rather than a fix -- but the listener
+        // side of this class settled that argument the other way and the two
+        // should not differ on it.
+        return withCloseOnFailure(fd, "openClientSocket cleanup") {
+            setCloexec(fd)
+            setNonBlocking(fd)
+        }
     }
 
     /**
@@ -478,9 +486,10 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
     override fun openUnixClientSocket(): Int {
         val fd = socket(AF_UNIX, SOCK_STREAM, 0)
         check(fd >= 0) { "socket(AF_UNIX) failed: ${errnoMessage(errno)}" }
-        setCloexec(fd)
-        setNonBlocking(fd)
-        return fd
+        return withCloseOnFailure(fd, "openUnixClientSocket cleanup") {
+            setCloexec(fd)
+            setNonBlocking(fd)
+        }
     }
 
     /**
@@ -521,6 +530,26 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
 
     private fun closeFdSafely(fd: Int, context: String) =
         closeFdSafely(fd, logger, context)
+
+    /**
+     * Runs [prepare] over a freshly opened [fd] and returns it, closing [fd]
+     * and re-raising if [prepare] throws.
+     *
+     * The shape every socket-opening method here owes: between `socket(2)` and
+     * the return, the descriptor exists and its number is known only to this
+     * frame. `closeFdSafely` reports rather than throws, so the original
+     * failure is what reaches the caller.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun withCloseOnFailure(fd: Int, context: String, prepare: () -> Unit): Int {
+        try {
+            prepare()
+        } catch (prepareFailure: Throwable) {
+            closeFdSafely(fd, context)
+            throw prepareFailure
+        }
+        return fd
+    }
 
     companion object {
         private const val INET_ADDRSTRLEN = 16
