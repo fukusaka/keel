@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.AcceptResult
@@ -27,6 +28,7 @@ import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -47,10 +49,6 @@ import kotlin.time.TimeSource
 class EpollAcceptFailureSeamTest {
 
     /**
-     * Creates a real but unbound `socket(AF_INET, SOCK_STREAM, 0)` fd so
-     * `bindListener` and the arm calls succeed. Mirrors the sibling suite.
-     */
-    /**
      * Whether [fd] still names an open descriptor, without keeping the
      * duplicate it asks with.
      */
@@ -61,6 +59,10 @@ class EpollAcceptFailureSeamTest {
         return true
     }
 
+    /**
+     * Creates a real but unbound `socket(AF_INET, SOCK_STREAM, 0)` fd so the
+     * arm calls succeed. Mirrors the sibling suite.
+     */
     private fun newSentinelFd(): Int {
         val fd = socket(AF_INET, SOCK_STREAM, 0)
         check(fd >= 0) { "failed to create sentinel socket" }
@@ -388,6 +390,53 @@ class EpollAcceptFailureSeamTest {
     }
 
     @Test
+    fun `a Channel-mode accept whose socket cannot be prepared releases the descriptor`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The three calls before the transport exists all throw on a failed
+            // syscall, and a peer that resets between `accept()` returning and
+            // the address query is enough to get one. The throw reaches the
+            // accept loop, which logs, backs off and retries -- so a descriptor
+            // left here is one per accept until the table is full.
+            val sentinelFd = newSentinelFd()
+            val doomed = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(doomed >= 0, "could not open a socket to be accepted")
+            val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18193)
+            val fakeSocket = FakeNativeSocket().apply {
+                enqueueAccept(sentinelFd, AcceptResult.Accepted(doomed))
+            }
+            val fakeOps = FakeNativeSocketOps().apply {
+                enqueueBindListener(sentinelFd)
+                enqueueLocalAddress(sentinelFd, scriptedLocal)
+                setNonBlockingThrowsOnce = IllegalStateException("fcntl(F_SETFL, O_NONBLOCK) failed: boom")
+            }
+            val engine = EpollEngine(
+                config = IoEngineConfig(threads = 1),
+                nativeSocket = fakeSocket,
+                nativeSocketOps = fakeOps,
+            )
+            try {
+                val server = engine.bind(
+                    InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
+                    BindConfig(),
+                )
+
+                assertFailsWith<IllegalStateException> { server.accept() }
+
+                assertFalse(
+                    stillOpen(doomed),
+                    "setup did not finish, so nothing owns that descriptor and this must release it",
+                )
+                server.close()
+            } catch (t: Throwable) {
+                close(sentinelFd)
+                throw t
+            } finally {
+                engine.close()
+            }
+        }
+    }
+
+    @Test
     fun `a connection whose initializer throws is closed rather than left unread`() = runBlocking {
         withTimeout(15.seconds) {
             // The pipeline initializer is user code, and it runs after the
@@ -407,8 +456,10 @@ class EpollAcceptFailureSeamTest {
             assertTrue(first >= 0 && second >= 0, "could not open sockets to be accepted")
             val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18192)
             // Two, because one failing initializer must not cost the peer
-            // behind it: the second is accepted only if the loop went round,
-            // and released only if its own failure was contained too.
+            // behind it. The accept loop goes round either way -- the hand-off
+            // returns before the worker runs anything -- so what the second
+            // descriptor answers is whether the worker's own drain contained
+            // the first throw and still ran the task behind it.
             val fakeSocket = FakeNativeSocket().apply {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(first))
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
@@ -441,9 +492,8 @@ class EpollAcceptFailureSeamTest {
                 // The hand-off is to a live worker, so the construction runs on
                 // its thread: wait for the descriptors to go rather than
                 // reading them straight away. Both, because the second is the
-                // peer queued behind the first one's failure -- it is accepted
-                // only if the loop went round, and released only if its own
-                // failure was contained as well.
+                // task queued behind the first one's failure -- it runs only if
+                // the worker's drain contained that throw.
                 //
                 // The worker group is closed before the probes, so nothing can
                 // be handed a descriptor number these are about to test. The
