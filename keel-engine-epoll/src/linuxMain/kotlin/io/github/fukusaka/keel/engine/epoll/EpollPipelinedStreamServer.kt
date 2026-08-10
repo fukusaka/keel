@@ -184,10 +184,10 @@ internal class EpollPipelinedStreamServer(
                             nativeSocketOps.applySocketOptions(result.fd, listener.config.childSocketOptions)
                             nextWorker()
                         } catch (setupFailure: Throwable) {
-                            closeFdSafely(result.fd, logger, "accepted socket setup")
                             logger.warn(setupFailure) {
                                 "preparing an accepted socket failed; dropping that connection: fd=${result.fd}"
                             }
+                            closeFdSafely(result.fd, logger, "accepted socket setup")
                             continue
                         }
                         val startedAt = TimeSource.Monotonic.markNow()
@@ -408,10 +408,66 @@ internal class EpollPipelinedStreamServer(
         waitBudgetMicros = waitBudgetMicros,
     )
 
+    /**
+     * Builds the connection on the worker's thread and hands it to the pipeline.
+     *
+     * Each step that can fail is guarded, because the descriptor has an owner
+     * only from partway through. One statement is not: `readEnabled = true` at
+     * the end, where a throw from inside leaves the connection short of an idle
+     * timer rather than unread — the flag is assigned first, and READ was
+     * already armed when the channel attached. Only an
+     * allocation-class failure gets there, and nothing here would know what to
+     * do about one. Before the transport exists nothing else will release
+     * it; after it exists but before the channel attaches, the transport is not
+     * in the registry, so no stop notification reaches it either. A throw
+     * anywhere in that stretch used to leave the descriptor open for the
+     * process's life, with one generic warning from the loop's drain — the same
+     * end state as an accept handed to a dead worker, reached from a different
+     * direction.
+     *
+     * The stretch **after** the channel attaches is the one that actually
+     * throws: [BindConfig.initializeConnection] and [pipelineInitializer] are
+     * the caller's code. A throw there skips `readEnabled = true`, so the
+     * connection is joined to the loop, holds its descriptor, and is never read
+     * — and the channel was never handed anywhere, so nobody is left to close
+     * it. Closing it here is what keeps that failure to the connection that
+     * caused it, the same rule the accept loop applies per descriptor.
+     *
+     * Nothing before the attach is known to throw today; that half is a guard
+     * against a construction step gaining one, not a fix for a reachable leak.
+     */
     private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop, listener: Listener) {
-        val rbs = listener.config.readBufferSize ?: loop.readBufferSize
-        val ito = listener.config.idleTimeoutMillis ?: loop.idleTimeoutMillis
-        val transport = EpollIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
+        val transport = try {
+            // Inside the guard: they read a descriptor's worth of config with
+            // that descriptor already accepted and nobody holding it. Neither
+            // can throw today -- both overrides are non-open constructor
+            // `val`s on either side of the elvis -- which is the standard the
+            // construction and attach guards below are already held to.
+            val rbs = listener.config.readBufferSize ?: loop.readBufferSize
+            val ito = listener.config.idleTimeoutMillis ?: loop.idleTimeoutMillis
+            EpollIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
+        } catch (constructionFailure: Throwable) {
+            // Nothing owns the descriptor yet, so this is the raw close the
+            // accept loop's setup-failure branch makes for the same reason.
+            // That holds while the constructor acquires nothing but fields; a
+            // step that gains a resource has to gain `transport.close()` here
+            // with it, the way the attach guard below has it.
+            // Reported before the release, not after. Not because this
+            // particular release can fail -- `closeFdSafely` reports rather
+            // than throws -- but because the guard below releases through a
+            // teardown that re-raises what its stages failed with, and a throw
+            // between the two there would discard the cause that got us here,
+            // leaving the operator the generic drain warning these guards exist
+            // to replace. One order for all three, so which of them is the
+            // dangerous one does not have to be remembered. The engines wrap the
+            // configured logger so it cannot throw, so nothing is lost the
+            // other way.
+            logger.warn(constructionFailure) {
+                "building the transport for an accepted connection failed; dropping it: fd=$clientFd"
+            }
+            closeFdSafely(clientFd, logger, "accepted connection construction")
+            return
+        }
         // The accepted socket's own local endpoint: for a specific-address
         // listener it equals the listener address; for a wildcard bind it is
         // the concrete interface address with the listener's port. Lets the
@@ -424,7 +480,18 @@ internal class EpollPipelinedStreamServer(
         // Built before the check: the transport joins the loop when the channel
         // attaches, so this connection is in the registry only once there is
         // something to deliver a stop notification to.
-        val channel = EpollPipelinedChannel(transport, logger, localAddress = channelLocal)
+        val channel = try {
+            EpollPipelinedChannel(transport, logger, localAddress = channelLocal)
+        } catch (attachFailure: Throwable) {
+            // The transport exists, so it owns the descriptor and closing it is
+            // how the descriptor goes. Whether the attach got as far as joining
+            // the loop does not change that -- `close()` handles both.
+            logger.warn(attachFailure) {
+                "attaching an accepted connection failed; dropping it: fd=$clientFd"
+            }
+            transport.close()
+            return
+        }
         if (!transport.joinedLoop) {
             // Reached when the sweep's own final drain runs this queued accept.
             // On the loop thread, so close() tears down synchronously; there is
@@ -433,8 +500,28 @@ internal class EpollPipelinedStreamServer(
             transport.close()
             return
         }
-        listener.config.initializeConnection(channel)
-        pipelineInitializer(channel)
+        try {
+            listener.config.initializeConnection(channel)
+            pipelineInitializer(channel)
+        } catch (initializerFailure: Throwable) {
+            // The caller's code, on our thread. Without this the connection is
+            // joined to the loop, holds its descriptor and is never read, and
+            // the channel it would be closed through was never handed on by us
+            // -- an initializer that stashed it somewhere before the throw is
+            // the one case where somebody else could still close it, and
+            // closing here is right for that one too.
+            //
+            // What this does not do is tell the pipeline: handlers installed
+            // before the throw get no `onInactive`, so whatever they hold ends
+            // with them. That is how `close()` behaves everywhere in the tree,
+            // not something this path chose; changing it is a contract
+            // question, filed separately.
+            logger.warn(initializerFailure) {
+                "initialising an accepted connection failed; dropping it: fd=$clientFd"
+            }
+            transport.close()
+            return
+        }
         transport.readEnabled = true
     }
 

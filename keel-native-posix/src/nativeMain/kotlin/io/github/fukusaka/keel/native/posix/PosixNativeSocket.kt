@@ -80,14 +80,42 @@ public object PosixNativeSocket : NativeSocket {
                 // (symmetric counterpart of the bug fixed in #510). macOS
                 // lacks accept4(SOCK_CLOEXEC) so we post-fcntl; on Linux a
                 // future keel_accept variant taking flags could close the
-                // TOCTOU window atomically. Fail-fast matches the pattern
-                // in PosixNativeSocketOps.setCloexec / setNonBlocking:
-                // F_GETFD / F_SETFD on a just-accepted fd can only fail
-                // with EBADF, which would indicate a corrupt kernel state.
-                val flags = fcntl(fd, F_GETFD, 0)
-                check(flags >= 0) { "fcntl(F_GETFD, accepted fd=$fd) failed: ${errnoMessage(errno)}" }
-                val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
-                check(rc == 0) { "fcntl(F_SETFD, FD_CLOEXEC, accepted fd=$fd) failed: ${errnoMessage(errno)}" }
+                // TOCTOU window atomically.
+                //
+                // Released before the throw leaves here. The descriptor exists
+                // from `keel_accept` onwards, but its number reaches the caller
+                // only inside [AcceptResult.Accepted] -- so a throw between the
+                // two strands it where nothing can name it, let alone close it,
+                // and the accept loop logs and comes round for the next one.
+                // `PosixNativeSocketOps.bindListener` guards the same shape
+                // for the listener it opens; the accept side did not. Not
+                // reachable from the seam either way -- this is an `object`
+                // calling `fcntl` on a descriptor the kernel has just handed
+                // over, so no test pins it. That these two calls are thought
+                // to fail only on a corrupt kernel state is not the reason to
+                // leave them unguarded: they are `check`s over a syscall, and
+                // what they cost when they do fail is one descriptor per
+                // accept until the table is full.
+                try {
+                    val flags = fcntl(fd, F_GETFD, 0)
+                    check(flags >= 0) { "fcntl(F_GETFD, accepted fd=$fd) failed: ${errnoMessage(errno)}" }
+                    val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
+                    check(rc == 0) { "fcntl(F_SETFD, FD_CLOEXEC, accepted fd=$fd) failed: ${errnoMessage(errno)}" }
+                } catch (cloexecFailure: Throwable) {
+                    // This object is the syscall seam itself and holds no
+                    // logger, so the close result rides out attached to the
+                    // failure rather than as a line of its own.
+                    when (val closeResult = close(fd)) {
+                        CloseResult.Ok -> Unit
+                        is CloseResult.Failed -> cloexecFailure.addSuppressed(
+                            IllegalStateException(
+                                "close($fd) failed while dropping an accepted socket: " +
+                                    errnoMessage(closeResult.errno),
+                            ),
+                        )
+                    }
+                    throw cloexecFailure
+                }
                 AcceptResult.Accepted(fd)
             }
             else -> {

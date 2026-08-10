@@ -471,9 +471,10 @@ internal class KqueueIoTransport(
      * after that constructor returns. The loop thread never touches it.
      *
      * `true` says the ledgers were open, not that the loop will run: a loop that
-     * was built and closed without ever entering its poll never sweeps, so it
-     * never refuses either, and work handed to it waits forever. That is a
-     * separate hole in the same close path.
+     * was built and closed without ever entering its poll used not to sweep,
+     * so it never refused either and work handed to it waited forever. Closing
+     * such a loop now claims the termination and runs the same sweep, so this
+     * flag answers for it too.
      */
     internal var joinedLoop: Boolean = false
         private set

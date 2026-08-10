@@ -82,6 +82,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `native-posix`, `engine-epoll`, `engine-kqueue`: release an accepted descriptor when setting
+  `FD_CLOEXEC` on it, preparing it, or running the caller's connection initialiser throws (#1044)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: run a loop's teardown when it is closed without
   ever having started — work dispatched at it was queued to a drain that never came (#1043)
 - `engine-epoll`, `engine-kqueue`: ignore `start()` on an EventLoop whose termination is already
