@@ -548,6 +548,13 @@ internal class KqueueEventLoop(
                 // `close()`. Such a caller must not still be inside `loop()`
                 // when it closes; nothing here can join a thread it never
                 // created.
+                if (!isStopped()) {
+                    logger.error {
+                        "${this::class.simpleName}.close() found the loop still being taken apart by " +
+                            "another caller; releasing nothing, because releasing is what would corrupt"
+                    }
+                    return
+                }
                 releaseLoopResources()
                 return
             }
