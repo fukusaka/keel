@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.Host
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
@@ -147,6 +148,40 @@ class KqueueConnectGuardSeamTest {
                 )
             } finally {
                 close(peer)
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a bind whose local address cannot be read releases the listener descriptor`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The other end of the same window: a listener fd is open and
+            // nothing holds it until the server is built, and `getsockname` is
+            // a `check` over the syscall. Left unguarded the descriptor would
+            // stay open for the process's life with the port still bound.
+            val doomed = socket(AF_INET, SOCK_STREAM, 0)
+            assertTrue(doomed >= 0, "could not open a socket for the engine to listen on")
+            val fakeOps = FakeNativeSocketOps().apply {
+                nextCreatedFd = doomed
+                getLocalAddressThrowsOnce = InjectedFault("getsockname() failed: EBADF")
+            }
+            val engine = KqueueEngine(
+                config = IoEngineConfig(threads = 1),
+                nativeSocket = FakeNativeSocket(),
+                nativeSocketOps = fakeOps,
+            )
+            try {
+                assertFailsWith<InjectedFault> {
+                    engine.bind(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), 0), BindConfig())
+                }
+
+                engine.close()
+                assertFalse(
+                    stillOpen(doomed),
+                    "the bind never produced a server, so nothing else will ever close this",
+                )
+            } finally {
                 engine.close()
             }
         }

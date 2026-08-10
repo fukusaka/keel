@@ -200,8 +200,21 @@ public class FakeNativeSocketOps : NativeSocketOps {
         return socketErrorQueue[fd]?.removeFirstOrNull() ?: defaultSocketError
     }
 
+    /**
+     * Thrown by the next [getLocalAddress], then cleared.
+     *
+     * `getsockname` is a `check` over the syscall in the real ops, and it is
+     * the one step inside a `bind` guard that can fail — the listener fd is
+     * open by then and nothing else holds it until the server is built.
+     */
+    public var getLocalAddressThrowsOnce: Throwable? = null
+
     override fun getLocalAddress(fd: Int): SocketAddress {
         getLocalAddressCalls++
+        getLocalAddressThrowsOnce?.let {
+            getLocalAddressThrowsOnce = null
+            throw it
+        }
         return localAddressQueue[fd]?.removeFirstOrNull() ?: defaultAddresses.second
     }
 
