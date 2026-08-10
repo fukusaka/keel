@@ -1363,9 +1363,17 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * true, and a `start()` racing this call loses the claim and returns
      * without touching anything.
      *
-     * @return `true` when this call ran the sequence. `false` means a loop
-     *   thread claimed it — it has run it or is about to — and the caller
-     *   should join that thread instead.
+     * **Call it from `close()`, after the flag that says the loop is closing.**
+     * The sequence runs application teardown, and a participant that closes
+     * the engine from its own stop notification re-enters `close()` — which
+     * no-ops there only because that flag is already down. Called directly,
+     * that re-entry reaches the resource release while this sequence is still
+     * walking the registry.
+     *
+     * @return `true` when this call ran the sequence. `false` means it was
+     *   already claimed — by a running or finished [loop]. The caller owns
+     *   deciding what that means: a thread it created is one it must join,
+     *   while a [loop] invoked directly leaves nothing to join at all.
      */
     fun finishWithoutRunning(): Boolean {
         if (!claimLoopTermination()) return false

@@ -262,6 +262,12 @@ internal class EpollEventLoop(
         // reading 0 in that window would skip the join and free the arena and
         // the fds out from under a live loop. Set pessimistically and cleared
         // if the thread never came into being.
+        //
+        // The inverse window is open and not closed by this: a `close()`
+        // landing between here and `pthread_create` returning reads 1 and
+        // joins a slot not yet written. Neither window is reachable while
+        // `start()` is only called from an engine constructor, before any
+        // reference has escaped; this is ordering, not synchronisation.
         threadCreated.value = 1
         val rc = pthread_create(
             threadPtr.ptr,
@@ -546,8 +552,8 @@ internal class EpollEventLoop(
      * `threadPtr`: that slot comes from an `Arena`, which does not zero, and
      * `pthread_t` is only a pointer on some targets — on linuxX64 it is a
      * `ULong` and the compiler reports the `t != null` guard below as always
-     * true. With the flag, that guard is reached only when `pthread_create` was
-     * called, so it no longer has to decide anything.
+     * true. The flag keeps that guard off the never-started path entirely, so
+     * it is only ever asked about a slot `pthread_create` has written.
      */
     fun close() {
         if (running.compareAndSet(1, 0)) {
@@ -562,21 +568,28 @@ internal class EpollEventLoop(
                 // cost this loop its fds. On the joined path below that
                 // question cannot arise -- a throw there leaves a pthread
                 // entry point and ends the process.
-                val claimed = try {
+                try {
                     finishWithoutRunning()
                 } catch (terminationFailure: Throwable) {
                     releaseLoopResources()
                     throw terminationFailure
                 }
-                if (claimed) {
-                    releaseLoopResources()
-                    return
-                }
-                // A thread took the claim after all, so it is running the
-                // sequence and owns these resources until it is joined.
+                // Release either way, and never fall through to the join. A
+                // `false` here means the claim was already taken -- and with
+                // no thread created, the only taker is a direct `loop()` call,
+                // which leaves nothing to join: `threadPtr` was never written,
+                // and handing that slot to `pthread_join` reads whatever the
+                // `Arena` happened to hold. The seam suites take exactly this
+                // path, calling `loop()` on their own thread and then
+                // `close()`. Such a caller must not still be inside `loop()`
+                // when it closes; nothing here can join a thread it never
+                // created.
+                releaseLoopResources()
+                return
             }
             wakeup()
-            // Join the EventLoop thread. threadPtr was written by pthread_create.
+            // Join the EventLoop thread. Reached only with `threadCreated` set,
+            // so `pthread_create` was called and wrote `threadPtr`.
             val t = threadPtr.ptr[0]
             if (t != null) {
                 val joinRet = pthread_join(t, null)
