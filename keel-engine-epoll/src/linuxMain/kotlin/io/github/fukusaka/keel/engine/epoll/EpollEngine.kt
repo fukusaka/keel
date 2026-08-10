@@ -396,8 +396,9 @@ class EpollEngine(
      * is connected.
      *
      * On the connect path every step that can fail goes through here or through
-     * [releaseTransport], with two exceptions that release for themselves --
-     * the `SO_ERROR` and connect-failure branches -- and one that cannot fail:
+     * [releaseTransport], with three exceptions that release for themselves --
+     * the `SO_ERROR` and connect-failure branches, and the await below -- and
+     * one that cannot fail:
      * the debug line renders a [SocketAddress], which is `sealed` in this
      * library, so its `toString` is keel's own however the address was
      * obtained. A caller-supplied `NativeSocketOps` cannot put its code there.
