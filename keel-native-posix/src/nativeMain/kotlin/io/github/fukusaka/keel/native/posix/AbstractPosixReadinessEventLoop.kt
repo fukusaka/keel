@@ -326,7 +326,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * queue, and a stale non-null sends off-loop work straight at state only
      * the loop may touch.
      *
-     * **Cleared when the loop exits**, as the last thing that thread does. A
+     * **Cleared when the terminal sequence ends**, as the last thing the
+     * claiming thread does with it. On the loop's own thread that is also its
+     * death; on a closer's it is not, and clearing matters there for a second
+     * reason — otherwise that thread goes on answering [inEventLoop] `true`
+     * for a loop it has finished taking apart. A
      * `pthread_t` is only unique among live threads, so holding the value past
      * the thread's lifetime would let an unrelated thread that inherits the id
      * answer [inEventLoop] with `true` — the second of the two failures above,
