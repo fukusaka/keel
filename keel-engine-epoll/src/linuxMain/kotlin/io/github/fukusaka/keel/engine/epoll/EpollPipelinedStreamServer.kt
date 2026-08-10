@@ -412,10 +412,10 @@ internal class EpollPipelinedStreamServer(
      * Builds the connection on the worker's thread and hands it to the pipeline.
      *
      * Each step that can fail is guarded, because the descriptor has an owner
-     * only from partway through. Not every statement: `readEnabled = true` at
-     * the end is unguarded, and a throw from inside it leaves the connection
-     * short of an idle timer rather than unread — the flag is assigned first,
-     * and READ was already armed when the channel attached. Only an
+     * only from partway through. One statement is not: `readEnabled = true` at
+     * the end, where a throw from inside leaves the connection short of an idle
+     * timer rather than unread — the flag is assigned first, and READ was
+     * already armed when the channel attached. Only an
      * allocation-class failure gets there, and nothing here would know what to
      * do about one. Before the transport exists nothing else will release
      * it; after it exists but before the channel attaches, the transport is not
@@ -437,9 +437,14 @@ internal class EpollPipelinedStreamServer(
      * against a construction step gaining one, not a fix for a reachable leak.
      */
     private fun onWorkerAccept(clientFd: Int, loop: EpollEventLoop, listener: Listener) {
-        val rbs = listener.config.readBufferSize ?: loop.readBufferSize
-        val ito = listener.config.idleTimeoutMillis ?: loop.idleTimeoutMillis
         val transport = try {
+            // Inside the guard: they read a descriptor's worth of config with
+            // that descriptor already accepted and nobody holding it. Neither
+            // can throw today -- both overrides are non-open constructor
+            // `val`s on either side of the elvis -- which is the standard the
+            // construction and attach guards below are already held to.
+            val rbs = listener.config.readBufferSize ?: loop.readBufferSize
+            val ito = listener.config.idleTimeoutMillis ?: loop.idleTimeoutMillis
             EpollIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
         } catch (constructionFailure: Throwable) {
             // Nothing owns the descriptor yet, so this is the raw close the
