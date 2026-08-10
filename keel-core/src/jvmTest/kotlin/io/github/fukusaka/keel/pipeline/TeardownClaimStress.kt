@@ -32,16 +32,20 @@ import kotlin.test.assertTrue
  * reproduce on every run, so it rides the engine stress workflow instead.
  *
  * **Detection power, measured 2026-08-11** (a 10-core arm64 macOS host, quick
- * scenario). As a plain read-then-write the scenario failed on every run; the
- * round it failed on is a draw, not a requirement, and varied widely — seven
- * runs landed on rounds 0, 416, 530, 827, 1,413, 4,211 and 10,064. [QUICK_ROUNDS]
- * is set well above the worst of those rather than at a computed margin. With
- * the compare-and-swap every run is green. Deleting the claim outright is caught
- * by [TeardownClaimTest] instead, on the first assertion and without threads.
+ * scenario). As a plain read-then-write the scenario failed on every run of 31,
+ * always with two winners; the round it failed on is a draw rather than a
+ * requirement and ranged from 0 to 14,209, mean ≈ 5,000. [QUICK_ROUNDS] is not a
+ * margin over the worst draw — draws are unbounded — but a budget chosen against
+ * that mean: at 50,000 rounds a broken claim escapes roughly one run in 20,000,
+ * for ~16s. `full` takes that to the point of irrelevance. With the
+ * compare-and-swap every run is green, and deleting the claim outright is caught
+ * by [TeardownClaimTest] immediately, without threads.
  *
  * **Not measured on the host that runs it.** The workflow runs this on the Linux
  * gate runner, whose core count and preemption profile differ from the machine
- * above; whether the window is wider or narrower there is unobserved.
+ * above; whether the window is wider or narrower there is unobserved. Runtime
+ * does carry: under heavy oversubscription the quick scenario grew ~1.6x, not
+ * an order of magnitude.
  */
 class TeardownClaimStress {
 
@@ -52,7 +56,7 @@ class TeardownClaimStress {
 
     /**
      * [QUICK_ROUNDS] rounds. Runs on the engine PR gate (`KEEL_STRESS=quick`),
-     * measured at ~7s.
+     * measured at ~16s.
      */
     @Test
     fun quick() {
@@ -61,8 +65,9 @@ class TeardownClaimStress {
     }
 
     /**
-     * [FULL_ROUNDS] rounds, for the manually dispatched run
-     * (`KEEL_STRESS=full`). Same race, more chances at it.
+     * [FULL_ROUNDS] rounds. Same race, more chances at it — for a developer
+     * exporting `KEEL_STRESS=full` by hand, since no workflow sets that value
+     * today (the two dispatched stress workflows drive a different switch).
      */
     @Test
     fun full() {
@@ -85,10 +90,12 @@ class TeardownClaimStress {
             val start = CyclicBarrier(THREADS)
             val threads = List(THREADS) {
                 Thread {
-                    // Bounded, because the wait is mutual: a thread that never
-                    // starts -- `quick` asks for 160,000 of them -- leaves the
-                    // ones already parked here waiting for a partner that will
-                    // not arrive, and the join below waiting for them.
+                    // Bounded, because the wait is mutual and these threads
+                    // are not daemons: a `start()` that fails -- `quick` asks
+                    // for 400,000 of them -- throws out of the loop below
+                    // before the joins run, and the threads already parked
+                    // here would then wait for a partner that will not arrive,
+                    // outliving the failed test and holding the test JVM open.
                     start.await(ROUND_BUDGET_SECONDS, TimeUnit.SECONDS)
                     if (transport.claim()) winners.incrementAndGet()
                 }
@@ -121,13 +128,17 @@ class TeardownClaimStress {
          */
         const val THREADS = 8
 
-        /** Rounds on the PR gate: ~7s, and enough to fail a plain read-then-write with margin. */
-        const val QUICK_ROUNDS = 20_000
+        /** Rounds on the PR gate: ~16s, chosen against a mean first failure of ~5,000. */
+        const val QUICK_ROUNDS = 50_000
 
         /** Rounds for the manually dispatched run. */
         const val FULL_ROUNDS = 500_000
 
-        /** Wall-clock bound per round; generous, since it only has to exclude a hang. */
+        /**
+         * Wall-clock bound on each wait, not on a round: the barrier and each
+         * join get their own. Generous, since it only has to exclude a hang --
+         * the job's own timeout is what bounds the suite.
+         */
         const val ROUND_BUDGET_SECONDS = 30L
 
         const val MILLIS_PER_SECOND = 1_000L

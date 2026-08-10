@@ -3,12 +3,14 @@ name: Engine stress (quick)
 # Runs the per-engine cross-thread funnel stress (KqueuePipelineEchoStress,
 # EpollPipelineEchoStress, ...) plus the pooled allocator's arena-saturation
 # stress (PooledAllocatorArenaSaturationStress) and the transport teardown claim
-# race (TeardownClaimStress) with KEEL_STRESS=quick on every
-# PR that touches an engine, keel-core, or keel-io. These tests skip unless
+# race (TeardownClaimStress) with KEEL_STRESS=quick on every PR that touches an
+# engine, keel-core, or keel-io. These tests skip unless
 # KEEL_STRESS is set, so the main CI (ci.yml) never runs them; this workflow is
 # the auto PR gate that guards the I/O ownership invariant (the funnel),
 # multi-EventLoop accept dispatch + per-EventLoop routing, the concurrent-allocate
-# path under load, and the shared ChunkArena under cross-thread saturation.
+# path under load, the shared ChunkArena under cross-thread saturation, and the
+# transport teardown claim that keeps two concurrent closers from running the
+# cleanup pass twice.
 #
 # Kept OUT of ci.yml deliberately: path-filtering here means a change to an
 # unrelated module does not pay for an engine stress run, and the quick scenario
