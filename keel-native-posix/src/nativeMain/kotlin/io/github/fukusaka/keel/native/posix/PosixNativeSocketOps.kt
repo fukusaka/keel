@@ -110,7 +110,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
         val fd = socket(family, SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed: ${errnoMessage(errno)}" }
 
-        try {
+        return withCloseOnFailure(fd, if (reusePort) "bindListener(reusePort) cleanup" else "bindListener cleanup") {
             setCloexec(fd)
             // SO_REUSEADDR avoids TIME_WAIT bind failures during tests.
             setsockoptInt(fd, SOL_SOCKET, SO_REUSEADDR, 1)
@@ -147,13 +147,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
 
             val result = listen(fd, backlog)
             check(result == 0) { "listen() failed: ${errnoMessage(errno)}" }
-        } catch (e: Throwable) {
-            val context = if (reusePort) "bindListener(reusePort) cleanup" else "bindListener cleanup"
-            closeFdSafely(fd, context)
-            throw e
         }
-
-        return fd
     }
 
     /**
@@ -450,7 +444,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
         val fd = socket(AF_UNIX, SOCK_STREAM, 0)
         check(fd >= 0) { "socket(AF_UNIX) failed: ${errnoMessage(errno)}" }
 
-        try {
+        return withCloseOnFailure(fd, "bindUnixListener cleanup") {
             setCloexec(fd)
             setNonBlocking(fd)
 
@@ -471,11 +465,7 @@ public class PosixNativeSocketOps(private val logger: Logger) : NativeSocketOps 
 
             val listenRc = listen(fd, backlog)
             check(listenRc == 0) { "listen(AF_UNIX) failed: ${errnoMessage(errno)}" }
-        } catch (e: Throwable) {
-            closeFdSafely(fd, "bindUnixListener cleanup")
-            throw e
         }
-        return fd
     }
 
     /**

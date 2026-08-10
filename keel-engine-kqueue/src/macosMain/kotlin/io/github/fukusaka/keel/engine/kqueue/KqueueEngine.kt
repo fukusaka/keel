@@ -403,8 +403,12 @@ class KqueueEngine(
      * The connect path holds a descriptor nobody else can name from the moment
      * the socket is opened until the channel is returned: the transport is not
      * in the loop's registry until the channel attaches, so no stop
-     * notification reaches it either. Every step in that stretch goes through
-     * here or through [releaseTransport], so what is left when one fails is the
+     * notification reaches it either. Every step in that stretch that can fail
+     * goes through here or through [releaseTransport] -- with two exceptions
+     * that release for themselves, the `SO_ERROR` and connect-failure branches,
+     * and one that cannot fail: the debug line's message is a `sealed`
+     * address's generated `toString`, so no caller-supplied `NativeSocketOps`
+     * can put its own code there. What is left when a step does fail is the
      * caller's exception rather than a descriptor open for the process's life
      * on a socket whose peer believes it is connected.
      *
@@ -419,13 +423,17 @@ class KqueueEngine(
      * here as well would be closing a number the kernel may have handed on.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun <T> releaseOnFailure(fd: Int, crossinline build: () -> T): T =
+    private inline fun <T> releaseOnFailure(
+        fd: Int,
+        context: String = "connect construction",
+        crossinline build: () -> T,
+    ): T =
         try {
             build()
         } catch (buildFailure: Throwable) {
             // Raw, because nothing owns the descriptor yet -- the same close
             // the connect-failure branches above make.
-            closeFdSafely(fd, logger, "connect construction")
+            closeFdSafely(fd, logger, context)
             throw buildFailure
         }
 
@@ -534,13 +542,10 @@ class KqueueEngine(
         return when (val address = spec.address) {
             is InetSocketAddress -> {
                 val serverFd = nativeSocketOps.bindListener(address.requireIp(), address.port, spec.config.backlog)
-                try {
+                releaseOnFailure(serverFd, "bindPipeline listener cleanup") {
                     val localAddr = nativeSocketOps.getLocalAddress(serverFd)
                     logger.debug { "Pipeline bound to $localAddr" }
                     KqueuePipelinedStreamServer.Listener(serverFd, localAddr, spec.config)
-                } catch (t: Throwable) {
-                    closeFdSafely(serverFd, logger, "bindPipeline listener cleanup")
-                    throw t
                 }
             }
             is UnixSocketAddress -> {
@@ -548,8 +553,14 @@ class KqueueEngine(
                     "KqueueEngine does not support abstract-namespace Unix sockets (macOS kernel has no abstract namespace)",
                 )
                 val serverFd = nativeSocketOps.bindUnixListener(address, spec.config.backlog)
-                logger.debug { "Pipeline bound to $address" }
-                KqueuePipelinedStreamServer.Listener(serverFd, address, spec.config)
+                // Guarded like its sibling above. Nothing here is known to
+                // throw -- the holder takes three fields -- but the two
+                // branches open the same kind of descriptor into the same
+                // window, and only one of them was answering for it.
+                releaseOnFailure(serverFd, "bindPipeline listener cleanup") {
+                    logger.debug { "Pipeline bound to $address" }
+                    KqueuePipelinedStreamServer.Listener(serverFd, address, spec.config)
+                }
             }
         }
     }
