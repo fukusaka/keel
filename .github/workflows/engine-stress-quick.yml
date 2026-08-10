@@ -2,7 +2,8 @@ name: Engine stress (quick)
 
 # Runs the per-engine cross-thread funnel stress (KqueuePipelineEchoStress,
 # EpollPipelineEchoStress, ...) plus the pooled allocator's arena-saturation
-# stress (PooledAllocatorArenaSaturationStress) with KEEL_STRESS=quick on every
+# stress (PooledAllocatorArenaSaturationStress) and the transport teardown claim
+# race (TeardownClaimStress) with KEEL_STRESS=quick on every
 # PR that touches an engine, keel-core, or keel-io. These tests skip unless
 # KEEL_STRESS is set, so the main CI (ci.yml) never runs them; this workflow is
 # the auto PR gate that guards the I/O ownership invariant (the funnel),
@@ -90,6 +91,7 @@ jobs:
           ./gradlew :keel-engine-nio:jvmTest --tests '*PipelineEchoStress'
           ./gradlew :keel-engine-netty:jvmTest --tests '*PipelineEchoStress'
           ./gradlew :keel-io:jvmTest --tests '*ArenaSaturationStress'
+          ./gradlew :keel-core:jvmTest --tests '*TeardownClaimStress'
 
       - name: Upload stress reports (linux)
         if: always()
