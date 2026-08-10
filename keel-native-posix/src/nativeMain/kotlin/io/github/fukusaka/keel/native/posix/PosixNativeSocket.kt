@@ -87,8 +87,11 @@ public object PosixNativeSocket : NativeSocket {
                 // only inside [AcceptResult.Accepted] -- so a throw between the
                 // two strands it where nothing can name it, let alone close it,
                 // and the accept loop logs and comes round for the next one.
-                // The listener side of this file's own ops guards the same
-                // shape; this side did not. That these two calls are thought
+                // `PosixNativeSocketOps.bindListener` guards the same shape
+                // for the listener it opens; the accept side did not. Not
+                // reachable from the seam either way -- this is an `object`
+                // calling `fcntl` on a descriptor the kernel has just handed
+                // over, so no test pins it. That these two calls are thought
                 // to fail only on a corrupt kernel state is not the reason to
                 // leave them unguarded: they are `check`s over a syscall, and
                 // what they cost when they do fail is one descriptor per
