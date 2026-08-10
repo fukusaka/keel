@@ -1360,8 +1360,15 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * The caller may walk the ledgers here because it holds the claim, and
      * because it publishes itself as the loop thread for the duration: every
      * assertion and every confinement argument in this class stays literally
-     * true, and a `start()` racing this call loses the claim and returns
-     * without touching anything.
+     * true.
+     *
+     * **A `start()` racing this call is not made safe by the claim.** It reads
+     * the claim before this takes it, so it goes on to create a thread and
+     * write the handle into the arena this call is about to release; what
+     * loses the claim is the spawned `loop()`, after both have happened. The
+     * engines refuse `start()` on a claimed loop for the sequential case and
+     * say there that it is ordering, not synchronisation. Nothing in the tree
+     * starts a loop concurrently with closing it.
      *
      * **Call it from `close()`, after the flag that says the loop is closing.**
      * The sequence runs application teardown, and a participant that closes

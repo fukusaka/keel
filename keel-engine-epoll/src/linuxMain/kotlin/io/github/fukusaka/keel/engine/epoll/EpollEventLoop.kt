@@ -197,7 +197,7 @@ internal class EpollEventLoop(
     // ever run the teardown -- so `close()` runs it here instead.
     private val threadCreated = AtomicInt(0)
 
-    /** Backs [threadPtr]. Cleared in [close] once the loop thread is joined. */
+    /** Backs [threadPtr]. Cleared in [close] — after joining the loop thread, or at once when none was created. */
     private val arena = Arena()
 
     private val threadPtr = arena.alloc<pthread_tVar>()
@@ -534,7 +534,8 @@ internal class EpollEventLoop(
      *
      * Signals the EventLoop thread to stop, joins it, then closes the
      * epoll fd and eventfd. Waiters still parked at that point are ended by
-     * the loop itself, on its way out.
+     * the loop itself, on its way out — or, for a loop that never started, by
+     * this thread; see below.
      *
      * **Must not be called from the EventLoop thread.** `pthread_join` returns
      * `EDEADLK` at once when asked to join the caller, so everything below
@@ -574,16 +575,21 @@ internal class EpollEventLoop(
                     releaseLoopResources()
                     throw terminationFailure
                 }
-                // Release either way, and never fall through to the join. A
-                // `false` here means the claim was already taken -- and with
-                // no thread created, the only taker is a direct `loop()` call,
-                // which leaves nothing to join: `threadPtr` was never written,
-                // and handing that slot to `pthread_join` reads whatever the
-                // `Arena` happened to hold. The seam suites take exactly this
-                // path, calling `loop()` on their own thread and then
-                // `close()`. Such a caller must not still be inside `loop()`
-                // when it closes; nothing here can join a thread it never
-                // created.
+                // Never fall through to the join. A `false` above means the
+                // claim was already taken -- and with no thread created, the
+                // only taker is a direct `loop()` call, which leaves nothing
+                // to join: `threadPtr` was never written, and handing that
+                // slot to `pthread_join` reads whatever the `Arena` happened
+                // to hold. The seam suites take exactly this path, calling
+                // `loop()` on their own thread and then `close()`.
+                //
+                // Checked rather than assumed: that `loop()` must have
+                // returned before this call. If it has not, releasing here
+                // would close the fds and free the arena underneath it, and
+                // the `EDEADLK` guard that catches "closing from the loop
+                // thread" is on the join path, which this branch skips.
+                // Quiescence is what says the sequence finished, whoever ran
+                // it.
                 if (!isStopped()) {
                     logger.error {
                         "${this::class.simpleName}.close() found the loop still being taken apart by " +
@@ -622,8 +628,10 @@ internal class EpollEventLoop(
      *
      * Shared by the two ways a loop ends — its thread returning and being
      * joined, or [finishWithoutRunning] taking it apart for a loop that never
-     * had one. Both reach here only after the terminal sequence, so no
-     * dispatch and no arm can still be in flight against these.
+     * had one. The joined path reaches here only after the terminal sequence
+     * has run and the thread is gone. The other reaches it after *a* sequence
+     * has run, which is this caller's unless something else claimed it first —
+     * see the obligation stated at that call site.
      */
     private fun releaseLoopResources() {
         closeFdSafely(wakeupFd, logger, "event loop teardown (wakeupFd)")
@@ -637,16 +645,17 @@ internal class EpollEventLoop(
         // EventLoopGroup hands each EL the result of
         // `BufferAllocator.createChild()`, so closing here drains
         // this loop's freelists and runs `Freelist.close()` (mutex
-        // destroy / nativeHeap.free for `MutexFreelist`). The joined EL
-        // thread can no longer allocate — but a returnToPool can still
+        // destroy / nativeHeap.free for `MutexFreelist`). The thread that ran
+        // this loop, if there was one, is joined by now and can no longer allocate — but a returnToPool can still
         // arrive from a post-quiescence closing caller (the stopped-loop
         // transport teardown releases pending writes on its own thread);
         // that race is the allocator's to absorb, via its cross-thread
         // return queue's close-sentinel contract. Default no-op for
         // `DefaultAllocator` (tests that instantiate this loop with the
         // stateless allocator).
-        // Free the shared writev scratch arrays — the loop thread is
-        // joined above, so no transport flush can touch them anymore.
+        // Free the shared writev scratch arrays. Either the loop thread is
+        // joined by the caller above, or there never was one, so no transport
+        // flush can touch them.
         nativeHeap.free(writevBases)
         nativeHeap.free(writevLens)
         allocator.close()
