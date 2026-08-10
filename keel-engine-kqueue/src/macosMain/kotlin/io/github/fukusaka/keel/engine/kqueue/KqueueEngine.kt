@@ -19,6 +19,7 @@ import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.guarded
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.NativeSocket
@@ -255,7 +256,9 @@ class KqueueEngine(
             ConnectResult.Connected -> Unit
             ConnectResult.InProgress -> {
                 (suspendRegisterOverride ?: workerLoop).awaitWriteReady(fd, logger)
-                val error = nativeSocketOps.getSocketError(fd)
+                // Guarded from here on; see the sibling path for why the
+                // await's own stretch is left out.
+                val error = releaseOnFailure(fd) { nativeSocketOps.getSocketError(fd) }
                 if (error != 0) {
                     closeFdSafely(fd, logger, "connect cleanup")
                     error("connect($address) failed: ${errnoMessage(error)}")
@@ -268,13 +271,17 @@ class KqueueEngine(
         }
 
         logger.debug { "Connected to $address" }
-        val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
-        val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
-        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        val transport = releaseOnFailure(fd) {
+            val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
+            val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
+            KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        }
         // Built before the check: the transport joins the loop when the channel
         // attaches, so that this connection is in the registry only once there
         // is something to deliver a stop notification to.
-        val channel = KqueuePipelinedChannel(transport, logger, address, null)
+        val channel = releaseOnFailure(transport) {
+            KqueuePipelinedChannel(transport, logger, address, null)
+        }
         if (!transport.joinedLoop) {
             // The loop swept between this call's check at the top and that join.
             // Closing the transport rather than the descriptor: close() is
@@ -316,7 +323,12 @@ class KqueueEngine(
                 // Connection in progress — suspend until fd is writable.
                 (suspendRegisterOverride ?: workerLoop).awaitWriteReady(fd, logger)
                 // Verify connection succeeded via SO_ERROR.
-                val error = nativeSocketOps.getSocketError(fd)
+                // Guarded from here on. Until the await returns the
+                // descriptor belongs to it -- it releases on cancellation and
+                // on failure, under a claim CAS -- so closing it here as well
+                // would be closing a number the kernel may already have
+                // handed on. Ownership comes back with the return.
+                val error = releaseOnFailure(fd) { nativeSocketOps.getSocketError(fd) }
                 if (error != 0) {
                     closeFdSafely(fd, logger, "connect cleanup")
                     error("connect() failed: ${errnoMessage(error)}")
@@ -328,14 +340,22 @@ class KqueueEngine(
             }
         }
 
-        val remoteAddr = nativeSocketOps.getRemoteAddress(fd)
-        val localAddr = nativeSocketOps.getLocalAddress(fd)
+        // `getpeername` on a peer that reset between the connect completing
+        // and this call answers ENOTCONN, and both queries are `check`s over
+        // the syscall. The throw used to leave the descriptor open for the
+        // process's life, once per connect attempt.
+        val remoteAddr = releaseOnFailure(fd) { nativeSocketOps.getRemoteAddress(fd) }
+        val localAddr = releaseOnFailure(fd) { nativeSocketOps.getLocalAddress(fd) }
         logger.debug { "Connected to $remoteAddr" }
-        val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
-        val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
-        val transport = KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        val transport = releaseOnFailure(fd) {
+            val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
+            val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
+            KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+        }
         // Built before the check; see the sibling connect path.
-        val channel = KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
+        val channel = releaseOnFailure(transport) {
+            KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
+        }
         if (!transport.joinedLoop) {
             // The loop swept between this call's check at the top and that join.
             // Closing the transport rather than the descriptor: close() is
@@ -347,6 +367,57 @@ class KqueueEngine(
         }
         return channel
     }
+
+    /**
+     * Runs [build] and returns its value, closing [fd] and re-raising if it
+     * throws.
+     *
+     * The connect path holds a descriptor nobody else can name from the moment
+     * the socket is opened until the channel is returned: the transport is not
+     * in the loop's registry until the channel attaches, so no stop
+     * notification reaches it either. Every step in that stretch that can fail
+     * goes through here, so what is left when one does is the caller's
+     * exception rather than a descriptor open for the process's life on a
+     * socket whose peer believes it is connected.
+     *
+     * **Not the stretch spent waiting for write-readiness.** That await owns
+     * the descriptor while it holds it and releases it on cancellation and on
+     * failure, under a claim so the two endings cannot both close. Closing
+     * here as well would be closing a number the kernel may have handed on.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun <T> releaseOnFailure(fd: Int, build: () -> T): T =
+        try {
+            build()
+        } catch (buildFailure: Throwable) {
+            // Raw, because nothing owns the descriptor yet -- the same close
+            // the connect-failure branches above make.
+            closeFdSafely(fd, logger, "connect construction")
+            throw buildFailure
+        }
+
+    /**
+     * Runs [build] and returns its value, closing [transport] and re-raising
+     * if it throws.
+     *
+     * Once the transport exists it owns the descriptor, so this is its
+     * teardown rather than a raw close -- and the teardown re-raises what its
+     * stages failed with, which would replace the answer the caller of
+     * `connect` is waiting for. Attached to that answer instead.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun <T> releaseOnFailure(transport: KqueueIoTransport, build: () -> T): T =
+        try {
+            build()
+        } catch (buildFailure: Throwable) {
+            try {
+                transport.close()
+            } catch (releaseFailure: Throwable) {
+                buildFailure.addSuppressed(releaseFailure)
+                logger.warn(releaseFailure) { "releasing a failed connect threw as well: fd=${transport.fd}" }
+            }
+            throw buildFailure
+        }
 
     /**
      * Binds a pipeline-based server on [host]:[port].
