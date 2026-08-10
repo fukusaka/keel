@@ -82,10 +82,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-epoll`, `engine-kqueue`: release an accepted descriptor when preparing it or running the
-  caller's initialiser throws — it was left open for the process's life, and in the initialiser's
-  case joined to the loop, never read and unreachable. The construction and attach steps between them
-  are now guarded the same way, against a future throw rather than a reachable leak (#1044)
+- `native-posix`, `engine-epoll`, `engine-kqueue`: release an accepted descriptor when setting
+  `FD_CLOEXEC` on it, preparing it, or running the caller's connection initialiser throws (#1044)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: run a loop's teardown when it is closed without
   ever having started — work dispatched at it was queued to a drain that never came (#1043)
 - `engine-epoll`, `engine-kqueue`: ignore `start()` on an EventLoop whose termination is already
