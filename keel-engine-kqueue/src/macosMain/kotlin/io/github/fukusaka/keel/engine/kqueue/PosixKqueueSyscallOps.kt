@@ -54,7 +54,7 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
 
     override fun kqueueCreate(): Int {
         val fd = kqueue()
-        if (fd < 0) return -errno
+        if (fd < 0) return -failingErrno()
         // Set FD_CLOEXEC so the kqueue fd does not leak into any child this
         // process may later fork via `posix_spawn` / `Runtime.exec`-style call.
         // macOS has no atomic kqueue1() / kqueue(O_CLOEXEC) variant, so the
@@ -72,7 +72,7 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
 
     override fun makePipe(fds: IntArray): Int {
         val rc = pipe(fds.refTo(0))
-        if (rc != 0) return errno
+        if (rc != 0) return failingErrno()
         // Same FD_CLOEXEC rationale as kqueueCreate(). macOS lacks pipe2() so
         // both ends are post-fcntl'd. The wakeup pipe is purely in-process; any
         // child inheriting it would be a leak with no legitimate use case.
@@ -128,14 +128,26 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
      * argument and the set does. [setNonBlocking] below distinguishes its own
      * pair the same way.
      *
-     * POSIX requires `fcntl` to set errno when it fails. The fallback is here
-     * so that a report cannot read back as success if it ever did not.
+     * The errno comes from [failingErrno], which is what keeps a failure from
+     * reading back as success.
      */
     private fun reportCloexecFailure(call: String): Int {
-        val err = errno.takeIf { it != 0 } ?: EIO
+        val err = failingErrno()
         logger.warn { "$call failed: ${errnoMessage(err)}" }
         return err
     }
+
+    /**
+     * The errno of the call that just failed, never `0`.
+     *
+     * `0` is what both encodings in this file mean by success — a zero return
+     * from an ok/errno method, and a non-negative one from an fd method, where
+     * it would additionally name descriptor 0. POSIX requires a failing call to
+     * set errno, so the fallback stands in for a violation of that rather than
+     * for anything reachable; without it a violation would be read as the one
+     * answer this file must never give for a call that did not work.
+     */
+    private fun failingErrno(): Int = errno.takeIf { it != 0 } ?: EIO
 
     override fun setNonBlocking(fd: Int) {
         val flags = fcntl(fd, F_GETFL, 0)
