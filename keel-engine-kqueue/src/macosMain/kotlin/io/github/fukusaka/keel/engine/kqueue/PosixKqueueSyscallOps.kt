@@ -108,9 +108,20 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
      */
     private fun applyCloexec(fd: Int): Int {
         val flags = fcntl(fd, F_GETFD, 0)
-        if (flags < 0) return reportCloexecFailure("fcntl(F_GETFD, fd=$fd)")
+        // Read before anything else runs, including the interpolation that
+        // names the call: after a call that succeeded, POSIX leaves errno
+        // unspecified, so an allocation between the failure and the read can
+        // put another value there -- and this one is not just printed, it is
+        // what the caller's contract carries back.
+        if (flags < 0) {
+            val err = failingErrno()
+            return reportCloexecFailure("fcntl(F_GETFD, fd=$fd)", err)
+        }
         val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
-        if (rc != 0) return reportCloexecFailure("fcntl(F_SETFD, FD_CLOEXEC, fd=$fd)")
+        if (rc != 0) {
+            val err = failingErrno()
+            return reportCloexecFailure("fcntl(F_SETFD, FD_CLOEXEC, fd=$fd)", err)
+        }
         return 0
     }
 
@@ -128,11 +139,11 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
      * argument and the set does. [setNonBlocking] below distinguishes its own
      * pair the same way.
      *
-     * The errno comes from [failingErrno], which is what keeps a failure from
-     * reading back as success.
+     * [err] is taken as a parameter rather than read here for the same reason
+     * it is read the moment the call fails: rendering [call] allocates, and
+     * errno is only guaranteed to survive up to the next call that touches it.
      */
-    private fun reportCloexecFailure(call: String): Int {
-        val err = failingErrno()
+    private fun reportCloexecFailure(call: String, err: Int): Int {
         logger.warn { "$call failed: ${errnoMessage(err)}" }
         return err
     }
