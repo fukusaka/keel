@@ -130,7 +130,7 @@ internal class FakeKqueueSyscallOps(
     override fun setNonBlocking(fd: Int) {
         setNonBlockingCalls++
         val err = if (setNonBlockingResults.isEmpty()) 0 else setNonBlockingResults.removeFirst()
-        if (err != 0) error("fcntl(F_SETFL, O_NONBLOCK) failed: ${errnoMessage(err)}")
+        if (err != 0) error("fcntl(F_SETFL, O_NONBLOCK, fd=$fd) failed: ${errnoMessage(err)}")
     }
 
     override fun makePipe(fds: IntArray): Int {
