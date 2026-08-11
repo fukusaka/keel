@@ -84,6 +84,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-nio`, `engine-kqueue`, `engine-epoll`: a single-buffer flush whose write throws now puts
+  the unsent remainder back on the queue instead of stranding the buffer — on NIO a peer reset leaked
+  one pooled buffer per connection (#1051)
 - `engine-kqueue`, `engine-epoll`: release the loops an engine or group has already built when a
   later one cannot be built or started, and close the rest even if one's `close()` throws — within a
   group and between the engine's boss loop and its group (#1049)
