@@ -124,10 +124,12 @@ internal interface KqueueSyscallOps {
      * a concurrent [waitEvents] call.
      *
      * @param scratch caller-owned single-byte buffer, pinned and passed
-     *   to `write(2)` without copying. The buffer belongs to the caller
-     *   because [wakeup] is called from arbitrary threads against one loop:
-     *   a buffer held here would be shared between those callers, and one
-     *   allocated per call would be allocated per wakeup.
+     *   to `write(2)` without copying. Owned by the caller so that an
+     *   implementation of this interface may be shared — as the convention
+     *   above says the production one is safe to be — without that sharing
+     *   reaching a buffer. The caller keeps one per loop rather than
+     *   allocating per call, which `wakeup` makes worth doing: it is called
+     *   from any thread, on every hand-off to a loop that is waiting.
      * @return `0` on success; positive errno on failure.
      *   `EAGAIN` means the pipe buffer is full, which is benign — a
      *   wakeup is already pending in the kernel.
