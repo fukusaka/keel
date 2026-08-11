@@ -172,10 +172,22 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
     private fun failingErrno(): Int = errno.takeIf { it != 0 } ?: EIO
 
     override fun setNonBlocking(fd: Int) {
+        // Errno into a local before the message exists, for the reason
+        // [failingErrno] gives: the template that names the call allocates, and
+        // the read after it is a read of whatever that left behind. This one
+        // only misleads a reader -- the contract here is a throw and the
+        // exception names the call itself -- but it is the same read, in the
+        // file that stopped doing it.
         val flags = fcntl(fd, F_GETFL, 0)
-        check(flags >= 0) { "fcntl(F_GETFL) failed: ${errnoMessage(errno)}" }
+        if (flags < 0) {
+            val err = failingErrno()
+            error("fcntl(F_GETFL, fd=$fd) failed: ${errnoMessage(err)}")
+        }
         val rc = fcntl(fd, F_SETFL, flags or O_NONBLOCK)
-        check(rc == 0) { "fcntl(F_SETFL, O_NONBLOCK) failed: ${errnoMessage(errno)}" }
+        if (rc != 0) {
+            val err = failingErrno()
+            error("fcntl(F_SETFL, O_NONBLOCK, fd=$fd) failed: ${errnoMessage(err)}")
+        }
     }
 
     override fun addReadFilter(kqFd: Int, fd: Int): Int =
