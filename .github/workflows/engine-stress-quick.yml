@@ -2,19 +2,26 @@ name: Engine stress (quick)
 
 # Runs the per-engine cross-thread funnel stress (KqueuePipelineEchoStress,
 # EpollPipelineEchoStress, ...) plus the pooled allocator's arena-saturation
-# stress (PooledAllocatorArenaSaturationStress) with KEEL_STRESS=quick on every
-# PR that touches an engine, keel-core, or keel-io. These tests skip unless
+# stress (PooledAllocatorArenaSaturationStress) and the transport teardown claim
+# race (TeardownClaimStress) with KEEL_STRESS=quick on every PR that touches an
+# engine, keel-core, or keel-io. These tests skip unless
 # KEEL_STRESS is set, so the main CI (ci.yml) never runs them; this workflow is
 # the auto PR gate that guards the I/O ownership invariant (the funnel),
 # multi-EventLoop accept dispatch + per-EventLoop routing, the concurrent-allocate
-# path under load, and the shared ChunkArena under cross-thread saturation.
+# path under load, the shared ChunkArena under cross-thread saturation, and the
+# transport teardown claim that keeps two concurrent closers from running the
+# cleanup pass twice.
 #
 # Kept OUT of ci.yml deliberately: path-filtering here means a change to an
 # unrelated module does not pay for an engine stress run, and the quick scenario
-# (~5s per engine) keeps the gate to ~1-2 min of test time per host.
+# (~5s per engine) keeps the gate to ~1-2 min of test time per host. The
+# teardown claim race is the outlier at ~35s, which is why the slow-test guard
+# is disabled while the stress opt-in is set.
 #
-# The full scenario (KEEL_STRESS=full, ~5 min per engine) is not run here; it is
-# driven manually per engine via workflow_dispatch (e.g. iouring-stress.yml).
+# The full scenario (KEEL_STRESS=full) is not run here, and no workflow drives
+# it -- the dispatched stress workflows (iouring-stress.yml, netty-ws-stress.yml)
+# loop a task or set -Dkeel.stress=true instead. It is reachable by exporting the
+# variable by hand.
 #
 # Trigger gating mirrors ci.yml: pull_request runs require the `needs-pr-check`
 # label AND a sender in the CI_ALLOWED_USERS allowlist, so fork PRs cannot spend
@@ -90,6 +97,7 @@ jobs:
           ./gradlew :keel-engine-nio:jvmTest --tests '*PipelineEchoStress'
           ./gradlew :keel-engine-netty:jvmTest --tests '*PipelineEchoStress'
           ./gradlew :keel-io:jvmTest --tests '*ArenaSaturationStress'
+          ./gradlew :keel-core:jvmTest --tests '*TeardownClaimStress'
 
       - name: Upload stress reports (linux)
         if: always()
