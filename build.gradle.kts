@@ -433,7 +433,22 @@ class SlowTestWarningListener : TestListener {
     override fun afterSuite(suite: TestDescriptor, result: TestResult) {}
     override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) {
         val elapsedSec = (result.endTime - result.startTime) / 1000.0
-        if (elapsedSec > SLOW_TEST_BUDGET_SEC) {
+        // Exempt while the stress opt-in is active, because that is the one
+        // state in which a slow test is expected, and the guard's advice
+        // ("name it *Benchmark/*Audit and add @Ignore") is wrong for a suite
+        // that is already named correctly and already opt-in.
+        //
+        // Keyed on the opt-in rather than on the class name on purpose -- the
+        // guard exists because a name alone cannot be trusted, so exempting by
+        // name would hand a free pass to exactly the misnamed measurement code
+        // it is looking for.
+        //
+        // The cost is that the exemption is build-wide: with the variable set,
+        // an unfiltered run exempts ordinary tests too. The gate does not hit
+        // that (every stress invocation is `--tests`-filtered), and the
+        // alternative -- trusting the name -- gives up more.
+        val stressOptIn = System.getenv("KEEL_STRESS") != null
+        if (!stressOptIn && elapsedSec > SLOW_TEST_BUDGET_SEC) {
             System.err.println(
                 "SLOW TEST (>%.0fs): %s.%s took %.1fs — if this is measurement code, ".format(
                     SLOW_TEST_BUDGET_SEC, testDescriptor.className, testDescriptor.name, elapsedSec,
