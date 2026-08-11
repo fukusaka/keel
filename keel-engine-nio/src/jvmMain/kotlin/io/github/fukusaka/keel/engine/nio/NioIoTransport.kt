@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -381,33 +382,75 @@ internal class NioIoTransport(
         // close the channel) all on the same EventLoop task — the
         // deferred flush task is still behind us in the queue when we
         // reach here.
-        // The drain can throw, and everything below is owed whatever it did.
-        // `SocketChannel.write` answers a reset with an `IOException`, and this
-        // is the tick where a same-tick send→close meets one: letting that
-        // escape skipped the release walk, the key cancel and the channel close
-        // for good, since the teardown claim above is spent and a later
-        // `close()` returns at `markClosing()`. The failure is still the
-        // caller's -- it is raised once the obligations are met, the way the
-        // POSIX teardowns stage theirs.
+        // One stage per obligation, each owed whatever the ones before it did,
+        // the way the POSIX teardowns run theirs. The claim above is spent, so
+        // nothing runs any of them a second time: an obligation skipped here is
+        // skipped for good, and a later `close()` returns at `markClosing()`.
+        //
+        // The drain is why this is staged at all. `SocketChannel.write` answers
+        // a reset with an `IOException`, and this is the tick where a same-tick
+        // send→close meets one; letting that escape took the release walk, the
+        // waiter wake, the key cancel and the channel close with it. Carrying
+        // it instead is not enough on its own either — a single `try` around
+        // the drain lets any later failure *replace* the one that started the
+        // teardown, which is the mistake the POSIX staging exists to prevent.
         var failure: Throwable? = null
-        if (flushScheduled && pendingWrites.isNotEmpty()) {
-            flushScheduled = false
-            try {
+        failure = runTeardownStage(failure) {
+            if (flushScheduled && pendingWrites.isNotEmpty()) {
+                flushScheduled = false
                 performFlush()
-            } catch (drainFailure: Throwable) {
-                failure = drainFailure
             }
         }
-        cancelIdleTimeout()
-        cancelWriteIdleTimeout()
-        for (pw in pendingWrites) pw.buf.release()
-        pendingWrites.clear()
-        pendingBytes = 0
-        selectionKey.cancel()
-        logTransportStatsOnClose(eventLoop.logger, "channel=$socketChannel")
-        if (socketChannel.isOpen) socketChannel.close()
+        failure = runTeardownStage(failure) { cancelIdleTimeout() }
+        failure = runTeardownStage(failure) { cancelWriteIdleTimeout() }
+        // The shared drain, not the inline walk this used to keep: it takes each
+        // entry out before releasing it, so a refused release does not leave a
+        // released buffer queued for the next walker, and it finishes the queue
+        // rather than abandoning what is behind the refusal.
+        failure = runTeardownStage(failure) { releaseAllPendingWrites() }
+        // Unblock anyone suspended in awaitPendingFlush(): the data is gone.
+        //
+        // A stage of its own, and one this transport did not have. A flush that
+        // throws leaves its entry re-queued with no write interest registered —
+        // the throw path does not arm one, since the connection is going down —
+        // so nothing will ever drain the queue and resume the waiter. Without
+        // this the fix for the stranded buffer would have traded a leak for a
+        // caller parked for the life of the process.
+        failure = runTeardownStage(failure) {
+            flushContinuation?.let { cont ->
+                flushContinuation = null
+                cont.cancel(stoppedFlushCause())
+            }
+        }
+        failure = runTeardownStage(failure) { selectionKey.cancel() }
+        failure = runTeardownStage(failure) { logTransportStatsOnClose(eventLoop.logger, "channel=$socketChannel") }
+        failure = runTeardownStage(failure) { if (socketChannel.isOpen) socketChannel.close() }
         failure?.let { throw it }
     }
+
+    /**
+     * Runs [stage] and returns the teardown's failure so far.
+     *
+     * [carried] if [stage] succeeds; [carried] with [stage]'s failure attached
+     * if it does not; [stage]'s failure if there was nothing carried yet. The
+     * first failure is the one that reaches the caller, since it is the one
+     * that explains the rest.
+     *
+     * `crossinline` so a `return` written inside a future stage cannot skip the
+     * stages after it and the rethrow at the end — which is the whole contract.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun runTeardownStage(carried: Throwable?, crossinline stage: () -> Unit): Throwable? =
+        try {
+            stage()
+            carried
+        } catch (stageFailure: Throwable) {
+            carried?.also { it.addSuppressed(stageFailure) } ?: stageFailure
+        }
+
+    /** Names what happened, so a cancelled flush waiter is not a bare cancellation. */
+    private fun stoppedFlushCause() =
+        CancellationException("the transport was closed before the pending flush on $socketChannel could drain")
 
     /**
      * Writes a single [PendingWrite] via [SocketChannel.write].
@@ -526,6 +569,16 @@ internal class NioIoTransport(
 
     private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
 
+    /**
+     * Whether a caller is parked in [awaitPendingFlush].
+     *
+     * For the tests that pin who answers such a caller: the moment a waiter is
+     * registered is what they have to wait for before driving the close that
+     * must answer it, and there is no other way to observe it. EventLoop-confined
+     * like the field it reads.
+     */
+    internal val hasFlushWaiter: Boolean get() = flushContinuation != null
+
     /** Registers OP_WRITE callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
         // A stalled write (OP_WRITE re-arm) means the peer is not draining its receive
@@ -573,6 +626,14 @@ internal class NioIoTransport(
                         // still coalesces SSE-style rapid emits when no one awaits.
                         if (flushScheduled) {
                             flushScheduled = false
+                            // The drain can throw here, and [cont] is not stored
+                            // yet. That is not a lost waiter: this branch is
+                            // only reached with a tick still scheduled, which
+                            // only happens when the caller is already on the
+                            // loop and this Runnable is being run inline -- so
+                            // the throw travels straight out to that caller.
+                            // A caller from another thread arrives after the
+                            // scheduled tick has run, with nothing scheduled.
                             val done = performFlush()
                             if (done && pendingWrites.isEmpty()) {
                                 sendFinIfDrained()

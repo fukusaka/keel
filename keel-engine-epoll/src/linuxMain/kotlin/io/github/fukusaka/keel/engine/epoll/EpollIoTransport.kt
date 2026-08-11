@@ -931,8 +931,11 @@ internal class EpollIoTransport(
                     // Released before the log, not after. The entry is already
                     // out of the deque, so anything that throws between here and
                     // the release strands its buffer exactly as a throwing write
-                    // would -- and `Logger` is a public SPI the engine takes
-                    // through its config, so this line is caller code too.
+                    // would. Today nothing here does: the engines wrap the
+                    // configured factory, so a `Logger` cannot escape a guard.
+                    // This orders the two so the buffer does not depend on that
+                    // guard staying in place -- the release is the obligation,
+                    // the log is the report.
                     pw.buf.release()
                     updatePendingBytes(-pw.length)
                     eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(writeResult.errno)}" }

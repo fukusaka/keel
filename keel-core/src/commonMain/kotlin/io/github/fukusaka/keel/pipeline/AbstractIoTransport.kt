@@ -376,39 +376,51 @@ abstract class AbstractIoTransport(
      * anything that flushed the original offsets again would send those bytes a
      * second time. The remainder goes back at the head, keeping wire order.
      *
-     * **The caller still rethrows.** This does not decide the failure is
-     * recoverable — it decides only that the failure costs one connection
-     * rather than one connection and a pooled buffer. A secondary failure while
-     * putting the entry back is attached to [cause] rather than replacing it:
-     * the send's failure is the one the caller is owed. Nothing drives that
-     * catch — `addFirst` fails only on exhaustion, and the update reaches user
-     * code only across a water mark — so it is a guard, and the entry is
-     * stranded anyway if it fires.
+     * **The caller still rethrows, and the transport is going down.** This does
+     * not decide the failure is recoverable — it decides only that the failure
+     * costs one connection rather than one connection and a pooled buffer. It
+     * does *not* register write interest: nothing is going to drain the entry
+     * it just put back, which is why a teardown that leaves a flush waiter
+     * parked turns this into a caller parked for good. Every transport calling
+     * this owes its waiters a cancel on the way down.
+     *
+     * A secondary failure while putting the entry back is attached to [cause]
+     * rather than replacing it: the send's failure is the one the caller is
+     * owed. The likelier of the two throwers is [updatePendingBytes], which
+     * reaches user code across a water mark — and by then `addFirst` has
+     * already succeeded, so the entry is queued and the teardown will still
+     * find it. Only `addFirst` itself failing loses it.
      *
      * **What uses this, and what has the shape and does not.** The three
      * single-buffer flush paths — NIO, kqueue, epoll — call it. Three more
      * places take entries out before something that can throw and are **not**
-     * covered: io_uring's `flush` clears the whole deque in a `finally`,
+     * covered: io_uring's `flush` clears the whole deque in a `finally` and
      * NWConnection's copies the batch out and clears before building its send,
-     * and the in-memory transport removes an entry before allocating. Each
-     * strands a whole batch rather than one entry and needs its own answer, so
-     * read the list rather than the rule. Netty is covered by its own `catch`,
-     * though that one takes `Exception` where these take `Throwable`.
+     * both losing a whole batch; the in-memory transport removes one entry
+     * before allocating, losing that one. Read the list rather than the rule.
+     * Netty is covered by its own `catch`, though that one takes `Exception`
+     * where these take `Throwable`.
      *
      * **A gather write's syscall needs nothing** — every entry is still queued
-     * while it runs. Its partial-write loop is a different matter: it takes
-     * each fully-written entry out and releases it, as [releaseQueuedWrites]
-     * does, so a release that throws strands the entry it was releasing. That
-     * shape is older than this helper and is not what this addresses — putting
-     * a half-released buffer back would hand the teardown a second release
-     * rather than a first.
+     * while it runs. Its partial-write loop is a different matter, and the two
+     * orders in the tree fail differently: kqueue and epoll take the entry out
+     * and then release it, as [releaseQueuedWrites] does, so a refused release
+     * strands the entry it was releasing; NIO releases first and removes after,
+     * so a refused release leaves a released buffer queued for the next walker.
+     * Both shapes are older than this helper and neither is what it addresses —
+     * putting a half-released buffer back would hand the teardown a second
+     * release rather than a first.
      */
     protected fun requeueUnsent(pw: PendingWrite, sent: Int, cause: Throwable) {
         try {
             pendingWrites.addFirst(
                 if (sent == 0) pw else PendingWrite(pw.buf, pw.offset + sent, pw.length - sent),
             )
-            updatePendingBytes(-sent)
+            // Nothing moved, nothing to account for. Skipped rather than passed
+            // as zero because the update re-evaluates the water marks, and that
+            // can reach user code — not something to do while unwinding when
+            // there is no ledger change to report.
+            if (sent > 0) updatePendingBytes(-sent)
         } catch (requeueFailure: Throwable) {
             // Not onto itself: `addSuppressed(this)` throws, which would put the
             // cleanup's failure in place of the send's — the one thing the
