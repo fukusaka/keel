@@ -1361,11 +1361,12 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * path handed on.
      *
      * **Who closes such a loop**: tests that build one and never start it, and
-     * any future caller that has to unwind a partly-built engine. Not, today,
-     * the case that motivated looking: a group whose `start()` throws part way
-     * takes the exception out through the engine constructor, so no reference
-     * escapes and nobody calls `close()` on anything. Making that path unwind
-     * is separate work, and this is its prerequisite rather than its fix.
+     * the rollback in an EventLoop group's `start()`. That rollback is what
+     * this was written as the prerequisite for — when a `pthread_create` fails
+     * part way, the group closes every loop it holds, and the ones it had not
+     * reached yet arrive here. It is a production path now, not a future one:
+     * on that route this function is what returns the descriptors, the native
+     * scratch and the allocator child of every loop the group never started.
      *
      * The caller may walk the ledgers here because it holds the claim, and
      * because it publishes itself as the loop thread for the duration: every

@@ -657,8 +657,26 @@ class KqueueEngine(
         if (!closed) {
             closed = true
             coroutineContext.job.cancelAndJoin()
-            bossLoop.close()
-            workerGroup.close()
+            // The group is closed whatever the boss did. `closed` is already
+            // true, so a throw from the first would leave every worker loop
+            // holding its descriptors with no second caller able to retry --
+            // the same reason the group closes each of its own loops
+            // independently. Barely reachable (the boss is always started, so
+            // it takes the join path, and it is built with the no-op default
+            // allocator) and guarded for the same reason the group's is.
+            var failure: Throwable? = null
+            try {
+                bossLoop.close()
+            } catch (bossFailure: Throwable) {
+                failure = bossFailure
+            }
+            try {
+                workerGroup.close()
+            } catch (groupFailure: Throwable) {
+                val first = failure
+                if (first == null) failure = groupFailure else first.addSuppressed(groupFailure)
+            }
+            failure?.let { throw it }
             logger.debug { "Engine closed" }
         }
     }
