@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
@@ -20,6 +22,7 @@ import platform.darwin.kevent
 import platform.darwin.kqueue
 import platform.posix.EAGAIN
 import platform.posix.FD_CLOEXEC
+import platform.posix.F_GETFD
 import platform.posix.F_GETFL
 import platform.posix.F_SETFD
 import platform.posix.F_SETFL
@@ -33,7 +36,9 @@ import platform.posix.write
 
 /**
  * Production implementation of [KqueueSyscallOps] that delegates directly
- * to the BSD `kqueue(2)` family syscalls. Stateless singleton.
+ * to the BSD `kqueue(2)` family syscalls. Stateless — one instance per
+ * [KqueueEventLoop], which supplies the [logger] the descriptor-releasing
+ * paths below report through.
  *
  * Per the [KqueueSyscallOps] contract, methods translate the raw
  * `return -1 + errno` syscall convention into the Kotlin-side encoding
@@ -43,18 +48,23 @@ import platform.posix.write
  * cannot set the real thread-local errno.
  */
 @OptIn(ExperimentalForeignApi::class)
-internal object PosixKqueueSyscallOps : KqueueSyscallOps {
+internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscallOps {
 
     override fun kqueueCreate(): Int {
         val fd = kqueue()
         if (fd < 0) return -errno
         // Set FD_CLOEXEC so the kqueue fd does not leak into any child this
         // process may later fork via `posix_spawn` / `Runtime.exec`-style call.
-        // macOS has no atomic kqueue1() / kqueue(O_CLOEXEC) variant, so we
-        // post-fcntl. `setCloexec` fail-fasts on fcntl errors — on a fd
-        // kqueue() just returned, F_GETFD / F_SETFD can only fail with
-        // EBADF, which would indicate a corrupt kernel state.
-        setCloexec(fd)
+        // macOS has no atomic kqueue1() / kqueue(O_CLOEXEC) variant, so the
+        // flag goes on afterwards -- and until it does, this descriptor has no
+        // owner but this function. Reporting the failure without releasing it
+        // would leak it past every caller: the contract here is a number, and a
+        // number the caller never receives is one nobody can close.
+        val cloexecErr = applyCloexec(fd)
+        if (cloexecErr != 0) {
+            closeFdSafely(fd, logger, "kqueueCreate cleanup")
+            return -cloexecErr
+        }
         return fd
     }
 
@@ -62,10 +72,19 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
         val rc = pipe(fds.refTo(0))
         if (rc != 0) return errno
         // Same FD_CLOEXEC rationale as kqueueCreate(). macOS lacks pipe2() so
-        // we post-fcntl both ends. The wakeup pipe is purely in-process; any
+        // both ends are post-fcntl'd. The wakeup pipe is purely in-process; any
         // child inheriting it would be a leak with no legitimate use case.
-        setCloexec(fds[0])
-        setCloexec(fds[1])
+        //
+        // Both ends are released whichever of them failed, because the caller
+        // is told only "pipe setup failed": it reads `fds` as untouched, and
+        // its own cleanup branch closes the kqueue fd rather than these.
+        val readErr = applyCloexec(fds[0])
+        val writeErr = if (readErr == 0) applyCloexec(fds[1]) else 0
+        if (readErr != 0 || writeErr != 0) {
+            closeFdSafely(fds[0], logger, "makePipe cleanup")
+            closeFdSafely(fds[1], logger, "makePipe cleanup")
+            return if (readErr != 0) readErr else writeErr
+        }
         return 0
     }
 
@@ -74,16 +93,21 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
      * the fd does not leak into any subprocess the host application later
      * `fork+exec`s — the symmetric counterpart of the bug fixed in #510,
      * where keel was the *recipient* of an inherited fd from a bash compound
-     * command. Fail-fast (`check()`) matches [setNonBlocking]: on a
-     * just-opened fd, `fcntl(F_GETFD)` / `fcntl(F_SETFD)` can only fail
-     * with `EBADF`, which would mean the fd we just opened is invalid —
-     * a pathological kernel state, not a recoverable runtime condition.
+     * command.
+     *
+     * Reports rather than throws, so the caller can release the descriptor and
+     * answer in the encoding its own contract promises. Both callers here own
+     * an fd nobody else can name yet, and a throw would leave them no way to
+     * say so.
+     *
+     * @return `0` on success; positive errno from whichever `fcntl` failed.
      */
-    private fun setCloexec(fd: Int) {
-        val flags = fcntl(fd, platform.posix.F_GETFD, 0)
-        check(flags >= 0) { "fcntl(F_GETFD, fd=$fd) failed: ${errnoMessage(errno)}" }
+    private fun applyCloexec(fd: Int): Int {
+        val flags = fcntl(fd, F_GETFD, 0)
+        if (flags < 0) return errno
         val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
-        check(rc == 0) { "fcntl(F_SETFD, FD_CLOEXEC, fd=$fd) failed: ${errnoMessage(errno)}" }
+        if (rc != 0) return errno
+        return 0
     }
 
     override fun setNonBlocking(fd: Int) {
@@ -190,6 +214,8 @@ internal object PosixKqueueSyscallOps : KqueueSyscallOps {
         }
     }
 
-    private const val MILLIS_PER_SEC = 1_000L
-    private const val NANOS_PER_MILLI = 1_000_000L
+    private companion object {
+        const val MILLIS_PER_SEC = 1_000L
+        const val NANOS_PER_MILLI = 1_000_000L
+    }
 }

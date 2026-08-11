@@ -113,9 +113,9 @@ internal interface KqueueSyscallOps {
      * a concurrent [waitEvents] call.
      *
      * @param scratch caller-owned single-byte buffer, pinned and passed
-     *   to `write(2)` without copying. Taking a caller buffer avoids a
-     *   thread-safety hazard in the singleton production impl when
-     *   multiple EventLoops coexist.
+     *   to `write(2)` without copying. Taking a caller buffer is what keeps
+     *   the production impl free of state that the EventLoops coexisting in
+     *   a group would otherwise share.
      * @return `0` on success; positive errno on failure.
      *   `EAGAIN` means the pipe buffer is full, which is benign — a
      *   wakeup is already pending in the kernel.
