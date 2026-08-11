@@ -219,8 +219,9 @@ internal class EpollEventLoop(
     // unreachable for the rest of the process, and the scratch and
     // descriptors would be held until it exits.
     //
-    // The property initialisers above are outside this: an allocation there
-    // failing leaves the ones before it with no unwind at all. That is left as
+    // The property initialisers are outside this -- the ones above and the two
+    // below it -- and an allocation failing in any of them leaves the ones
+    // before it with no unwind at all. That is left as
     // it is because a `nativeHeap` allocation of a few dozen bytes failing is
     // not a condition this process continues past.
     //
@@ -717,12 +718,13 @@ internal class EpollEventLoop(
      * The two obligations below are attempted independently — the second runs
      * whatever the first did — and a failure is suppressed onto [cause] rather
      * than thrown: the caller is owed the failure that ended the construction,
-     * not one from the cleanup after it. `close()` on the allocator is the most
-     * likely to throw, since [BufferAllocator] is a public interface
-     * implementable outside this project — but not the only one: the fd closes
-     * above report through a caller-supplied [io.github.fukusaka.keel.logging.Logger],
-     * and a throw from there escapes this function's reach the same way it does
-     * on every other guard in these engines.
+     * not one from the cleanup after it. `close()` on the allocator is the only
+     * one here that can realistically throw, since [BufferAllocator] is a public
+     * interface implementable outside this project and nothing wraps it. The
+     * releases the constructor makes above are reported through a logger the
+     * engine has already wrapped — every loop is handed one from a factory the
+     * engine guards — so a throwing [io.github.fukusaka.keel.logging.Logger]
+     * cannot reach them.
      *
      * The shape is the transport's, whose teardown runs each stage this way.
      * [releaseLoopResources] does not: it calls the same two straight, so a
