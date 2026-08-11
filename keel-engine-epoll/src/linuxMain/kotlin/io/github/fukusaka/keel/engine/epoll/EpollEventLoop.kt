@@ -256,14 +256,7 @@ internal class EpollEventLoop(
                 throw wakeupFailure
             }
         } catch (constructionFailure: Throwable) {
-            releaseConstructionScratch()
-            // The child the group carved for this loop is the loop's to close --
-            // [releaseLoopResources] ends by doing it. Closing it here is not
-            // covered by the parent's cascade in the case that matters: an engine
-            // whose construction failed is discarded, so nothing closes the
-            // parent either. Idempotent, so the cascade closing it later is a
-            // no-op if something does.
-            allocator.close()
+            releaseOnConstructionFailure(constructionFailure)
             throw constructionFailure
         }
     }
@@ -730,6 +723,36 @@ internal class EpollEventLoop(
      * not need saying for the constructor: no reference to a loop whose
      * `init` threw ever leaves it.
      */
+    /**
+     * Gives back what the constructor took, without letting the giving back
+     * replace the reason it is happening.
+     *
+     * Each obligation is attempted whatever the one before it did, and a
+     * failure is suppressed onto [cause] rather than thrown — the same shape
+     * the teardown path uses, and for the same reason: the caller is owed the
+     * failure that ended the construction, not one from the cleanup after it.
+     * `close()` on the allocator is the one that can realistically throw, since
+     * [BufferAllocator] is a public interface.
+     *
+     * The allocator is the child the group carved for this loop, and the loop
+     * is what closes it — [releaseLoopResources] ends by doing so. The parent's
+     * cascade is not a substitute in this case: an engine whose construction
+     * failed is discarded, so nothing closes the parent either. `close()` is
+     * idempotent, so a cascade that does reach the child later is a no-op.
+     */
+    private fun releaseOnConstructionFailure(cause: Throwable) {
+        try {
+            releaseConstructionScratch()
+        } catch (scratchFailure: Throwable) {
+            cause.addSuppressed(scratchFailure)
+        }
+        try {
+            allocator.close()
+        } catch (allocatorFailure: Throwable) {
+            cause.addSuppressed(allocatorFailure)
+        }
+    }
+
     private fun releaseConstructionScratch() {
         arena.clear()
         nativeHeap.free(writevBases)
