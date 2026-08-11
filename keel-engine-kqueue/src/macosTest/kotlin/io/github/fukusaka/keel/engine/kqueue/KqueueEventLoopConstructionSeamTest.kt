@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.AF_INET
@@ -28,9 +29,10 @@ import kotlin.test.assertTrue
  *
  * Four cases over three stages -- the wakeup fds are made non-blocking one at
  * a time, and each end gets its own -- asking the same question of every
- * descriptor the constructor had taken by then. The stage that creates the
- * kqueue fd is not here: it fails before there is anything to give back, and
- * the sibling seam suite already drives it. Real descriptors are
+ * descriptor the constructor had taken by then, and a fifth for the allocator
+ * child, which is neither a descriptor nor native memory. The stage that
+ * creates the kqueue fd is not here: it fails before there is anything to give
+ * back, and the sibling seam suite already drives it. Real descriptors are
  * used rather than fabricated numbers: the point is whether `close(2)`
  * reached them, which a made-up number cannot answer — and closing one would
  * shut whatever this process happens to have open there.
@@ -138,11 +140,39 @@ class KqueueEventLoopConstructionSeamTest {
         }
     }
 
+    @Test
+    fun `the loop closes the allocator child it was handed when construction fails`() {
+        // The fourth thing the constructor takes, and the only one not made of
+        // descriptors or native memory. The loop is what closes it -- the
+        // teardown path ends by doing so -- and the parent's cascade does not
+        // stand in for that here, because an engine whose construction failed
+        // is discarded and nobody closes the parent either.
+        withRealFds(1) { (kqFd) ->
+            val tracker = TrackingAllocator()
+            val child = tracker.createChild()
+            val fake = FakeKqueueSyscallOps().apply {
+                scriptKqueueCreateFd(kqFd)
+                scriptMakePipeFailure(EMFILE)
+            }
+
+            assertFailsWith<IllegalStateException> {
+                KqueueEventLoop(logger, allocator = child, syscallOps = fake)
+            }
+
+            assertEquals(
+                1,
+                tracker.totalCloseCount(),
+                "the loop kept the allocator child it was handed; nothing can close it once init has thrown",
+            )
+        }
+    }
+
     /**
      * Opens [count] real descriptors, runs [block] with them, and closes any
-     * the constructor left behind so a failing assertion does not also leak
-     * out of this suite. A second `close(2)` on one already released is the
-     * `EBADF` this ignores.
+     * the constructor left behind so a failing assertion does not also leak out
+     * of this suite. Only those still open: closing a number the constructor
+     * already released would close whatever the kernel has since handed out
+     * under it — the hazard these cases exist to detect.
      */
     private fun withRealFds(count: Int, block: (List<Int>) -> Unit) {
         val fds = List(count) {
@@ -153,7 +183,7 @@ class KqueueEventLoopConstructionSeamTest {
         try {
             block(fds)
         } finally {
-            fds.forEach { close(it) }
+            fds.forEach { if (fcntl(it, F_GETFD) != -1) close(it) }
         }
     }
 

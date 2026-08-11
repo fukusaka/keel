@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.AF_INET
@@ -22,8 +23,10 @@ import kotlin.test.assertFailsWith
  * no reference, so `close` is unreachable for the rest of the process: every
  * descriptor still open at that point is open until it exits.
  *
- * Both stages here released their descriptors before the loop's construction
- * was staged, and both still do — what nothing asserted was the releasing.
+ * Both descriptor stages here released what they held before the loop's
+ * construction was staged, and both still do — what nothing asserted was the
+ * releasing. A third case covers the allocator child, which the unwind did not
+ * give back at all until this branch.
  * The sibling seam suite drives the same two branches with fabricated numbers,
  * so it can read the message and the call counts but not whether `close(2)`
  * happened. Real descriptors answer that; a made-up number cannot, and closing
@@ -73,11 +76,39 @@ class EpollEventLoopConstructionSeamTest {
         }
     }
 
+    @Test
+    fun `the loop closes the allocator child it was handed when construction fails`() {
+        // The fourth thing the constructor takes, and the only one not made of
+        // descriptors or native memory. The loop is what closes it -- the
+        // teardown path ends by doing so -- and the parent's cascade does not
+        // stand in for that here, because an engine whose construction failed
+        // is discarded and nobody closes the parent either.
+        withRealFds(1) { (epFd) ->
+            val tracker = TrackingAllocator()
+            val child = tracker.createChild()
+            val fake = FakeEpollSyscallOps().apply {
+                scriptEpollCreateFd(epFd)
+                scriptEventfdCreateFailure(EMFILE)
+            }
+
+            assertFailsWith<IllegalStateException> {
+                EpollEventLoop(logger, allocator = child, syscallOps = fake)
+            }
+
+            assertEquals(
+                1,
+                tracker.totalCloseCount(),
+                "the loop kept the allocator child it was handed; nothing can close it once init has thrown",
+            )
+        }
+    }
+
     /**
      * Opens [count] real descriptors, runs [block] with them, and closes any
-     * the constructor left behind so a failing assertion does not also leak
-     * out of this suite. A second `close(2)` on one already released is the
-     * `EBADF` this ignores.
+     * the constructor left behind so a failing assertion does not also leak out
+     * of this suite. Only those still open: closing a number the constructor
+     * already released would close whatever the kernel has since handed out
+     * under it — the hazard these cases exist to detect.
      */
     private fun withRealFds(count: Int, block: (List<Int>) -> Unit) {
         val fds = List(count) {
@@ -88,7 +119,7 @@ class EpollEventLoopConstructionSeamTest {
         try {
             block(fds)
         } finally {
-            fds.forEach { close(it) }
+            fds.forEach { if (fcntl(it, F_GETFD) != -1) close(it) }
         }
     }
 
