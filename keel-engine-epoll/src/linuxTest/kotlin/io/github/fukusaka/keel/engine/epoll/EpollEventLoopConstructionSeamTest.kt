@@ -16,6 +16,7 @@ import platform.posix.socket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * What an `EpollEventLoop` constructor that fails must not keep.
@@ -113,7 +114,7 @@ class EpollEventLoopConstructionSeamTest {
         // reason construction ended would be gone.
         withRealFds(1) { (epFd) ->
             val fake = FakeEpollSyscallOps().apply {
-                scriptKqueueCreateFd(epFd)
+                scriptEpollCreateFd(epFd)
                 scriptEventfdCreateFailure(EMFILE)
             }
 
