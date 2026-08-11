@@ -637,10 +637,21 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * invalidated. What this replaces is a discarded return value: the failure
      * was not impossible before, it was silent.
      *
-     * `@PublishedApi internal` because [withRegLock] is inline and reaches it.
+     * **Public, under the opt-in, so a test can reach the reporting entry point
+     * the syscall cannot.** A default `pthread_mutex_t` that is never destroyed
+     * will not return non-zero, so nothing in the tree can drive `withRegLock`
+     * into calling this. What a test *can* do is call it, and then check that
+     * the loop it belongs to stops — which is the half of the wiring that would
+     * otherwise be held by nothing. Opting in is the same declaration every
+     * other member of this surface asks for.
+     *
+     * It is not `inline` that forces the change: `@PublishedApi internal`
+     * already satisfies that, which is what [regMutex] still is. What `internal`
+     * does not do is cross a Gradle module boundary, and the tests are on the
+     * other side of one.
      */
-    @PublishedApi
-    internal fun reportRegLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
+    @InternalPosixEventLoopApi
+    fun reportRegLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
         regLockFailed.value = 1
         // A failed release leaves this thread holding the mutex; a failed
         // acquire does not. The teardown has to tell them apart: it can still
