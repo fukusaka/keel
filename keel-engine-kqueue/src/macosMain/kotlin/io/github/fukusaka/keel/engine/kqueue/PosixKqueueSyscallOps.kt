@@ -108,9 +108,9 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
      */
     private fun applyCloexec(fd: Int): Int {
         val flags = fcntl(fd, F_GETFD, 0)
-        if (flags < 0) return reportCloexecFailure("F_GETFD", fd)
+        if (flags < 0) return reportCloexecFailure("fcntl(F_GETFD, fd=$fd)")
         val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
-        if (rc != 0) return reportCloexecFailure("F_SETFD", fd)
+        if (rc != 0) return reportCloexecFailure("fcntl(F_SETFD, FD_CLOEXEC, fd=$fd)")
         return 0
     }
 
@@ -123,12 +123,17 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
      * `kqueue() failed`. Without this line the first occurrence would be
      * debugged against the wrong call.
      *
+     * [call] is rendered by the caller rather than assembled here, so that each
+     * of the two reads as the call that was made: the query carries no flag
+     * argument and the set does. [setNonBlocking] below distinguishes its own
+     * pair the same way.
+     *
      * POSIX requires `fcntl` to set errno when it fails. The fallback is here
      * so that a report cannot read back as success if it ever did not.
      */
-    private fun reportCloexecFailure(call: String, fd: Int): Int {
+    private fun reportCloexecFailure(call: String): Int {
         val err = errno.takeIf { it != 0 } ?: EIO
-        logger.warn { "fcntl($call, FD_CLOEXEC, fd=$fd) failed: ${errnoMessage(err)}" }
+        logger.warn { "$call failed: ${errnoMessage(err)}" }
         return err
     }
 
