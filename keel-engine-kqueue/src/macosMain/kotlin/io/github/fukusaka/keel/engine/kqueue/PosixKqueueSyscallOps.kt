@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -21,6 +22,7 @@ import platform.darwin.EV_DELETE
 import platform.darwin.kevent
 import platform.darwin.kqueue
 import platform.posix.EAGAIN
+import platform.posix.EIO
 import platform.posix.FD_CLOEXEC
 import platform.posix.F_GETFD
 import platform.posix.F_GETFL
@@ -75,9 +77,11 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
         // both ends are post-fcntl'd. The wakeup pipe is purely in-process; any
         // child inheriting it would be a leak with no legitimate use case.
         //
-        // Both ends are released whichever of them failed, because the caller
-        // is told only "pipe setup failed": it reads `fds` as untouched, and
-        // its own cleanup branch closes the kqueue fd rather than these.
+        // Both ends are released whichever of them failed. The caller is told
+        // only "pipe setup failed", so it cannot tell this apart from a
+        // `pipe(2)` that never wrote `fds` -- which is why releasing them is
+        // this function's job and not the caller's. Stated as a rule on the
+        // interface, since a second impl has to follow it.
         val readErr = applyCloexec(fds[0])
         val writeErr = if (readErr == 0) applyCloexec(fds[1]) else 0
         if (readErr != 0 || writeErr != 0) {
@@ -104,10 +108,28 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
      */
     private fun applyCloexec(fd: Int): Int {
         val flags = fcntl(fd, F_GETFD, 0)
-        if (flags < 0) return errno
+        if (flags < 0) return reportCloexecFailure("F_GETFD", fd)
         val rc = fcntl(fd, F_SETFD, flags or FD_CLOEXEC)
-        if (rc != 0) return errno
+        if (rc != 0) return reportCloexecFailure("F_SETFD", fd)
         return 0
+    }
+
+    /**
+     * Names the `fcntl` that failed, and answers with its errno.
+     *
+     * Both callers fold that errno into the one their own contract carries, and
+     * that contract names the syscall which *succeeded*: a `kqueue()` whose
+     * descriptor could not be flagged is reported to the loop as
+     * `kqueue() failed`. Without this line the first occurrence would be
+     * debugged against the wrong call.
+     *
+     * POSIX requires `fcntl` to set errno when it fails. The fallback is here
+     * so that a report cannot read back as success if it ever did not.
+     */
+    private fun reportCloexecFailure(call: String, fd: Int): Int {
+        val err = errno.takeIf { it != 0 } ?: EIO
+        logger.warn { "fcntl($call, FD_CLOEXEC, fd=$fd) failed: ${errnoMessage(err)}" }
+        return err
     }
 
     override fun setNonBlocking(fd: Int) {
