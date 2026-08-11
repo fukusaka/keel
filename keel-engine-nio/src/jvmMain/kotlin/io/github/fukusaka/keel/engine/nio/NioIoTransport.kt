@@ -400,13 +400,26 @@ internal class NioIoTransport(
      *
      * On send buffer full (write returns 0), re-enqueues the remainder
      * and registers OP_WRITE callback for async retry.
+     *
+     * The entry arrives already removed from the deque, and here the write
+     * really does throw: [SocketChannel.write] answers a reset or a broken pipe
+     * with an `IOException`, which is the ordinary end of a connection rather
+     * than a fault. Without the guard that buffer is not queued for the
+     * teardown to release and not held by any caller — [write] took ownership
+     * when it was enqueued — so every peer that resets mid-flush costs a pooled
+     * buffer for the life of the process.
      */
     private fun flushSingle(pw: PendingWrite): Boolean {
         val bb = pw.buf.unsafeBuffer
         bb.position(pw.offset)
         bb.limit(pw.offset + pw.length)
         while (bb.hasRemaining()) {
-            val n = socketChannel.write(bb)
+            val n = try {
+                socketChannel.write(bb)
+            } catch (writeFailure: Throwable) {
+                requeueUnsent(pw, bb.position() - pw.offset, writeFailure)
+                throw writeFailure
+            }
             if (n == 0) {
                 // Send buffer full — defer via OP_WRITE callback.
                 val written = bb.position() - pw.offset

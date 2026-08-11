@@ -361,6 +361,43 @@ abstract class AbstractIoTransport(
     }
 
     /**
+     * Puts back an entry that had already left the queue when the send meant to
+     * consume it threw, so something can still find the buffer.
+     *
+     * A single-buffer flush takes its entry off the deque *before* writing. If
+     * the write returns, every branch accounts for the entry. If it throws,
+     * nothing in the transport knows the buffer exists any more: it is not
+     * queued, so no teardown releases it, and no caller holds it, because
+     * [write] took ownership when it was enqueued. The buffer is pooled, so
+     * what is lost is not reclaimed by anything later.
+     *
+     * [sent] is how many of the entry's bytes reached the socket before the
+     * throw, and is why this is not a matter of re-queueing the entry whole:
+     * anything that flushed the original offsets again would send those bytes a
+     * second time. The remainder goes back at the head, keeping wire order.
+     *
+     * **The caller still rethrows.** This does not decide the failure is
+     * recoverable — it decides only that the failure costs one connection
+     * rather than one connection and a pooled buffer. A secondary failure while
+     * putting the entry back is attached to [cause] rather than replacing it:
+     * the send's failure is the one the caller is owed.
+     *
+     * Only the flush paths that remove before sending need this. A gather write
+     * reads the entries in place and leaves them queued, so a throw there is
+     * already covered by the teardown.
+     */
+    protected fun requeueUnsent(pw: PendingWrite, sent: Int, cause: Throwable) {
+        try {
+            pendingWrites.addFirst(
+                if (sent == 0) pw else PendingWrite(pw.buf, pw.offset + sent, pw.length - sent),
+            )
+            updatePendingBytes(-sent)
+        } catch (requeueFailure: Throwable) {
+            cause.addSuppressed(requeueFailure)
+        }
+    }
+
+    /**
      * Buffers [buf] for the next [flush] call under ownership-transfer
      * semantics: the transport takes over the caller's reference and
      * releases it after the buffer has been flushed (or the transport is

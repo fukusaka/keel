@@ -897,13 +897,26 @@ internal class EpollIoTransport(
      *
      * On EAGAIN, re-enqueues the remainder and registers EPOLLOUT
      * callback for async retry.
+     *
+     * The entry arrives already removed from the deque, so a [NativeSocket]
+     * that throws would strand its buffer where no teardown can reach it.
+     * [NativeSocket] is a public SPI -- the engine takes one as a constructor
+     * argument -- and the production implementation answers with [WriteResult]
+     * rather than throwing, which is why the guard is here and not a branch
+     * anything in this tree drives.
      */
     private fun flushSingle(pw: PendingWrite): Boolean {
         var written = 0
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
-            when (val result = nativeSocket.write(fd, ptr, pw.length - written)) {
-                is WriteResult.Written -> written += result.bytes
+            val writeResult = try {
+                nativeSocket.write(fd, ptr, pw.length - written)
+            } catch (writeFailure: Throwable) {
+                requeueUnsent(pw, written, writeFailure)
+                throw writeFailure
+            }
+            when (writeResult) {
+                is WriteResult.Written -> written += writeResult.bytes
                 WriteResult.WouldBlock -> {
                     if (written > 0) partialWriteCount++
                     val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
@@ -913,7 +926,7 @@ internal class EpollIoTransport(
                     return false
                 }
                 is WriteResult.Failed -> {
-                    eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(result.errno)}" }
+                    eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(writeResult.errno)}" }
                     pw.buf.release()
                     updatePendingBytes(-pw.length)
                     return true
