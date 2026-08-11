@@ -1360,10 +1360,11 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * descriptor it would have released; an accepted connection the accept
      * path handed on.
      *
-     * **Who closes such a loop**: the subclass sends `close()` here when it
-     * claims termination and finds no thread was created, so the callers are
-     * whoever reaches `close()` on an unstarted loop rather than a set of
-     * special cases. Tests that build one and never start it, and, in
+     * **Who closes such a loop**: the subclass sends `close()` here when it wins
+     * the CAS that takes the loop down and reads its thread flag as never set —
+     * not on the termination claim, which this function takes itself at the top
+     * and may not get. So the callers are whoever reaches `close()` on an
+     * unstarted loop rather than a set of special cases. Tests that build one and never start it, and, in
      * production, each unwind of a partly-built engine: an EventLoop group
      * rolling back its own constructor, a group rolling back a `start()` that
      * failed part way, and an engine closing a group or a boss loop it had
