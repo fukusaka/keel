@@ -133,7 +133,7 @@ internal class KqueueEventLoop(
      * `false`, each `flush()` sends immediately (pre-#899 behaviour).
      */
     val flushCoalescing: Boolean = true,
-    private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps,
+    private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps(logger),
 ) : AbstractPosixReadinessEventLoop(), KqueueSuspendRegister {
 
     /**
@@ -210,26 +210,45 @@ internal class KqueueEventLoop(
 
     private val threadPtr = arena.alloc<pthread_tVar>()
 
+    // Each stage releases what it took, and only that: a failure unwinds
+    // through the stages behind it, each closing its own. Nothing else can --
+    // a constructor that throws hands out no reference, so [close] is
+    // unreachable for the rest of the process, and the scratch and
+    // descriptors below would be held until it exits.
+    //
+    // Two of the stages fail by throwing rather than by returning an errno:
+    // `setNonBlocking` says so in its contract, and the ops it calls sit
+    // behind an interface. Reading only the errnos would leave those two the
+    // way they were before -- taking three descriptors and releasing none.
     init {
-        val fd = syscallOps.kqueueCreate()
-        if (fd < 0) error("kqueue() failed: ${errnoMessage(-fd)}")
-        kqFd = fd
+        try {
+            val fd = syscallOps.kqueueCreate()
+            if (fd < 0) error("kqueue() failed: ${errnoMessage(-fd)}")
+            kqFd = fd
 
-        // Create wakeup pipe and register the read end with kqueue
-        val pipeErr = syscallOps.makePipe(wakeupFds)
-        if (pipeErr != 0) {
-            closeFdSafely(kqFd, logger, "kqueue init (pipe failure)")
-            error("pipe() failed: ${errnoMessage(pipeErr)}")
-        }
-        syscallOps.setNonBlocking(wakeupFds[0])
-        syscallOps.setNonBlocking(wakeupFds[1])
+            try {
+                // Create wakeup pipe and register the read end with kqueue
+                val pipeErr = syscallOps.makePipe(wakeupFds)
+                if (pipeErr != 0) error("pipe() failed: ${errnoMessage(pipeErr)}")
 
-        val kevErr = syscallOps.addReadFilter(kqFd, wakeupFds[0])
-        if (kevErr != 0) {
-            closeFdSafely(wakeupFds[0], logger, "kqueue init (kevent failure)")
-            closeFdSafely(wakeupFds[1], logger, "kqueue init (kevent failure)")
-            closeFdSafely(kqFd, logger, "kqueue init (kevent failure)")
-            error("kevent(EV_ADD, wakeupFd) failed: ${errnoMessage(kevErr)}")
+                try {
+                    syscallOps.setNonBlocking(wakeupFds[0])
+                    syscallOps.setNonBlocking(wakeupFds[1])
+
+                    val kevErr = syscallOps.addReadFilter(kqFd, wakeupFds[0])
+                    if (kevErr != 0) error("kevent(EV_ADD, wakeupFd) failed: ${errnoMessage(kevErr)}")
+                } catch (wakeupSetupFailure: Throwable) {
+                    closeFdSafely(wakeupFds[0], logger, "kqueue init (wakeup setup failure)")
+                    closeFdSafely(wakeupFds[1], logger, "kqueue init (wakeup setup failure)")
+                    throw wakeupSetupFailure
+                }
+            } catch (wakeupFailure: Throwable) {
+                closeFdSafely(kqFd, logger, "kqueue init (wakeup failure)")
+                throw wakeupFailure
+            }
+        } catch (constructionFailure: Throwable) {
+            releaseConstructionScratch()
+            throw constructionFailure
         }
     }
 
@@ -623,7 +642,13 @@ internal class KqueueEventLoop(
         // a cancellation arriving after this point takes it, and those
         // arrive without bound (see AbstractPosixReadinessEventLoop's
         // regMutex). The task queue is lock-free, so it has none either.
-        arena.clear()
+        //
+        // The arena and the writev scratch go together, and what makes that
+        // safe on every route here is quiescence, not a join: the thread may
+        // be joined, may never have existed, or may be another caller's that
+        // ran the sequence and is not joined at all. In each, the sequence has
+        // finished, so no transport flush can be in it.
+        releaseConstructionScratch()
         // Close the per-EL allocator child. By construction the
         // EventLoopGroup hands each EL the result of
         // `BufferAllocator.createChild()`, so closing here drains
@@ -637,14 +662,26 @@ internal class KqueueEventLoop(
         // return queue's close-sentinel contract. Default no-op for
         // `DefaultAllocator` (tests that instantiate this loop with the
         // stateless allocator).
-        // Free the shared writev scratch arrays. What makes that safe on every
-        // route here is quiescence, not a join: the thread may be joined, may
-        // never have existed, or may be another caller's that ran the sequence
-        // and is not joined at all. In each, the sequence has finished, so no
-        // transport flush can be in it.
+        allocator.close()
+    }
+
+    /**
+     * Frees the native memory this loop takes before it owns any descriptor:
+     * the arena behind [threadPtr] and the shared writev scratch.
+     *
+     * Called from both ends of the loop's life — [releaseLoopResources] for
+     * one that ran, and the constructor's own unwind for one that never came
+     * to exist. Kept as a single function so a fourth allocation cannot be
+     * released along one of those and forgotten along the other.
+     *
+     * The caller establishes that nothing can still be using them. It does
+     * not need saying for the constructor: no reference to a loop whose
+     * `init` threw ever leaves it.
+     */
+    private fun releaseConstructionScratch() {
+        arena.clear()
         nativeHeap.free(writevBases)
         nativeHeap.free(writevLens)
-        allocator.close()
     }
 
     // --- KqueueSuspendRegister impl (seam for connect InProgress) ---
