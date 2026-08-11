@@ -1,13 +1,16 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -97,6 +100,68 @@ internal class KqueueTransportFlushSeamTest : KqueueTransportSeamFixture() {
         assertEquals(1, fake.writeCalls)
         assertTrue(transport.flush())
         assertEquals(1, fake.writeCalls)
+        fake.assertAllConsumed()
+    }
+
+    @Test
+    fun `flushSingle whose write throws leaves the buffer where the teardown looks`() {
+        // `performFlush` takes the entry off the deque before calling the
+        // socket, so a write that throws is the one path where the buffer is
+        // in nobody's hands: not queued for the teardown, and not the
+        // caller's, since `write` took ownership when it was enqueued.
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply { flushThrowsOnce = InjectedFault("write refused") }
+        val transport = KqueueIoTransport(fd, eventLoop, tracker, fake)
+
+        val buf = tracker.allocate(16)
+        buf.writerIndex = 5
+        transport.write(buf)
+
+        assertFailsWith<InjectedFault> { transport.flush() }
+
+        assertEquals(1, fake.writeCalls, "the write must have been attempted for this test to mean anything")
+        assertEquals(1, tracker.outstandingCount, "the entry is still owed a release, not released early")
+
+        // Stop the loop so the transport's teardown runs on this thread: these
+        // seam tests never start one, and a teardown offered to a queue nothing
+        // drains would answer neither way.
+        eventLoop.close()
+        assertStrandedWritesReleased(transport, tracker)
+    }
+
+    @Test
+    fun `flushSingle whose write throws part way keeps only what is unsent`() {
+        // The throw lands after 3 of the 5 bytes are gone. Re-queueing the
+        // entry whole would put those 3 back on the wire on the next flush, so
+        // what goes back is the remainder -- and the single scripted write
+        // below is what says so: 2 bytes finish it, and a whole entry would
+        // need another call.
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(fd, WriteResult.Written(3))
+            flushThrowsOnce = InjectedFault("write refused after a partial send")
+            flushThrowsAfterCalls = 1
+        }
+        val transport = KqueueIoTransport(fd, eventLoop, tracker, fake)
+
+        val buf = tracker.allocate(16)
+        buf.writerIndex = 5
+        transport.write(buf)
+
+        assertFailsWith<InjectedFault> { transport.flush() }
+        assertEquals(2, fake.writeCalls, "the second write is the one that must have thrown")
+        assertEquals(1, tracker.outstandingCount, "the entry is still owed a release, not released early")
+
+        val callsBeforeRetry = fake.writeCalls
+        fake.enqueueWrite(fd, WriteResult.Written(2))
+        assertTrue(transport.flush(), "the retry flush completes")
+        assertEquals(
+            callsBeforeRetry + 1,
+            fake.writeCalls,
+            "the retry must send exactly the 2 unsent bytes: no extra call means nothing went back " +
+                "at all, two means the whole entry went back and the first 3 bytes were sent twice",
+        )
+        assertEquals(0, tracker.outstandingCount, "the completed write releases its buffer")
         fake.assertAllConsumed()
     }
 
