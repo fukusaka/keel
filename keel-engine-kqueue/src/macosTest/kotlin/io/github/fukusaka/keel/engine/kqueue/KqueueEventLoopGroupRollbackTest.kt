@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -92,6 +94,55 @@ class KqueueEventLoopGroupRollbackTest {
         }
     }
 
+    @Test
+    fun `every loop in a group is closed even when an earlier one refuses`() {
+        // A loop's `close()` can throw: its teardown re-raises what its stages
+        // failed with, and the allocator child it returns is caller code --
+        // `BufferAllocator` is a public interface and nothing wraps it. Walking
+        // out on the first would leave the rest of the group holding their
+        // descriptors, and `close()` is the last call anyone makes, so there is
+        // no second caller to try again.
+        withRealFds(LOOPS_IN_GROUP * FDS_PER_LOOP) { fds ->
+            val refusing = RefusingCloseAllocator()
+            val fake = FakeKqueueSyscallOps().apply {
+                repeat(LOOPS_IN_GROUP) { loop ->
+                    scriptKqueueCreateFd(fds[loop * FDS_PER_LOOP])
+                    scriptMakePipeFds(
+                        readFd = fds[loop * FDS_PER_LOOP + 1],
+                        writeFd = fds[loop * FDS_PER_LOOP + 2],
+                    )
+                }
+            }
+            val group = KqueueEventLoopGroup(
+                size = LOOPS_IN_GROUP,
+                logger = logger,
+                allocator = refusing,
+                syscallOps = fake,
+            )
+
+            val failure = assertFailsWith<IllegalStateException> { group.close() }
+
+            assertEquals(
+                CLOSE_FAULT,
+                failure.message,
+                "the caller is told the first failure, not the last",
+            )
+            assertEquals(
+                LOOPS_IN_GROUP - 1,
+                failure.suppressedExceptions.size,
+                "and the later ones are attached to it: ${failure.suppressedExceptions}",
+            )
+            fds.forEachIndexed { i, fd ->
+                assertEquals(
+                    -1,
+                    fcntl(fd, F_GETFD),
+                    "descriptor $i (fd=$fd) was left open by a loop the group reached " +
+                        "after one that refused",
+                )
+            }
+        }
+    }
+
     /**
      * Opens [count] real descriptors, runs [block] with them, and closes them so
      * a failing assertion does not also leak out of this suite. A second
@@ -112,11 +163,26 @@ class KqueueEventLoopGroupRollbackTest {
         }
     }
 
+    /**
+     * An allocator whose children refuse to close, standing in for the caller
+     * code a loop's teardown ends by calling.
+     */
+    private class RefusingCloseAllocator : BufferAllocator by DefaultAllocator {
+        override fun createChild(): BufferAllocator = this
+
+        override fun close(): Unit = throw IllegalStateException(CLOSE_FAULT)
+    }
+
     private companion object {
         /** Loops the fake lets through before refusing the next one. */
         const val LOOPS_BUILT = 3
 
         /** A kqueue fd and the two ends of a wakeup pipe. */
         const val FDS_PER_LOOP = 3
+
+        /** Loops in the group whose close is exercised. */
+        const val LOOPS_IN_GROUP = 3
+
+        const val CLOSE_FAULT = "allocator child close refused"
     }
 }
