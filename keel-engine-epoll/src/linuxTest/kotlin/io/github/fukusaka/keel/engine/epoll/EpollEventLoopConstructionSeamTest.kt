@@ -1,5 +1,7 @@
 package io.github.fukusaka.keel.engine.epoll
 
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -103,12 +105,47 @@ class EpollEventLoopConstructionSeamTest {
         }
     }
 
+    @Test
+    fun `a construction failure survives an allocator whose close throws`() {
+        // The release is itself a throw source: `BufferAllocator` is a public
+        // interface, so `close()` is caller code. Reported after it, a failure
+        // whose cleanup threw would reach the caller as the cleanup's, and the
+        // reason construction ended would be gone.
+        withRealFds(1) { (epFd) ->
+            val fake = FakeEpollSyscallOps().apply {
+                scriptKqueueCreateFd(epFd)
+                scriptEventfdCreateFailure(EMFILE)
+            }
+
+            val failure = assertFailsWith<IllegalStateException> {
+                EpollEventLoop(logger, allocator = ThrowingCloseAllocator, syscallOps = fake)
+            }
+
+            assertTrue(
+                failure.message!!.contains("eventfd()"),
+                "the caller must be told what ended the construction, got: ${failure.message}",
+            )
+            assertTrue(
+                failure.suppressedExceptions.any { it.message == CLOSE_FAULT },
+                "and the cleanup's failure must be attached to it rather than dropped: " +
+                    "${failure.suppressedExceptions}",
+            )
+        }
+    }
+
     /**
-     * Opens [count] real descriptors, runs [block] with them, and closes any
-     * the constructor left behind so a failing assertion does not also leak out
-     * of this suite. Only those still open: closing a number the constructor
-     * already released would close whatever the kernel has since handed out
-     * under it — the hazard these cases exist to detect.
+     * Opens [count] real descriptors, runs [block] with them, and closes them
+     * so a failing assertion does not also leak out of this suite. A second
+     * `close(2)` on one the constructor already released is the `EBADF` this
+     * ignores.
+     *
+     * What makes that safe is not the `EBADF` but the suite: nothing opens a
+     * descriptor between the constructor throwing and this `finally`, so a
+     * released number has not been handed out again by the time it is closed.
+     * A guard on whether the number is open cannot substitute for that — it is
+     * true precisely when something else has taken the number, so it would
+     * close the new owner in the one case that matters and skip only the
+     * harmless `EBADF`.
      */
     private fun withRealFds(count: Int, block: (List<Int>) -> Unit) {
         val fds = List(count) {
@@ -119,7 +156,7 @@ class EpollEventLoopConstructionSeamTest {
         try {
             block(fds)
         } finally {
-            fds.forEach { if (fcntl(it, F_GETFD) != -1) close(it) }
+            fds.forEach { close(it) }
         }
     }
 
@@ -129,5 +166,14 @@ class EpollEventLoopConstructionSeamTest {
             fcntl(fd, F_GETFD),
             "the constructor kept the $what (fd=$fd); nothing can close it once init has thrown",
         )
+    }
+
+    /** An allocator whose `close()` refuses, standing in for caller code that throws. */
+    private object ThrowingCloseAllocator : BufferAllocator by DefaultAllocator {
+        override fun close(): Unit = throw IllegalStateException(CLOSE_FAULT)
+    }
+
+    private companion object {
+        const val CLOSE_FAULT = "allocator close refused"
     }
 }
