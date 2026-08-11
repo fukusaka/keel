@@ -206,7 +206,8 @@ internal class KqueueEventLoop(
      * after the loop's terminal sequence has run — by the joined thread, or by
      * the closing one when there was none — or from the constructor's own
      * unwind when the loop never came to exist. Not cleared at all when that
-     * sequence is still running elsewhere and [close] refuses to release.
+     * sequence is still running and [close] refuses to release — which includes
+     * this very thread, re-entered.
      */
     private val arena = Arena()
 
@@ -223,10 +224,10 @@ internal class KqueueEventLoop(
     // it is because a `nativeHeap` allocation of a few dozen bytes failing is
     // not a condition this process continues past.
     //
-    // Two of the stages fail by throwing rather than by returning an errno:
-    // `setNonBlocking` says so in its contract, and the ops it calls sit
-    // behind an interface. Reading only the errnos would leave those two the
-    // way they were before -- taking three descriptors and releasing none.
+    // One of the stages fails by throwing rather than by returning an errno --
+    // the wakeup fds are made non-blocking by an op whose contract is to
+    // throw, once per end. Reading only the errnos would leave those two calls
+    // the way they were before: taking three descriptors and releasing none.
     init {
         try {
             val fd = syscallOps.kqueueCreate()
@@ -255,6 +256,13 @@ internal class KqueueEventLoop(
             }
         } catch (constructionFailure: Throwable) {
             releaseConstructionScratch()
+            // The child the group carved for this loop is the loop's to close --
+            // [releaseLoopResources] ends by doing it. Closing it here is not
+            // covered by the parent's cascade in the case that matters: an engine
+            // whose construction failed is discarded, so nothing closes the
+            // parent either. Idempotent, so the cascade closing it later is a
+            // no-op if something does.
+            allocator.close()
             throw constructionFailure
         }
     }

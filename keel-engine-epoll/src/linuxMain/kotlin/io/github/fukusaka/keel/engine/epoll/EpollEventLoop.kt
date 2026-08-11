@@ -206,7 +206,8 @@ internal class EpollEventLoop(
      * after the loop's terminal sequence has run — by the joined thread, or by
      * the closing one when there was none — or from the constructor's own
      * unwind when the loop never came to exist. Not cleared at all when that
-     * sequence is still running elsewhere and [close] refuses to release.
+     * sequence is still running and [close] refuses to release — which includes
+     * this very thread, re-entered.
      */
     private val arena = Arena()
 
@@ -223,11 +224,12 @@ internal class EpollEventLoop(
     // it is because a `nativeHeap` allocation of a few dozen bytes failing is
     // not a condition this process continues past.
     //
-    // The syscalls here report by errno rather than by throwing, so the
-    // catches read as belt-and-braces on this engine. They are the shape the
-    // kqueue loop needs -- there the wakeup fds are made non-blocking by an
-    // op whose contract is to throw -- and the two loops are close enough
-    // that having them differ here would be the more surprising reading.
+    // The catches are not decoration on this engine either: every syscall here
+    // reports by errno, but each report is raised as an `error(...)` inside the
+    // try, so the catches are where both descriptors go back -- the only place.
+    // What the kqueue loop has and this one does not is a stage that throws
+    // without being asked to: there the wakeup fds are made non-blocking by an
+    // op whose contract is to throw.
     init {
         try {
             val fd = syscallOps.epollCreate()
@@ -255,6 +257,13 @@ internal class EpollEventLoop(
             }
         } catch (constructionFailure: Throwable) {
             releaseConstructionScratch()
+            // The child the group carved for this loop is the loop's to close --
+            // [releaseLoopResources] ends by doing it. Closing it here is not
+            // covered by the parent's cascade in the case that matters: an engine
+            // whose construction failed is discarded, so nothing closes the
+            // parent either. Idempotent, so the cascade closing it later is a
+            // no-op if something does.
+            allocator.close()
             throw constructionFailure
         }
     }
