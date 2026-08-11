@@ -674,28 +674,16 @@ internal class KqueueEventLoop(
     }
 
     /**
-     * Frees the native memory this loop takes before it owns any descriptor:
-     * the arena behind [threadPtr] and the shared writev scratch.
-     *
-     * Called from both ends of the loop's life — [releaseLoopResources] for
-     * one that ran, and the constructor's own unwind for one that never came
-     * to exist. Kept as a single function so a fourth allocation cannot be
-     * released along one of those and forgotten along the other.
-     *
-     * The caller establishes that nothing can still be using them. It does
-     * not need saying for the constructor: no reference to a loop whose
-     * `init` threw ever leaves it.
-     */
-    /**
      * Gives back what the constructor took, without letting the giving back
      * replace the reason it is happening.
      *
-     * Each obligation is attempted whatever the one before it did, and a
-     * failure is suppressed onto [cause] rather than thrown — the same shape
-     * the teardown path uses, and for the same reason: the caller is owed the
-     * failure that ended the construction, not one from the cleanup after it.
-     * `close()` on the allocator is the one that can realistically throw, since
-     * [BufferAllocator] is a public interface.
+     * The two obligations below are attempted independently — the second runs
+     * whatever the first did — and a failure is suppressed onto [cause] rather
+     * than thrown, the same shape the teardown path uses and for the same
+     * reason: the caller is owed the failure that ended the construction, not
+     * one from the cleanup after it. `close()` on the allocator is the one
+     * that can realistically throw, since [BufferAllocator] is a public
+     * interface implementable outside this project.
      *
      * The allocator is the child the group carved for this loop, and the loop
      * is what closes it — [releaseLoopResources] ends by doing so. The parent's
@@ -716,6 +704,23 @@ internal class KqueueEventLoop(
         }
     }
 
+    /**
+     * Frees the native memory this loop takes before it owns any descriptor:
+     * the arena behind [threadPtr] and the shared writev scratch.
+     *
+     * Called from both ends of the loop's life — [releaseLoopResources] for
+     * one that ran, and [releaseOnConstructionFailure] for one that never came
+     * to exist. Kept as a single function so a fourth allocation cannot be
+     * released along one of those and forgotten along the other.
+     *
+     * The three releases are not staged against each other the way the two
+     * callers of this are: none of them can fail short of a corrupt heap, and
+     * a `nativeHeap` this process cannot free is not one it continues past.
+     *
+     * The caller establishes that nothing can still be using them. It does
+     * not need saying for the constructor: no reference to a loop whose
+     * `init` threw ever leaves it.
+     */
     private fun releaseConstructionScratch() {
         arena.clear()
         nativeHeap.free(writevBases)
