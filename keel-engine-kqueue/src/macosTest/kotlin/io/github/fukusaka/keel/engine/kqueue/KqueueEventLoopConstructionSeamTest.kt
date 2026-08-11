@@ -31,8 +31,9 @@ import kotlin.test.assertTrue
  *
  * Four cases over three stages -- the wakeup fds are made non-blocking one at
  * a time, and each end gets its own -- asking the same question of every
- * descriptor the constructor had taken by then, and a fifth for the allocator
- * child, which is neither a descriptor nor native memory. The stage that
+ * descriptor the constructor had taken by then; a fifth for the allocator
+ * child, which is neither a descriptor nor native memory; and a sixth for what
+ * happens when giving that back throws. The stage that
  * creates the kqueue fd is not here: it fails before there is anything to give
  * back, and the sibling seam suite already drives it. Real descriptors are
  * used rather than fabricated numbers: the point is whether `close(2)`

@@ -28,8 +28,11 @@ import kotlin.test.assertTrue
  *
  * Both descriptor stages here released what they held before the loop's
  * construction was staged, and both still do — what nothing asserted was the
- * releasing. A third case covers the allocator child, which the unwind did not
- * give back at all until this branch.
+ * releasing.
+ *
+ * Two further cases are about what the unwind gives back rather than what the
+ * stages do: the allocator child, which it did not give back at all until this
+ * branch, and what happens when giving that back throws.
  * The sibling seam suite drives the same two branches with fabricated numbers,
  * so it can read the message and the call counts but not whether `close(2)`
  * happened. Real descriptors answer that; a made-up number cannot, and closing

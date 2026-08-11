@@ -125,9 +125,9 @@ internal interface KqueueSyscallOps {
      *
      * @param scratch caller-owned single-byte buffer, pinned and passed
      *   to `write(2)` without copying. Owned by the caller so that an
-     *   implementation of this interface may be shared — as the convention
-     *   above says the production one is safe to be — without that sharing
-     *   reaching a buffer. The caller keeps one per loop rather than
+     *   implementation of this interface may be shared — as the thread-safety
+     *   note above says the production one is safe to be — without that
+     *   sharing reaching a buffer. The caller keeps one per loop rather than
      *   allocating per call, which `wakeup` makes worth doing: it is called
      *   from any thread, on every hand-off to a loop that is waiting.
      * @return `0` on success; positive errno on failure.
