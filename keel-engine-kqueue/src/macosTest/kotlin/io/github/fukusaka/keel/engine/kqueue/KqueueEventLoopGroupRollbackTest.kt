@@ -123,9 +123,9 @@ class KqueueEventLoopGroupRollbackTest {
             val failure = assertFailsWith<IllegalStateException> { group.close() }
 
             assertEquals(
-                CLOSE_FAULT,
+                "$CLOSE_FAULT 0",
                 failure.message,
-                "the caller is told the first failure, not the last",
+                "the caller is told the first loop's refusal, not a later one",
             )
             assertEquals(
                 LOOPS_IN_GROUP - 1,
@@ -166,11 +166,24 @@ class KqueueEventLoopGroupRollbackTest {
     /**
      * An allocator whose children refuse to close, standing in for the caller
      * code a loop's teardown ends by calling.
+     *
+     * Each child names itself, so the failure the group raises identifies
+     * *which* loop's refusal it is. With one shared message the assertion could
+     * not tell the first from the last, and the ordering would rest on the
+     * suppressed count alone.
      */
     private class RefusingCloseAllocator : BufferAllocator by DefaultAllocator {
-        override fun createChild(): BufferAllocator = this
+        private var childrenHandedOut = 0
 
-        override fun close(): Unit = throw IllegalStateException(CLOSE_FAULT)
+        override fun createChild(): BufferAllocator = RefusingChild(childrenHandedOut++)
+
+        /** The parent is the test's, not a loop's; only children are closed here. */
+        override fun close() = Unit
+    }
+
+    /** The [ordinal]-th child handed out, refusing under a name of its own. */
+    private class RefusingChild(private val ordinal: Int) : BufferAllocator by DefaultAllocator {
+        override fun close(): Unit = throw IllegalStateException("$CLOSE_FAULT $ordinal")
     }
 
     private companion object {
@@ -183,6 +196,7 @@ class KqueueEventLoopGroupRollbackTest {
         /** Loops in the group whose close is exercised. */
         const val LOOPS_IN_GROUP = 3
 
+        /** Prefix of each child's refusal; the ordinal that follows names the loop. */
         const val CLOSE_FAULT = "allocator child close refused"
     }
 }
