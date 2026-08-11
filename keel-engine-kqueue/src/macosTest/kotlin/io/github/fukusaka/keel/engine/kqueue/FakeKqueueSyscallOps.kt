@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.pthread_self
 import platform.posix.usleep
@@ -106,8 +107,30 @@ internal class FakeKqueueSyscallOps(
     var setNonBlockingCalls: Int = 0
         private set
 
+    private val setNonBlockingResults = ArrayDeque<Int>()
+
+    /**
+     * Makes the next [setNonBlocking] call throw, the way the production impl
+     * does when `fcntl` fails — its contract is to fail-fast rather than
+     * report, so this is the only outcome a caller can be asked to handle.
+     *
+     * FIFO like the other scripts: enqueue one success ([scriptSetNonBlockingSuccess])
+     * per call that should get through first.
+     */
+    fun scriptSetNonBlockingFailure(errno: Int) {
+        require(errno > 0) { "errno must be positive, got $errno" }
+        setNonBlockingResults.addLast(errno)
+    }
+
+    /** Enqueues one call that succeeds, to position a scripted failure after it. */
+    fun scriptSetNonBlockingSuccess() {
+        setNonBlockingResults.addLast(0)
+    }
+
     override fun setNonBlocking(fd: Int) {
         setNonBlockingCalls++
+        val err = if (setNonBlockingResults.isEmpty()) 0 else setNonBlockingResults.removeFirst()
+        if (err != 0) error("fcntl(F_SETFL, O_NONBLOCK, fd=$fd) failed: ${errnoMessage(err)}")
     }
 
     override fun makePipe(fds: IntArray): Int {

@@ -33,6 +33,10 @@ internal interface KqueueSyscallOps {
     /**
      * Creates a new kqueue fd.
      *
+     * An implementation that opens a descriptor and then fails to finish
+     * preparing it must release that descriptor before reporting: the number
+     * never reaches the caller, so nothing else can close it.
+     *
      * @return non-negative fd on success; negative `-errno` on failure.
      */
     fun kqueueCreate(): Int
@@ -41,6 +45,13 @@ internal interface KqueueSyscallOps {
      * Creates a pipe pair. On success, `fds[0]` is the read end and
      * `fds[1]` is the write end. Both ends should be set to non-blocking
      * by the caller before use.
+     *
+     * **On failure the caller owns nothing.** An implementation that has
+     * already opened the pair when it fails releases both ends itself, and
+     * `fds` is not to be read: a failure that wrote descriptors into it is
+     * indistinguishable from one that did not, so a caller closing what it
+     * finds there would be closing numbers the kernel may have handed out
+     * again.
      *
      * @return `0` on success; positive errno on failure.
      */
@@ -113,9 +124,12 @@ internal interface KqueueSyscallOps {
      * a concurrent [waitEvents] call.
      *
      * @param scratch caller-owned single-byte buffer, pinned and passed
-     *   to `write(2)` without copying. Taking a caller buffer avoids a
-     *   thread-safety hazard in the singleton production impl when
-     *   multiple EventLoops coexist.
+     *   to `write(2)` without copying. Owned by the caller so that an
+     *   implementation of this interface may be shared — as the thread-safety
+     *   note above says the production one is safe to be — without that
+     *   sharing reaching a buffer. The caller keeps one per loop rather than
+     *   allocating per call, which `wakeup` makes worth doing: it is called
+     *   from any thread, on every hand-off to a loop that is waiting.
      * @return `0` on success; positive errno on failure.
      *   `EAGAIN` means the pipe buffer is full, which is benign — a
      *   wakeup is already pending in the kernel.

@@ -22,6 +22,7 @@ import platform.linux.epoll_create1
 import platform.linux.epoll_ctl
 import platform.linux.epoll_event
 import platform.linux.epoll_wait
+import platform.posix.EIO
 import platform.posix.errno
 import posix_inet.keel_eventfd_create
 import posix_inet.keel_eventfd_read
@@ -46,12 +47,12 @@ internal object PosixEpollSyscallOps : EpollSyscallOps {
         // leak into any subprocess the host application later fork+exec's
         // (symmetric counterpart of the inherited-fd hang fixed in #510).
         val fd = epoll_create1(EPOLL_CLOEXEC)
-        return if (fd < 0) -errno else fd
+        return if (fd < 0) -failingErrno() else fd
     }
 
     override fun eventfdCreate(): Int {
         val fd = keel_eventfd_create()
-        return if (fd < 0) -errno else fd
+        return if (fd < 0) -failingErrno() else fd
     }
 
     override fun epollAdd(epFd: Int, fd: Int, events: Int): Int =
@@ -67,7 +68,7 @@ internal object PosixEpollSyscallOps : EpollSyscallOps {
         memScoped {
             val eventList = allocArray<epoll_event>(eventsOut.size)
             val n = epoll_wait(epFd, eventList, eventsOut.size, timeoutMs)
-            if (n < 0) return -errno
+            if (n < 0) return -failingErrno()
             for (i in 0 until n) {
                 val ev = eventList[i]
                 eventsOut[i].fd = ev.data.fd
@@ -79,13 +80,43 @@ internal object PosixEpollSyscallOps : EpollSyscallOps {
 
     override fun eventfdWakeupWrite(eventfd: Int): Int {
         val rc = keel_eventfd_write(eventfd)
-        return if (rc < 0) errno else 0
+        return if (rc < 0) failingErrno() else 0
     }
 
     override fun eventfdWakeupDrain(eventfd: Int): Int {
         val rc = keel_eventfd_read(eventfd)
-        return if (rc < 0) errno else 0
+        return if (rc < 0) failingErrno() else 0
     }
+
+    /**
+     * The errno of the call that just failed, never `0`.
+     *
+     * `0` is what every encoding in this file means by success — a zero return
+     * from an ok/errno method, a non-negative one from an fd method, where it
+     * would additionally name descriptor 0, and from [waitEvents] a wait that
+     * timed out with nothing to report. Every failing return in this class goes
+     * through here, so none of them can give that answer for a call that did
+     * not work.
+     *
+     * What it stands behind, on the path this matters most: `epollAdd` is how
+     * the loop registers its wakeup fd. An `epoll_ctl(ADD)` that failed without
+     * setting errno would answer `0`, the constructor would read success, and
+     * the loop would start with a wakeup fd nobody watches — every cross-thread
+     * hand-off to a loop parked in `epoll_wait` lost, with no error anywhere.
+     *
+     * Half the calls this stands behind document the errors they set errno for
+     * — `epoll_create1`, `epoll_wait`, `epoll_ctl` — so the fallback covers one
+     * of them violating its own contract rather than anything reachable. The
+     * other three are this project's own C wrappers, around `eventfd(2)` and
+     * around `read(2)` / `write(2)` on that fd: each returns the syscall's
+     * result and touches nothing after it, so it inherits that contract rather
+     * than stating one.
+     *
+     * Read it on the line after the call. Errno survives only until the next
+     * thing that touches it, and after a call that succeeded its value is
+     * unspecified.
+     */
+    private fun failingErrno(): Int = errno.takeIf { it != 0 } ?: EIO
 
     private fun ctl(epFd: Int, op: Int, fd: Int, events: Int): Int {
         memScoped {
@@ -93,7 +124,7 @@ internal object PosixEpollSyscallOps : EpollSyscallOps {
             ev.events = events.toUInt()
             ev.data.fd = fd
             val rc = epoll_ctl(epFd, op, fd, ev.ptr)
-            return if (rc < 0) errno else 0
+            return if (rc < 0) failingErrno() else 0
         }
     }
 }

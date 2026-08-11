@@ -133,7 +133,7 @@ internal class KqueueEventLoop(
      * `false`, each `flush()` sends immediately (pre-#899 behaviour).
      */
     val flushCoalescing: Boolean = true,
-    private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps,
+    private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps(logger),
 ) : AbstractPosixReadinessEventLoop(), KqueueSuspendRegister {
 
     /**
@@ -155,9 +155,10 @@ internal class KqueueEventLoop(
      * EventLoop rather than per connection so every flush on this thread
      * touches the same hot memory — mirroring the locality of the memScoped
      * arena this replaced — while performing no per-flush allocation.
-     * EL-confined like [eventBuffer]; freed once in [close] (safe: the loop's
-     * terminal sequence has finished by then, whoever ran it, so no flush can
-     * be in flight).
+     * EL-confined like [eventBuffer]; freed by [releaseConstructionScratch],
+     * from [close] once the loop's terminal sequence has finished (whoever ran
+     * it, so no flush can be in flight) or from the constructor's own unwind
+     * for a loop that never came to exist.
      */
     internal var writevBases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
         private set
@@ -201,35 +202,62 @@ internal class KqueueEventLoop(
     private val threadCreated = AtomicInt(0)
 
     /**
-     * Backs [threadPtr]. Cleared in [close], after the loop's terminal sequence
-     * has run — by the joined thread, or by the closing one when there was
-     * none. Not cleared at all when that sequence is still running elsewhere
-     * and [close] refuses to release.
+     * Backs [threadPtr]. Cleared by [releaseConstructionScratch], from [close]
+     * after the loop's terminal sequence has run — by the joined thread, or by
+     * the closing one when there was none — or from the constructor's own
+     * unwind when the loop never came to exist. Not cleared at all when that
+     * sequence is still running and [close] refuses to release — which includes
+     * this very thread, re-entered.
      */
     private val arena = Arena()
 
     private val threadPtr = arena.alloc<pthread_tVar>()
 
+    // Each stage below releases what it took, and only that: a failure unwinds
+    // through the stages behind it, each closing its own. Nothing else can --
+    // a constructor that throws hands out no reference, so [close] is
+    // unreachable for the rest of the process, and the scratch and
+    // descriptors would be held until it exits.
+    //
+    // The property initialisers are outside this -- the ones above and the two
+    // below it -- and an allocation failing in any of them leaves the ones
+    // before it with no unwind at all. That is left as
+    // it is because a `nativeHeap` allocation of a few dozen bytes failing is
+    // not a condition this process continues past.
+    //
+    // One of the stages fails by throwing rather than by returning an errno --
+    // the wakeup fds are made non-blocking by an op whose contract is to
+    // throw, once per end. Reading only the errnos would leave those two calls
+    // the way they were before: taking three descriptors and releasing none.
     init {
-        val fd = syscallOps.kqueueCreate()
-        if (fd < 0) error("kqueue() failed: ${errnoMessage(-fd)}")
-        kqFd = fd
+        try {
+            val fd = syscallOps.kqueueCreate()
+            if (fd < 0) error("kqueue() failed: ${errnoMessage(-fd)}")
+            kqFd = fd
 
-        // Create wakeup pipe and register the read end with kqueue
-        val pipeErr = syscallOps.makePipe(wakeupFds)
-        if (pipeErr != 0) {
-            closeFdSafely(kqFd, logger, "kqueue init (pipe failure)")
-            error("pipe() failed: ${errnoMessage(pipeErr)}")
-        }
-        syscallOps.setNonBlocking(wakeupFds[0])
-        syscallOps.setNonBlocking(wakeupFds[1])
+            try {
+                // Create wakeup pipe and register the read end with kqueue
+                val pipeErr = syscallOps.makePipe(wakeupFds)
+                if (pipeErr != 0) error("pipe() failed: ${errnoMessage(pipeErr)}")
 
-        val kevErr = syscallOps.addReadFilter(kqFd, wakeupFds[0])
-        if (kevErr != 0) {
-            closeFdSafely(wakeupFds[0], logger, "kqueue init (kevent failure)")
-            closeFdSafely(wakeupFds[1], logger, "kqueue init (kevent failure)")
-            closeFdSafely(kqFd, logger, "kqueue init (kevent failure)")
-            error("kevent(EV_ADD, wakeupFd) failed: ${errnoMessage(kevErr)}")
+                try {
+                    syscallOps.setNonBlocking(wakeupFds[0])
+                    syscallOps.setNonBlocking(wakeupFds[1])
+
+                    val kevErr = syscallOps.addReadFilter(kqFd, wakeupFds[0])
+                    if (kevErr != 0) error("kevent(EV_ADD, wakeupFd) failed: ${errnoMessage(kevErr)}")
+                } catch (wakeupSetupFailure: Throwable) {
+                    closeFdSafely(wakeupFds[0], logger, "kqueue init (wakeup setup failure)")
+                    closeFdSafely(wakeupFds[1], logger, "kqueue init (wakeup setup failure)")
+                    throw wakeupSetupFailure
+                }
+            } catch (wakeupFailure: Throwable) {
+                closeFdSafely(kqFd, logger, "kqueue init (wakeup failure)")
+                throw wakeupFailure
+            }
+        } catch (constructionFailure: Throwable) {
+            releaseOnConstructionFailure(constructionFailure)
+            throw constructionFailure
         }
     }
 
@@ -623,7 +651,13 @@ internal class KqueueEventLoop(
         // a cancellation arriving after this point takes it, and those
         // arrive without bound (see AbstractPosixReadinessEventLoop's
         // regMutex). The task queue is lock-free, so it has none either.
-        arena.clear()
+        //
+        // The arena and the writev scratch go together, and what makes that
+        // safe on every route here is quiescence, not a join: the thread may
+        // be joined, may never have existed, or may be another caller's that
+        // ran the sequence and is not joined at all. In each, the sequence has
+        // finished, so no transport flush can be in it.
+        releaseConstructionScratch()
         // Close the per-EL allocator child. By construction the
         // EventLoopGroup hands each EL the result of
         // `BufferAllocator.createChild()`, so closing here drains
@@ -637,14 +671,71 @@ internal class KqueueEventLoop(
         // return queue's close-sentinel contract. Default no-op for
         // `DefaultAllocator` (tests that instantiate this loop with the
         // stateless allocator).
-        // Free the shared writev scratch arrays. What makes that safe on every
-        // route here is quiescence, not a join: the thread may be joined, may
-        // never have existed, or may be another caller's that ran the sequence
-        // and is not joined at all. In each, the sequence has finished, so no
-        // transport flush can be in it.
+        allocator.close()
+    }
+
+    /**
+     * Gives back what the constructor took, without letting the giving back
+     * replace the reason it is happening.
+     *
+     * The two obligations below are attempted independently — the second runs
+     * whatever the first did — and a failure is suppressed onto [cause] rather
+     * than thrown: the caller is owed the failure that ended the construction,
+     * not one from the cleanup after it. `close()` on the allocator is the only
+     * one here that can realistically throw, since [BufferAllocator] is a public
+     * interface implementable outside this project and nothing wraps it. The
+     * releases the constructor makes above are reported through a logger the
+     * engine has already wrapped — every loop is handed one from a factory the
+     * engine guards — so a throwing [io.github.fukusaka.keel.logging.Logger]
+     * cannot reach them.
+     *
+     * The shape is the transport's, whose teardown runs each stage this way.
+     * [releaseLoopResources] does not: it calls the same two straight, so a
+     * throw from the first would skip the second. That is how it was before
+     * this, and changing what a teardown does with a failing release is a
+     * decision about the teardown rather than about construction.
+     *
+     * The allocator is the child the group carved for this loop, and the loop
+     * is what closes it — [releaseLoopResources] ends by doing so. The parent's
+     * cascade is not a substitute in this case: an engine whose construction
+     * failed is discarded, so nothing closes the parent either. `close()` is
+     * idempotent, so a cascade that does reach the child later is a no-op.
+     */
+    private fun releaseOnConstructionFailure(cause: Throwable) {
+        try {
+            releaseConstructionScratch()
+        } catch (scratchFailure: Throwable) {
+            cause.addSuppressed(scratchFailure)
+        }
+        try {
+            allocator.close()
+        } catch (allocatorFailure: Throwable) {
+            cause.addSuppressed(allocatorFailure)
+        }
+    }
+
+    /**
+     * Frees the native memory this loop takes before it owns any descriptor:
+     * the arena behind [threadPtr] and the shared writev scratch.
+     *
+     * Called from both ends of the loop's life — [releaseLoopResources] for
+     * one that ran, and [releaseOnConstructionFailure] for one that never came
+     * to exist. Kept as a single function so a fourth allocation cannot be
+     * released along one of those and forgotten along the other.
+     *
+     * The three releases are not staged against each other the way
+     * [releaseOnConstructionFailure] stages its two: none of them can fail
+     * short of a corrupt heap, and a `nativeHeap` this process cannot free is
+     * not one it continues past.
+     *
+     * The caller establishes that nothing can still be using them. It does
+     * not need saying for the constructor: no reference to a loop whose
+     * `init` threw ever leaves it.
+     */
+    private fun releaseConstructionScratch() {
+        arena.clear()
         nativeHeap.free(writevBases)
         nativeHeap.free(writevLens)
-        allocator.close()
     }
 
     // --- KqueueSuspendRegister impl (seam for connect InProgress) ---

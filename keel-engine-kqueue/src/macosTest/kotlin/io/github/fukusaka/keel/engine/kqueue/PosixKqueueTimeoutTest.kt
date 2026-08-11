@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.close
 import kotlin.test.Test
@@ -24,14 +25,16 @@ import kotlin.time.TimeSource
 @OptIn(ExperimentalForeignApi::class)
 class PosixKqueueTimeoutTest {
 
+    private val syscallOps = PosixKqueueSyscallOps(NoopLoggerFactory.logger("PosixKqueueTimeoutTest"))
+
     @Test
     fun `waitEvents blocks for the requested millisecond timeout`() {
-        val kqFd = PosixKqueueSyscallOps.kqueueCreate()
+        val kqFd = syscallOps.kqueueCreate()
         check(kqFd >= 0) { "kqueueCreate() failed: $kqFd" }
         try {
             val events = Array(EVENT_CAP) { KqEvent() }
             val start = TimeSource.Monotonic.markNow()
-            val n = PosixKqueueSyscallOps.waitEvents(kqFd, events, WAIT_MILLIS)
+            val n = syscallOps.waitEvents(kqFd, events, WAIT_MILLIS)
             val elapsed = start.elapsedNow()
             // No fds are registered, so the wait times out with no events.
             assertEquals(0, n, "expected 0 events on a no-fd timeout, got $n")
