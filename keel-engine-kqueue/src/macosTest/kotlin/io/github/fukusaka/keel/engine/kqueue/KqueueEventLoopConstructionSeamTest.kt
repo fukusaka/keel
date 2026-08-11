@@ -26,8 +26,11 @@ import kotlin.test.assertTrue
  * builds one loop per worker, and an application that retries a failed
  * `IoEngine` loses them per attempt.
  *
- * Each case scripts a different stage to fail and asks the same question of
- * every descriptor the constructor had taken by then. Real descriptors are
+ * Four cases over three stages -- the wakeup fds are made non-blocking one at
+ * a time, and each end gets its own -- asking the same question of every
+ * descriptor the constructor had taken by then. The stage that creates the
+ * kqueue fd is not here: it fails before there is anything to give back, and
+ * the sibling seam suite already drives it. Real descriptors are
  * used rather than fabricated numbers: the point is whether `close(2)`
  * reached them, which a made-up number cannot answer — and closing one would
  * shut whatever this process happens to have open there.
