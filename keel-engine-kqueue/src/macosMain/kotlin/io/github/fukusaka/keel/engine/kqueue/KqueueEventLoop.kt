@@ -210,11 +210,16 @@ internal class KqueueEventLoop(
 
     private val threadPtr = arena.alloc<pthread_tVar>()
 
-    // Each stage releases what it took, and only that: a failure unwinds
+    // Each stage below releases what it took, and only that: a failure unwinds
     // through the stages behind it, each closing its own. Nothing else can --
     // a constructor that throws hands out no reference, so [close] is
     // unreachable for the rest of the process, and the scratch and
-    // descriptors below would be held until it exits.
+    // descriptors would be held until it exits.
+    //
+    // The property initialisers above are outside this: an allocation there
+    // failing leaves the ones before it with no unwind at all. That is left as
+    // it is because a `nativeHeap` allocation of a few dozen bytes failing is
+    // not a condition this process continues past.
     //
     // Two of the stages fail by throwing rather than by returning an errno:
     // `setNonBlocking` says so in its contract, and the ops it calls sit
