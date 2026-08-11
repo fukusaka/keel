@@ -320,6 +320,7 @@ public class FakeNativeSocket : NativeSocket {
                 if (flushThrowsAfterCalls > 0) " (still waiting out $flushThrowsAfterCalls calls)" else ""
         }
         check(acceptThrowsOnce == null) { "a scripted accept failure never fired" }
+        check(readThrowsOnce == null) { "a scripted read failure never fired" }
         val leftovers = buildList {
             fun report(name: String, queues: Map<Int, ArrayDeque<*>>) {
                 for ((fd, q) in queues) {

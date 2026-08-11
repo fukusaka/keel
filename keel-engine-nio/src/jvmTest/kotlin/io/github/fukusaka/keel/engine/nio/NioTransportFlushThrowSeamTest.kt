@@ -3,7 +3,10 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.net.InetSocketAddress
 import java.nio.channels.ClosedChannelException
 import java.nio.channels.ServerSocketChannel
@@ -125,11 +128,59 @@ class NioTransportFlushThrowSeamTest {
         )
     }
 
+    @Test
+    fun `a parked waiter is answered by the teardown`() {
+        // The other half: here the tick has already run and thrown, so the
+        // waiter finds a non-empty queue with nothing scheduled and parks. What
+        // would have resumed it -- a drain -- is never coming, because the throw
+        // path re-queues without registering write interest. `close()` owes it
+        // an answer, and this transport had no stage that gave one.
+        val eventLoop = newLoop(flushCoalescing = true)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val tracker = TrackingAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+
+        val armed = CountDownLatch(1)
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
+                transport.write(buf)
+                transport.flush()
+                client.close()
+                armed.countDown()
+            },
+        )
+        if (!armed.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("setup task did not run")
+        // Let the scheduled tick run and throw, so the waiter below parks rather
+        // than driving the drain itself.
+        val drained = CountDownLatch(1)
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable { drained.countDown() })
+        if (!drained.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the scheduled tick did not run")
+
+        runBlocking {
+            val waiter = launch { runCatching { transport.awaitPendingFlush() } }
+            withTimeout(WAITER_BUDGET_MS) {
+                while (!transport.hasFlushWaiter) delay(WAITER_POLL_MS)
+                eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.close() })
+                waiter.join()
+            }
+        }
+    }
+
     private class Outcome(
         val thrown: Throwable?,
         val outstandingAfterThrow: Int,
         val outstandingAfterClose: Int,
     )
+
+    /** One loop per test, remembered so [tearDown] closes it. */
+    private fun newLoop(flushCoalescing: Boolean): NioEventLoop =
+        NioEventLoop(
+            name = "nio-flush-throw-test",
+            logger = NoopLoggerFactory.logger("nio-flush-throw-test"),
+            flushCoalescing = flushCoalescing,
+        ).also { loop = it }
 
     /**
      * Runs [block] on the EventLoop thread with a transport over the connected
@@ -140,12 +191,7 @@ class NioTransportFlushThrowSeamTest {
      * would race.
      */
     private fun runOnLoop(flushCoalescing: Boolean, block: (NioIoTransport, TrackingAllocator) -> Outcome): Outcome {
-        val eventLoop = NioEventLoop(
-            name = "nio-flush-throw-test",
-            logger = NoopLoggerFactory.logger("nio-flush-throw-test"),
-            flushCoalescing = flushCoalescing,
-        )
-        loop = eventLoop
+        val eventLoop = newLoop(flushCoalescing)
         val key = runBlocking { eventLoop.registerChannel(client) }
         val tracker = TrackingAllocator()
         val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
@@ -177,5 +223,10 @@ class NioTransportFlushThrowSeamTest {
         const val PAYLOAD_BYTES = 5
 
         const val LOOP_TASK_TIMEOUT_MS = 5_000L
+
+        /** Wall-clock bound on a waiter that must be answered rather than parked. */
+        const val WAITER_BUDGET_MS = 5_000L
+
+        const val WAITER_POLL_MS = 5L
     }
 }
