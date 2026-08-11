@@ -46,8 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - `native-posix`: `AbstractPosixReadinessEventLoop.reportRegLockFailure` is public under
-  `@InternalPosixEventLoopApi`, so the engines' tests can reach the entry point a failing
-  `pthread_mutex_lock` would call (#1050)
+  `@InternalPosixEventLoopApi`, reachable from the engines' tests (#1050)
 - `build`, `ci`: add a `detektTestSources` task and run it in the gate — no detekt task
   analysed `commonTest` / `nativeTest` / `macosTest` / `linuxTest` / `appleTest` before, and
   `engine-netty` reached no test sources at all. Pre-existing findings were grandfathered per

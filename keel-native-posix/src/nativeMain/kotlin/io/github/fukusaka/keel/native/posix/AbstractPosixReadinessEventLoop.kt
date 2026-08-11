@@ -631,19 +631,29 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * immediately; guarding that with a catch turns it into a spin. Ending the
      * loop instead runs the same teardown any other fatal takes.
      *
-     * **Unreachable in practice, and that is the point.** The lock is a default
-     * `pthread_mutex_t` (no error-checking attribute) that is never destroyed,
-     * so `EDEADLK` cannot arise and `EINVAL` needs the slot itself to have been
-     * invalidated. What this replaces is a discarded return value: the failure
-     * was not impossible before, it was silent.
+     * **Unreachable in practice, and that is the point.** Three calls reach
+     * here: one from a failed acquire and two from a failed release. The
+     * acquire takes a default `pthread_mutex_t` (no error-checking attribute)
+     * that is never destroyed, so `EDEADLK` cannot arise and `EINVAL` needs the
+     * slot itself to have been invalidated. Neither release is ever issued for
+     * a mutex this thread does not hold — one runs only under a successful
+     * lock, the other only under a successful `trylock` — which is the case a
+     * default mutex defines, and it returns zero. What this replaces is a
+     * discarded return value: the failure was not impossible before, it was
+     * silent.
      *
      * **Public, under the opt-in, so a test can reach the reporting entry point
-     * the syscall cannot.** A default `pthread_mutex_t` that is never destroyed
-     * will not return non-zero, so nothing in the tree can drive `withRegLock`
-     * into calling this. What a test *can* do is call it, and then check that
-     * the loop it belongs to stops — which is the half of the wiring that would
-     * otherwise be held by nothing. Opting in is the same declaration every
-     * other member of this surface asks for.
+     * the syscall cannot.** Nothing in the tree can drive `withRegLock` into
+     * calling this, for the reason above. What a test *can* do is call it, and
+     * then check that the loop it belongs to stops — which is the half of the
+     * wiring that would otherwise be held by nothing.
+     *
+     * The opt-in is not a formality here: this is the only member of the
+     * surface carrying the marker itself. A class-level marker gates *naming*
+     * [AbstractPosixReadinessEventLoop], which a caller reaching an inherited
+     * member through a concrete engine type never does — such a caller reaches
+     * [loop] with no opt-in at all. Strip the marker from this declaration and
+     * it is callable from any module that depends on an engine.
      *
      * It is not `inline` that forces the change: `@PublishedApi internal`
      * already satisfies that, which is what [regMutex] still is. What `internal`
