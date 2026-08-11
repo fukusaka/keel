@@ -1360,13 +1360,18 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * descriptor it would have released; an accepted connection the accept
      * path handed on.
      *
-     * **Who closes such a loop**: tests that build one and never start it, and
-     * the rollback in an EventLoop group's `start()`. That rollback is what
-     * this was written as the prerequisite for — when a `pthread_create` fails
-     * part way, the group closes every loop it holds, and the ones it had not
-     * reached yet arrive here. It is a production path now, not a future one:
-     * on that route this function is what returns the descriptors, the native
-     * scratch and the allocator child of every loop the group never started.
+     * **Who closes such a loop**: every caller of `close()` on one whose thread
+     * was never created — the subclass dispatches here on exactly that, so the
+     * list is what reaches `close()` with an unstarted loop rather than a set
+     * of special cases. Tests that build one and never start it, and, in
+     * production, each unwind of a partly-built engine: an EventLoop group
+     * rolling back its own constructor, a group rolling back a `start()` that
+     * failed part way, and an engine closing a group or a boss loop it had
+     * built before something else in its construction threw.
+     *
+     * That is a present set, not a future one. On every one of those routes
+     * this function is what returns the descriptors, the native scratch and the
+     * allocator child of a loop that never ran.
      *
      * The caller may walk the ledgers here because it holds the claim, and
      * because it publishes itself as the loop thread for the duration: every
