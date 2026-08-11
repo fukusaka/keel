@@ -151,12 +151,23 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
     /**
      * The errno of the call that just failed, never `0`.
      *
-     * `0` is what both encodings in this file mean by success — a zero return
-     * from an ok/errno method, and a non-negative one from an fd method, where
-     * it would additionally name descriptor 0. POSIX requires a failing call to
-     * set errno, so the fallback stands in for a violation of that rather than
-     * for anything reachable; without it a violation would be read as the one
-     * answer this file must never give for a call that did not work.
+     * `0` is what every encoding in this file means by success — a zero return
+     * from an ok/errno method, a non-negative one from an fd method, where it
+     * would additionally name descriptor 0, and from [waitEvents] a wait that
+     * timed out with nothing to report. Every failing return in this class goes
+     * through here, so none of them can give that answer for a call that did
+     * not work.
+     *
+     * Each of the calls this stands behind documents the errors it sets errno
+     * for, so the fallback covers a library violating its own contract rather
+     * than anything reachable. It is not offered as a general POSIX guarantee:
+     * the standard promises errno only for the errors each function's own
+     * description enumerates, and `kqueue(2)` is BSD rather than POSIX.
+     *
+     * Read it on the line after the call. Errno survives only until the next
+     * thing that touches it, and after a call that succeeded its value is
+     * unspecified — so an allocation in between, such as building a message,
+     * is enough to lose it.
      */
     private fun failingErrno(): Int = errno.takeIf { it != 0 } ?: EIO
 
@@ -196,7 +207,7 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
                 ts.ptr
             }
             val n = kevent(kqFd, null, 0, eventList, eventsOut.size, timeoutPtr)
-            if (n < 0) return -errno
+            if (n < 0) return -failingErrno()
             for (i in 0 until n) {
                 val ev = eventList[i]
                 eventsOut[i].fd = ev.ident.toInt()
@@ -210,7 +221,7 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
     override fun wakeupWrite(writeFd: Int, scratch: ByteArray): Int {
         scratch.usePinned { pinned ->
             val n = write(writeFd, pinned.addressOf(0), 1u.convert())
-            if (n < 0) return errno
+            if (n < 0) return failingErrno()
         }
         return 0
     }
@@ -221,7 +232,7 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
                 val n = read(readFd, pinned.addressOf(0), scratch.size.toULong().convert())
                 if (n > 0) continue
                 if (n == 0L) return 0
-                val err = errno
+                val err = failingErrno()
                 // EAGAIN is the expected exit — all bytes drained.
                 return if (err == EAGAIN) 0 else err
             }
@@ -243,7 +254,7 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
                 null,
             )
             val rc = kevent(kqFd, ev.ptr, 1, null, 0, null)
-            return if (rc < 0) errno else 0
+            return if (rc < 0) failingErrno() else 0
         }
     }
 
@@ -260,7 +271,7 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
                 null,
             )
             val rc = kevent(kqFd, ev.ptr, 1, null, 0, null)
-            return if (rc < 0) errno else 0
+            return if (rc < 0) failingErrno() else 0
         }
     }
 
