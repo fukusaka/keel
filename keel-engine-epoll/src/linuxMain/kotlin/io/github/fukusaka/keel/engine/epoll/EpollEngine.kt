@@ -100,6 +100,7 @@ class EpollEngine(
 
     private val logger = guardedLoggerFactory.logger("EpollEngine")
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
+
     /**
      * The accept loop, and the worker loops it hands connections to.
      *

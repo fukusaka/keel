@@ -101,6 +101,7 @@ class KqueueEngine(
 
     private val logger = guardedLoggerFactory.logger("KqueueEngine")
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
+
     /**
      * The accept loop, and the worker loops it hands connections to.
      *

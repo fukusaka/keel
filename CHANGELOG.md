@@ -82,6 +82,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: release the loops an engine or group has already built when a
+  later one cannot be built or started, and close every loop in a group even if an earlier one's
+  `close()` throws (#1049)
 - `engine-kqueue`, `engine-epoll`: a syscall that failed without setting `errno` no longer reports
   `0`, which both impls' encodings read as success (#1048)
 - `engine-kqueue`, `engine-epoll`: release the descriptors, native scratch and allocator child an
