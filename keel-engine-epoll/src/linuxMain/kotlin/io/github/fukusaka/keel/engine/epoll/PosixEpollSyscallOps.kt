@@ -104,11 +104,12 @@ internal object PosixEpollSyscallOps : EpollSyscallOps {
      * the loop would start with a wakeup fd nobody watches — every cross-thread
      * hand-off to a loop parked in `epoll_wait` lost, with no error anywhere.
      *
-     * Four of the calls this stands behind document the errors they set errno
-     * for, so the fallback covers a library violating its own contract rather
-     * than anything reachable. The other two are this project's own C wrappers
-     * around `read(2)` / `write(2)` on the eventfd, which return the syscall's
-     * result and touch nothing after it, so they inherit that contract rather
+     * Half the calls this stands behind document the errors they set errno for
+     * — `epoll_create1`, `epoll_wait`, `epoll_ctl` — so the fallback covers one
+     * of them violating its own contract rather than anything reachable. The
+     * other three are this project's own C wrappers, around `eventfd(2)` and
+     * around `read(2)` / `write(2)` on that fd: each returns the syscall's
+     * result and touches nothing after it, so it inherits that contract rather
      * than stating one.
      *
      * Read it on the line after the call. Errno survives only until the next
