@@ -1,0 +1,196 @@
+package io.github.fukusaka.keel.engine.epoll
+
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlinx.cinterop.ExperimentalForeignApi
+import platform.posix.AF_INET
+import platform.posix.EMFILE
+import platform.posix.F_GETFD
+import platform.posix.SOCK_STREAM
+import platform.posix.close
+import platform.posix.fcntl
+import platform.posix.socket
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+
+/**
+ * What a group whose construction fails part way must not keep.
+ *
+ * The loops before the one that failed are *fully built* — each holding an
+ * epoll fd, a wakeup eventfd, native scratch and an allocator child that only
+ * its own `close()` returns. The array being filled is discarded along with the
+ * constructor that threw, and the group reference never reaches a caller, so
+ * nothing else can ever close them. An engine asks for one loop per worker, so
+ * an application retrying a failed engine loses a group's worth per attempt.
+ *
+ * `EMFILE` on the fourth loop is the condition this is for: a process at its
+ * descriptor limit, which is exactly when the earlier loops' descriptors matter
+ * most.
+ *
+ * Real descriptors rather than fabricated numbers, for the reason the sibling
+ * construction suite gives: whether `close(2)` reached one is not answerable
+ * about a number nobody opened, and closing it would shut whatever this process
+ * has open there.
+ *
+ * **What this file does not cover**: the rollback in `start()`. Reaching it
+ * needs `pthread_create` to fail, and that call is deliberately outside the
+ * [EpollSyscallOps] seam. That rollback is a guard, and no test in the tree
+ * makes it fire.
+ */
+@OptIn(ExperimentalForeignApi::class)
+class EpollEventLoopGroupRollbackTest {
+
+    private val logger = NoopLoggerFactory.logger("EpollEventLoopGroupRollbackTest")
+
+    @Test
+    fun `a group whose fourth loop cannot be built releases the three before it`() {
+        // Three loops' worth of descriptors: an epoll fd and a wakeup eventfd
+        // each, consumed in that order by the fake's FIFO scripts.
+        withRealFds(LOOPS_BUILT * FDS_PER_LOOP) { fds ->
+            val tracker = TrackingAllocator()
+            val fake = FakeEpollSyscallOps().apply {
+                repeat(LOOPS_BUILT) { loop ->
+                    scriptEpollCreateFd(fds[loop * FDS_PER_LOOP])
+                    scriptEventfdCreateFd(fds[loop * FDS_PER_LOOP + 1])
+                }
+                scriptEpollCreateFailure(EMFILE)
+            }
+
+            val failure = assertFailsWith<IllegalStateException> {
+                EpollEventLoopGroup(
+                    size = LOOPS_BUILT + 1,
+                    logger = logger,
+                    allocator = tracker,
+                    syscallOps = fake,
+                )
+            }
+
+            assertTrue(
+                failure.message!!.contains("epoll_create1()"),
+                "the caller should be told which stage failed, got: ${failure.message}",
+            )
+            fds.forEachIndexed { i, fd ->
+                assertEquals(
+                    -1,
+                    fcntl(fd, F_GETFD),
+                    "the group kept descriptor $i (fd=$fd) of a loop it had already built; " +
+                        "nothing can close it once the constructor has thrown",
+                )
+            }
+            assertEquals(
+                LOOPS_BUILT + 1,
+                tracker.totalCloseCount(),
+                "and every allocator child handed out is closed: the three the group rolls back, " +
+                    "plus the one the failing loop was given — its argument is evaluated before the " +
+                    "constructor that throws, and that constructor's own unwind returns it",
+            )
+        }
+    }
+
+    @Test
+    fun `every loop in a group is closed even when an earlier one refuses`() {
+        // A loop's `close()` can throw: its teardown re-raises what its stages
+        // failed with, and the allocator child it returns is caller code --
+        // `BufferAllocator` is a public interface and nothing wraps it. Walking
+        // out on the first would leave the rest of the group holding their
+        // descriptors, and `close()` is the last call anyone makes, so there is
+        // no second caller to try again.
+        withRealFds(LOOPS_IN_GROUP * FDS_PER_LOOP) { fds ->
+            val refusing = RefusingCloseAllocator()
+            val fake = FakeEpollSyscallOps().apply {
+                repeat(LOOPS_IN_GROUP) { loop ->
+                    scriptEpollCreateFd(fds[loop * FDS_PER_LOOP])
+                    scriptEventfdCreateFd(fds[loop * FDS_PER_LOOP + 1])
+                }
+            }
+            val group = EpollEventLoopGroup(
+                size = LOOPS_IN_GROUP,
+                logger = logger,
+                allocator = refusing,
+                syscallOps = fake,
+            )
+
+            val failure = assertFailsWith<IllegalStateException> { group.close() }
+
+            assertEquals(
+                "$CLOSE_FAULT 0",
+                failure.message,
+                "the caller is told the first loop's refusal, not a later one",
+            )
+            assertEquals(
+                LOOPS_IN_GROUP - 1,
+                failure.suppressedExceptions.size,
+                "and the later ones are attached to it: ${failure.suppressedExceptions}",
+            )
+            fds.forEachIndexed { i, fd ->
+                assertEquals(
+                    -1,
+                    fcntl(fd, F_GETFD),
+                    "descriptor $i (fd=$fd) was left open by a loop the group reached " +
+                        "after one that refused",
+                )
+            }
+        }
+    }
+
+    /**
+     * Opens [count] real descriptors, runs [block] with them, and closes them so
+     * a failing assertion does not also leak out of this suite. A second
+     * `close(2)` on one the group already released is the `EBADF` this ignores;
+     * nothing here opens a descriptor between the throw and this `finally`, so a
+     * released number has not been handed out again by the time it is closed.
+     */
+    private fun withRealFds(count: Int, block: (List<Int>) -> Unit) {
+        val fds = List(count) {
+            val fd = socket(AF_INET, SOCK_STREAM, 0)
+            check(fd >= 0) { "socket() failed while preparing the test" }
+            fd
+        }
+        try {
+            block(fds)
+        } finally {
+            fds.forEach { close(it) }
+        }
+    }
+
+    /**
+     * An allocator whose children refuse to close, standing in for the caller
+     * code a loop's teardown ends by calling.
+     *
+     * Each child names itself, so the failure the group raises identifies
+     * *which* loop's refusal it is. With one shared message the assertion could
+     * not tell the first from the last, and the ordering would rest on the
+     * suppressed count alone.
+     */
+    private class RefusingCloseAllocator : BufferAllocator by DefaultAllocator {
+        private var childrenHandedOut = 0
+
+        override fun createChild(): BufferAllocator = RefusingChild(childrenHandedOut++)
+
+        /** The parent is the test's, not a loop's; only children are closed here. */
+        override fun close() = Unit
+    }
+
+    /** The [ordinal]-th child handed out, refusing under a name of its own. */
+    private class RefusingChild(private val ordinal: Int) : BufferAllocator by DefaultAllocator {
+        override fun close(): Unit = throw IllegalStateException("$CLOSE_FAULT $ordinal")
+    }
+
+    private companion object {
+        /** Loops the fake lets through before refusing the next one. */
+        const val LOOPS_BUILT = 3
+
+        /** An epoll fd and a wakeup eventfd. */
+        const val FDS_PER_LOOP = 2
+
+        /** Loops in the group whose close is exercised. */
+        const val LOOPS_IN_GROUP = 3
+
+        /** Prefix of each child's refusal; the ordinal that follows names the loop. */
+        const val CLOSE_FAULT = "allocator child close refused"
+    }
+}

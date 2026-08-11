@@ -101,15 +101,19 @@ class KqueueEngine(
 
     private val logger = guardedLoggerFactory.logger("KqueueEngine")
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
-    private val bossLoop = KqueueEventLoop(guardedLoggerFactory.logger("KqueueEventLoop"))
-    private val workerGroup = KqueueEventLoopGroup(
-        resolveThreads(config),
-        guardedLoggerFactory.logger("KqueueEventLoop"),
-        config.allocator,
-        config.readBufferSize,
-        config.idleTimeoutMillis,
-        config.flushCoalescing,
-    )
+
+    /**
+     * The accept loop, and the worker loops it hands connections to.
+     *
+     * Assigned in the `init` below rather than here, so that a failure part way
+     * through has something to unwind. As property initialisers they had none:
+     * a throw from the group's constructor discarded a fully built boss loop,
+     * and a throw from either `start()` left running threads behind — with the
+     * engine reference never leaving the constructor, so [close] could never be
+     * called on any of it.
+     */
+    private val bossLoop: KqueueEventLoop
+    private val workerGroup: KqueueEventLoopGroup
 
     /**
      * Set once by [close]; read by every entry point's `check(!closed)`.
@@ -131,9 +135,52 @@ class KqueueEngine(
     /** Participants currently held by the worker loops; see the loop's probe. */
     internal fun workerParticipants(): Int = workerGroup.participants()
 
+    // Each stage releases what it took. `pthread_create` answering `EAGAIN` is
+    // the condition this is for -- a process out of threads -- and it lands in
+    // the middle of building an engine, where nothing else can clean up: the
+    // reference never leaves this constructor, so [close] is unreachable for
+    // the rest of the process and every loop already built keeps its kqueue fd,
+    // wakeup pipe, native scratch and allocator child.
+    //
+    // Closing an unstarted loop is what makes the last stage's rollback work,
+    // and it runs the teardown its thread would have.
     init {
-        bossLoop.start()
-        workerGroup.start()
+        bossLoop = KqueueEventLoop(guardedLoggerFactory.logger("KqueueEventLoop"))
+        try {
+            workerGroup = KqueueEventLoopGroup(
+                resolveThreads(config),
+                guardedLoggerFactory.logger("KqueueEventLoop"),
+                config.allocator,
+                config.readBufferSize,
+                config.idleTimeoutMillis,
+                config.flushCoalescing,
+            )
+            try {
+                bossLoop.start()
+                workerGroup.start()
+            } catch (startFailure: Throwable) {
+                // The group rolls its own loops back, and closing it again is a
+                // no-op; what this adds is the case where the boss failed to
+                // start and the group had not been asked yet.
+                closeQuietly(startFailure) { workerGroup.close() }
+                throw startFailure
+            }
+        } catch (constructionFailure: Throwable) {
+            closeQuietly(constructionFailure) { bossLoop.close() }
+            throw constructionFailure
+        }
+    }
+
+    /**
+     * Runs [release], attaching any failure to [cause] rather than letting it
+     * replace the reason the rollback is happening.
+     */
+    private inline fun closeQuietly(cause: Throwable, release: () -> Unit) {
+        try {
+            release()
+        } catch (releaseFailure: Throwable) {
+            cause.addSuppressed(releaseFailure)
+        }
     }
 
     /**
@@ -610,8 +657,26 @@ class KqueueEngine(
         if (!closed) {
             closed = true
             coroutineContext.job.cancelAndJoin()
-            bossLoop.close()
-            workerGroup.close()
+            // The group is closed whatever the boss did. `closed` is already
+            // true, so a throw from the first would leave every worker loop
+            // holding its descriptors with no second caller able to retry --
+            // the same reason the group closes each of its own loops
+            // independently. Barely reachable (the boss is always started, so
+            // it takes the join path, and it is built with the no-op default
+            // allocator) and guarded for the same reason the group's is.
+            var failure: Throwable? = null
+            try {
+                bossLoop.close()
+            } catch (bossFailure: Throwable) {
+                failure = bossFailure
+            }
+            try {
+                workerGroup.close()
+            } catch (groupFailure: Throwable) {
+                val first = failure
+                if (first == null) failure = groupFailure else first.addSuppressed(groupFailure)
+            }
+            failure?.let { throw it }
             logger.debug { "Engine closed" }
         }
     }

@@ -1360,12 +1360,24 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * descriptor it would have released; an accepted connection the accept
      * path handed on.
      *
-     * **Who closes such a loop**: tests that build one and never start it, and
-     * any future caller that has to unwind a partly-built engine. Not, today,
-     * the case that motivated looking: a group whose `start()` throws part way
-     * takes the exception out through the engine constructor, so no reference
-     * escapes and nobody calls `close()` on anything. Making that path unwind
-     * is separate work, and this is its prerequisite rather than its fix.
+     * **Who closes such a loop**: the subclass sends `close()` here when it wins
+     * the CAS that takes the loop down and reads its thread flag as never set —
+     * not on the termination claim, which this function takes itself at the top
+     * and may not get. So the callers are whoever reaches `close()` on an
+     * unstarted loop rather than a set of special cases. Tests that build one and never start it, and, in
+     * production, each unwind of a partly-built engine: an EventLoop group
+     * rolling back its own constructor, a group rolling back a `start()` that
+     * failed part way, and an engine closing a group or a boss loop it had
+     * built before something else in its construction threw. A present set,
+     * not a future one.
+     *
+     * **What this contributes on those routes** is the terminal sequence, not
+     * the release: the work dispatched at the loop runs here — a transport's
+     * teardown, and with it the descriptor *that* would have released — and the
+     * loop is left quiescent, which is the condition `close()` refuses to
+     * release under when it is not met. The loop's own descriptors, native
+     * scratch and allocator child are returned by the subclass's
+     * `releaseLoopResources()`, on this path and the joined one alike.
      *
      * The caller may walk the ledgers here because it holds the claim, and
      * because it publishes itself as the loop thread for the duration: every
