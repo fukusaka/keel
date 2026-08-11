@@ -381,9 +381,22 @@ internal class NioIoTransport(
         // close the channel) all on the same EventLoop task — the
         // deferred flush task is still behind us in the queue when we
         // reach here.
+        // The drain can throw, and everything below is owed whatever it did.
+        // `SocketChannel.write` answers a reset with an `IOException`, and this
+        // is the tick where a same-tick send→close meets one: letting that
+        // escape skipped the release walk, the key cancel and the channel close
+        // for good, since the teardown claim above is spent and a later
+        // `close()` returns at `markClosing()`. The failure is still the
+        // caller's -- it is raised once the obligations are met, the way the
+        // POSIX teardowns stage theirs.
+        var failure: Throwable? = null
         if (flushScheduled && pendingWrites.isNotEmpty()) {
             flushScheduled = false
-            performFlush()
+            try {
+                performFlush()
+            } catch (drainFailure: Throwable) {
+                failure = drainFailure
+            }
         }
         cancelIdleTimeout()
         cancelWriteIdleTimeout()
@@ -393,6 +406,7 @@ internal class NioIoTransport(
         selectionKey.cancel()
         logTransportStatsOnClose(eventLoop.logger, "channel=$socketChannel")
         if (socketChannel.isOpen) socketChannel.close()
+        failure?.let { throw it }
     }
 
     /**

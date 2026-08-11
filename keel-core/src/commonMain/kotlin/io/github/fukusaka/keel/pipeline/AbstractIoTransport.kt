@@ -380,11 +380,28 @@ abstract class AbstractIoTransport(
      * recoverable — it decides only that the failure costs one connection
      * rather than one connection and a pooled buffer. A secondary failure while
      * putting the entry back is attached to [cause] rather than replacing it:
-     * the send's failure is the one the caller is owed.
+     * the send's failure is the one the caller is owed. Nothing drives that
+     * catch — `addFirst` fails only on exhaustion, and the update reaches user
+     * code only across a water mark — so it is a guard, and the entry is
+     * stranded anyway if it fires.
      *
-     * Only the flush paths that remove before sending need this. A gather write
-     * reads the entries in place and leaves them queued, so a throw there is
-     * already covered by the teardown.
+     * **What uses this, and what has the shape and does not.** The three
+     * single-buffer flush paths — NIO, kqueue, epoll — call it. Three more
+     * places take entries out before something that can throw and are **not**
+     * covered: io_uring's `flush` clears the whole deque in a `finally`,
+     * NWConnection's copies the batch out and clears before building its send,
+     * and the in-memory transport removes an entry before allocating. Each
+     * strands a whole batch rather than one entry and needs its own answer, so
+     * read the list rather than the rule. Netty is covered by its own `catch`,
+     * though that one takes `Exception` where these take `Throwable`.
+     *
+     * **A gather write's syscall needs nothing** — every entry is still queued
+     * while it runs. Its partial-write loop is a different matter: it takes
+     * each fully-written entry out and releases it, as [releaseQueuedWrites]
+     * does, so a release that throws strands the entry it was releasing. That
+     * shape is older than this helper and is not what this addresses — putting
+     * a half-released buffer back would hand the teardown a second release
+     * rather than a first.
      */
     protected fun requeueUnsent(pw: PendingWrite, sent: Int, cause: Throwable) {
         try {
@@ -393,7 +410,10 @@ abstract class AbstractIoTransport(
             )
             updatePendingBytes(-sent)
         } catch (requeueFailure: Throwable) {
-            cause.addSuppressed(requeueFailure)
+            // Not onto itself: `addSuppressed(this)` throws, which would put the
+            // cleanup's failure in place of the send's — the one thing the
+            // attach is here to avoid.
+            if (requeueFailure !== cause) cause.addSuppressed(requeueFailure)
         }
     }
 

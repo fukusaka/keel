@@ -926,9 +926,16 @@ internal class EpollIoTransport(
                     return false
                 }
                 is WriteResult.Failed -> {
-                    eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(writeResult.errno)}" }
+                    // Other error (EPIPE, ECONNRESET) — release and drop, then say so.
+                    //
+                    // Released before the log, not after. The entry is already
+                    // out of the deque, so anything that throws between here and
+                    // the release strands its buffer exactly as a throwing write
+                    // would -- and `Logger` is a public SPI the engine takes
+                    // through its config, so this line is caller code too.
                     pw.buf.release()
                     updatePendingBytes(-pw.length)
+                    eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(writeResult.errno)}" }
                     return true
                 }
             }
