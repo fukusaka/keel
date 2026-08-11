@@ -414,12 +414,7 @@ internal class NioIoTransport(
         bb.position(pw.offset)
         bb.limit(pw.offset + pw.length)
         while (bb.hasRemaining()) {
-            val n = try {
-                socketChannel.write(bb)
-            } catch (writeFailure: Throwable) {
-                requeueUnsent(pw, bb.position() - pw.offset, writeFailure)
-                throw writeFailure
-            }
+            val n = writeOrGiveBack(pw, bb)
             if (n == 0) {
                 // Send buffer full — defer via OP_WRITE callback.
                 val written = bb.position() - pw.offset
@@ -436,6 +431,24 @@ internal class NioIoTransport(
         updatePendingBytes(-pw.length)
         return true
     }
+
+    /**
+     * Writes what is left of [bb], returning the entry's unsent remainder to the
+     * queue if the channel throws.
+     *
+     * A function of its own rather than a `try` around the call in
+     * [flushSingle]: with the guard inline, detekt's analysis reads the
+     * statement after it as unreachable, which the Kotlin compiler does not.
+     * [bb]'s position is how far the write got, and [PendingWrite.offset] is
+     * where it started.
+     */
+    private fun writeOrGiveBack(pw: PendingWrite, bb: ByteBuffer): Int =
+        try {
+            socketChannel.write(bb)
+        } catch (writeFailure: Throwable) {
+            requeueUnsent(pw, bb.position() - pw.offset, writeFailure)
+            throw writeFailure
+        }
 
     /**
      * Writes multiple pending buffers via [java.nio.channels.GatheringByteChannel.write].
