@@ -82,6 +82,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: every failing return from the two engines' syscall impls answers
+  with an errno that cannot read as success — a call that failed without setting one no longer
+  reports `0`, which both encodings mean by success and which names descriptor 0 on an fd-returning
+  method (#1048)
 - `engine-kqueue`, `engine-epoll`: release the descriptors, native scratch and allocator child an
   `EventLoop` constructor took when it fails — a throw hands out no reference, so `close()` could
   never run and everything it held stayed held until the process exited (#1048)
