@@ -304,12 +304,22 @@ public class FakeNativeSocket : NativeSocket {
     }
 
     /**
-     * Throws if any scripted response queue is non-empty. Call at the
-     * end of a test to verify every queued response was consumed —
-     * an unconsumed response usually means the system under test
-     * short-circuited before reaching that branch.
+     * Throws if any scripted response queue is non-empty, or if a scripted
+     * fault never fired. Call at the end of a test to verify every queued
+     * response was consumed — an unconsumed response usually means the system
+     * under test short-circuited before reaching that branch.
+     *
+     * The faults are checked for the same reason the queues are, and it is the
+     * sharper of the two: a test whose fault never fires asserts what a failure
+     * costs against a run that had no failure in it, and passes against a build
+     * that never fixed anything.
      */
     public fun assertAllConsumed() {
+        check(flushThrowsOnce == null) {
+            "a scripted flush failure never fired" +
+                if (flushThrowsAfterCalls > 0) " (still waiting out $flushThrowsAfterCalls calls)" else ""
+        }
+        check(acceptThrowsOnce == null) { "a scripted accept failure never fired" }
         val leftovers = buildList {
             fun report(name: String, queues: Map<Int, ArrayDeque<*>>) {
                 for ((fd, q) in queues) {

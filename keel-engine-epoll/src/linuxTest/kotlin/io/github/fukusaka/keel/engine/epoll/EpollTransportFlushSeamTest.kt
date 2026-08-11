@@ -2,6 +2,8 @@ package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
@@ -186,6 +188,39 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
         )
         assertEquals(0, tracker.outstandingCount, "the completed write releases its buffer")
         fake.assertAllConsumed()
+    }
+
+    @Test
+    fun `flushSingle whose failure log throws has already released the buffer`() {
+        // The entry is out of the deque for the whole branch, not just for the
+        // write, so anything that throws before the release strands it the same
+        // way. `Logger` is a public SPI the engine takes through its config, so
+        // the warn line is caller code: releasing after it put a third party
+        // between the buffer and its only release.
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.Failed(ECONNRESET)) }
+        val loop = EpollEventLoop(throwingWarnLogger(), flushCoalescing = false)
+        try {
+            val transport = EpollIoTransport(fd, loop, tracker, fake)
+            val buf = tracker.allocate(16)
+            buf.writerIndex = 5
+            transport.write(buf)
+
+            assertFailsWith<InjectedFault> { transport.flush() }
+
+            assertEquals(0, tracker.outstandingCount, "the buffer must be released before the log is attempted")
+        } finally {
+            loop.close()
+        }
+    }
+
+    /** Stands in for a caller-supplied logger that fails on the warn path. */
+    private fun throwingWarnLogger(): Logger = object : Logger {
+        override fun isLoggable(level: LogLevel): Boolean = true
+
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            if (level == LogLevel.WARN) throw InjectedFault("the logger refused")
+        }
     }
 
     @Test

@@ -6,7 +6,6 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
 import java.nio.channels.ClosedChannelException
-import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
 import java.util.concurrent.CountDownLatch
@@ -21,7 +20,8 @@ import kotlin.test.fail
 
 /**
  * That a single-buffer flush whose write throws still owes its buffer to the
- * teardown.
+ * teardown — in **both** flush configurations, because they reach the throw
+ * through different callers.
  *
  * `performFlush` takes the entry off the deque before calling the channel, so
  * for the length of that call the buffer is in nobody's hands: not queued for
@@ -34,7 +34,14 @@ import kotlin.test.fail
  * [SocketChannel.write] itself: a reset, a broken pipe or a channel closed
  * underneath answers with an `IOException`, which is how connections
  * ordinarily end. Every one of those cost a pooled buffer for the life of the
- * process.
+ * EventLoop's allocator.
+ *
+ * **Two cases, because coalescing decides who makes the call.** With it off,
+ * `flush()` reaches `performFlush` on the caller. With it on — the shipped
+ * default — the flush is a scheduled tick, and a `close()` that lands first
+ * runs the drain from inside the teardown. Only the second reaches the
+ * teardown's own handling of a throwing drain, and pinning one without the
+ * other pins the configuration nobody runs.
  *
  * A closed channel is the deterministic way in. The alternative — a peer that
  * resets while a large write is in flight — reaches the same throw through a
@@ -42,32 +49,23 @@ import kotlin.test.fail
  */
 class NioTransportFlushThrowSeamTest {
 
-    private lateinit var loop: NioEventLoop
     private lateinit var server: ServerSocketChannel
     private lateinit var client: SocketChannel
     private lateinit var accepted: SocketChannel
-    private lateinit var key: SelectionKey
+    private var loop: NioEventLoop? = null
 
     @BeforeTest
     fun setUp() {
-        // Coalescing off so `flush()` reaches `performFlush` on the calling
-        // thread rather than through a task this test would then have to chase.
-        loop = NioEventLoop(
-            name = "nio-flush-throw-test",
-            logger = NoopLoggerFactory.logger("nio-flush-throw-test"),
-            flushCoalescing = false,
-        )
         server = ServerSocketChannel.open()
         server.bind(InetSocketAddress(LOOPBACK, 0))
         client = SocketChannel.open(server.localAddress as InetSocketAddress)
         accepted = server.accept()
         client.configureBlocking(false)
-        key = runBlocking { loop.registerChannel(client) }
     }
 
     @AfterTest
     fun tearDown() {
-        loop.close()
+        loop?.close()
         if (client.isOpen) client.close()
         accepted.close()
         server.close()
@@ -75,29 +73,90 @@ class NioTransportFlushThrowSeamTest {
 
     @Test
     fun `a flush whose write throws leaves the buffer where the teardown looks`() {
-        val tracker = TrackingAllocator()
-        val transport = NioIoTransport(client, key, loop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+        val outcome = runOnLoop(flushCoalescing = false) { transport, tracker ->
+            val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
+            transport.write(buf)
+            client.close()
 
-        // Everything on the loop thread: `close()` runs its teardown inline
-        // there, and dispatching it from here would leave the release to a task
-        // this assertion would race.
-        var thrown: Throwable? = null
-        var outstandingAfterThrow = -1
-        var outstandingAfterClose = -1
+            val thrown = runCatching { transport.flush() }.exceptionOrNull()
+            val afterThrow = tracker.outstandingCount
+
+            transport.close()
+            Outcome(thrown, afterThrow, tracker.outstandingCount)
+        }
+
+        assertTrue(
+            outcome.thrown is ClosedChannelException,
+            "the write must have thrown for this test to mean anything, got: ${outcome.thrown}",
+        )
+        assertEquals(1, outcome.outstandingAfterThrow, "the entry is still owed a release, not released early")
+        assertEquals(
+            0,
+            outcome.outstandingAfterClose,
+            "the teardown must find the buffer the failed write let go of",
+        )
+    }
+
+    @Test
+    fun `a teardown whose drain throws still releases what the drain gave back`() {
+        // The shipped default: `flush()` only schedules a tick, so the write
+        // that throws is the one the teardown itself makes as its first act.
+        // Letting that escape skipped every obligation below it -- the release
+        // walk among them -- and the teardown claim is spent, so nothing
+        // retries.
+        val outcome = runOnLoop(flushCoalescing = true) { transport, tracker ->
+            val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
+            transport.write(buf)
+            transport.flush()
+            client.close()
+
+            val thrown = runCatching { transport.close() }.exceptionOrNull()
+            Outcome(thrown, -1, tracker.outstandingCount)
+        }
+
+        assertTrue(
+            outcome.thrown is ClosedChannelException,
+            "the drain's failure is still the caller's, raised once the obligations are met, got: ${outcome.thrown}",
+        )
+        assertEquals(
+            0,
+            outcome.outstandingAfterClose,
+            "the release walk runs even though the drain before it threw",
+        )
+    }
+
+    private class Outcome(
+        val thrown: Throwable?,
+        val outstandingAfterThrow: Int,
+        val outstandingAfterClose: Int,
+    )
+
+    /**
+     * Runs [block] on the EventLoop thread with a transport over the connected
+     * client channel.
+     *
+     * On the loop because `close()` runs its teardown inline there; dispatching
+     * it from the test thread would leave the release to a task the assertions
+     * would race.
+     */
+    private fun runOnLoop(flushCoalescing: Boolean, block: (NioIoTransport, TrackingAllocator) -> Outcome): Outcome {
+        val eventLoop = NioEventLoop(
+            name = "nio-flush-throw-test",
+            logger = NoopLoggerFactory.logger("nio-flush-throw-test"),
+            flushCoalescing = flushCoalescing,
+        )
+        loop = eventLoop
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val tracker = TrackingAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+
+        var outcome: Outcome? = null
         val done = CountDownLatch(1)
-        loop.dispatch(
+        eventLoop.dispatch(
             EmptyCoroutineContext,
             Runnable {
                 try {
-                    val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
-                    transport.write(buf)
-                    client.close()
-
-                    thrown = runCatching { transport.flush() }.exceptionOrNull()
-                    outstandingAfterThrow = tracker.outstandingCount
-
-                    transport.close()
-                    outstandingAfterClose = tracker.outstandingCount
+                    outcome = block(transport, tracker)
                 } finally {
                     done.countDown()
                 }
@@ -106,13 +165,7 @@ class NioTransportFlushThrowSeamTest {
         if (!done.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             fail("the dispatched task did not run within timeout")
         }
-
-        assertTrue(
-            thrown is ClosedChannelException,
-            "the write must have thrown for this test to mean anything, got: $thrown",
-        )
-        assertEquals(1, outstandingAfterThrow, "the entry is still owed a release, not released early")
-        assertEquals(0, outstandingAfterClose, "the teardown must find the buffer the failed write let go of")
+        return outcome ?: fail("the task threw before producing an outcome")
     }
 
     private companion object {
