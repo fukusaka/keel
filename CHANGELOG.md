@@ -82,6 +82,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: release the descriptors and native scratch an `EventLoop`
+  constructor took when it fails — a throw hands out no reference, so `close()` could never run and
+  the kqueue / epoll fd, the wakeup channel and the scratch were held until the process exited
+  (#1048)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: release a connecting descriptor when preparing it,
   reading the peer address, or building the connection throws — `getpeername` answers `ENOTCONN` for a
   peer that resets, and the descriptor was left open for the process's life once per connect. A
