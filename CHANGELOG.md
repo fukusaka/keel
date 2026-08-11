@@ -82,13 +82,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-kqueue`, `engine-epoll`: every failing return from the two engines' syscall impls answers
-  with an errno that cannot read as success — a call that failed without setting one no longer
-  reports `0`, which both encodings mean by success and which names descriptor 0 on an fd-returning
-  method (#1048)
+- `engine-kqueue`, `engine-epoll`: a syscall that failed without setting `errno` no longer reports
+  `0`, which both impls' encodings read as success (#1048)
 - `engine-kqueue`, `engine-epoll`: release the descriptors, native scratch and allocator child an
   `EventLoop` constructor took when it fails — a throw hands out no reference, so `close()` could
-  never run and everything it held stayed held until the process exited (#1048)
+  never run (#1048)
 - `native-posix`, `engine-epoll`, `engine-kqueue`: release a connecting descriptor when preparing it,
   reading the peer address, or building the connection throws — `getpeername` answers `ENOTCONN` for a
   peer that resets, and the descriptor was left open for the process's life once per connect. A

@@ -717,9 +717,12 @@ internal class EpollEventLoop(
      * The two obligations below are attempted independently — the second runs
      * whatever the first did — and a failure is suppressed onto [cause] rather
      * than thrown: the caller is owed the failure that ended the construction,
-     * not one from the cleanup after it. `close()` on the allocator is the one
-     * that can realistically throw, since [BufferAllocator] is a public
-     * interface implementable outside this project.
+     * not one from the cleanup after it. `close()` on the allocator is the most
+     * likely to throw, since [BufferAllocator] is a public interface
+     * implementable outside this project — but not the only one: the fd closes
+     * above report through a caller-supplied [io.github.fukusaka.keel.logging.Logger],
+     * and a throw from there escapes this function's reach the same way it does
+     * on every other guard in these engines.
      *
      * The shape is the transport's, whose teardown runs each stage this way.
      * [releaseLoopResources] does not: it calls the same two straight, so a
