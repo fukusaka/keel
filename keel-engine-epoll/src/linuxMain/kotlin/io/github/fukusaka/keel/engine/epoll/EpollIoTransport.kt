@@ -1178,7 +1178,6 @@ internal class EpollIoTransport(
         reportAbandonedFin()
     }
 
-
     /**
      * Reports a half-close whose FIN can no longer be sent.
      *
