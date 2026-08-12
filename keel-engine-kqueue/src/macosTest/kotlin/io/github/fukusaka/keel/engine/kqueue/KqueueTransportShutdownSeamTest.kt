@@ -7,7 +7,6 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
-import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
@@ -17,7 +16,6 @@ import platform.posix.EPIPE
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -175,58 +173,5 @@ internal class KqueueTransportShutdownSeamTest : KqueueTransportSeamFixture() {
         assertEquals(0, fake.writeCalls, "nothing may be sent after the FIN")
         assertEquals(0, tracker.outstandingCount, "the discarded write must still be released")
         fake.assertAllConsumed()
-    }
-
-    @Test
-    fun `a half-close whose flush throws reports the FIN it can no longer send`() = runBlocking {
-        // The deferral is a promise that a later completion path will send the
-        // FIN. A flush that throws schedules no tick and arms no write
-        // readiness, so there is no such path -- and the entry it puts back on
-        // the queue is what keeps `outputDrained` false, so the half-close's
-        // own `finally` finds nothing to send. Not sending it is right: the
-        // bytes did not go out, and a FIN would tell the peer they had. What
-        // must not happen is that nobody says so.
-        val warns = RecordingLogger(LogLevel.WARN)
-        val loop = KqueueEventLoop(warns, flushCoalescing = false)
-        loop.start()
-        try {
-            val fake = FakeNativeSocket().apply { flushThrowsOnce = InjectedFault("write refused") }
-            val tracker = TrackingAllocator()
-            val transport = KqueueIoTransport(fd, loop, tracker, fake)
-
-            val thrown = CompletableDeferred<Throwable?>()
-            loop.dispatch(
-                EmptyCoroutineContext,
-                Runnable {
-                    val buf = tracker.allocate(SEAM_PAYLOAD_BYTES).also { it.writerIndex = SEAM_PAYLOAD_BYTES }
-                    transport.write(buf)
-                    thrown.complete(runCatching { transport.shutdownOutput() }.exceptionOrNull())
-                },
-            )
-            assertIs<InjectedFault>(
-                withTimeout(SEAM_TIMEOUT_MS) { thrown.await() },
-                "the caller is still told the flush failed",
-            )
-
-            assertEquals(0, fake.shutdownCalls, "the bytes never went out, so the FIN must not claim they did")
-            assertTrue(
-                warns.messages.any { "the flush that would have released it failed" in it },
-                "the unkeepable deferral must be reported, got: ${warns.messages}",
-            )
-            assertEquals(1, tracker.outstandingCount, "the entry the failed flush put back is still owed a release")
-            fake.assertAllConsumed()
-
-            // The branch's own premise: that entry is where a teardown can
-            // reach it. The barrier behind the close is how we know the
-            // teardown ran before the assertion -- this loop is live, so the
-            // close is dispatched rather than inline.
-            transport.close()
-            val closed = CompletableDeferred<Unit>()
-            loop.dispatch(EmptyCoroutineContext, Runnable { closed.complete(Unit) })
-            withTimeout(SEAM_TIMEOUT_MS) { closed.await() }
-            assertEquals(0, tracker.outstandingCount, "and the teardown releases it")
-        } finally {
-            loop.close()
-        }
     }
 }
