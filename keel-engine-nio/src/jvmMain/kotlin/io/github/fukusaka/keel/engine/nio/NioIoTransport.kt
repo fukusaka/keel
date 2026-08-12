@@ -569,16 +569,6 @@ internal class NioIoTransport(
 
     private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
 
-    /**
-     * Whether a caller is parked in [awaitPendingFlush].
-     *
-     * For the tests that pin who answers such a caller: the moment a waiter is
-     * registered is what they have to wait for before driving the close that
-     * must answer it, and there is no other way to observe it. EventLoop-confined
-     * like the field it reads.
-     */
-    internal val hasFlushWaiter: Boolean get() = flushContinuation != null
-
     /** Registers OP_WRITE callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
         // A stalled write (OP_WRITE re-arm) means the peer is not draining its receive

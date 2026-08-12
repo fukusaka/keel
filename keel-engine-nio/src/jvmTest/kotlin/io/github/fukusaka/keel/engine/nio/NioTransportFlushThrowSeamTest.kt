@@ -3,7 +3,7 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -159,12 +159,18 @@ class NioTransportFlushThrowSeamTest {
         if (!drained.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the scheduled tick did not run")
 
         runBlocking {
-            val waiter = launch { runCatching { transport.awaitPendingFlush() } }
-            withTimeout(WAITER_BUDGET_MS) {
-                while (!transport.hasFlushWaiter) delay(WAITER_POLL_MS)
-                eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.close() })
-                waiter.join()
-            }
+            // Unconfined so the body runs here up to its own dispatch: when
+            // `launch` returns, the registration is already queued on the loop.
+            // A barrier behind it is then enough to know it has run -- the loop
+            // is FIFO -- which is what makes the close land on a waiter that is
+            // genuinely parked, without polling a field the loop owns.
+            val waiter = launch(Dispatchers.Unconfined) { runCatching { transport.awaitPendingFlush() } }
+            val registered = CountDownLatch(1)
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { registered.countDown() })
+            if (!registered.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the waiter did not register")
+
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.close() })
+            withTimeout(WAITER_BUDGET_MS) { waiter.join() }
         }
     }
 
@@ -226,7 +232,5 @@ class NioTransportFlushThrowSeamTest {
 
         /** Wall-clock bound on a waiter that must be answered rather than parked. */
         const val WAITER_BUDGET_MS = 5_000L
-
-        const val WAITER_POLL_MS = 5L
     }
 }
