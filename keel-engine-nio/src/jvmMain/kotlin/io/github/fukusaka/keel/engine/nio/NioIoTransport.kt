@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -191,7 +192,18 @@ internal class NioIoTransport(
         )
     }
 
-    private fun onReadable() {
+    private fun onReadable() = containLoopFailure("readiness for read") { onReadableOwned() }
+
+    /**
+     * The read itself, with the buffer it allocates owned until it is handed on.
+     *
+     * A peer reset answers [SocketChannel.read] the same way it answers a
+     * write, and the buffer is a local of this frame: nothing in the queue,
+     * nothing the teardown walks. Released here on the way out, and after that
+     * the pipeline owns it, so a throw from downstream must not release it
+     * again — it only ends the connection, through the guard on [onReadable].
+     */
+    private fun onReadableOwned() {
         if (!socketChannel.isOpen) return
         if (readPaused) {
             // Paused after the interest was registered: do not consume and
@@ -208,10 +220,15 @@ internal class NioIoTransport(
             readPoolRegistered = true
         }
         val buf = allocator.allocate(readBufferSize)
-        val bb = buf.unsafeBuffer
-        bb.position(buf.writerIndex)
-        bb.limit(buf.capacity)
-        val n = socketChannel.read(bb)
+        val n = try {
+            val bb = buf.unsafeBuffer
+            bb.position(buf.writerIndex)
+            bb.limit(buf.capacity)
+            socketChannel.read(bb)
+        } catch (readFailure: Throwable) {
+            buf.release()
+            throw readFailure
+        }
         when {
             n > 0 -> {
                 buf.writerIndex += n
@@ -335,7 +352,7 @@ internal class NioIoTransport(
                 val done = try {
                     transport.performFlush()
                 } catch (drainFailure: Throwable) {
-                    transport.endConnectionAfterDrainFailure(drainFailure)
+                    transport.endConnectionAfterLoopFailure("the scheduled flush", drainFailure)
                     return@Runnable
                 }
                 if (done && transport.pendingWrites.isEmpty()) {
@@ -352,7 +369,27 @@ internal class NioIoTransport(
     }
 
     /**
-     * Ends the connection a scheduled drain could not finish.
+     * Runs a callback the loop drives, so that a throw ends the connection.
+     *
+     * What the loop does with an escaping throw is log it: the task drain and
+     * `processReadyKey` each catch, warn and move to the next item. That is the
+     * right thing for the loop — one connection must not stop it — and the
+     * wrong thing for the connection, which is left open holding whatever the
+     * callback had not finished with. The two POSIX transports answer this with
+     * `containReadinessFailure` on their readiness dispatch; this is the same
+     * answer for the four callbacks this transport hands the loop.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun containLoopFailure(handling: String, body: () -> Unit) {
+        try {
+            body()
+        } catch (loopFailure: Throwable) {
+            endConnectionAfterLoopFailure(handling, loopFailure)
+        }
+    }
+
+    /**
+     * Reports the connection inactive, then closes it.
      *
      * The report comes first and the close second, which is the order the two
      * POSIX transports use when a readiness callback throws, and for the same
@@ -362,14 +399,14 @@ internal class NioIoTransport(
      * the server's registry entry, and the EOF that wakes a parked reader.
      *
      * A report that throws must not cost the close, so it is logged and the
-     * close runs anyway. The close's own failure is left to the loop's task
-     * drain: by then the staged teardown has run every obligation it could, and
-     * there is no caller here to carry a failure to.
+     * close runs anyway. The close's own failure is left to the loop's guard:
+     * by then the staged teardown has run every obligation it could, and there
+     * is no caller here to carry a failure to.
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun endConnectionAfterDrainFailure(drainFailure: Throwable) {
-        eventLoop.logger.warn(drainFailure) {
-            "the scheduled flush threw; ending the connection: $socketChannel"
+    private fun endConnectionAfterLoopFailure(handling: String, loopFailure: Throwable) {
+        eventLoop.logger.warn(loopFailure) {
+            "handling $handling threw; ending the connection: $socketChannel"
         }
         try {
             onReadClosed?.invoke()
@@ -641,14 +678,21 @@ internal class NioIoTransport(
             selectionKey,
             SelectionKey.OP_WRITE,
             Runnable {
-                val done = flush()
-                if (done) {
-                    flushContinuation?.let { cont ->
-                        flushContinuation = null
-                        cont.resume(Unit)
+                // `processReadyKey` catches what escapes here, warns and moves
+                // on -- and the slot and interest bit were cleared before this
+                // ran, so nothing re-arms. Left to it, a throw leaves the
+                // transport open with the entry this retry gave back, no write
+                // interest, a parked waiter and no route to `onReadClosed`.
+                containLoopFailure("readiness for write") {
+                    val done = flush()
+                    if (done) {
+                        flushContinuation?.let { cont ->
+                            flushContinuation = null
+                            cont.resume(Unit)
+                        }
+                        onFlushComplete?.invoke()
+                        sendFinIfDrained()
                     }
-                    onFlushComplete?.invoke()
-                    sendFinIfDrained()
                 }
             },
         )
@@ -666,7 +710,32 @@ internal class NioIoTransport(
     override suspend fun awaitPendingFlush() {
         suspendCancellableCoroutine { cont ->
             val register = Runnable {
-                when {
+                try {
+                    registerFlushWaiter(cont)
+                } catch (registerFailure: Throwable) {
+                    // Run inline, this throw would leave through
+                    // `suspendCancellableCoroutine` and reach the caller.
+                    // Dispatched, it reaches the loop's task drain instead, and
+                    // the eager drain above throws *before* the continuation is
+                    // stored -- so neither the teardown's waiter stage nor
+                    // anything else can answer it. Same answer either way, by
+                    // hand.
+                    if (flushContinuation === cont) flushContinuation = null
+                    if (!cont.isCompleted) cont.resumeWithException(registerFailure)
+                    endConnectionAfterLoopFailure("an awaited flush", registerFailure)
+                }
+            }
+            if (eventLoop.inEventLoop()) {
+                register.run()
+            } else {
+                eventLoop.dispatch(EmptyCoroutineContext, register)
+            }
+        }
+    }
+
+    /** The body of [awaitPendingFlush]'s registration, on the EventLoop thread. */
+    private fun registerFlushWaiter(cont: kotlinx.coroutines.CancellableContinuation<Unit>) {
+        when {
                     !opened -> cont.cancel(closedTransportFlushCause())
                     pendingWrites.isEmpty() -> cont.resume(Unit)
                     else -> {
@@ -676,24 +745,17 @@ internal class NioIoTransport(
                         // flush inline so the caller wakes on this dispatch instead of
                         // the next one. The `flush()` deferral path is unchanged and
                         // still coalesces SSE-style rapid emits when no one awaits.
-                        if (flushScheduled) {
-                            flushScheduled = false
-                            val done = performFlush()
-                            if (done && pendingWrites.isEmpty()) {
-                                sendFinIfDrained()
-                                cont.resume(Unit)
-                                return@Runnable
-                            }
-                        }
-                        flushContinuation = cont
-                        cont.invokeOnCancellation { flushContinuation = null }
+                if (flushScheduled) {
+                    flushScheduled = false
+                    val done = performFlush()
+                    if (done && pendingWrites.isEmpty()) {
+                        sendFinIfDrained()
+                        cont.resume(Unit)
+                        return
                     }
                 }
-            }
-            if (eventLoop.inEventLoop()) {
-                register.run()
-            } else {
-                eventLoop.dispatch(EmptyCoroutineContext, register)
+                flushContinuation = cont
+                cont.invokeOnCancellation { flushContinuation = null }
             }
         }
     }
