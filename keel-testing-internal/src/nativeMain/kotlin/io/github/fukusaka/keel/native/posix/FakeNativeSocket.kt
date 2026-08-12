@@ -319,6 +319,10 @@ public class FakeNativeSocket : NativeSocket {
             "a scripted flush failure never fired" +
                 if (flushThrowsAfterCalls > 0) " (still waiting out $flushThrowsAfterCalls calls)" else ""
         }
+        // A count with no fault behind it never decrements, so the check above
+        // cannot see it. That combination is a test that armed the delay and not
+        // the failure, which is the same silent green the fault checks close.
+        check(flushThrowsAfterCalls == 0) { "a flush-failure delay was set without a failure to delay" }
         check(acceptThrowsOnce == null) { "a scripted accept failure never fired" }
         check(readThrowsOnce == null) { "a scripted read failure never fired" }
         val leftovers = buildList {

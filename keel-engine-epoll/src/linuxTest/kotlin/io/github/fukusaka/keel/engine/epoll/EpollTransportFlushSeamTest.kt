@@ -194,9 +194,10 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
     fun `flushSingle whose failure log throws has already released the buffer`() {
         // The entry is out of the deque for the whole branch, not just for the
         // write, so anything that throws before the release strands it the same
-        // way. `Logger` is a public SPI the engine takes through its config, so
-        // the warn line is caller code: releasing after it put a third party
-        // between the buffer and its only release.
+        // way. No engine-built loop can get here -- each wraps the configured
+        // factory in a guard that swallows what `rawLog` throws -- so this
+        // constructs the loop with a raw `Logger` to reach it. What it pins is
+        // the order: the release is the obligation, the log is the report.
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.Failed(ECONNRESET)) }
         val loop = EpollEventLoop(throwingWarnLogger(), flushCoalescing = false)
