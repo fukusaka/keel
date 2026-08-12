@@ -1,9 +1,9 @@
 package io.github.fukusaka.keel.engine.nio
 
-import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.CancellationException
