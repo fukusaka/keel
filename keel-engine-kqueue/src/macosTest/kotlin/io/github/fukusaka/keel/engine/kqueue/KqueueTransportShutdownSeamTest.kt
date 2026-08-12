@@ -213,6 +213,18 @@ internal class KqueueTransportShutdownSeamTest : KqueueTransportSeamFixture() {
                 warns.messages.any { "the flush that would have released it failed" in it },
                 "the unkeepable deferral must be reported, got: ${warns.messages}",
             )
+            assertEquals(1, tracker.outstandingCount, "the entry the failed flush put back is still owed a release")
+            fake.assertAllConsumed()
+
+            // The branch's own premise: that entry is where a teardown can
+            // reach it. The barrier behind the close is how we know the
+            // teardown ran before the assertion -- this loop is live, so the
+            // close is dispatched rather than inline.
+            transport.close()
+            val closed = CompletableDeferred<Unit>()
+            loop.dispatch(EmptyCoroutineContext, Runnable { closed.complete(Unit) })
+            withTimeout(SEAM_TIMEOUT_MS) { closed.await() }
+            assertEquals(0, tracker.outstandingCount, "and the teardown releases it")
         } finally {
             loop.close()
         }
