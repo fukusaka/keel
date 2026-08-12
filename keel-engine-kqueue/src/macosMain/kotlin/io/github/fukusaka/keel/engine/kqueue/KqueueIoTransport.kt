@@ -719,10 +719,12 @@ internal class KqueueIoTransport(
             Runnable {
                 if (!transport.opened) return@Runnable
                 transport.flushScheduled = false
-                // This drain is the one with nobody to tell. Every other caller
-                // of `performFlush` receives the throw -- `flush()` without
-                // coalescing, the eager run in `awaitPendingFlush`, the teardown's
-                // own staged drain -- and can end the connection or report it.
+                // This drain is the one with nobody to tell. `flush()` without
+                // coalescing and the eager run in `awaitPendingFlush` hand the
+                // throw to their caller; the teardown's own staged drain keeps
+                // going and carries it out; `onWritable`'s retry runs inside
+                // `containReadinessFailure`, which ends the connection. Only
+                // this one had no answer.
                 // Here it would reach the loop's task drain, which logs it and
                 // moves to the next task, leaving a transport that is open, holds
                 // a re-queued entry nothing will send, and parks the next
