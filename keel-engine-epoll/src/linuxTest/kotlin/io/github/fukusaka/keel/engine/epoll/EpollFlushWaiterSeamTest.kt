@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
+import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
@@ -26,6 +27,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeSource
 
 /**
  * That a caller waiting on a flush is answered when the drain *it* runs throws.
@@ -86,10 +88,9 @@ internal class EpollFlushWaiterSeamTest {
                 EmptyCoroutineContext,
                 Runnable {
                     held.store(1)
-                    var spins = 0
-                    while (gate.load() == 0 && spins < GATE_MAX_SPINS) {
+                    val start = TimeSource.Monotonic.markNow()
+                    while (gate.load() == 0 && start.elapsedNow() < BUDGET) {
                         usleep(GATE_POLL_US)
-                        spins++
                     }
                 },
             )
@@ -179,16 +180,95 @@ internal class EpollFlushWaiterSeamTest {
         }
     }
 
+    @Test
+    fun `a drain that throws after the queue emptied still sends the deferred FIN`() = runBlocking {
+        withTimeout(BUDGET) {
+            // Every byte reached the socket; what threw came after the send --
+            // here the water-mark callback the drain runs on its way out. The
+            // FIN was one call from the wire, and `reportAbandonedFin` gives the
+            // deferral up for good, so a catch that reports without attempting
+            // turns a sendable FIN into a lost one that is then reported as
+            // lost.
+            val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.Written(BACKPRESSURE_BYTES)) }
+            val tracker = TrackingAllocator()
+            val transport = EpollIoTransport(fd, eventLoop, tracker, fake)
+
+            val answer = CompletableDeferred<Throwable?>()
+            eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    // Over the high-water mark, so the drain's accounting
+                    // crosses back below the low one and reaches the callback.
+                    val buf = tracker.allocate(BACKPRESSURE_BYTES).also { it.writerIndex = BACKPRESSURE_BYTES }
+                    transport.write(buf)
+                    transport.onWritabilityChanged = { throw InjectedFault("the writability callback refused") }
+                    transport.shutdownOutput() // defers the FIN behind the buffered write
+                    answer.complete(runCatching { transport.flush() }.exceptionOrNull())
+                },
+            )
+            answer.await()
+
+            val drained = CompletableDeferred<Unit>()
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { drained.complete(Unit) })
+            drained.await()
+
+            assertEquals(1, fake.writeCalls, "the write must have gone out for this test to mean anything")
+            assertEquals(1, fake.shutdownCalls, "the FIN was sendable when the drain threw, so it must have gone out")
+        }
+    }
+
+    @Test
+    fun `a waiter whose bytes all went out is told the flush drained rather than failed`() = runBlocking {
+        withTimeout(BUDGET) {
+            // The throw lands after the queue emptied, so the caller's bytes
+            // reached the socket. They asked whether their flush drained; it
+            // did. Handing them the failure would report a write error for
+            // bytes the peer received.
+            val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.Written(BACKPRESSURE_BYTES)) }
+            val tracker = TrackingAllocator()
+            val transport = EpollIoTransport(fd, eventLoop, tracker, fake)
+
+            val buffered = CompletableDeferred<Unit>()
+            eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    val buf = tracker.allocate(BACKPRESSURE_BYTES).also { it.writerIndex = BACKPRESSURE_BYTES }
+                    transport.write(buf)
+                    buffered.complete(Unit)
+                },
+            )
+            buffered.await()
+
+            val answer = CompletableDeferred<Throwable?>()
+            launch(Dispatchers.Unconfined) {
+                answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
+            }
+            val registered = CompletableDeferred<Unit>()
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { registered.complete(Unit) })
+            registered.await()
+
+            eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    transport.onWritabilityChanged = { throw InjectedFault("the writability callback refused") }
+                    transport.flush() // schedules the tick that drains, then throws on the way out
+                },
+            )
+
+            assertEquals(null, answer.await(), "the bytes went out, so the waiter must be told the flush drained")
+        }
+    }
+
     private companion object {
         /** Any capacity above the payload; the flush reads the payload range. */
         const val BUF_CAPACITY = 16
 
         const val PAYLOAD_BYTES = 5
 
-        const val GATE_POLL_US = 200u
+        /** Above `IoTransport.DEFAULT_HIGH_WATER_MARK`, so the drain crosses back below the low one. */
+        const val BACKPRESSURE_BYTES = 70_000
 
-        /** Bounds the hold at roughly [BUDGET] even if the release is skipped. */
-        const val GATE_MAX_SPINS = 25_000
+        const val GATE_POLL_US = 200u
 
         /** The sibling seam suites' envelope; the happy path here is sub-second. */
         val BUDGET = 5.seconds

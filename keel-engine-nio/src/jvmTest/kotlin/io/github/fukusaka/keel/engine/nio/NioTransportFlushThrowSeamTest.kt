@@ -220,23 +220,30 @@ class NioTransportFlushThrowSeamTest {
         )
         if (!holding.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the loop was never held")
 
-        eventLoop.dispatch(
-            EmptyCoroutineContext,
-            Runnable {
-                val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
-                transport.write(buf)
-                transport.flush() // queues the tick behind the registration below
-                client.close()
-            },
-        )
+        val answer = CompletableDeferred<Throwable?>()
+        try {
+            eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
+                    transport.write(buf)
+                    transport.flush() // queues the tick behind the registration below
+                    client.close()
+                },
+            )
+            runBlocking {
+                launch(Dispatchers.Unconfined) {
+                    answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
+                }
+            }
+        } finally {
+            // Released from a `finally`: a throw between the dispatch and here
+            // would otherwise leave the hold running until its own bound, and
+            // `tearDown` joins that thread.
+            release.countDown()
+        }
 
         runBlocking {
-            val answer = CompletableDeferred<Throwable?>()
-            launch(Dispatchers.Unconfined) {
-                answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
-            }
-            release.countDown()
-
             val cause = withTimeout(WAITER_BUDGET_MS) { answer.await() }
             assertTrue(cause != null, "the waiter must be answered, not parked")
         }
@@ -245,9 +252,9 @@ class NioTransportFlushThrowSeamTest {
     @Test
     fun `a parked waiter is answered when the tick that would resume it throws`() {
         // The shipped default's own path: the waiter is already parked when a
-        // scheduled tick runs and throws. Nothing else is coming -- the throw
-        // path arms no write interest -- and the teardown only answers a waiter
-        // if something closes the transport, which nothing here does.
+        // scheduled tick runs and throws. The throw path arms no interest of
+        // its own, and the teardown only answers a waiter if something closes
+        // the transport, which nothing here does.
         val eventLoop = newLoop(flushCoalescing = true)
         val key = runBlocking { eventLoop.registerChannel(client) }
         val tracker = TrackingAllocator()
