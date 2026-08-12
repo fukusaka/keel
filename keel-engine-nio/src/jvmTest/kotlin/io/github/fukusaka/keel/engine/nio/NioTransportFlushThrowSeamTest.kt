@@ -4,8 +4,8 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.NioByteBufferBacking
-import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.CancellationException
@@ -502,14 +502,18 @@ class NioTransportFlushThrowSeamTest {
         client.setOption(StandardSocketOptions.SO_SNDBUF, STALL_SNDBUF_BYTES)
         val eventLoop = newLoop(flushCoalescing = false)
         val key = runBlocking { eventLoop.registerChannel(client) }
-        val head = RefuseOnceBuf(DefaultAllocator.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES })
+        val head = RefuseOnceBuf(
+            DefaultAllocator.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES },
+        )
         val transport = NioIoTransport(client, key, eventLoop, DefaultAllocator, IdleReadPolicy.DETECT_PEER_CLOSE)
 
         runOnLoopAndWait(eventLoop) {
             // The head is consumed whole and the tail stalls, so the walk runs
             // and reaches the head's release inside it.
             transport.write(head)
-            transport.write(DefaultAllocator.allocate(STALL_PAYLOAD_BYTES).also { it.writerIndex = STALL_PAYLOAD_BYTES })
+            transport.write(
+                DefaultAllocator.allocate(STALL_PAYLOAD_BYTES).also { it.writerIndex = STALL_PAYLOAD_BYTES },
+            )
             runCatching { transport.flush() }
             runCatching { transport.close() }
         }
@@ -547,7 +551,9 @@ class NioTransportFlushThrowSeamTest {
         val eventLoop = newLoop(flushCoalescing = false)
         val key = runBlocking { eventLoop.registerChannel(client) }
         val transport = NioIoTransport(client, key, eventLoop, DefaultAllocator, IdleReadPolicy.DETECT_PEER_CLOSE)
-        val late = RefuseOnceBuf(DefaultAllocator.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES })
+        val late = RefuseOnceBuf(
+            DefaultAllocator.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES },
+        )
 
         runOnLoopAndWait(eventLoop) {
             // Two entries over the high-water mark, so the drain's accounting
@@ -575,7 +581,9 @@ class NioTransportFlushThrowSeamTest {
         // itself used to: not queued for the teardown, not held by a caller.
         val eventLoop = newLoop(flushCoalescing = false)
         val key = runBlocking { eventLoop.registerChannel(client) }
-        val refusing = RefusingRangeBuf(DefaultAllocator.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES })
+        val refusing = RefusingRangeBuf(
+            DefaultAllocator.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES },
+        )
         val transport = NioIoTransport(client, key, eventLoop, DefaultAllocator, IdleReadPolicy.DETECT_PEER_CLOSE)
 
         runOnLoopAndWait(eventLoop) {
@@ -584,7 +592,11 @@ class NioTransportFlushThrowSeamTest {
                 runCatching { transport.flush() }.exceptionOrNull() is IllegalStateException,
                 "the range must have been refused for this case to mean anything",
             )
-            assertEquals(0, refusing.releaseAttempts, "the entry goes back to the queue rather than being released here")
+            assertEquals(
+                0,
+                refusing.releaseAttempts,
+                "the entry goes back to the queue rather than being released here",
+            )
             transport.close()
         }
         assertEquals(1, refusing.releaseAttempts, "and the teardown finds it there")
