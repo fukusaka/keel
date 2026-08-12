@@ -25,6 +25,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.set
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -179,11 +180,30 @@ internal class KqueueIoTransport(
      * closed here instead; [endConnectionAfterFailure] rethrows only when the
      * wind-down itself failed, and that throw is the loop drain's to log.
      */
-    private fun containDrainFailure(drainFailure: Throwable) {
-        eventLoop.logger.warn(drainFailure) {
-            "handling the scheduled flush threw; ending the connection: fd=$fd"
+    private inline fun containLoopFailure(handling: String, body: () -> Unit) {
+        try {
+            body()
+        } catch (loopFailure: Throwable) {
+            endConnectionAfterLoopFailure(handling, loopFailure)
         }
-        endConnectionAfterFailure(drainFailure)
+    }
+
+    /**
+     * Ends the connection a loop-driven callback could not finish, the way a
+     * failed readiness callback ends one.
+     *
+     * These callbacks have no caller to carry a failure to: the loop's task
+     * drain logs what escapes and moves to the next task, which leaves the
+     * connection open holding whatever the callback had not finished with.
+     * [endConnectionAfterFailure] rethrows only when the wind-down itself
+     * failed, and that throw is the drain's to log.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun endConnectionAfterLoopFailure(handling: String, loopFailure: Throwable) {
+        eventLoop.logger.warn(loopFailure) {
+            "handling $handling threw; ending the connection: fd=$fd"
+        }
+        endConnectionAfterFailure(loopFailure)
     }
 
     /**
@@ -681,7 +701,13 @@ internal class KqueueIoTransport(
             // may make per connection, so blocking it would expose every such
             // caller to a wait that runs application teardown. The mid-shutdown
             // window keeps the dispatch, and the final drain still runs it.
-            else -> eventLoop.dispatch(EmptyCoroutineContext, Runnable { halfCloseAndReport() })
+            // Contained, unlike the arm above it: that one hands a throw back to
+            // the caller who asked for the half-close, and this one has only the
+            // loop's task drain, which logs it and moves on.
+            else -> eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable { containLoopFailure("a half-close") { halfCloseAndReport() } },
+            )
         }
     }
 
@@ -724,7 +750,10 @@ internal class KqueueIoTransport(
                 // throw to their caller; the teardown's own staged drain keeps
                 // going and carries it out; `onWritable`'s retry runs inside
                 // `containReadinessFailure`, which ends the connection. Only
-                // this one had no answer.
+                // this one had no answer. The whole body is inside the guard,
+                // not just the drain: what follows it resumes a waiter, calls
+                // back into user code and decides the FIN, and a throw from any
+                // of those leaves the same connection open with nobody told.
                 // Here it would reach the loop's task drain, which logs it and
                 // moves to the next task, leaving a transport that is open, holds
                 // a re-queued entry nothing will send, and parks the next
@@ -732,24 +761,20 @@ internal class KqueueIoTransport(
                 // through a seam that answers rather than throws, so what gets
                 // here is a caller-supplied `NativeSocket` -- the same reach that
                 // makes the re-queue above worth having.
-                val done: Boolean
-                try {
-                    done = transport.performFlush()
-                } catch (drainFailure: Throwable) {
-                    transport.containDrainFailure(drainFailure)
-                    return@Runnable
-                }
-                if (done && transport.pendingWrites.isEmpty()) {
-                    transport.flushContinuation?.let { cont ->
-                        transport.flushContinuation = null
-                        cont.resume(Unit)
+                transport.containLoopFailure("the scheduled flush") {
+                    val done = transport.performFlush()
+                    if (done && transport.pendingWrites.isEmpty()) {
+                        transport.flushContinuation?.let { cont ->
+                            transport.flushContinuation = null
+                            cont.resume(Unit)
+                        }
+                        transport.onFlushComplete?.invoke()
+                        transport.sendFinIfDrained()
                     }
-                    transport.onFlushComplete?.invoke()
-                    transport.sendFinIfDrained()
+                    // The last chance this transport had to send a deferred FIN. If
+                    // it is still pending after this, nothing else will take it.
+                    transport.reportAbandonedFin()
                 }
-                // The last chance this transport had to send a deferred FIN. If
-                // it is still pending after this, nothing else will take it.
-                transport.reportAbandonedFin()
             },
         )
         return false
@@ -1137,40 +1162,18 @@ internal class KqueueIoTransport(
     override suspend fun awaitPendingFlush() {
         suspendCancellableCoroutine { cont ->
             val register = Runnable {
-                when {
-                    !opened -> cont.cancel(closedTransportFlushCause())
-                    pendingWrites.isEmpty() -> cont.resume(Unit)
-                    else -> {
-                        // Mirror of the epoll defer eager-run: when a caller reaches
-                        // this branch, they are about to suspend and pay for a full EL
-                        // tick before the coalesced flush drains. Run the deferred
-                        // flush inline so the caller wakes on this dispatch instead of
-                        // the next one. The `flush()` deferral path is unchanged and
-                        // still coalesces SSE-style rapid emits when no one awaits.
-                        if (flushScheduled) {
-                            flushScheduled = false
-                            val done = performFlush()
-                            if (done && pendingWrites.isEmpty()) {
-                                sendFinIfDrained()
-                                cont.resume(Unit)
-                                return@Runnable
-                            }
-                        }
-                        // About to park on a flush only a future event can
-                        // complete. If the loop has stopped polling, there is
-                        // no such event -- and this Runnable may be running in
-                        // the drain the stop sweep performs *after* walking the
-                        // participants, in which case onLoopStopped has already
-                        // been and gone and nothing is left to end the wait.
-                        // Storing here would reproduce the exact hang this
-                        // change exists to remove.
-                        if (eventLoop.isFinishing()) {
-                            cont.cancel(stoppedLoopFlushCause())
-                            return@Runnable
-                        }
-                        flushContinuation = cont
-                        cont.invokeOnCancellation { flushContinuation = null }
-                    }
+                try {
+                    registerFlushWaiter(cont)
+                } catch (registerFailure: Throwable) {
+                    // Run inline, this throw leaves through
+                    // `suspendCancellableCoroutine` and reaches the caller.
+                    // Dispatched, it reaches the loop's task drain instead, and
+                    // the eager drain above throws *before* the continuation is
+                    // stored -- so nothing is left that could answer this
+                    // caller. Same answer either way, by hand.
+                    if (flushContinuation === cont) flushContinuation = null
+                    if (!cont.isCompleted) cont.resumeWith(Result.failure(registerFailure))
+                    endConnectionAfterLoopFailure("an awaited flush", registerFailure)
                 }
             }
             when {
@@ -1197,6 +1200,45 @@ internal class KqueueIoTransport(
                 else -> eventLoop.dispatch(EmptyCoroutineContext, register)
             }
         }
+    }
+
+    /** The body of [awaitPendingFlush]'s registration, on the EventLoop thread. */
+    private fun registerFlushWaiter(cont: CancellableContinuation<Unit>) {
+            when {
+                !opened -> cont.cancel(closedTransportFlushCause())
+                pendingWrites.isEmpty() -> cont.resume(Unit)
+                else -> {
+                    // Mirror of the epoll defer eager-run: when a caller reaches
+                    // this branch, they are about to suspend and pay for a full EL
+                    // tick before the coalesced flush drains. Run the deferred
+                    // flush inline so the caller wakes on this dispatch instead of
+                    // the next one. The `flush()` deferral path is unchanged and
+                    // still coalesces SSE-style rapid emits when no one awaits.
+                    if (flushScheduled) {
+                        flushScheduled = false
+                        val done = performFlush()
+                        if (done && pendingWrites.isEmpty()) {
+                            sendFinIfDrained()
+                            cont.resume(Unit)
+                            return
+                        }
+                    }
+                    // About to park on a flush only a future event can
+                    // complete. If the loop has stopped polling, there is
+                    // no such event -- and this Runnable may be running in
+                    // the drain the stop sweep performs *after* walking the
+                    // participants, in which case onLoopStopped has already
+                    // been and gone and nothing is left to end the wait.
+                    // Storing here would reproduce the exact hang this
+                    // change exists to remove.
+                    if (eventLoop.isFinishing()) {
+                        cont.cancel(stoppedLoopFlushCause())
+                        return
+                    }
+                    flushContinuation = cont
+                    cont.invokeOnCancellation { flushContinuation = null }
+                }
+            }
     }
 
     /**

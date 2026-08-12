@@ -292,7 +292,13 @@ internal class NioIoTransport(
         if (eventLoop.inEventLoop()) {
             shutdownOutputOwned()
         } else {
-            eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOwned() })
+            // Contained, unlike the arm above it: that one hands a throw back to
+            // the caller who asked for the half-close, and this one has only the
+            // loop's task drain, which logs it and moves on.
+            eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable { containLoopFailure("a half-close") { shutdownOutputOwned() } },
+            )
         }
     }
 
@@ -364,19 +370,16 @@ internal class NioIoTransport(
                 // reset makes `SocketChannel.write` throw, and the read side
                 // throws the same way, so `onReadClosed` never fires either.
                 // Measured before this guard: the caller never returned.
-                val done = try {
-                    transport.performFlush()
-                } catch (drainFailure: Throwable) {
-                    transport.endConnectionAfterLoopFailure("the scheduled flush", drainFailure)
-                    return@Runnable
-                }
-                if (done && transport.pendingWrites.isEmpty()) {
-                    transport.flushContinuation?.let { cont ->
-                        transport.flushContinuation = null
-                        cont.resume(Unit)
+                transport.containLoopFailure("the scheduled flush") {
+                    val done = transport.performFlush()
+                    if (done && transport.pendingWrites.isEmpty()) {
+                        transport.flushContinuation?.let { cont ->
+                            transport.flushContinuation = null
+                            cont.resume(Unit)
+                        }
+                        transport.onFlushComplete?.invoke()
+                        transport.sendFinIfDrained()
                     }
-                    transport.onFlushComplete?.invoke()
-                    transport.sendFinIfDrained()
                 }
             },
         )
@@ -392,7 +395,11 @@ internal class NioIoTransport(
      * wrong thing for the connection, which is left open holding whatever the
      * callback had not finished with. The two POSIX transports answer this with
      * `containReadinessFailure` on their readiness dispatch; this is the same
-     * answer for the four callbacks this transport hands the loop.
+     * answer for every callback this transport hands the loop that has an
+     * obligation to strand: the read, the OP_WRITE retry, the scheduled flush,
+     * an awaited flush's registration and the dispatched half-close. The
+     * teardown's own dispatch is the exception, and deliberate — by the time it
+     * can fail there is nothing left to end.
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun containLoopFailure(handling: String, body: () -> Unit) {
