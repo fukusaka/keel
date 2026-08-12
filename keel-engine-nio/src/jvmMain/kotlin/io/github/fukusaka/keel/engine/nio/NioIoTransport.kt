@@ -282,6 +282,21 @@ internal class NioIoTransport(
     private var flushScheduled: Boolean = false
 
     /**
+     * Hands [cause] to a caller parked in [awaitPendingFlush], if there is one.
+     *
+     * The drain that would have resumed them threw, and the throw path arms no
+     * write interest, so nothing is scheduled that could resume them later. The
+     * teardown answers a waiter it finds; this answers the one whose drain just
+     * failed, before the teardown is even certain to run.
+     */
+    private fun failFlushWaiter(cause: Throwable) {
+        flushContinuation?.let { cont ->
+            flushContinuation = null
+            cont.cancel(cause)
+        }
+    }
+
+    /**
      * Schedules pending writes to be drained on the next [NioEventLoop.dispatch]
      * tick. If a scheduled tick is already pending ([flushScheduled] == true),
      * this call just leaves the bytes in [pendingWrites] — the pending tick
@@ -320,7 +335,19 @@ internal class NioIoTransport(
                 // already-closed channel here.
                 if (!transport.opened) return@Runnable
                 transport.flushScheduled = false
-                val done = transport.performFlush()
+                // The drain can throw -- `flushSingle` re-queues its entry and
+                // rethrows when the socket does. Whoever is parked in
+                // `awaitPendingFlush` is waiting on a drain that is not coming:
+                // the throw path arms no write interest, and this tick is the
+                // only thing scheduled. Answer them with the failure, the way
+                // the drain a waiter runs for itself does, and let the throw go
+                // on to the loop's task drain afterwards.
+                val done = try {
+                    transport.performFlush()
+                } catch (drainFailure: Throwable) {
+                    transport.failFlushWaiter(drainFailure)
+                    throw drainFailure
+                }
                 if (done && transport.pendingWrites.isEmpty()) {
                     transport.flushContinuation?.let { cont ->
                         transport.flushContinuation = null
@@ -420,8 +447,8 @@ internal class NioIoTransport(
         //
         // A stage of its own, and one this transport did not have. A flush that
         // throws leaves its entry re-queued with no write interest registered —
-        // the throw path does not arm one, since the connection is going down —
-        // so nothing will ever drain the queue and resume the waiter. Without
+        // the throw path does not arm one — so nothing will ever drain the
+        // queue and resume the waiter. Without
         // this the fix for the stranded buffer would have traded a leak for a
         // caller parked for the life of its job.
         failure = runTeardownStage(failure) {

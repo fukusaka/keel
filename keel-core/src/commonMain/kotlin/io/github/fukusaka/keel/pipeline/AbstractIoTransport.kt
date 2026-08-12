@@ -277,8 +277,9 @@ abstract class AbstractIoTransport(
      * [PendingWrite]'s buffer is released, the deque cleared, [pendingBytes]
      * zeroed. The shared implementation the POSIX transports' two teardown
      * bodies — on-loop and stopped-loop — both call, so their release
-     * invariant cannot drift apart; the other engines still carry inline
-     * copies and can adopt this as they gain a stopped-loop path.
+     * invariant cannot drift apart. The NIO teardown calls it too, for the
+     * order rather than the sharing: it has no stopped-loop path of its own.
+     * The remaining transports still carry inline copies.
      * Caller must hold the teardown claim ([markTeardownStarted]).
      *
      * **Two obligations, and the second is owed whatever the first did.** A
@@ -286,8 +287,8 @@ abstract class AbstractIoTransport(
      * that are no longer queued. The POSIX teardowns give one stage per
      * obligation for exactly this reason, and calling this from a single stage
      * would have smuggled the grouping they forbid back in through the helper
-     * they share. It is kept here rather than split across two stages at four
-     * call sites because the second obligation is one assignment: a `finally`
+     * they share. It is kept here rather than split across two stages at every
+     * call site because the second obligation is one assignment: a `finally`
      * that cannot throw cannot displace the release failure on its way out,
      * which is the one thing the staging exists to prevent.
      */
@@ -316,8 +317,7 @@ abstract class AbstractIoTransport(
      * the teardown claim is taken, so it has no next walker of its own; it uses
      * this so that the two drains that share a body cannot drift apart. The NIO
      * teardown adopted it without having a stopped-loop path of its own, for the
-     * order rather than the sharing. What the shape costs the transports that
-     * still carry inline copies differs — **the defect needs
+     * order rather than the sharing. What the shape costs a transport differs — **the defect needs
      * a second walker over the same queue**, which only some have. The NIO and
      * Node transports drain on their flush path *and* on teardown, so a refused
      * release on the first leaves a buffer for the second to release again:
@@ -344,7 +344,7 @@ abstract class AbstractIoTransport(
      * raised afterwards, later ones attached to it — the same rule the POSIX
      * teardowns follow between their stages, applied inside the one stage that
      * has a queue to walk. Stopping cost every buffer behind the refusal for
-     * the process lifetime — and where that is: a teardown stage carries on
+     * as long as the allocator that owns them lives — and where that is: a teardown stage carries on
      * past the failure, so nothing came back for what the stage abandoned,
      * while a flush does not (see the paragraph above), so its entries stayed
      * queued for the next walk. Not for the same buffer to refuse again — that

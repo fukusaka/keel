@@ -184,8 +184,8 @@ public class FakeNativeSocket : NativeSocket {
      * throw that lands *after* bytes have already gone out, which is a
      * different state for the caller to be in: a single-buffer flush that
      * throws part way owes the queue the remainder rather than the whole
-     * entry, and both loops run inside one `flush()`, so there is no moment
-     * between them for a test to arm the fault itself.
+     * entry, and both write calls run inside one `flush()`, so there is no
+     * moment between them for a test to arm the fault itself.
      */
     public var flushThrowsAfterCalls: Int = 0
 

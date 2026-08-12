@@ -123,9 +123,8 @@ internal class EpollIoTransport(
         //
         // What no end can do for us is release a buffer that is only a local
         // of the frame that threw. `onReadable` therefore owns what it
-        // allocates until it has handed it on; `flushSingle` has the same
-        // exposure on the write half and does not yet, which is filed rather
-        // than widened into here.
+        // allocates until it has handed it on, and `flushSingle` now owns the
+        // entry it took off the deque for the same reason.
         containReadinessFailure(interest) {
             when (interest) {
                 Interest.READ -> onReadable()
@@ -692,7 +691,20 @@ internal class EpollIoTransport(
             Runnable {
                 if (!transport.opened) return@Runnable
                 transport.flushScheduled = false
-                val done = transport.performFlush()
+                // The drain can throw -- `flushSingle` re-queues its entry and
+                // rethrows when the socket does. Whoever is parked in
+                // `awaitPendingFlush` is waiting on a drain that is not coming:
+                // the throw path arms no write interest, and this tick is the
+                // only thing scheduled. Answer them with the failure, the way
+                // the drain a waiter runs for itself does, and let the throw go
+                // on to the loop's task drain afterwards.
+                val done = try {
+                    transport.performFlush()
+                } catch (drainFailure: Throwable) {
+                    transport.failFlushWaiter(drainFailure)
+                    transport.reportAbandonedFin()
+                    throw drainFailure
+                }
                 if (done && transport.pendingWrites.isEmpty()) {
                     transport.flushContinuation?.let { cont ->
                         transport.flushContinuation = null
@@ -701,8 +713,10 @@ internal class EpollIoTransport(
                     transport.onFlushComplete?.invoke()
                     transport.sendFinIfDrained()
                 }
-                // The last chance this transport had to send a deferred FIN. If
-                // it is still pending after this, nothing else will take it.
+                // The last chance this transport had to send a deferred FIN.
+                // If it is still pending after this, nothing else will take it
+                // -- and a throw from the drain above skips this line, so the
+                // deferral is then abandoned without the report it is owed.
                 transport.reportAbandonedFin()
             },
         )
@@ -710,6 +724,21 @@ internal class EpollIoTransport(
     }
 
     private var flushScheduled = false
+
+    /**
+     * Hands [cause] to a caller parked in [awaitPendingFlush], if there is one.
+     *
+     * The drain that would have resumed them threw, and the throw path arms no
+     * write interest, so nothing is scheduled that could resume them later. The
+     * teardown answers a waiter it finds; this answers the one whose drain just
+     * failed, before the teardown is even certain to run.
+     */
+    private fun failFlushWaiter(cause: Throwable) {
+        flushContinuation?.let { cont ->
+            flushContinuation = null
+            cont.cancel(cause)
+        }
+    }
 
     private fun performFlush(): Boolean {
         if (pendingWrites.isEmpty()) return true
@@ -751,7 +780,7 @@ internal class EpollIoTransport(
         // One stage *per* obligation, not per group. Two in a stage lets the
         // first skip the second, and the two that grouping stranded are not
         // interchangeable: a skipped release leaks buffers, a skipped waiter
-        // wake parks a caller for the process lifetime, and a skipped withdraw
+        // wake parks a caller for the life of its job, and a skipped withdraw
         // leaves a ledger entry naming an fd that is gone.
         //
         // Stages rather than nested `finally` blocks, because a throw from a
@@ -878,7 +907,7 @@ internal class EpollIoTransport(
         // same two obligations to keep apart: the `finally` this replaces saved
         // the descriptor from a throwing release, but the waiter behind that
         // release was inside the `try` and went with it -- parked for the
-        // process lifetime, on a path that exists to end exactly those waits.
+        // life of its job, on a path that exists to end exactly those waits.
         var failure: Throwable? = null
         failure = runTeardownStage(failure) { releaseAllPendingWrites() }
         failure = runTeardownStage(failure) {
@@ -900,10 +929,10 @@ internal class EpollIoTransport(
      *
      * The entry arrives already removed from the deque, so a [NativeSocket]
      * that throws would strand its buffer where no teardown can reach it.
-     * [NativeSocket] is a public SPI -- the engine takes one as a constructor
-     * argument — and the production implementation answers with [WriteResult]
-     * rather than throwing, so nothing an engine builds reaches this branch. A
-     * seam test does, through the fake socket.
+     * [NativeSocket] is a public SPI — the engine takes one as a constructor
+     * argument — and only the production implementation is known not to throw:
+     * it answers with [WriteResult]. A caller that supplies its own reaches
+     * this branch, as does a seam test through the fake socket.
      */
     private fun flushSingle(pw: PendingWrite): Boolean {
         var written = 0
