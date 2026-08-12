@@ -407,10 +407,11 @@ class NioTransportFlushThrowSeamTest {
 
         // The read runs on the loop; the barrier is what says it has.
         var seen = 0
-        for (attempt in 1..READ_ATTEMPTS) {
+        var attempts = 0
+        while (seen == 0 && attempts < READ_ATTEMPTS) {
+            attempts++
             runOnLoopAndWait(eventLoop) { }
             seen = tracker.allocateCount
-            if (seen > 0) break
         }
         assertTrue(seen > 0, "no read ran, so this case never reached the buffer it is about")
         assertEquals(0, tracker.outstandingCount, "the buffer had nowhere to go, so this frame owes its release")

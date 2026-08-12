@@ -227,9 +227,9 @@ internal class KqueueTransportShutdownSeamTest : KqueueTransportSeamFixture() {
         eventLoop.start()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply {
-            enqueueWrite(fd, WriteResult.WouldBlock)   // the stall that arms readiness
+            enqueueWrite(fd, WriteResult.WouldBlock) // the stall that arms readiness
             flushThrowsOnce = InjectedFault("write refused")
-            flushThrowsAfterCalls = 1                  // the half-close's own flush
+            flushThrowsAfterCalls = 1 // the half-close's own flush
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
         val transport = KqueueIoTransport(fd, eventLoop, tracker, fake)
