@@ -12,7 +12,7 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
-import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -220,15 +220,7 @@ internal class NioIoTransport(
             readPoolRegistered = true
         }
         val buf = allocator.allocate(readBufferSize)
-        val n = try {
-            val bb = buf.unsafeBuffer
-            bb.position(buf.writerIndex)
-            bb.limit(buf.capacity)
-            socketChannel.read(bb)
-        } catch (readFailure: Throwable) {
-            buf.release()
-            throw readFailure
-        }
+        val n = readOrRelease(buf)
         when {
             n > 0 -> {
                 buf.writerIndex += n
@@ -257,6 +249,29 @@ internal class NioIoTransport(
             }
         }
     }
+
+    /**
+     * Reads into [buf], releasing it if the channel throws.
+     *
+     * A function of its own rather than a `try` around the call, for the same
+     * reason as [writeOrGiveBack]: with the guard inline, detekt reads the
+     * statement after it as unreachable and the Kotlin compiler does not.
+     *
+     * Only up to the read. After it the buffer is on its way to [onRead], and a
+     * throw from there must end the connection without releasing what the
+     * pipeline now owns.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun readOrRelease(buf: IoBuf): Int =
+        try {
+            val bb = buf.unsafeBuffer
+            bb.position(buf.writerIndex)
+            bb.limit(buf.capacity)
+            socketChannel.read(bb)
+        } catch (readFailure: Throwable) {
+            buf.release()
+            throw readFailure
+        }
 
     // --- Lifecycle ---
 
@@ -666,7 +681,7 @@ internal class NioIoTransport(
         return false
     }
 
-    private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
+    private var flushContinuation: CancellableContinuation<Unit>? = null
 
     /** Registers OP_WRITE callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
@@ -721,7 +736,7 @@ internal class NioIoTransport(
                     // anything else can answer it. Same answer either way, by
                     // hand.
                     if (flushContinuation === cont) flushContinuation = null
-                    if (!cont.isCompleted) cont.resumeWithException(registerFailure)
+                    if (!cont.isCompleted) cont.resumeWith(Result.failure(registerFailure))
                     endConnectionAfterLoopFailure("an awaited flush", registerFailure)
                 }
             }
@@ -734,17 +749,17 @@ internal class NioIoTransport(
     }
 
     /** The body of [awaitPendingFlush]'s registration, on the EventLoop thread. */
-    private fun registerFlushWaiter(cont: kotlinx.coroutines.CancellableContinuation<Unit>) {
+    private fun registerFlushWaiter(cont: CancellableContinuation<Unit>) {
         when {
-                    !opened -> cont.cancel(closedTransportFlushCause())
-                    pendingWrites.isEmpty() -> cont.resume(Unit)
-                    else -> {
-                        // Mirror of the epoll defer eager-run: when a caller reaches
-                        // this branch, they are about to suspend and pay for a full EL
-                        // tick before the coalesced flush drains. Run the deferred
-                        // flush inline so the caller wakes on this dispatch instead of
-                        // the next one. The `flush()` deferral path is unchanged and
-                        // still coalesces SSE-style rapid emits when no one awaits.
+            !opened -> cont.cancel(closedTransportFlushCause())
+            pendingWrites.isEmpty() -> cont.resume(Unit)
+            else -> {
+                // Mirror of the epoll defer eager-run: when a caller reaches
+                // this branch, they are about to suspend and pay for a full EL
+                // tick before the coalesced flush drains. Run the deferred
+                // flush inline so the caller wakes on this dispatch instead of
+                // the next one. The `flush()` deferral path is unchanged and
+                // still coalesces SSE-style rapid emits when no one awaits.
                 if (flushScheduled) {
                     flushScheduled = false
                     val done = performFlush()
