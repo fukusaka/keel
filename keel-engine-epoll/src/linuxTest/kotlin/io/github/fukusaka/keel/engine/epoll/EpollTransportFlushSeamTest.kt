@@ -363,6 +363,9 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
 
             runBlocking {
                 withTimeout(SEAM_TIMEOUT_MS) { inactive.await() }
+                // The report runs before the close that releases; the barrier is
+                // what says that close has run.
+                loopBarrier(loop)
                 // The waiter would park on a drain nothing can finish; the
                 // connection this ends is what answers it instead.
                 assertFailsWith<CancellationException>("a caller must be answered, not left parked") {
@@ -401,7 +404,10 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
             // From this thread, so the half-close is dispatched rather than run here.
             transport.shutdownOutput()
 
-            runBlocking { withTimeout(SEAM_TIMEOUT_MS) { inactive.await() } }
+            runBlocking {
+                withTimeout(SEAM_TIMEOUT_MS) { inactive.await() }
+                loopBarrier(loop)
+            }
             assertEquals(0, fake.shutdownCalls, "the bytes never went out, so no FIN may claim they had")
             assertEquals(0, tracker.outstandingCount, "and the entry the failed flush gave back is released")
         } finally {
@@ -434,12 +440,22 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
                 },
             )
 
-            runBlocking { withTimeout(SEAM_TIMEOUT_MS) { inactive.await() } }
+            runBlocking {
+                withTimeout(SEAM_TIMEOUT_MS) { inactive.await() }
+                loopBarrier(loop)
+            }
             assertEquals(1, fake.writeCalls, "the write itself must have succeeded for this case to mean anything")
             assertEquals(0, tracker.outstandingCount, "the sent entry is released by the write, not stranded")
             fake.assertAllConsumed()
         } finally {
             loop.close()
         }
+    }
+
+    /** Returns once the loop has run everything dispatched so far. */
+    private suspend fun loopBarrier(loop: EpollEventLoop) {
+        val drained = CompletableDeferred<Unit>()
+        loop.dispatch(EmptyCoroutineContext, Runnable { drained.complete(Unit) })
+        withTimeout(SEAM_TIMEOUT_MS) { drained.await() }
     }
 }

@@ -12,6 +12,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetSocketAddress
 import java.net.StandardSocketOptions
+import java.nio.ByteBuffer
 import java.nio.channels.ClosedChannelException
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
@@ -388,6 +389,33 @@ class NioTransportFlushThrowSeamTest {
         assertEquals(0, tracker.outstandingCount, "and the entry the failed flush gave back released")
     }
 
+    @Test
+    fun `a read delivered with no handler attached releases its buffer`() {
+        // The read buffer is this frame's until it is handed on, and with no
+        // handler there is nothing to hand it to. Dropped, it is a pooled
+        // buffer nothing can reach -- the two POSIX transports have written
+        // `?: release` for this all along.
+        val eventLoop = newLoop(flushCoalescing = true)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val tracker = TrackingAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+        // No onRead: the state a transport is in between construction and the
+        // channel wiring its handlers up.
+        runOnLoopAndWait(eventLoop) { transport.onChannelAttached() } // arms OP_READ under this policy
+
+        accepted.write(ByteBuffer.wrap(ByteArray(PAYLOAD_BYTES) { 'x'.code.toByte() }))
+
+        // The read runs on the loop; the barrier is what says it has.
+        var seen = 0
+        for (attempt in 1..READ_ATTEMPTS) {
+            runOnLoopAndWait(eventLoop) { }
+            seen = tracker.allocateCount
+            if (seen > 0) break
+        }
+        assertTrue(seen > 0, "no read ran, so this case never reached the buffer it is about")
+        assertEquals(0, tracker.outstandingCount, "the buffer had nowhere to go, so this frame owes its release")
+    }
+
     /** Runs [body] on [eventLoop] and returns once it has run; also usable as a barrier. */
     private fun runOnLoopAndWait(eventLoop: NioEventLoop, body: () -> Unit) {
         val done = CountDownLatch(1)
@@ -462,6 +490,9 @@ class NioTransportFlushThrowSeamTest {
 
         /** Wall-clock bound on a waiter that must be answered rather than parked. */
         const val WAITER_BUDGET_MS = 5_000L
+
+        /** Bounded polls for the loop to have run the read; each is one loop round-trip. */
+        const val READ_ATTEMPTS = 50
 
         /** Small enough that one payload cannot leave the send buffer while the peer never reads. */
         const val STALL_SNDBUF_BYTES = 2048

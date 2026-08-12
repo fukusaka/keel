@@ -215,4 +215,47 @@ internal class EpollTransportShutdownSeamTest : EpollTransportSeamFixture() {
         assertEquals(0, tracker.outstandingCount, "the completed write releases its buffer")
         fake.assertAllConsumed()
     }
+
+    @Test
+    fun `a half-close whose flush throws keeps a FIN the stall already armed`() = runBlocking {
+        // The case the uncontained inline arm exists for, built as production
+        // reaches it: a first write stalls and arms write readiness, and only
+        // then does the half-close's own flush throw. The entry that throw puts
+        // back is not stranded -- the armed readiness is a live completion path,
+        // and ending the connection here would take it, and the FIN with it.
+        eventLoop.start()
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(fd, WriteResult.WouldBlock)   // the stall that arms readiness
+            flushThrowsOnce = InjectedFault("write refused")
+            flushThrowsAfterCalls = 1                  // the half-close's own flush
+            enqueueShutdown(fd, ShutdownResult.Ok)
+        }
+        val transport = EpollIoTransport(fd, eventLoop, tracker, fake)
+
+        val thrown = CompletableDeferred<Throwable?>()
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = tracker.allocate(SEAM_PAYLOAD_BYTES).also { it.writerIndex = SEAM_PAYLOAD_BYTES }
+                transport.write(buf)
+                transport.flush() // stalls: WouldBlock arms the retry
+                thrown.complete(runCatching { transport.shutdownOutput() }.exceptionOrNull())
+            },
+        )
+        assertIs<InjectedFault>(
+            withTimeout(SEAM_TIMEOUT_MS) { thrown.await() },
+            "the caller is still told the flush failed",
+        )
+        assertEquals(0, fake.shutdownCalls, "the bytes are still unsent, so no FIN may claim otherwise")
+
+        // The readiness the stall armed is the completion path: it drains the
+        // entry the throw gave back, and the FIN follows it.
+        fake.enqueueWrite(fd, WriteResult.Written(SEAM_PAYLOAD_BYTES))
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.onReady(Interest.WRITE) })
+        awaitLoopDrained()
+        assertEquals(1, fake.shutdownCalls, "FIN must follow the completed write")
+        assertEquals(0, tracker.outstandingCount, "and the entry is released by the write that sent it")
+        fake.assertAllConsumed()
+    }
 }
