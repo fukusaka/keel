@@ -3,6 +3,8 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -164,13 +166,77 @@ class NioTransportFlushThrowSeamTest {
             // A barrier behind it is then enough to know it has run -- the loop
             // is FIFO -- which is what makes the close land on a waiter that is
             // genuinely parked, without polling a field the loop owns.
-            val waiter = launch(Dispatchers.Unconfined) { runCatching { transport.awaitPendingFlush() } }
+            val answer = CompletableDeferred<Throwable?>()
+            val waiter = launch(Dispatchers.Unconfined) {
+                answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
+            }
             val registered = CountDownLatch(1)
             eventLoop.dispatch(EmptyCoroutineContext, Runnable { registered.countDown() })
             if (!registered.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the waiter did not register")
 
             eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.close() })
             withTimeout(WAITER_BUDGET_MS) { waiter.join() }
+
+            // *How* it is answered, not just that it was: told the flush
+            // succeeded, a caller would go on believing bytes it never sent
+            // reached the peer. `resume(Unit)` in place of the cancel keeps a
+            // join-only assertion green.
+            val cause = answer.await()
+            assertTrue(
+                cause is CancellationException,
+                "the waiter must be told the flush did not drain, got: $cause",
+            )
+            assertTrue(
+                cause.message?.contains("could drain") == true,
+                "and told why, rather than cancelled bare: ${cause.message}",
+            )
+        }
+    }
+
+    @Test
+    fun `an off-loop waiter that runs the drain itself is answered when it throws`() {
+        // The order a Ktor write channel produces: it dispatches its emit and
+        // then awaits without waiting for it, so the queue is [emit, register]
+        // and the emit queues the flush tick *behind* the registration. The
+        // waiter therefore reaches the inline drain from another thread, and a
+        // throw there escapes into the loop's task drain -- which logs and moves
+        // on -- with the continuation stored nowhere.
+        val eventLoop = newLoop(flushCoalescing = true)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val tracker = TrackingAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+
+        // Hold the loop so the three tasks below queue in a known order.
+        val release = CountDownLatch(1)
+        val holding = CountDownLatch(1)
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                holding.countDown()
+                release.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            },
+        )
+        if (!holding.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the loop was never held")
+
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
+                transport.write(buf)
+                transport.flush() // queues the tick behind the registration below
+                client.close()
+            },
+        )
+
+        runBlocking {
+            val answer = CompletableDeferred<Throwable?>()
+            launch(Dispatchers.Unconfined) {
+                answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
+            }
+            release.countDown()
+
+            val cause = withTimeout(WAITER_BUDGET_MS) { answer.await() }
+            assertTrue(cause != null, "the waiter must be answered, not parked")
         }
     }
 
