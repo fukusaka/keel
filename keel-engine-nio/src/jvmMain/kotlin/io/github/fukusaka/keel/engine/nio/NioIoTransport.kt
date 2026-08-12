@@ -199,9 +199,10 @@ internal class NioIoTransport(
      *
      * A peer reset answers [SocketChannel.read] the same way it answers a
      * write, and the buffer is a local of this frame: nothing in the queue,
-     * nothing the teardown walks. Released here on the way out, and after that
-     * the pipeline owns it, so a throw from downstream must not release it
-     * again — it only ends the connection, through the guard on [onReadable].
+     * nothing the teardown walks. Held until it is released or handed on, and
+     * after the hand-off the pipeline owns it, so a throw from downstream must
+     * not release it again — it only ends the connection, through the guard on
+     * [onReadable].
      */
     private fun onReadableOwned() {
         if (!socketChannel.isOpen) return
@@ -220,60 +221,65 @@ internal class NioIoTransport(
             readPoolRegistered = true
         }
         val buf = allocator.allocate(readBufferSize)
-        val n = readOrRelease(buf)
-        when {
-            n > 0 -> {
-                buf.writerIndex += n
-                touchIdleTimeout() // progress: refresh the read-idle deadline
-                // Always deliver via [onRead] in both modes. In
-                // [IdleReadPolicy.PRESERVE_BACKPRESSURE] this branch is
-                // only reachable when `readEnabled = true` (otherwise
-                // OP_READ is not armed). In [IdleReadPolicy.DETECT_PEER_CLOSE]
-                // we deliver regardless of `readEnabled`; bytes that
-                // arrive while no user [InboundHandler] is installed
-                // are absorbed by `DefaultPipeline`'s pre-attach event
-                // journal and replayed when the first user handler is
-                // added — this trades engine-level data dropping for
-                // pipeline-level buffering, closing the data-loss
-                // caveat that DETECT_PEER_CLOSE previously documented.
-                // `?: release` as on the POSIX pair: with no handler attached the
-                // buffer is this frame's and nothing downstream takes it.
-                onRead?.invoke(buf) ?: buf.release()
-                armRead()
+        // Held until this body has either released it or handed it on, as on
+        // the POSIX pair: a throw between the read and the hand-off leaves the
+        // buffer a local of the frame that threw, and `close()` cannot reach it
+        // — it releases `pendingWrites`, which this was never in. `writerIndex`
+        // and the idle-timer touch both sit in that gap.
+        var unreleased: IoBuf? = buf
+        try {
+            val n = readInto(buf)
+            when {
+                n > 0 -> {
+                    buf.writerIndex += n
+                    touchIdleTimeout() // progress: refresh the read-idle deadline
+                    // Always deliver via [onRead] in both modes. In
+                    // [IdleReadPolicy.PRESERVE_BACKPRESSURE] this branch is
+                    // only reachable when `readEnabled = true` (otherwise
+                    // OP_READ is not armed). In [IdleReadPolicy.DETECT_PEER_CLOSE]
+                    // we deliver regardless of `readEnabled`; bytes that
+                    // arrive while no user [InboundHandler] is installed
+                    // are absorbed by `DefaultPipeline`'s pre-attach event
+                    // journal and replayed when the first user handler is
+                    // added — this trades engine-level data dropping for
+                    // pipeline-level buffering, closing the data-loss
+                    // caveat that DETECT_PEER_CLOSE previously documented.
+                    // `?: release` as on the POSIX pair: with no handler attached
+                    // the buffer is this frame's and nothing downstream takes it.
+                    unreleased = null
+                    onRead?.invoke(buf) ?: buf.release()
+                    armRead()
+                }
+                n == -1 -> {
+                    unreleased = null
+                    buf.release()
+                    onReadClosed?.invoke()
+                }
+                else -> {
+                    unreleased = null
+                    buf.release()
+                    armRead()
+                }
             }
-            n == -1 -> {
-                buf.release()
-                onReadClosed?.invoke()
-            }
-            else -> {
-                buf.release()
-                armRead()
-            }
+        } catch (readFailure: Throwable) {
+            unreleased?.release()
+            throw readFailure
         }
     }
 
     /**
-     * Reads into [buf], releasing it if the channel throws.
+     * Reads into [buf].
      *
-     * A function of its own rather than a `try` around the call, for the same
-     * reason as [writeOrGiveBack]: with the guard inline, detekt reads the
-     * statement after it as unreachable and the Kotlin compiler does not.
-     *
-     * Only up to the read. After it the buffer is on its way to [onRead], and a
-     * throw from there must end the connection without releasing what the
-     * pipeline now owns.
+     * The release on a throw belongs to [onReadableOwned]'s guard, which holds
+     * the buffer across the whole body — releasing here as well would release
+     * it twice, since that guard cannot know this one already had.
      */
-    @Suppress("TooGenericExceptionCaught")
-    private fun readOrRelease(buf: IoBuf): Int =
-        try {
-            val bb = buf.unsafeBuffer
-            bb.position(buf.writerIndex)
-            bb.limit(buf.capacity)
-            socketChannel.read(bb)
-        } catch (readFailure: Throwable) {
-            buf.release()
-            throw readFailure
-        }
+    private fun readInto(buf: IoBuf): Int {
+        val bb = buf.unsafeBuffer
+        bb.position(buf.writerIndex)
+        bb.limit(buf.capacity)
+        return socketChannel.read(bb)
+    }
 
     // --- Lifecycle ---
 
