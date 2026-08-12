@@ -692,14 +692,16 @@ internal class EpollIoTransport(
                 if (!transport.opened) return@Runnable
                 transport.flushScheduled = false
                 // A throw from here reaches the loop's task drain, which logs it
-                // and moves on -- so a waiter parked in `awaitPendingFlush` is
-                // left for the teardown to answer, and a deferred FIN goes
-                // unreported until the loop is finishing. That is the shape on
-                // `main` and this change does not alter it: the entry the drain
-                // re-queues is released by the teardown either way. Answering
-                // from here is filed rather than done, because the answer
-                // belongs at the one place every drain goes through and this is
-                // one of four.
+                // and moves on. What that leaves is unchanged by this branch: a
+                // waiter parked in `awaitPendingFlush` waits for the teardown's
+                // cancel stage -- which this transport already had -- and a
+                // deferred FIN goes unreported until the loop is finishing.
+                //
+                // What the re-queue adds is the entry sitting in the queue, and
+                // that is the point: a teardown can find it. Answering from
+                // here is filed rather than done, because the answer belongs at
+                // the one place every drain goes through rather than restated
+                // at each of the sites that reach it.
                 val done = transport.performFlush()
                 if (done && transport.pendingWrites.isEmpty()) {
                     transport.flushContinuation?.let { cont ->
@@ -709,11 +711,8 @@ internal class EpollIoTransport(
                     transport.onFlushComplete?.invoke()
                     transport.sendFinIfDrained()
                 }
-                // The last chance this transport had to send a deferred FIN.
-                // If it is still pending after this, nothing else will take it.
-                // The catch above reaches this too, though on a running loop it
-                // returns early either way -- the report is for the stopping
-                // loop's final drain.
+                // The last chance this transport had to send a deferred FIN. If
+                // it is still pending after this, nothing else will take it.
                 transport.reportAbandonedFin()
             },
         )

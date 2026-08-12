@@ -321,13 +321,18 @@ internal class NioIoTransport(
                 if (!transport.opened) return@Runnable
                 transport.flushScheduled = false
                 // A throw from here reaches the loop's task drain, which logs it
-                // and moves on -- so a waiter parked in `awaitPendingFlush` is
-                // left for the teardown to answer. That is the shape on `main`
-                // and this change does not alter it: the entry the drain
-                // re-queues is released by the teardown either way. Answering
-                // from here is filed rather than done, because the answer
-                // belongs at the one place every drain goes through and this is
-                // one of four.
+                // and moves on, so a waiter parked in `awaitPendingFlush` is
+                // left for the teardown's cancel stage -- which this transport
+                // gains in this change; on `main` nothing answered such a
+                // caller at all.
+                //
+                // That stage only runs if something closes the transport, and
+                // nothing here does. What the re-queue adds is the entry
+                // sitting in the queue for whatever teardown does run, where
+                // before it was reachable by nothing. Answering from here is
+                // filed rather than done, because the answer belongs at the one
+                // place every drain goes through rather than restated at each
+                // of the sites that reach it.
                 val done = transport.performFlush()
                 if (done && transport.pendingWrites.isEmpty()) {
                     transport.flushContinuation?.let { cont ->
