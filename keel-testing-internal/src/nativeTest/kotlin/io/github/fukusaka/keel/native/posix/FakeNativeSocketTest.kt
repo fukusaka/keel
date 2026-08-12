@@ -220,4 +220,20 @@ class FakeNativeSocketTest {
 
         fake.assertAllConsumed()
     }
+
+    @Test
+    fun `assertAllConsumed reports a scripted accept failure that never fired`() {
+        val fake = FakeNativeSocket().apply { acceptThrowsOnce = IllegalStateException("never reached") }
+
+        val failure = assertFailsWith<IllegalStateException> { fake.assertAllConsumed() }
+        assertContains(failure.message.orEmpty(), "accept failure never fired")
+    }
+
+    @Test
+    fun `assertAllConsumed reports a scripted read failure that never fired`() {
+        val fake = FakeNativeSocket().apply { readThrowsOnce = IllegalStateException("never reached") }
+
+        val failure = assertFailsWith<IllegalStateException> { fake.assertAllConsumed() }
+        assertContains(failure.message.orEmpty(), "read failure never fired")
+    }
 }

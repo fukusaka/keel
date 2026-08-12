@@ -24,11 +24,13 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * What a flush that throws still owes: its buffer to the teardown, and an
- * answer to whoever was waiting on it.
+ * What a flush that throws still owes: its buffer to the teardown, and — once
+ * the teardown is the only thing that can answer it — the caller parked on that
+ * flush.
  *
- * Both, and in **both** flush configurations, because they reach the throw
- * through different callers.
+ * The buffer in **both** flush configurations, because they reach the throw
+ * through different callers; the parked caller under the shipped default, which
+ * is where the teardown runs the drain itself.
  *
  * `performFlush` takes the entry off the deque before calling the channel, so
  * for the length of that call the buffer is in nobody's hands: not queued for
@@ -43,7 +45,7 @@ import kotlin.test.fail
  * ordinarily end. Every one of those cost a pooled buffer for the life of the
  * EventLoop's allocator.
  *
- * **Two cases, because coalescing decides who makes the call.** With it off,
+ * **Coalescing decides who makes the call.** With it off,
  * `flush()` reaches `performFlush` on the caller. With it on — the shipped
  * default — the flush is a scheduled tick, and a `close()` that lands first
  * runs the drain from inside the teardown. Only the second reaches the
@@ -191,6 +193,11 @@ class NioTransportFlushThrowSeamTest {
             assertTrue(
                 cause.message?.contains("could drain") == true,
                 "and told why, rather than cancelled bare: ${cause.message}",
+            )
+            assertEquals(
+                0,
+                tracker.outstandingCount,
+                "and the entry the failed drain re-queued is released by the same teardown",
             )
         }
     }
