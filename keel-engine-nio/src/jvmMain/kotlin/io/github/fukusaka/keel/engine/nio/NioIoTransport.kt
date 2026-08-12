@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.IdleReadPolicy
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
@@ -320,20 +321,23 @@ internal class NioIoTransport(
                 // already-closed channel here.
                 if (!transport.opened) return@Runnable
                 transport.flushScheduled = false
-                // A throw from here reaches the loop's task drain, which logs it
-                // and moves on, so a waiter parked in `awaitPendingFlush` is
-                // left for the teardown's cancel stage -- which this transport
-                // gains in this change; on `main` nothing answered such a
-                // caller at all.
-                //
-                // That stage only runs if something closes the transport, and
-                // nothing here does. What the re-queue adds is the entry
-                // sitting in the queue for whatever teardown does run, where
-                // before it was reachable by nothing. Answering from here is
-                // filed rather than done, because the answer belongs at the one
-                // place every drain goes through rather than restated at each
-                // of the sites that reach it.
-                val done = transport.performFlush()
+                // This drain is the one with nobody to tell. Every other caller
+                // of `performFlush` receives the throw -- `flush()` without
+                // coalescing, the eager run in `awaitPendingFlush`, the
+                // teardown's own staged drain -- and can end the connection or
+                // report it. Here the throw would reach the loop's task drain,
+                // which logs it and moves to the next task, leaving a transport
+                // that is open, holds a re-queued entry nothing will send, and
+                // parks the next `awaitPendingFlush` caller for good: a peer
+                // reset makes `SocketChannel.write` throw, and the read side
+                // throws the same way, so `onReadClosed` never fires either.
+                // Measured before this guard: the caller never returned.
+                val done = try {
+                    transport.performFlush()
+                } catch (drainFailure: Throwable) {
+                    transport.endConnectionAfterDrainFailure(drainFailure)
+                    return@Runnable
+                }
                 if (done && transport.pendingWrites.isEmpty()) {
                     transport.flushContinuation?.let { cont ->
                         transport.flushContinuation = null
@@ -345,6 +349,36 @@ internal class NioIoTransport(
             },
         )
         return false
+    }
+
+    /**
+     * Ends the connection a scheduled drain could not finish.
+     *
+     * The report comes first and the close second, which is the order the two
+     * POSIX transports use when a readiness callback throws, and for the same
+     * reason: `close()` releases what it can reach and tells nobody, while
+     * [onReadClosed] is the only route from here to the pipeline's inactive
+     * chain — the aggregator's held chunks, the decoder's borrowed header set,
+     * the server's registry entry, and the EOF that wakes a parked reader.
+     *
+     * A report that throws must not cost the close, so it is logged and the
+     * close runs anyway. The close's own failure is left to the loop's task
+     * drain: by then the staged teardown has run every obligation it could, and
+     * there is no caller here to carry a failure to.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun endConnectionAfterDrainFailure(drainFailure: Throwable) {
+        eventLoop.logger.warn(drainFailure) {
+            "the scheduled flush threw; ending the connection: $socketChannel"
+        }
+        try {
+            onReadClosed?.invoke()
+        } catch (notifyFailure: Throwable) {
+            eventLoop.logger.warn(notifyFailure) {
+                "reporting the failed connection inactive threw as well: $socketChannel"
+            }
+        }
+        close()
     }
 
     /**
