@@ -343,8 +343,11 @@ abstract class AbstractIoTransport(
      * it: the walk continues to the end of the deque and the first failure is
      * raised afterwards, later ones attached to it — the same rule the POSIX
      * teardowns follow between their stages, applied inside the one stage that
-     * has a queue to walk. Stopping cost every buffer behind the refusal for
-     * as long as the allocator that owns them lives — and where that is: a teardown stage carries on
+     * has a queue to walk. Stopping cost every buffer behind the refusal for the
+     * rest of the process rather than the allocator's life: on Kotlin/Native a
+     * stranded chunk-backed view holds a retain the arena's `close()` does not
+     * clear — that drops only the arena's own reference — so the backing is
+     * never freed. And where the loss lands differs: a teardown stage carries on
      * past the failure, so nothing came back for what the stage abandoned,
      * while a flush does not (see the paragraph above), so its entries stayed
      * queued for the next walk. Not for the same buffer to refuse again — that
@@ -550,7 +553,9 @@ abstract class AbstractIoTransport(
         // complete asynchronously read a false `outputDrained` as "a send is in
         // flight". The three built on readiness have the opposite problem -- a
         // *previous* flush that stalled left write readiness armed, which this
-        // one knows nothing about and does not withdraw. Giving the deferral up
+        // one knows nothing about and does not withdraw. Node fits neither: its
+        // flush completes against Node's own buffer, with no readiness this
+        // class could track. Giving the deferral up
         // on a throw therefore gives it up while a path is alive: measured on
         // one of the readiness engines, the FIN that the armed readiness would
         // have sent is lost instead. Left deferred until close, and filed.

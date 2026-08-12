@@ -553,8 +553,11 @@ internal class NioIoTransport(
      * queue if the channel throws.
      *
      * A function of its own rather than a `try` around the call in
-     * [flushSingle]: with the guard inline, detekt's analysis reads the
-     * statement after it as unreachable, which the Kotlin compiler does not.
+     * [flushSingle]: with the guard inline, detekt's type-resolution analysis
+     * reads the statement after it as unreachable, which the Kotlin compiler
+     * does not. The two POSIX transports ship that same shape inline — only the
+     * `jvm` target runs detekt with types, so their tasks cannot raise it
+     * whatever the shape.
      * [bb]'s position is how far the write got, and [PendingWrite.offset] is
      * where it started.
      */
