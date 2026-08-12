@@ -94,7 +94,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it (#1051)
 - `engine-nio`: a throw from a readiness callback ends the connection instead of being logged and
   dropped (#1051)
-- `engine-nio`: a read that throws releases its buffer instead of stranding it (#1051)
+- `engine-nio`: a read that throws anywhere before the hand-off releases its buffer instead of
+  stranding it (#1051)
 - `engine-nio`: a failing teardown drain no longer takes the obligations after it, and it answers a
   parked `awaitPendingFlush` caller (#1051)
 - `engine-kqueue`, `engine-epoll`: a failed write releases its buffer before reporting the failure, so
