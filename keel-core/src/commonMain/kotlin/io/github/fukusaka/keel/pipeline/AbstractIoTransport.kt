@@ -387,8 +387,9 @@ abstract class AbstractIoTransport(
      * it. Every site that can throw out of a drain owes its waiter an answer —
      * the drain a waiter runs for itself, the queued tick that would have woken
      * a stored one, and the teardown for whatever is still stored when it runs.
-     * And the answer is not always the failure: a throw after the queue emptied
-     * means the bytes went out, so what that caller asked about did happen.
+     * And the answer is not always the failure: a throw that lands once the
+     * output has drained leaves the state the success path calls a completed
+     * flush, which is what that caller asked about.
      *
      * A secondary failure while putting the entry back is attached to [cause]
      * rather than replacing it: the send's failure is the one the caller is
