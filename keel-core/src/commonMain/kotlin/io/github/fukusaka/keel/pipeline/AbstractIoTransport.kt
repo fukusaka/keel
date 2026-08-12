@@ -384,9 +384,11 @@ abstract class AbstractIoTransport(
      * can close only on some paths — from a coalesced flush tick it is
      * swallowed by the loop's task drain and the transport stays open. So the
      * entry waits for a teardown, and anyone parked on that flush waits with
-     * it. Every site that can throw out of a drain owes its waiter an answer:
-     * the teardown for a waiter already stored, and the drain itself for the
-     * one running it, which is not stored anywhere yet.
+     * it. Every site that can throw out of a drain owes its waiter an answer —
+     * the drain a waiter runs for itself, the queued tick that would have woken
+     * a stored one, and the teardown for whatever is still stored when it runs.
+     * And the answer is not always the failure: a throw after the queue emptied
+     * means the bytes went out, so what that caller asked about did happen.
      *
      * A secondary failure while putting the entry back is attached to [cause]
      * rather than replacing it: the send's failure is the one the caller is

@@ -712,6 +712,13 @@ internal class KqueueIoTransport(
                 val done = try {
                     transport.performFlush()
                 } catch (drainFailure: Throwable) {
+                    // Same three steps the success path takes, in the same
+                    // order. The FIN attempt is first and is why: a throw that
+                    // lands after the queue emptied leaves a deferred FIN one
+                    // call from the wire, and `reportAbandonedFin` gives the
+                    // deferral up for good -- so reporting without attempting
+                    // turns a sendable FIN into a lost one.
+                    transport.sendFinIfDrained()
                     transport.failFlushWaiter(drainFailure)
                     transport.reportAbandonedFin()
                     throw drainFailure
@@ -725,9 +732,9 @@ internal class KqueueIoTransport(
                     transport.sendFinIfDrained()
                 }
                 // The last chance this transport had to send a deferred FIN.
-                // If it is still pending after this, nothing else will take it
-                // -- and a throw from the drain above skips this line, so the
-                // deferral is then abandoned without the report it is owed.
+                // If it is still pending after this, nothing else will take it.
+                // The catch above reaches the same two calls in the same order,
+                // so a drain that throws does not skip either.
                 transport.reportAbandonedFin()
             },
         )
@@ -737,17 +744,29 @@ internal class KqueueIoTransport(
     private var flushScheduled = false
 
     /**
-     * Hands [cause] to a caller parked in [awaitPendingFlush], if there is one.
+     * Answers a caller parked in [awaitPendingFlush], if there is one, for a
+     * drain that threw.
      *
-     * The drain that would have resumed them threw, and the throw path arms no
-     * write interest, so nothing is scheduled that could resume them later. The
-     * teardown answers a waiter it finds; this answers the one whose drain just
-     * failed, before the teardown is even certain to run.
+     * **The answer is not always the failure.** A throw after the queue emptied
+     * — a refused release, a water-mark callback — means every byte reached the
+     * socket and the thing that failed came afterwards. The caller asked
+     * whether their flush drained, and it did. Only an entry still queued makes
+     * the failure their answer.
+     *
+     * The drain that would have resumed them is not coming back on its own: it
+     * arms no write interest on the way out, and while readiness armed by an
+     * earlier stall can still fire, the connection that just failed a write is
+     * not something to leave a caller waiting on.
      */
+    private fun answerFlushWaiter(cont: kotlinx.coroutines.CancellableContinuation<Unit>, cause: Throwable) {
+        if (pendingWrites.isEmpty()) cont.resume(Unit) else cont.cancel(cause)
+    }
+
+    /** [answerFlushWaiter] for the waiter this transport is holding, if any. */
     private fun failFlushWaiter(cause: Throwable) {
         flushContinuation?.let { cont ->
             flushContinuation = null
-            cont.cancel(cause)
+            answerFlushWaiter(cont, cause)
         }
     }
 
@@ -1156,7 +1175,8 @@ internal class KqueueIoTransport(
                             val done = try {
                                 performFlush()
                             } catch (drainFailure: Throwable) {
-                                cont.cancel(drainFailure)
+                                sendFinIfDrained()
+                                answerFlushWaiter(cont, drainFailure)
                                 return@Runnable
                             }
                             if (done && pendingWrites.isEmpty()) {
