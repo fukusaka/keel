@@ -248,6 +248,14 @@ internal class EpollTransportShutdownSeamTest : EpollTransportSeamFixture() {
             "the caller is still told the flush failed",
         )
         assertEquals(0, fake.shutdownCalls, "the bytes are still unsent, so no FIN may claim otherwise")
+        // The premise, asserted rather than assumed: the stall registered for
+        // write readiness and the throw did not withdraw it. Without this the
+        // case passes on a transport that never registered at all, since the
+        // retry below is driven by hand.
+        assertTrue(
+            eventLoop.hasCallbackRegistration(fd, Interest.WRITE),
+            "the stall must still have write readiness armed for the retry to be a real one",
+        )
 
         // The readiness the stall armed is the completion path: it drains the
         // entry the throw gave back, and the FIN follows it.

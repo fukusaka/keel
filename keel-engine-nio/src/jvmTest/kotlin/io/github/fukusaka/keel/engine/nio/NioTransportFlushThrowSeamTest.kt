@@ -1,6 +1,9 @@
 package io.github.fukusaka.keel.engine.nio
 
 import io.github.fukusaka.keel.buf.TrackingAllocator
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.coroutines.CancellationException
@@ -414,7 +417,72 @@ class NioTransportFlushThrowSeamTest {
             seen = tracker.allocateCount
         }
         assertTrue(seen > 0, "no read ran, so this case never reached the buffer it is about")
+        // The count above can be observed from inside the read that is running;
+        // one more barrier puts the assertion after that frame, not within it.
+        runOnLoopAndWait(eventLoop) { }
         assertEquals(0, tracker.outstandingCount, "the buffer had nowhere to go, so this frame owes its release")
+    }
+
+    @Test
+    fun `a read whose bookkeeping throws releases the buffer it had allocated`() {
+        // The gap the read guard alone does not cover: between the syscall and
+        // the hand-off the buffer is still this frame's, and `close()` cannot
+        // reach it -- it releases `pendingWrites`, which this was never in. The
+        // two POSIX transports hold it across the whole body; a `writerIndex`
+        // that refuses is the cheapest way to land a throw inside that gap, and
+        // `BufferAllocator` is public, so the buffer is the caller's to supply.
+        val eventLoop = newLoop(flushCoalescing = true)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val allocator = RefusingWriterIndexAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, allocator, IdleReadPolicy.DETECT_PEER_CLOSE)
+        val inactive = CountDownLatch(1)
+        transport.onReadClosed = { inactive.countDown() }
+        runOnLoopAndWait(eventLoop) { transport.onChannelAttached() } // arms OP_READ under this policy
+
+        accepted.write(ByteBuffer.wrap(ByteArray(PAYLOAD_BYTES) { 'x'.code.toByte() }))
+
+        assertTrue(
+            inactive.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS),
+            "the refusal must end the connection rather than be swallowed by the loop",
+        )
+        runOnLoopAndWait(eventLoop) { }
+        assertEquals(1, allocator.allocated, "the read must have allocated for this case to mean anything")
+        assertEquals(1, allocator.released, "and the frame that threw owes that buffer its release")
+    }
+
+    /**
+     * Hands out buffers whose [IoBuf.writerIndex] setter refuses.
+     *
+     * Stands in for the class of allocator-supplied buffer that fails between
+     * the read and the hand-off — the same class the POSIX transports name when
+     * they explain their own guard (a buffer that fails the native-pointer
+     * cast). What matters here is only where the throw lands.
+     */
+    private class RefusingWriterIndexAllocator : BufferAllocator by DefaultAllocator {
+        var allocated = 0
+            private set
+        var released = 0
+            private set
+
+        override fun allocate(capacity: Int): IoBuf {
+            allocated++
+            return RefusingBuf(DefaultAllocator.allocate(capacity)) { released++ }
+        }
+    }
+
+    /**
+     * Counted here rather than by `TrackingAllocator`, which decorates only the
+     * buffers it recognises and would not see this one.
+     */
+    private class RefusingBuf(private val delegate: IoBuf, private val onRelease: () -> Unit) : IoBuf by delegate {
+        override var writerIndex: Int
+            get() = delegate.writerIndex
+            set(_) = throw IllegalStateException("writerIndex refused")
+
+        override fun release(): Boolean {
+            onRelease()
+            return delegate.release()
+        }
     }
 
     /** Runs [body] on [eventLoop] and returns once it has run; also usable as a barrier. */
