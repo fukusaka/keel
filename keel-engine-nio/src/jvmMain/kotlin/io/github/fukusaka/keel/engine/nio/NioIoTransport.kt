@@ -294,12 +294,13 @@ internal class NioIoTransport(
         if (eventLoop.inEventLoop()) {
             // Uncontained, and the throw is the caller's. Not because nothing is
             // left stranded when it fires -- an entry with no write interest
-            // armed behind a FIN that will not go out is exactly what this
-            // branch cannot tell apart from an entry a *previous* stall left
-            // readiness armed for, which a later drain still completes. Ending
-            // the connection would take that second case with it. The caller is
-            // told and can close; the other case is filed rather than guessed.
-            // The stop sweep reaches this arm too, where the caller is the loop.
+            // armed behind a FIN that will not go out is what this branch does
+            // not ask apart from an entry a *previous* stall left readiness
+            // armed for, which a later drain still completes. Ending the
+            // connection would take that second case with it. The key is here
+            // to ask with, but that is a state question this change does not
+            // open, and the caller is told either way. The stop sweep reaches
+            // this arm too, where the caller is the loop.
             shutdownOutputOwned()
         } else {
             // Contained without re-raising, unlike the arm above it: the caller
@@ -406,10 +407,12 @@ internal class NioIoTransport(
      * callback had not finished with. The two POSIX transports answer this with
      * `containReadinessFailure` on their readiness dispatch; this is the same
      * answer for every callback this transport hands the loop that has an
-     * obligation to strand: the read, the OP_WRITE retry, the scheduled flush,
-     * an awaited flush's registration and the dispatched half-close. The
-     * teardown's own dispatch is the exception, and deliberate — by the time it
-     * can fail there is nothing left to end.
+     * obligation to strand: the read, the OP_WRITE retry, the scheduled flush
+     * and the dispatched half-close come through here; an awaited flush's
+     * registration reaches the same end through its own catch, because it has
+     * one more thing to do first — answer the caller it would otherwise leave
+     * parked. The teardown's own dispatch is the exception, and deliberate — by
+     * the time it can fail there is nothing left to end.
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun containLoopFailure(handling: String, body: () -> Unit) {

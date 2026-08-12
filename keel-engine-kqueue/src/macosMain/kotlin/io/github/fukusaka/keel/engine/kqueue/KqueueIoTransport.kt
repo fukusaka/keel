@@ -173,13 +173,15 @@ internal class KqueueIoTransport(
     /**
      * Runs a callback the loop drives, so that a throw ends the connection.
      *
-     * The scheduled flush, the dispatched half-close and an awaited flush's
-     * registration each reach the loop with no caller left to carry a failure
-     * to: the drain logs what escapes and moves to the next task, which leaves
-     * the connection open with an entry nobody will send, a FIN that will not
-     * go out, or a caller parked for good. [handling] names which one, for the
-     * warning. The readiness callbacks reach the same end through
-     * [containReadinessFailure], and the teardown carries its own failure out.
+     * The scheduled flush and the dispatched half-close reach the loop with no
+     * caller left to carry a failure to: the drain logs what escapes and moves
+     * to the next task, which leaves the connection open with an entry nobody
+     * will send, or a FIN that will not go out. [handling] names which one, for
+     * the warning. An awaited flush's registration reaches the same end through
+     * its own catch rather than this function, because it has one more thing to
+     * do first — answer the caller it would otherwise leave parked. The
+     * readiness callbacks come through [containReadinessFailure], and the
+     * teardown carries its own failure out.
      */
     private inline fun containLoopFailure(handling: String, body: () -> Unit) {
         try {
@@ -699,12 +701,14 @@ internal class KqueueIoTransport(
             // Uncontained, and the throw is the caller's. Not because nothing
             // is left stranded when it fires -- an entry with no write interest
             // armed behind a FIN that will not go out is exactly what this
-            // branch cannot tell apart from an entry a *previous* stall left
-            // readiness armed for, which a later drain still completes (the
-            // half-close seam tests hold that case). Ending the connection
-            // would take it with it. The caller is told and can close; the
-            // other case is filed rather than guessed. The stop sweep reaches
-            // this arm too, where the caller is the loop.
+            // branch does not ask apart from an entry a *previous* stall left
+            // readiness armed for, which a later drain still completes -- the
+            // half-close seam tests build both. Ending the connection would
+            // take the second with it. The loop does know which: NIO holds the
+            // SelectionKey, and both POSIX loops have `hasCallbackFor`. Asking
+            // is a state question this change does not open, and the caller is
+            // told either way. The stop sweep reaches this arm too, where the
+            // caller is the loop.
             eventLoop.inEventLoop() -> halfCloseAndReport()
             // A plain check rather than the loop hand-off: that one spins out a
             // loop mid-shutdown, and this is a non-suspending call any thread
