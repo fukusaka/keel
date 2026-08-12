@@ -604,9 +604,7 @@ internal class NioIoTransport(
      * buffer for as long as this loop's allocator lives.
      */
     private fun flushSingle(pw: PendingWrite): Boolean {
-        val bb = pw.buf.unsafeBuffer
-        bb.position(pw.offset)
-        bb.limit(pw.offset + pw.length)
+        val bb = openRangeOrGiveBack(pw)
         while (bb.hasRemaining()) {
             val n = writeOrGiveBack(pw, bb)
             if (n == 0) {
@@ -625,6 +623,28 @@ internal class NioIoTransport(
         updatePendingBytes(-pw.length)
         return true
     }
+
+    /**
+     * Opens [pw]'s byte range, returning the entry to the queue if that throws.
+     *
+     * Inside a guard rather than ahead of the loop: `unsafeBuffer` casts, and
+     * the range calls reject a bad one — on an entry already off the deque,
+     * which is the position the guard exists for. The read path names the same
+     * thrower for the same reason.
+     *
+     * A function of its own for the same detekt reason as [writeOrGiveBack].
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun openRangeOrGiveBack(pw: PendingWrite): ByteBuffer =
+        try {
+            pw.buf.unsafeBuffer.also {
+                it.position(pw.offset)
+                it.limit(pw.offset + pw.length)
+            }
+        } catch (rangeFailure: Throwable) {
+            requeueUnsent(pw, sent = 0, cause = rangeFailure)
+            throw rangeFailure
+        }
 
     /**
      * Writes what is left of [bb], returning the entry's unsent remainder to the
@@ -674,13 +694,21 @@ internal class NioIoTransport(
         val written = socketChannel.write(bbArray, 0, count)
 
         if (written >= totalBytes) {
-            // Out of the deque before released, and the accounting settled
-            // first: a refused release must not leave a released buffer queued
-            // for the teardown to release a second time -- by then the pool may
-            // have handed that buffer to another connection. The POSIX pair
-            // reaches the same order through this helper.
-            updatePendingBytes(-totalBytes.toInt())
+            // Out of the deque before released: a refused release must not
+            // leave a released buffer queued for the teardown to release a
+            // second time -- by then the pool may have handed that buffer to
+            // another connection.
+            //
+            // The drain runs first and the accounting second, which is the
+            // order the POSIX pair uses. Reversed, `updatePendingBytes` calls
+            // the water-mark callback while the sent entries are still queued,
+            // and a handler that writes from it -- which is what the callback
+            // is for -- lands its entry in the deque this walk is about to
+            // empty, so bytes that never reached the socket are released as if
+            // they had. Measured that way: 33,000-byte entries and a handler
+            // writing 64, and the new entry was gone.
             releaseQueuedWrites()
+            updatePendingBytes(-totalBytes.toInt())
             return true
         }
 

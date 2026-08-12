@@ -982,8 +982,13 @@ internal class EpollIoTransport(
     private fun flushSingle(pw: PendingWrite): Boolean {
         var written = 0
         while (written < pw.length) {
-            val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
+            // The pointer access is inside the guard, not before it: it casts,
+            // so an allocator whose `IoBuf` does not implement the native-
+            // pointer interface fails here -- on an entry already off the
+            // deque, which is the position this guard exists for. The read
+            // path names the same thrower for the same reason.
             val writeResult = try {
+                val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
                 nativeSocket.write(fd, ptr, pw.length - written)
             } catch (writeFailure: Throwable) {
                 requeueUnsent(pw, written, writeFailure)
