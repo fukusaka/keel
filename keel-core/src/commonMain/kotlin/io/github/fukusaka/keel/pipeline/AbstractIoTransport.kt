@@ -379,17 +379,21 @@ abstract class AbstractIoTransport(
      * second time. The remainder goes back at the head, keeping wire order.
      *
      * **The caller rethrows, and this does not register write interest.**
-     * Nothing is coming to drain the entry it just put back. That is not the
-     * same as "the transport is going down": the rethrow reaches a caller who
-     * can close only on some paths — from a coalesced flush tick it is
-     * swallowed by the loop's task drain and the transport stays open. So the
-     * entry waits for a teardown, and anyone parked on that flush waits with
-     * it. Every site that can throw out of a drain owes its waiter an answer —
-     * the drain a waiter runs for itself, the queued tick that would have woken
-     * a stored one, and the teardown for whatever is still stored when it runs.
-     * And the answer is not always the failure: a throw that lands once the
-     * output has drained leaves the state the success path calls a completed
-     * flush, which is what that caller asked about.
+     * Nothing is coming to drain the entry it just put back, so it waits for a
+     * teardown — which is the point: a teardown can find it, and before this
+     * nothing could. That is not the same as "the transport is going down". The
+     * rethrow reaches a caller who can close only on some paths; from a
+     * coalesced flush tick it is swallowed by the loop's task drain and the
+     * transport stays open.
+     *
+     * **What that leaves open is a caller parked on the same flush.** A drain
+     * that throws does not resume anyone, and the entry sitting in the queue is
+     * what makes a *later* `awaitPendingFlush` park rather than return. Only
+     * the teardown answers such a caller, and only the POSIX transports had a
+     * stage that does — which is why NIO's teardown grew one here. Answering
+     * from the drain sites themselves is a larger change than this one: there
+     * are four of them, and the answer belongs at the single point they all go
+     * through rather than restated at each. Filed, not done here.
      *
      * A secondary failure while putting the entry back is attached to [cause]
      * rather than replacing it: the send's failure is the one the caller is

@@ -282,36 +282,6 @@ internal class NioIoTransport(
     private var flushScheduled: Boolean = false
 
     /**
-     * Answers a caller parked in [awaitPendingFlush], if there is one, for a
-     * drain that threw.
-     *
-     * **The answer is not always the failure.** A throw that lands once the
-     * output has drained — a refused release, a water-mark callback — leaves
-     * the transport in the state the success path calls a completed flush, and
-     * that is what this caller asked about. Note what "drained" means here: the
-     * queue is empty, which is also true after a write failed and its entry was
-     * released and dropped. That is the same answer the non-throwing path gives
-     * for the same state, not a claim that every byte reached the peer.
-     *
-     * Only output still pending makes the failure their answer. The drain that
-     * would have resumed them is not coming back on its own — it arms no write
-     * interest on the way out — and while readiness armed by an earlier stall
-     * can still fire, a caller is better told that the flush it is waiting on
-     * failed than left waiting on a retry that may never be scheduled.
-     */
-    private fun answerFlushWaiter(cont: kotlinx.coroutines.CancellableContinuation<Unit>, cause: Throwable) {
-        if (outputDrained) cont.resume(Unit) else cont.cancel(cause)
-    }
-
-    /** [answerFlushWaiter] for the waiter this transport is holding, if any. */
-    private fun failFlushWaiter(cause: Throwable) {
-        flushContinuation?.let { cont ->
-            flushContinuation = null
-            answerFlushWaiter(cont, cause)
-        }
-    }
-
-    /**
      * Schedules pending writes to be drained on the next [NioEventLoop.dispatch]
      * tick. If a scheduled tick is already pending ([flushScheduled] == true),
      * this call just leaves the bytes in [pendingWrites] — the pending tick
@@ -350,24 +320,15 @@ internal class NioIoTransport(
                 // already-closed channel here.
                 if (!transport.opened) return@Runnable
                 transport.flushScheduled = false
-                // The drain can throw -- `flushSingle` re-queues its entry and
-                // rethrows when the socket does. Whoever is parked in
-                // `awaitPendingFlush` is waiting on a drain that is not coming:
-                // the throw path arms no write interest, and this tick is the
-                // only thing scheduled. Answer them with the failure, the way
-                // the drain a waiter runs for itself does, and let the throw go
-                // on to the loop's task drain afterwards.
-                val done = try {
-                    transport.performFlush()
-                } catch (drainFailure: Throwable) {
-                    // The success path's order: answer the waiter, then attempt
-                    // the deferred FIN. The waiter first because the FIN
-                    // attempt can throw and nothing catches it here -- it would
-                    // take the answer with it and leave a caller suspended.
-                    transport.failFlushWaiter(drainFailure)
-                    transport.sendFinIfDrained()
-                    throw drainFailure
-                }
+                // A throw from here reaches the loop's task drain, which logs it
+                // and moves on -- so a waiter parked in `awaitPendingFlush` is
+                // left for the teardown to answer. That is the shape on `main`
+                // and this change does not alter it: the entry the drain
+                // re-queues is released by the teardown either way. Answering
+                // from here is filed rather than done, because the answer
+                // belongs at the one place every drain goes through and this is
+                // one of four.
+                val done = transport.performFlush()
                 if (done && transport.pendingWrites.isEmpty()) {
                     transport.flushContinuation?.let { cont ->
                         transport.flushContinuation = null
@@ -671,33 +632,7 @@ internal class NioIoTransport(
                         // still coalesces SSE-style rapid emits when no one awaits.
                         if (flushScheduled) {
                             flushScheduled = false
-                            // The drain can throw, and [cont] is not stored
-                            // anywhere yet -- so an escaping throw leaves a
-                            // continuation nothing holds: not resumable by the
-                            // write callback, not reachable by the teardown's
-                            // cancel, and swallowed by the loop's task drain
-                            // when this Runnable was dispatched rather than run
-                            // inline. The caller waits for the life of its job.
-                            //
-                            // Reached from another thread, not only inline. A
-                            // Ktor write channel dispatches its emit and then
-                            // awaits without waiting for it, so the queue is
-                            // [emit, register]; the emit sets `flushScheduled`
-                            // and queues the tick *behind* this registration.
-                            //
-                            // The waiter is owed an answer and the drain's
-                            // failure is the answer.
-                            val done = try {
-                                performFlush()
-                            } catch (drainFailure: Throwable) {
-                                // The waiter first: `sendFin` can throw, and
-                                // this continuation is stored nowhere yet, so a
-                                // throw before the answer leaves it reachable by
-                                // nothing at all.
-                                answerFlushWaiter(cont, drainFailure)
-                                sendFinIfDrained()
-                                return@Runnable
-                            }
+                            val done = performFlush()
                             if (done && pendingWrites.isEmpty()) {
                                 sendFinIfDrained()
                                 cont.resume(Unit)
