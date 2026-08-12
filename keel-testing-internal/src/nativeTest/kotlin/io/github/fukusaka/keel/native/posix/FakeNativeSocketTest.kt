@@ -184,4 +184,40 @@ class FakeNativeSocketTest {
         assertEquals(2, fake.writevCalls)
         assertEquals(1, fake.sendCalls)
     }
+
+    @Test
+    fun `assertAllConsumed reports a scripted fault that never fired`() {
+        // The sharper half of the check: a test whose fault never fires asserts
+        // what a failure costs against a run that had no failure in it, and
+        // stays green against a build that never fixed anything.
+        val fake = FakeNativeSocket().apply { flushThrowsOnce = IllegalStateException("never reached") }
+
+        val failure = assertFailsWith<IllegalStateException> { fake.assertAllConsumed() }
+        assertContains(failure.message.orEmpty(), "never fired")
+    }
+
+    @Test
+    fun `assertAllConsumed reports a flush-failure delay with no failure behind it`() {
+        // The counter only decrements while the fault is armed, so this
+        // combination never fires and the fault check above cannot see it.
+        val fake = FakeNativeSocket().apply { flushThrowsAfterCalls = 2 }
+
+        val failure = assertFailsWith<IllegalStateException> { fake.assertAllConsumed() }
+        assertContains(failure.message.orEmpty(), "without a failure to delay")
+    }
+
+    @Test
+    fun `assertAllConsumed passes once the delayed fault has fired`() {
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(3, WriteResult.Written(1))
+            flushThrowsOnce = IllegalStateException("delayed")
+            flushThrowsAfterCalls = 1
+        }
+        withDummyBuf { buf ->
+            fake.write(3, buf, 1)
+            assertFailsWith<IllegalStateException> { fake.write(3, buf, 1) }
+        }
+
+        fake.assertAllConsumed()
+    }
 }

@@ -24,8 +24,10 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
- * That a single-buffer flush whose write throws still owes its buffer to the
- * teardown — in **both** flush configurations, because they reach the throw
+ * What a flush that throws still owes: its buffer to the teardown, and an
+ * answer to whoever was waiting on it.
+ *
+ * Both, and in **both** flush configurations, because they reach the throw
  * through different callers.
  *
  * `performFlush` takes the entry off the deque before calling the channel, so
@@ -237,6 +239,55 @@ class NioTransportFlushThrowSeamTest {
 
             val cause = withTimeout(WAITER_BUDGET_MS) { answer.await() }
             assertTrue(cause != null, "the waiter must be answered, not parked")
+        }
+    }
+
+    @Test
+    fun `a parked waiter is answered when the tick that would resume it throws`() {
+        // The shipped default's own path: the waiter is already parked when a
+        // scheduled tick runs and throws. Nothing else is coming -- the throw
+        // path arms no write interest -- and the teardown only answers a waiter
+        // if something closes the transport, which nothing here does.
+        val eventLoop = newLoop(flushCoalescing = true)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val tracker = TrackingAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+
+        // Buffered, not flushed: the waiter finds a non-empty queue with
+        // nothing scheduled, so it parks rather than draining.
+        val buffered = CountDownLatch(1)
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
+                transport.write(buf)
+                buffered.countDown()
+            },
+        )
+        if (!buffered.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the write did not run")
+
+        runBlocking {
+            val answer = CompletableDeferred<Throwable?>()
+            launch(Dispatchers.Unconfined) {
+                answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
+            }
+            val registered = CountDownLatch(1)
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { registered.countDown() })
+            if (!registered.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the waiter did not register")
+
+            eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    client.close()
+                    transport.flush() // schedules the tick that will throw
+                },
+            )
+
+            val cause = withTimeout(WAITER_BUDGET_MS) { answer.await() }
+            assertTrue(
+                cause is ClosedChannelException,
+                "the waiter must be given the drain's failure, got: $cause",
+            )
         }
     }
 

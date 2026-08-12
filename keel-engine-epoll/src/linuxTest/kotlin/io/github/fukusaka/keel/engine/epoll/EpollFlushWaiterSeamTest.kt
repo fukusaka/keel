@@ -22,6 +22,8 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -72,31 +74,108 @@ internal class EpollFlushWaiterSeamTest {
 
             // Hold the loop so the two tasks below queue behind this one, in
             // the order they are dispatched.
+            //
+            // Bounded, and released from a `finally`. An unbounded hold whose
+            // release is skipped by a throw would spin the loop thread for
+            // good, and `tearDown`'s `close()` joins that thread -- a native
+            // wait no `withTimeout` can interrupt once this coroutine has
+            // unwound.
             val gate = AtomicInt(0)
+            val held = AtomicInt(0)
             eventLoop.dispatch(
                 EmptyCoroutineContext,
                 Runnable {
-                    while (gate.load() == 0) usleep(GATE_POLL_US)
+                    held.store(1)
+                    var spins = 0
+                    while (gate.load() == 0 && spins < GATE_MAX_SPINS) {
+                        usleep(GATE_POLL_US)
+                        spins++
+                    }
                 },
             )
+            val answer = CompletableDeferred<Throwable?>()
+            try {
+                eventLoop.dispatch(
+                    EmptyCoroutineContext,
+                    Runnable {
+                        val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
+                        transport.write(buf)
+                        transport.flush() // queues the tick behind the registration below
+                    },
+                )
+
+                // Unconfined so the body runs here up to its own dispatch: when
+                // `launch` returns, the registration is already queued.
+                launch(Dispatchers.Unconfined) {
+                    answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
+                }
+            } finally {
+                gate.store(1)
+            }
+
+            // The fault, not just any throwable. The two arms above this branch
+            // hand back a `CancellationException` -- a closed transport, or a
+            // finishing loop -- and either would pass an "answered at all"
+            // assertion while proving the guard was never reached.
+            assertIs<InjectedFault>(answer.await(), "the waiter must be answered with the drain's failure")
+            assertEquals(1, held.load(), "the loop was never held, so the queue order is not the one under test")
+            assertTrue(fake.writeCalls >= 1, "the write must have been attempted for this test to mean anything")
+            fake.assertAllConsumed()
+
+            // The entry the guard put back is this test's to release: `close()`
+            // is what walks the queue, and the barrier behind it is how we know
+            // the teardown ran before the assertion.
+            transport.close()
+            val closed = CompletableDeferred<Unit>()
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { closed.complete(Unit) })
+            closed.await()
+            assertEquals(0, tracker.outstandingCount, "the teardown must release the re-queued entry")
+        }
+    }
+
+    @Test
+    fun `a parked waiter is answered when the tick that would resume it throws`() = runBlocking {
+        withTimeout(BUDGET) {
+            val fake = FakeNativeSocket()
+            val tracker = TrackingAllocator()
+            val transport = EpollIoTransport(fd, eventLoop, tracker, fake)
+
+            // Buffered, not flushed: the waiter finds a non-empty queue with
+            // nothing scheduled, so it parks rather than draining.
+            val buffered = CompletableDeferred<Unit>()
             eventLoop.dispatch(
                 EmptyCoroutineContext,
                 Runnable {
                     val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
                     transport.write(buf)
-                    transport.flush() // queues the tick behind the registration below
+                    buffered.complete(Unit)
                 },
             )
+            buffered.await()
 
             val answer = CompletableDeferred<Throwable?>()
-            // Unconfined so the body runs here up to its own dispatch: when
-            // `launch` returns, the registration is already queued.
             launch(Dispatchers.Unconfined) {
                 answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
             }
-            gate.store(1)
+            val registered = CompletableDeferred<Unit>()
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { registered.complete(Unit) })
+            registered.await()
 
-            assertTrue(answer.await() != null, "the waiter must be answered, not parked")
+            eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    fake.flushThrowsOnce = InjectedFault("write refused")
+                    transport.flush() // schedules the tick that will throw
+                },
+            )
+
+            assertIs<InjectedFault>(answer.await(), "the waiter must be given the drain's failure")
+
+            transport.close()
+            val closed = CompletableDeferred<Unit>()
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { closed.complete(Unit) })
+            closed.await()
+            assertEquals(0, tracker.outstandingCount, "the teardown must release the re-queued entry")
         }
     }
 
@@ -108,6 +187,10 @@ internal class EpollFlushWaiterSeamTest {
 
         const val GATE_POLL_US = 200u
 
-        val BUDGET = 15.seconds
+        /** Bounds the hold at roughly [BUDGET] even if the release is skipped. */
+        const val GATE_MAX_SPINS = 25_000
+
+        /** The sibling seam suites' envelope; the happy path here is sub-second. */
+        val BUDGET = 5.seconds
     }
 }
