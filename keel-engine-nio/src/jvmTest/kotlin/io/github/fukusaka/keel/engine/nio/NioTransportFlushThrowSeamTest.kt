@@ -239,6 +239,116 @@ class NioTransportFlushThrowSeamTest {
         }
     }
 
+    @Test
+    fun `an awaited flush whose eager drain throws answers the caller`() {
+        // The registration runs on the loop, and an off-loop caller reaches it
+        // by dispatch. Its eager drain throws *before* the continuation is
+        // stored, so neither the teardown's waiter stage nor anything else has
+        // anything to answer -- and the throw reaches the loop's task drain,
+        // which logs and moves on. The ordering below is the one that puts the
+        // registration ahead of the tick: the loop is held inside a task while
+        // the caller registers, and only then does that task write and flush.
+        val eventLoop = newLoop(flushCoalescing = true)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val tracker = TrackingAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+
+        val release = CountDownLatch(1)
+        val held = CountDownLatch(1)
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                held.countDown()
+                if (!release.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the loop was never released")
+                val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
+                transport.write(buf)
+                transport.flush()
+                client.close()
+            },
+        )
+        if (!held.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the holding task did not run")
+
+        runBlocking {
+            val answer = CompletableDeferred<Throwable?>()
+            // Unconfined so the body runs here up to its own dispatch: when
+            // `launch` returns, the registration is queued ahead of the tick the
+            // held task is about to schedule.
+            launch(Dispatchers.Unconfined) {
+                answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
+            }
+            release.countDown()
+
+            val cause = withTimeoutOrNull(WAITER_BUDGET_MS) { answer.await() }
+                ?: fail("the caller parked on a drain that had already failed")
+            assertTrue(
+                cause is ClosedChannelException,
+                "and is told what the flush failed with, the way an on-loop caller is, got: $cause",
+            )
+        }
+        assertEquals(0, tracker.outstandingCount, "the entry the failed drain re-queued is released by the close")
+    }
+
+    @Test
+    fun `a write-readiness retry that throws ends the connection`() {
+        // The other loop-driven drain. `processReadyKey` catches what escapes
+        // it, warns and moves on -- and the readiness slot and interest bit were
+        // cleared before the callback ran, so nothing re-arms. Left to that, the
+        // transport stays open with a queued entry, no write interest and a
+        // waiter nothing will answer. Coalescing off so the retry is the drain
+        // that throws rather than a tick.
+        client.setOption(StandardSocketOptions.SO_SNDBUF, STALL_SNDBUF_BYTES)
+        val eventLoop = newLoop(flushCoalescing = false)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val tracker = TrackingAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+        val inactive = CountDownLatch(1)
+        transport.onReadClosed = { inactive.countDown() }
+
+        // Stall: the peer never reads, so a payload far above its send buffer
+        // cannot leave, and the drain arms OP_WRITE instead of finishing.
+        runOnLoopAndWait(eventLoop) {
+            val buf = tracker.allocate(STALL_PAYLOAD_BYTES).also { it.writerIndex = STALL_PAYLOAD_BYTES }
+            transport.write(buf)
+            transport.flush()
+        }
+        assertEquals(1, tracker.outstandingCount, "the write must have stalled for this case to mean anything")
+
+        // Reset while the retry is armed: linger-0 close sends RST, so the
+        // socket reports writable and the write is refused.
+        accepted.setOption(StandardSocketOptions.SO_LINGER, 0)
+        accepted.close()
+
+        assertTrue(
+            inactive.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS),
+            "the connection must be ended, not left open with an entry nothing will send",
+        )
+        assertEquals(0, tracker.outstandingCount, "and the stalled entry released with it")
+    }
+
+    @Test
+    fun `a read that throws releases its buffer and ends the connection`() {
+        // The read side of the same rule: the buffer is a local of the frame
+        // that throws -- not queued, not the pipeline's yet -- so nothing else
+        // can reach it. A peer reset answers `read` the way it answers a write.
+        val eventLoop = newLoop(flushCoalescing = true)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val tracker = TrackingAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+        val inactive = CountDownLatch(1)
+        transport.onReadClosed = { inactive.countDown() }
+        transport.onRead = { it.release() }
+        runOnLoopAndWait(eventLoop) { transport.onChannelAttached() } // arms OP_READ under this policy
+
+        accepted.setOption(StandardSocketOptions.SO_LINGER, 0)
+        accepted.close()
+
+        assertTrue(
+            inactive.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS),
+            "a refused read must end the connection rather than be swallowed by the loop",
+        )
+        assertEquals(0, tracker.outstandingCount, "and must not strand the buffer it had allocated")
+    }
+
     /** Runs [body] on [eventLoop] and returns once it has run; also usable as a barrier. */
     private fun runOnLoopAndWait(eventLoop: NioEventLoop, body: () -> Unit) {
         val done = CountDownLatch(1)
