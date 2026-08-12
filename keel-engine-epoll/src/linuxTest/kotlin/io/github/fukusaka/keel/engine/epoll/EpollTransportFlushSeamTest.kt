@@ -8,8 +8,14 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -328,5 +334,45 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
         assertTrue(transport.flush())
         assertEquals(1, fake.writevCalls)
         fake.assertAllConsumed()
+    }
+
+    @Test
+    fun `a scheduled flush whose write throws ends the connection`() {
+        // The coalesced tick is the drain with nobody to tell: its throw would
+        // reach the loop's task drain, which logs it and moves on, leaving the
+        // transport open with a re-queued entry nothing will send. This loop
+        // keeps coalescing on -- the shipped default, and the only way to reach
+        // the tick -- rather than the fixture's opt-out.
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply { flushThrowsOnce = InjectedFault("write refused") }
+        val loop = EpollEventLoop(logger)
+        loop.start()
+        try {
+            val transport = EpollIoTransport(fd, loop, tracker, fake)
+            val inactive = CompletableDeferred<Unit>()
+            transport.onReadClosed = { inactive.complete(Unit) }
+
+            loop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    val buf = tracker.allocate(SEAM_PAYLOAD_BYTES).also { it.writerIndex = SEAM_PAYLOAD_BYTES }
+                    transport.write(buf)
+                    transport.flush()
+                },
+            )
+
+            runBlocking {
+                withTimeout(SEAM_TIMEOUT_MS) { inactive.await() }
+                // The waiter would park on a drain nothing can finish; the
+                // connection this ends is what answers it instead.
+                assertFailsWith<CancellationException>("a caller must be answered, not left parked") {
+                    withTimeout(SEAM_TIMEOUT_MS) { transport.awaitPendingFlush() }
+                }
+            }
+            assertEquals(1, fake.writeCalls, "the write must have been attempted for this test to mean anything")
+            assertEquals(0, tracker.outstandingCount, "the entry the failed drain re-queued is released by that close")
+        } finally {
+            loop.close()
+        }
     }
 }

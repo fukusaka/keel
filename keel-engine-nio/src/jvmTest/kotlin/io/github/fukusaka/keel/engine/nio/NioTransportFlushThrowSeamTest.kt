@@ -9,7 +9,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.InetSocketAddress
+import java.net.StandardSocketOptions
 import java.nio.channels.ClosedChannelException
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
@@ -135,34 +137,70 @@ class NioTransportFlushThrowSeamTest {
     }
 
     @Test
+    fun `a scheduled drain that throws ends the connection`() {
+        // The tick is the drain with nobody to tell. Left to the loop's task
+        // drain, its throw leaves a transport that is open, holds an entry
+        // nothing will send, and parks the next caller for good. Measured that
+        // way against a peer reset -- linger-0 close, so RST rather than FIN --
+        // `awaitPendingFlush` never returned: the write throws, and the read
+        // side throws the same way, so nothing else ends the connection either.
+        // A channel closed underneath reaches the same throw without waiting on
+        // when the reset lands, which is what this asserts on.
+        val eventLoop = newLoop(flushCoalescing = true)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val tracker = TrackingAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+        val inactive = CountDownLatch(1)
+        transport.onReadClosed = { inactive.countDown() }
+
+        runOnLoopAndWait(eventLoop) {
+            val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
+            transport.write(buf)
+            transport.flush()
+            client.close()
+        }
+        runOnLoopAndWait(eventLoop) { } // barrier: the scheduled tick has run and thrown
+
+        assertTrue(
+            inactive.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS),
+            "the connection must be reported inactive, not left open with nobody told",
+        )
+        runBlocking {
+            val answer = CompletableDeferred<Throwable?>()
+            launch(Dispatchers.Unconfined) {
+                answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
+            }
+            val cause = withTimeoutOrNull(WAITER_BUDGET_MS) { answer.await() }
+                ?: fail("the caller parked: nothing ended the connection the failed drain left behind")
+            assertTrue(
+                cause is CancellationException,
+                "and is told the flush did not drain rather than that it did, got: $cause",
+            )
+        }
+        assertEquals(0, tracker.outstandingCount, "the entry the failed drain re-queued is released by that same close")
+    }
+
+    @Test
     fun `a parked waiter is answered by the teardown`() {
-        // The other half: here the tick has already run and thrown, so the
-        // waiter finds a non-empty queue with nothing scheduled and parks. What
-        // would have resumed it -- a drain -- is never coming, because the throw
-        // path re-queues without registering write interest. `close()` owes it
-        // an answer, and this transport had no stage that gave one.
+        // The teardown's own waiter stage, reached the way production does: a
+        // full send buffer stalls the drain, so the tick returns having sent
+        // nothing and cleared `flushScheduled`. The caller then finds a
+        // non-empty queue with no tick to run eagerly, and parks on a drain
+        // only write readiness could finish -- which never comes, because the
+        // peer is not reading. `close()` owes it an answer, and this transport
+        // had no stage that gave one.
+        client.setOption(StandardSocketOptions.SO_SNDBUF, STALL_SNDBUF_BYTES)
         val eventLoop = newLoop(flushCoalescing = true)
         val key = runBlocking { eventLoop.registerChannel(client) }
         val tracker = TrackingAllocator()
         val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
 
-        val armed = CountDownLatch(1)
-        eventLoop.dispatch(
-            EmptyCoroutineContext,
-            Runnable {
-                val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
-                transport.write(buf)
-                transport.flush()
-                client.close()
-                armed.countDown()
-            },
-        )
-        if (!armed.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("setup task did not run")
-        // Let the scheduled tick run and throw, so the waiter below parks rather
-        // than driving the drain itself.
-        val drained = CountDownLatch(1)
-        eventLoop.dispatch(EmptyCoroutineContext, Runnable { drained.countDown() })
-        if (!drained.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the scheduled tick did not run")
+        runOnLoopAndWait(eventLoop) {
+            val buf = tracker.allocate(STALL_PAYLOAD_BYTES).also { it.writerIndex = STALL_PAYLOAD_BYTES }
+            transport.write(buf)
+            transport.flush()
+        }
+        runOnLoopAndWait(eventLoop) { } // barrier: the tick has run and stalled
 
         runBlocking {
             // Unconfined so the body runs here up to its own dispatch: when
@@ -174,9 +212,8 @@ class NioTransportFlushThrowSeamTest {
             val waiter = launch(Dispatchers.Unconfined) {
                 answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
             }
-            val registered = CountDownLatch(1)
-            eventLoop.dispatch(EmptyCoroutineContext, Runnable { registered.countDown() })
-            if (!registered.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the waiter did not register")
+            runOnLoopAndWait(eventLoop) { } // barrier: the waiter has registered
+            assertTrue(waiter.isActive, "the waiter must be parked for the teardown to be what answers it")
 
             eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.close() })
             withTimeout(WAITER_BUDGET_MS) { waiter.join() }
@@ -197,9 +234,25 @@ class NioTransportFlushThrowSeamTest {
             assertEquals(
                 0,
                 tracker.outstandingCount,
-                "and the entry the failed drain re-queued is released by the same teardown",
+                "and the entry the stalled drain left queued is released by the same teardown",
             )
         }
+    }
+
+    /** Runs [body] on [eventLoop] and returns once it has run; also usable as a barrier. */
+    private fun runOnLoopAndWait(eventLoop: NioEventLoop, body: () -> Unit) {
+        val done = CountDownLatch(1)
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                try {
+                    body()
+                } finally {
+                    done.countDown()
+                }
+            },
+        )
+        if (!done.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) fail("the dispatched task did not run")
     }
 
     private class Outcome(
@@ -260,5 +313,11 @@ class NioTransportFlushThrowSeamTest {
 
         /** Wall-clock bound on a waiter that must be answered rather than parked. */
         const val WAITER_BUDGET_MS = 5_000L
+
+        /** Small enough that one payload cannot leave the send buffer while the peer never reads. */
+        const val STALL_SNDBUF_BYTES = 2048
+
+        /** Far above [STALL_SNDBUF_BYTES], so the write stalls rather than completing. */
+        const val STALL_PAYLOAD_BYTES = 256 * 1024
     }
 }
