@@ -3,6 +3,8 @@ package io.github.fukusaka.keel.engine.nio
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.NioByteBufferBacking
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.core.IdleReadPolicy
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
@@ -485,6 +487,124 @@ class NioTransportFlushThrowSeamTest {
         }
     }
 
+    @Test
+    fun `a gather whose release is refused does not offer that buffer twice`() {
+        // The other walker. The teardown takes each entry out before releasing
+        // it; the gather released first and removed after, so a refused release
+        // left an already-released buffer queued for the teardown to release a
+        // second time. By then the pool may have handed that buffer to another
+        // connection.
+        //
+        // What discriminates is the number of *attempts*, not of successes: a
+        // buffer that always refuses looks the same under either order, since
+        // the teardown's second attempt throws too and the walk catches it.
+        // Refusing once and counting attempts is what tells them apart.
+        client.setOption(StandardSocketOptions.SO_SNDBUF, STALL_SNDBUF_BYTES)
+        val eventLoop = newLoop(flushCoalescing = false)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val head = RefuseOnceBuf(DefaultAllocator.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES })
+        val transport = NioIoTransport(client, key, eventLoop, DefaultAllocator, IdleReadPolicy.DETECT_PEER_CLOSE)
+
+        runOnLoopAndWait(eventLoop) {
+            // The head is consumed whole and the tail stalls, so the walk runs
+            // and reaches the head's release inside it.
+            transport.write(head)
+            transport.write(DefaultAllocator.allocate(STALL_PAYLOAD_BYTES).also { it.writerIndex = STALL_PAYLOAD_BYTES })
+            runCatching { transport.flush() }
+            runCatching { transport.close() }
+        }
+
+        assertEquals(
+            1,
+            head.releaseAttempts,
+            "a buffer already out of the queue must not be offered to a second walker",
+        )
+    }
+
+    /** Refuses its first release and counts every attempt. */
+    @OptIn(UnsafeIoBufApi::class)
+    private class RefuseOnceBuf(private val delegate: IoBuf) : IoBuf by delegate, NioByteBufferBacking {
+        var releaseAttempts = 0
+            private set
+
+        override val unsafeNioByteBuffer: ByteBuffer
+            get() = (delegate as NioByteBufferBacking).unsafeNioByteBuffer
+
+        override fun release(): Boolean {
+            releaseAttempts++
+            if (releaseAttempts == 1) throw IllegalStateException("release refused once")
+            return delegate.release()
+        }
+    }
+
+    @Test
+    fun `a write from the water-mark callback is not swept up by the flush that woke it`() {
+        // `updatePendingBytes` calls the water-mark callback, and writing from
+        // it is what the callback is for. Run before the drain, that call lands
+        // the handler's entry in the deque the drain is about to empty, and it
+        // is released as if it had been sent. The drain runs first for that
+        // reason -- the order the POSIX pair uses.
+        val eventLoop = newLoop(flushCoalescing = false)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val transport = NioIoTransport(client, key, eventLoop, DefaultAllocator, IdleReadPolicy.DETECT_PEER_CLOSE)
+        val late = RefuseOnceBuf(DefaultAllocator.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES })
+
+        runOnLoopAndWait(eventLoop) {
+            // Two entries over the high-water mark, so the drain's accounting
+            // crosses back under it and the callback fires.
+            repeat(2) {
+                transport.write(
+                    DefaultAllocator.allocate(WATERMARK_ENTRY_BYTES).also { it.writerIndex = WATERMARK_ENTRY_BYTES },
+                )
+            }
+            transport.onWritabilityChanged = { writable -> if (writable) transport.write(late) }
+            transport.flush()
+        }
+
+        assertEquals(
+            0,
+            late.releaseAttempts,
+            "the entry the callback wrote has not been sent, so the drain that woke it must not release it",
+        )
+    }
+
+    @Test
+    fun `a flush whose buffer refuses its range gives the entry back`() {
+        // The entry is off the deque before the range is opened, and opening it
+        // casts. A throw there leaves the buffer where a throw from the write
+        // itself used to: not queued for the teardown, not held by a caller.
+        val eventLoop = newLoop(flushCoalescing = false)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val refusing = RefusingRangeBuf(DefaultAllocator.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES })
+        val transport = NioIoTransport(client, key, eventLoop, DefaultAllocator, IdleReadPolicy.DETECT_PEER_CLOSE)
+
+        runOnLoopAndWait(eventLoop) {
+            transport.write(refusing)
+            assertTrue(
+                runCatching { transport.flush() }.exceptionOrNull() is IllegalStateException,
+                "the range must have been refused for this case to mean anything",
+            )
+            assertEquals(0, refusing.releaseAttempts, "the entry goes back to the queue rather than being released here")
+            transport.close()
+        }
+        assertEquals(1, refusing.releaseAttempts, "and the teardown finds it there")
+    }
+
+    /** Refuses the byte-range access the flush opens, and counts release attempts. */
+    @OptIn(UnsafeIoBufApi::class)
+    private class RefusingRangeBuf(private val delegate: IoBuf) : IoBuf by delegate, NioByteBufferBacking {
+        var releaseAttempts = 0
+            private set
+
+        override val unsafeNioByteBuffer: ByteBuffer
+            get() = throw IllegalStateException("range refused")
+
+        override fun release(): Boolean {
+            releaseAttempts++
+            return delegate.release()
+        }
+    }
+
     /** Runs [body] on [eventLoop] and returns once it has run; also usable as a barrier. */
     private fun runOnLoopAndWait(eventLoop: NioEventLoop, body: () -> Unit) {
         val done = CountDownLatch(1)
@@ -562,6 +682,9 @@ class NioTransportFlushThrowSeamTest {
 
         /** Bounded polls for the loop to have run the read; each is one loop round-trip. */
         const val READ_ATTEMPTS = 50
+
+        /** Two of these cross the 64 KiB high-water mark, so the drain's accounting crosses back. */
+        const val WATERMARK_ENTRY_BYTES = 33_000
 
         /** Small enough that one payload cannot leave the send buffer while the peer never reads. */
         const val STALL_SNDBUF_BYTES = 2048
