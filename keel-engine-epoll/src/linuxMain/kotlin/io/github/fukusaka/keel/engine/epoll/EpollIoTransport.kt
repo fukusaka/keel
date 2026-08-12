@@ -171,6 +171,23 @@ internal class EpollIoTransport(
     }
 
     /**
+     * Ends the connection a scheduled drain could not finish, the way a failed
+     * readiness callback ends one.
+     *
+     * The tick has no caller to carry the failure to, so leaving it to the
+     * loop's task drain leaves the connection open with an entry nobody will
+     * send and every later `awaitPendingFlush` caller parked. Reported and
+     * closed here instead; [endConnectionAfterFailure] rethrows only when the
+     * wind-down itself failed, and that throw is the loop drain's to log.
+     */
+    private fun containDrainFailure(drainFailure: Throwable) {
+        eventLoop.logger.warn(drainFailure) {
+            "handling the scheduled flush threw; ending the connection: fd=$fd"
+        }
+        endConnectionAfterFailure(drainFailure)
+    }
+
+    /**
      * Reports this connection inactive, remembering it if that throws.
      *
      * Every readiness path that ends a connection goes through here rather than
@@ -691,18 +708,24 @@ internal class EpollIoTransport(
             Runnable {
                 if (!transport.opened) return@Runnable
                 transport.flushScheduled = false
-                // A throw from here reaches the loop's task drain, which logs it
-                // and moves on. What that leaves is unchanged by this branch: a
-                // waiter parked in `awaitPendingFlush` waits for the teardown's
-                // cancel stage -- which this transport already had -- and a
-                // deferred FIN goes unreported until the loop is finishing.
-                //
-                // What the re-queue adds is the entry sitting in the queue, and
-                // that is the point: a teardown can find it. Answering from
-                // here is filed rather than done, because the answer belongs at
-                // the one place every drain goes through rather than restated
-                // at each of the sites that reach it.
-                val done = transport.performFlush()
+                // This drain is the one with nobody to tell. Every other caller
+                // of `performFlush` receives the throw -- `flush()` without
+                // coalescing, the eager run in `awaitPendingFlush`, the teardown's
+                // own staged drain -- and can end the connection or report it.
+                // Here it would reach the loop's task drain, which logs it and
+                // moves to the next task, leaving a transport that is open, holds
+                // a re-queued entry nothing will send, and parks the next
+                // `awaitPendingFlush` caller for good. The socket is reached
+                // through a seam that answers rather than throws, so what gets
+                // here is a caller-supplied `NativeSocket` -- the same reach that
+                // makes the re-queue above worth having.
+                val done: Boolean
+                try {
+                    done = transport.performFlush()
+                } catch (drainFailure: Throwable) {
+                    transport.containDrainFailure(drainFailure)
+                    return@Runnable
+                }
                 if (done && transport.pendingWrites.isEmpty()) {
                     transport.flushContinuation?.let { cont ->
                         transport.flushContinuation = null
