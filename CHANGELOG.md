@@ -88,9 +88,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   strands its pooled buffer (#1051)
 - `engine-nio`: the teardown is staged, so a failing drain no longer skips the buffer release, the
   key cancel, the channel close, or a waiting `awaitPendingFlush` (#1051)
-- `core`, `engine-*`: a half-close whose flush throws reports the deferred FIN it can no longer send
-  instead of holding it silently, and the write failure is logged before the water-mark callback that
-  could swallow it (#1051)
+- `engine-nio`, `engine-kqueue`, `engine-epoll`: a half-close whose flush throws reports the deferred
+  FIN it can no longer send instead of holding it silently, and the write failure is logged before the
+  water-mark callback that could swallow it (#1051)
 - `engine-kqueue`, `engine-epoll`: release the loops an engine or group has already built when a
   later one cannot be built or started, and close the rest even if one's `close()` throws — within a
   group and between the engine's boss loop and its group (#1049)

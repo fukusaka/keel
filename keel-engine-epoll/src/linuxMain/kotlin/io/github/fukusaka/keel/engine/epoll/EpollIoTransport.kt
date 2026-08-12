@@ -947,11 +947,13 @@ internal class EpollIoTransport(
                     // two so the buffer does not depend on that guard staying
                     // in place.
                     //
-                    // The report is second because `updatePendingBytes` is the
-                    // one call here that reaches user code: it invokes the
-                    // writability callback across a water mark, and a handler
-                    // that throws there would otherwise take the only signal
-                    // this failure produces with it.
+                    // The report is second because `updatePendingBytes` can
+                    // reach a pipeline handler: it invokes the writability
+                    // callback across a water mark, and a handler that throws
+                    // there would otherwise take the only signal this failure
+                    // produces with it. The release above reaches caller code
+                    // too -- `BufferAllocator` is public and unguarded -- but it
+                    // is the obligation, so it stays first.
                     pw.buf.release()
                     eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(writeResult.errno)}" }
                     updatePendingBytes(-pw.length)
@@ -1171,26 +1173,38 @@ internal class EpollIoTransport(
      * stop sweep itself, where a participant closing its own output runs on the
      * loop thread with the loop already finishing.
      */
+    private fun halfCloseAndReport() {
+        var completed = false
+        try {
+            shutdownOutputOwned()
+            completed = true
+        } finally {
+            if (completed) reportAbandonedFin() else reportUnkeepableDeferredFin()
+        }
+    }
+
     /**
-     * The half-close's own flush threw, so the FIN it deferred is not coming.
+     * Reports a deferred FIN left by a half-close whose own flush threw.
      *
-     * Reported here rather than left to [reportAbandonedFin], which asks a
-     * different question -- whether a *stopping* loop left a deferral behind --
-     * and returns early while the loop is alive. This one is the live-loop
-     * case: the flush that was to release the FIN did not return, and it armed
-     * nothing that would try again.
+     * A different unkeepable deferral from the one [reportAbandonedFin]
+     * describes, and on a live loop rather than a stopping one: the flush that
+     * was to release the FIN did not return, and on this transport a throwing
+     * flush schedules no tick and arms no write readiness, so nothing will call
+     * `sendFinIfDrained` again. That is a fact about this engine and not about
+     * transports in general -- the ones whose flush completes asynchronously
+     * read a false `outputDrained` as "a send is still in flight" -- which is
+     * why the judgement is here and not in the base class.
+     *
+     * Not sending the FIN is right: the bytes did not go out, and a FIN would
+     * tell the peer they had. What it must not be is silent.
      */
-    override fun onUnkeepableDeferredFin() {
+    private fun reportUnkeepableDeferredFin() {
+        if (!abandonDeferredFin()) return
         eventLoop.logger.warn {
             "shutdownOutput() deferred the FIN behind buffered writes on fd=$fd and the flush that " +
                 "would have released it failed — the FIN is not sent, and the peer sees the close " +
                 "when this connection is closed"
         }
-    }
-
-    private fun halfCloseAndReport() {
-        shutdownOutputOwned()
-        reportAbandonedFin()
     }
 
     /**
