@@ -1204,41 +1204,41 @@ internal class KqueueIoTransport(
 
     /** The body of [awaitPendingFlush]'s registration, on the EventLoop thread. */
     private fun registerFlushWaiter(cont: CancellableContinuation<Unit>) {
-            when {
-                !opened -> cont.cancel(closedTransportFlushCause())
-                pendingWrites.isEmpty() -> cont.resume(Unit)
-                else -> {
-                    // Mirror of the epoll defer eager-run: when a caller reaches
-                    // this branch, they are about to suspend and pay for a full EL
-                    // tick before the coalesced flush drains. Run the deferred
-                    // flush inline so the caller wakes on this dispatch instead of
-                    // the next one. The `flush()` deferral path is unchanged and
-                    // still coalesces SSE-style rapid emits when no one awaits.
-                    if (flushScheduled) {
-                        flushScheduled = false
-                        val done = performFlush()
-                        if (done && pendingWrites.isEmpty()) {
-                            sendFinIfDrained()
-                            cont.resume(Unit)
-                            return
-                        }
-                    }
-                    // About to park on a flush only a future event can
-                    // complete. If the loop has stopped polling, there is
-                    // no such event -- and this Runnable may be running in
-                    // the drain the stop sweep performs *after* walking the
-                    // participants, in which case onLoopStopped has already
-                    // been and gone and nothing is left to end the wait.
-                    // Storing here would reproduce the exact hang this
-                    // change exists to remove.
-                    if (eventLoop.isFinishing()) {
-                        cont.cancel(stoppedLoopFlushCause())
+        when {
+            !opened -> cont.cancel(closedTransportFlushCause())
+            pendingWrites.isEmpty() -> cont.resume(Unit)
+            else -> {
+                // Mirror of the epoll defer eager-run: when a caller reaches
+                // this branch, they are about to suspend and pay for a full EL
+                // tick before the coalesced flush drains. Run the deferred
+                // flush inline so the caller wakes on this dispatch instead of
+                // the next one. The `flush()` deferral path is unchanged and
+                // still coalesces SSE-style rapid emits when no one awaits.
+                if (flushScheduled) {
+                    flushScheduled = false
+                    val done = performFlush()
+                    if (done && pendingWrites.isEmpty()) {
+                        sendFinIfDrained()
+                        cont.resume(Unit)
                         return
                     }
-                    flushContinuation = cont
-                    cont.invokeOnCancellation { flushContinuation = null }
                 }
+                // About to park on a flush only a future event can
+                // complete. If the loop has stopped polling, there is
+                // no such event -- and this Runnable may be running in
+                // the drain the stop sweep performs *after* walking the
+                // participants, in which case onLoopStopped has already
+                // been and gone and nothing is left to end the wait.
+                // Storing here would reproduce the exact hang this
+                // change exists to remove.
+                if (eventLoop.isFinishing()) {
+                    cont.cancel(stoppedLoopFlushCause())
+                    return
+                }
+                flushContinuation = cont
+                cont.invokeOnCancellation { flushContinuation = null }
             }
+        }
     }
 
     /**

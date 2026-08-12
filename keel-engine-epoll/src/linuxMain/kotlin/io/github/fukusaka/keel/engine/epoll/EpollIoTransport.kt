@@ -1181,45 +1181,45 @@ internal class EpollIoTransport(
 
     /** The body of [awaitPendingFlush]'s registration, on the EventLoop thread. */
     private fun registerFlushWaiter(cont: CancellableContinuation<Unit>) {
-            when {
-                !opened -> cont.cancel(closedTransportFlushCause())
-                pendingWrites.isEmpty() -> cont.resume(Unit)
-                else -> {
-                    // If a coalesced flush is already queued to run on the next
-                    // EL tick, run it now instead of waiting for the tick to fire.
-                    // The awaitFlushComplete path is the backpressure gate under
-                    // high-concurrency /large workloads; the extra EL-tick round-trip
-                    // was measured at ~-25% throughput on 32-core Linux epoll
-                    // (16t/500c) because every producer that reaches this branch
-                    // pays one tick of latency before the flush drains. SSE-style
-                    // rapid emits still benefit from coalescing when no one is
-                    // waiting: `flush()` continues to defer as before, and only
-                    // callers already suspended in `awaitPendingFlush()` short-circuit.
-                    if (flushScheduled) {
-                        flushScheduled = false
-                        val done = performFlush()
-                        if (done && pendingWrites.isEmpty()) {
-                            sendFinIfDrained()
-                            cont.resume(Unit)
-                            return
-                        }
-                    }
-                    // About to park on a flush only a future event can
-                    // complete. If the loop has stopped polling, there is
-                    // no such event -- and this Runnable may be running in
-                    // the drain the stop sweep performs *after* walking the
-                    // participants, in which case onLoopStopped has already
-                    // been and gone and nothing is left to end the wait.
-                    // Storing here would reproduce the exact hang this
-                    // change exists to remove.
-                    if (eventLoop.isFinishing()) {
-                        cont.cancel(stoppedLoopFlushCause())
+        when {
+            !opened -> cont.cancel(closedTransportFlushCause())
+            pendingWrites.isEmpty() -> cont.resume(Unit)
+            else -> {
+                // If a coalesced flush is already queued to run on the next
+                // EL tick, run it now instead of waiting for the tick to fire.
+                // The awaitFlushComplete path is the backpressure gate under
+                // high-concurrency /large workloads; the extra EL-tick round-trip
+                // was measured at ~-25% throughput on 32-core Linux epoll
+                // (16t/500c) because every producer that reaches this branch
+                // pays one tick of latency before the flush drains. SSE-style
+                // rapid emits still benefit from coalescing when no one is
+                // waiting: `flush()` continues to defer as before, and only
+                // callers already suspended in `awaitPendingFlush()` short-circuit.
+                if (flushScheduled) {
+                    flushScheduled = false
+                    val done = performFlush()
+                    if (done && pendingWrites.isEmpty()) {
+                        sendFinIfDrained()
+                        cont.resume(Unit)
                         return
                     }
-                    flushContinuation = cont
-                    cont.invokeOnCancellation { flushContinuation = null }
                 }
+                // About to park on a flush only a future event can
+                // complete. If the loop has stopped polling, there is
+                // no such event -- and this Runnable may be running in
+                // the drain the stop sweep performs *after* walking the
+                // participants, in which case onLoopStopped has already
+                // been and gone and nothing is left to end the wait.
+                // Storing here would reproduce the exact hang this
+                // change exists to remove.
+                if (eventLoop.isFinishing()) {
+                    cont.cancel(stoppedLoopFlushCause())
+                    return
+                }
+                flushContinuation = cont
+                cont.invokeOnCancellation { flushContinuation = null }
             }
+        }
     }
 
     /**
