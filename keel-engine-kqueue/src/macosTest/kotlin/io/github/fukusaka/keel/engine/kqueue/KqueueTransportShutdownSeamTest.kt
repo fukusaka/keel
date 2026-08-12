@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
@@ -16,6 +17,7 @@ import platform.posix.EPIPE
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -172,6 +174,46 @@ internal class KqueueTransportShutdownSeamTest : KqueueTransportSeamFixture() {
         assertEquals(1, fake.shutdownCalls)
         assertEquals(0, fake.writeCalls, "nothing may be sent after the FIN")
         assertEquals(0, tracker.outstandingCount, "the discarded write must still be released")
+        fake.assertAllConsumed()
+    }
+
+    @Test
+    fun `a half-close whose flush throws keeps the FIN for the retry`() = runBlocking {
+        // The half-close defers its FIN because the queue is not empty, and the
+        // flush it drives throws. What must survive the throw is the deferral
+        // and the entry: the bytes did not go out, so a FIN here would tell the
+        // peer they had, and the entry is what the next drain has to send
+        // before the FIN is true. Write readiness is that next drain.
+        eventLoop.start()
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply {
+            flushThrowsOnce = InjectedFault("write refused")
+            enqueueShutdown(fd, ShutdownResult.Ok)
+        }
+        val transport = KqueueIoTransport(fd, eventLoop, tracker, fake)
+
+        val thrown = CompletableDeferred<Throwable?>()
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                val buf = tracker.allocate(SEAM_PAYLOAD_BYTES).also { it.writerIndex = SEAM_PAYLOAD_BYTES }
+                transport.write(buf)
+                thrown.complete(runCatching { transport.shutdownOutput() }.exceptionOrNull())
+            },
+        )
+        assertIs<InjectedFault>(
+            withTimeout(SEAM_TIMEOUT_MS) { thrown.await() },
+            "the caller is still told the flush failed",
+        )
+        assertEquals(0, fake.shutdownCalls, "the bytes never went out, so the FIN must not claim they had")
+
+        // The retry sends what the failed flush put back, and the FIN follows it.
+        fake.enqueueWrite(fd, WriteResult.Written(SEAM_PAYLOAD_BYTES))
+        eventLoop.dispatch(EmptyCoroutineContext, Runnable { transport.onReady(Interest.WRITE) })
+        awaitLoopDrained()
+        assertEquals(2, fake.writeCalls, "the re-queued entry is what write readiness finds")
+        assertEquals(1, fake.shutdownCalls, "FIN must follow the completed write")
+        assertEquals(0, tracker.outstandingCount, "the completed write releases its buffer")
         fake.assertAllConsumed()
     }
 }
