@@ -421,4 +421,24 @@ internal class KqueueTransportFlushSeamTest : KqueueTransportSeamFixture() {
         loop.dispatch(EmptyCoroutineContext, Runnable { drained.complete(Unit) })
         withTimeout(SEAM_TIMEOUT_MS) { drained.await() }
     }
+
+    @Test
+    fun `flushSingle whose write reports no progress ends rather than spins`() {
+        // `Written(0)` leaves the loop counter where it was, so the next turn
+        // asks for the same bytes: an EventLoop thread spinning on one socket
+        // takes every connection on that loop with it. The production socket
+        // maps a zero-byte `write(2)` to `Failed` for this reason, and
+        // `NativeSocket` is a public SPI, so a caller's implementation need not.
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.Written(0)) }
+        val transport = KqueueIoTransport(fd, eventLoop, tracker, fake)
+
+        val buf = tracker.allocate(SEAM_PAYLOAD_BYTES).also { it.writerIndex = SEAM_PAYLOAD_BYTES }
+        transport.write(buf)
+
+        assertTrue(transport.flush(), "the flush must finish rather than ask again")
+        assertEquals(1, fake.writeCalls, "and must not have asked twice for the same bytes")
+        assertEquals(0, tracker.outstandingCount, "the entry it gave up on is released")
+        fake.assertAllConsumed()
+    }
 }
