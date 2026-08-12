@@ -88,9 +88,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   strands its pooled buffer (#1051)
 - `engine-nio`, `engine-kqueue`, `engine-epoll`: a scheduled flush whose write throws now ends the
   connection rather than leaving it stuck open (#1051)
-- `engine-nio`, `engine-kqueue`, `engine-epoll`: a throw from an awaited flush, a dispatched
-  half-close or a flush's completion callback ends the connection instead of being logged and
-  dropped (#1051)
+- `engine-nio`, `engine-kqueue`, `engine-epoll`: an awaited flush, half-close or flush completion
+  that throws ends the connection (#1051)
 - `engine-nio`: a throw from a readiness callback ends the connection instead of being logged and
   dropped (#1051)
 - `engine-nio`: a read that throws releases its buffer instead of stranding it (#1051)
