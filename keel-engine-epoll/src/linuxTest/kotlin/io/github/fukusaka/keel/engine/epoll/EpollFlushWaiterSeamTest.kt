@@ -3,6 +3,8 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
+import io.github.fukusaka.keel.native.posix.NativeSocket
+import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -214,6 +216,7 @@ internal class EpollFlushWaiterSeamTest {
 
             assertEquals(1, fake.writeCalls, "the write must have gone out for this test to mean anything")
             assertEquals(1, fake.shutdownCalls, "the FIN was sendable when the drain threw, so it must have gone out")
+            fake.assertAllConsumed()
         }
     }
 
@@ -255,7 +258,56 @@ internal class EpollFlushWaiterSeamTest {
                 },
             )
 
-            assertEquals(null, answer.await(), "the bytes went out, so the waiter must be told the flush drained")
+            assertEquals(null, answer.await(), "the output drained, so the waiter must be told the flush drained")
+            assertEquals(1, fake.writeCalls, "the write must have gone out for this test to mean anything")
+            fake.assertAllConsumed()
+        }
+    }
+
+    @Test
+    fun `a FIN attempt that throws does not take the waiter's answer with it`() = runBlocking {
+        withTimeout(BUDGET) {
+            // Everything after the answer can throw -- `sendFin` goes through
+            // the same public SPI the write does -- and nothing catches it
+            // here. Answering first is what keeps a caller from being left
+            // suspended by a failure in the cleanup that follows.
+            val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.Written(BACKPRESSURE_BYTES)) }
+            val refusingHalfClose = object : NativeSocket by fake {
+                override fun shutdown(fd: Int, how: Int): ShutdownResult =
+                    throw InjectedFault("the half-close refused")
+            }
+            val tracker = TrackingAllocator()
+            val transport = EpollIoTransport(fd, eventLoop, tracker, refusingHalfClose)
+
+            val buffered = CompletableDeferred<Unit>()
+            eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    val buf = tracker.allocate(BACKPRESSURE_BYTES).also { it.writerIndex = BACKPRESSURE_BYTES }
+                    transport.write(buf)
+                    buffered.complete(Unit)
+                },
+            )
+            buffered.await()
+
+            val answer = CompletableDeferred<Throwable?>()
+            launch(Dispatchers.Unconfined) {
+                answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
+            }
+            val registered = CompletableDeferred<Unit>()
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { registered.complete(Unit) })
+            registered.await()
+
+            eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    transport.onWritabilityChanged = { throw InjectedFault("the writability callback refused") }
+                    transport.shutdownOutput() // defers the FIN, so the catch will attempt it
+                    transport.flush()
+                },
+            )
+
+            assertEquals(null, answer.await(), "the waiter is answered before anything that can throw")
         }
     }
 
