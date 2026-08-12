@@ -469,6 +469,10 @@ internal class NioIoTransport(
             carried?.also { it.addSuppressed(stageFailure) } ?: stageFailure
         }
 
+    /** Names what happened, so a waiter cancelled by an already-closed transport is not a bare one. */
+    private fun closedTransportFlushCause() =
+        CancellationException("the transport on $socketChannel was closed before this flush was awaited")
+
     /** Names what happened, so a cancelled flush waiter is not a bare cancellation. */
     private fun stoppedFlushCause() =
         CancellationException("the transport was closed before the pending flush on $socketChannel could drain")
@@ -626,7 +630,7 @@ internal class NioIoTransport(
         suspendCancellableCoroutine { cont ->
             val register = Runnable {
                 when {
-                    !opened -> cont.cancel()
+                    !opened -> cont.cancel(closedTransportFlushCause())
                     pendingWrites.isEmpty() -> cont.resume(Unit)
                     else -> {
                         // Mirror of the epoll defer eager-run: when a caller reaches
