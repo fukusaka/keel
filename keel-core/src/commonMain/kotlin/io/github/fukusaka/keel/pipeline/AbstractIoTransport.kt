@@ -419,14 +419,13 @@ abstract class AbstractIoTransport(
      * where these take `Throwable`.
      *
      * **A gather write's syscall needs nothing** — every entry is still queued
-     * while it runs. Its partial-write loop is a different matter, and the two
-     * orders in the tree fail differently: kqueue and epoll take the entry out
-     * and then release it, as [releaseQueuedWrites] does, so a refused release
-     * strands the entry it was releasing; NIO releases first and removes after,
-     * so a refused release leaves a released buffer queued for the next walker.
-     * Both shapes are older than this helper and neither is what it addresses —
-     * putting a half-released buffer back would hand the teardown a second
-     * release rather than a first.
+     * while it runs. Its partial-write loop is a different matter: all three
+     * now take the entry out before releasing it, as [releaseQueuedWrites]
+     * does, so a refused release strands the entry it was releasing rather than
+     * leaving a released one queued for the next walker to release again. That
+     * order is older than this helper on the POSIX pair and arrived with it on
+     * NIO; neither is what this helper addresses — putting a half-released
+     * buffer back would hand the teardown a second release rather than a first.
      */
     protected fun requeueUnsent(pw: PendingWrite, sent: Int, cause: Throwable) {
         try {

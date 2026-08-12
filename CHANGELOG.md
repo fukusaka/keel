@@ -86,10 +86,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `engine-nio`, `engine-kqueue`, `engine-epoll`: a single-buffer flush whose write throws no longer
   strands its pooled buffer (#1051)
-- `engine-nio`, `engine-kqueue`, `engine-epoll`: a scheduled flush whose write throws now ends the
+- `engine-nio`, `engine-kqueue`, `engine-epoll`: a scheduled flush whose write throws ends the
   connection rather than leaving it stuck open (#1051)
-- `engine-nio`, `engine-kqueue`, `engine-epoll`: an awaited flush, a dispatched half-close or a flush
-  completion that throws ends the connection (#1051)
+- `engine-nio`, `engine-kqueue`, `engine-epoll`: an awaited flush, dispatched half-close or
+  completion callback that throws ends the connection (#1051)
 - `engine-nio`: a read delivered with no handler attached releases its buffer instead of dropping
   it (#1051)
 - `engine-nio`: a throw from a readiness callback ends the connection instead of being logged and
@@ -97,7 +97,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-kqueue`, `engine-epoll`: a write reporting no progress ends the connection instead of
   spinning the event loop on the same bytes (#1051)
 - `engine-nio`: the gather flush takes each entry out of the queue before releasing it, so a refused
-  release cannot leave a released buffer queued (#1051)
+  release leaves no released buffer queued (#1051)
 - `engine-nio`: a read that throws anywhere before the hand-off releases its buffer instead of
   stranding it (#1051)
 - `engine-nio`: a failing teardown drain no longer takes the obligations after it, and it answers a
