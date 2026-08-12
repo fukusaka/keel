@@ -389,9 +389,11 @@ abstract class AbstractIoTransport(
      * **What that leaves open is a caller parked on the same flush.** A drain
      * that throws does not resume anyone, and the entry sitting in the queue is
      * what makes a *later* `awaitPendingFlush` park rather than return. On the
-     * POSIX transports the teardown, the loop's stop notification and the
-     * `isFinishing` pre-check all answer such a caller; on NIO only the
-     * teardown does, and it did not until this change. Answering from the drain
+     * POSIX transports the teardown and the loop's stop notification answer
+     * such a caller, and the `isFinishing` pre-check keeps one from parking in
+     * the first place; on NIO only the teardown does, and it did not until this
+     * change. None of them covers a continuation that was never stored, which
+     * is what an eager drain that throws leaves behind. Answering from the drain
      * sites themselves is a larger change than this one — each transport has
      * several, and the answer belongs at the single point they all go through
      * rather than restated at each. Filed, not done here.
@@ -544,13 +546,14 @@ abstract class AbstractIoTransport(
         // It cannot serve the throw itself, and nothing here can yet. A
         // deferral is unkeepable only when no completion path is left, and no
         // transport tracks that: `outputDrained` and `flushScheduled` are
-        // proxies that disagree with it in different places -- the engines that
+        // proxies that disagree with it in different places. The three that
         // complete asynchronously read a false `outputDrained` as "a send is in
-        // flight", and on every engine a *previous* flush that stalled leaves
-        // write readiness armed that this one knows nothing about. Giving the
-        // deferral up on a throw therefore gives it up while a path is alive:
-        // measured, the FIN that the armed readiness would have sent is lost
-        // instead. Left deferred until close, and filed.
+        // flight". The three built on readiness have the opposite problem -- a
+        // *previous* flush that stalled left write readiness armed, which this
+        // one knows nothing about and does not withdraw. Giving the deferral up
+        // on a throw therefore gives it up while a path is alive: measured on
+        // one of the readiness engines, the FIN that the armed readiness would
+        // have sent is lost instead. Left deferred until close, and filed.
         try {
             flush()
         } finally {
