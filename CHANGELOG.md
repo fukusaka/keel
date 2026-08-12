@@ -87,9 +87,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `engine-nio`, `engine-kqueue`, `engine-epoll`: a single-buffer flush whose write throws no longer
   strands its pooled buffer (#1051)
 - `engine-nio`: the teardown is staged, so a failing drain no longer skips the buffer release, the
-  key cancel, the channel close, or a waiting `awaitPendingFlush` (#1051)
-- `engine-kqueue`, `engine-epoll`: a failed write is logged before the water-mark callback that could
-  swallow the report (#1051)
+  key cancel or the channel close, and it now answers a caller waiting in `awaitPendingFlush` (#1051)
+- `engine-kqueue`, `engine-epoll`: a failed write releases its buffer before reporting the failure, so
+  a caller-supplied `Logger` that throws cannot strand it (#1051)
 - `engine-kqueue`, `engine-epoll`: release the loops an engine or group has already built when a
   later one cannot be built or started, and close the rest even if one's `close()` throws — within a
   group and between the engine's boss loop and its group (#1049)
