@@ -1,11 +1,15 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -155,5 +159,66 @@ internal class KqueueTransportFlushWaitSeamTest : KqueueTransportSeamFixture() {
         } finally {
             coalescingLoop.close()
         }
+    }
+
+    @Test
+    fun `an awaited flush whose eager drain throws answers the caller`() = runBlocking {
+        // The registration runs on the loop, and an off-loop caller reaches it
+        // by dispatch. Its eager drain throws before the continuation is
+        // stored, so nothing is left that could answer this caller -- and the
+        // throw reaches only the loop's task drain, which logs it and moves on.
+        //
+        // The ordering below is what puts the registration ahead of the tick:
+        // the loop is held inside a task while the caller registers, and only
+        // then does that task write and flush.
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply { flushThrowsOnce = InjectedFault("write refused") }
+        val loop = KqueueEventLoop(logger)
+        loop.start()
+        try {
+            val transport = KqueueIoTransport(fd, loop, tracker, fake)
+            val release = CompletableDeferred<Unit>()
+            val held = CompletableDeferred<Unit>()
+            loop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    held.complete(Unit)
+                    // Blocking the loop is the point: the caller below has to
+                    // reach its dispatch while this task still owns the thread.
+                    while (!release.isCompleted) {
+                        // Busy-wait: this thread cannot suspend, and the window is one dispatch long.
+                    }
+                    val buf = tracker.allocate(WAIT_PAYLOAD_BYTES).also { it.writerIndex = WAIT_PAYLOAD_BYTES }
+                    transport.write(buf)
+                    transport.flush() // queues the tick behind the registration
+                },
+            )
+            withTimeout(WAIT_TIMEOUT_MS) { held.await() }
+
+            val answer = CompletableDeferred<Throwable?>()
+            // Unconfined so the body runs here up to its own dispatch: when
+            // `launch` returns, the registration is queued ahead of the tick.
+            launch(Dispatchers.Unconfined) {
+                answer.complete(runCatching { transport.awaitPendingFlush() }.exceptionOrNull())
+            }
+            release.complete(Unit)
+
+            val thrown = withTimeout(WAIT_TIMEOUT_MS) { answer.await() }
+            assertTrue(
+                thrown is InjectedFault,
+                "the caller must be told what the drain failed with rather than parked, got: $thrown",
+            )
+            assertEquals(0, tracker.outstandingCount, "the entry that drain gave back is released by the close")
+        } finally {
+            loop.close()
+        }
+    }
+
+    private companion object {
+        /** Wall-clock bound for anything this suite waits on. */
+        const val WAIT_TIMEOUT_MS = 5_000L
+
+        /** Payload size for the cases that need one queued entry. */
+        const val WAIT_PAYLOAD_BYTES = 5
     }
 }

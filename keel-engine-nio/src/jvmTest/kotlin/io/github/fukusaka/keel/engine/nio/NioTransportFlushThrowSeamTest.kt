@@ -349,6 +349,35 @@ class NioTransportFlushThrowSeamTest {
         assertEquals(0, tracker.outstandingCount, "and must not strand the buffer it had allocated")
     }
 
+    @Test
+    fun `a dispatched half-close whose flush throws ends the connection`() {
+        // `shutdownOutput` from off the loop is the fifth callback: the caller
+        // has already returned, so the throw its flush raises reaches only the
+        // loop's task drain. Left there it leaves the transport open, holding
+        // the entry the failed flush gave back, with a FIN deferred behind
+        // writes nothing will ever send -- `write` is gated by the half-close.
+        val eventLoop = newLoop(flushCoalescing = false)
+        val key = runBlocking { eventLoop.registerChannel(client) }
+        val tracker = TrackingAllocator()
+        val transport = NioIoTransport(client, key, eventLoop, tracker, IdleReadPolicy.DETECT_PEER_CLOSE)
+        val inactive = CountDownLatch(1)
+        transport.onReadClosed = { inactive.countDown() }
+
+        runOnLoopAndWait(eventLoop) {
+            val buf = tracker.allocate(BUF_CAPACITY).also { it.writerIndex = PAYLOAD_BYTES }
+            transport.write(buf)
+            client.close()
+        }
+        // Off the loop, so the half-close is dispatched rather than run here.
+        transport.shutdownOutput()
+
+        assertTrue(
+            inactive.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS),
+            "the connection must be ended rather than left half-closed with an unsendable entry",
+        )
+        assertEquals(0, tracker.outstandingCount, "and the entry the failed flush gave back released")
+    }
+
     /** Runs [body] on [eventLoop] and returns once it has run; also usable as a barrier. */
     private fun runOnLoopAndWait(eventLoop: NioEventLoop, body: () -> Unit) {
         val done = CountDownLatch(1)

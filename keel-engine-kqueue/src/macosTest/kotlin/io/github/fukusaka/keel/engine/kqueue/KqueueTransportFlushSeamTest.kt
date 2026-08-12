@@ -338,4 +338,71 @@ internal class KqueueTransportFlushSeamTest : KqueueTransportSeamFixture() {
             loop.close()
         }
     }
+
+    @Test
+    fun `a dispatched half-close whose flush throws ends the connection`() {
+        // `shutdownOutput` from off the loop: the caller has already returned,
+        // so the throw its flush raises reaches only the loop's task drain.
+        // Left there it leaves the transport open holding the entry the failed
+        // flush gave back, with a FIN deferred behind writes nothing will send.
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply { flushThrowsOnce = InjectedFault("write refused") }
+        val loop = KqueueEventLoop(logger, flushCoalescing = false)
+        loop.start()
+        try {
+            val transport = KqueueIoTransport(fd, loop, tracker, fake)
+            val inactive = CompletableDeferred<Unit>()
+            transport.onReadClosed = { inactive.complete(Unit) }
+
+            loop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    val buf = tracker.allocate(SEAM_PAYLOAD_BYTES).also { it.writerIndex = SEAM_PAYLOAD_BYTES }
+                    transport.write(buf)
+                },
+            )
+            // From this thread, so the half-close is dispatched rather than run here.
+            transport.shutdownOutput()
+
+            runBlocking { withTimeout(SEAM_TIMEOUT_MS) { inactive.await() } }
+            assertEquals(0, fake.shutdownCalls, "the bytes never went out, so no FIN may claim they had")
+            assertEquals(0, tracker.outstandingCount, "and the entry the failed flush gave back is released")
+        } finally {
+            loop.close()
+        }
+    }
+
+    @Test
+    fun `a completed flush whose callback throws ends the connection`() {
+        // The tick's tail is inside the guard too, not just the drain: it
+        // resumes a waiter, calls back into user code and decides the FIN. A
+        // throw from any of those leaves the same connection open with nobody
+        // told -- and the FIN, decided after the callback, silently dropped.
+        val tracker = TrackingAllocator()
+        val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.Written(SEAM_PAYLOAD_BYTES)) }
+        val loop = KqueueEventLoop(logger)
+        loop.start()
+        try {
+            val transport = KqueueIoTransport(fd, loop, tracker, fake)
+            val inactive = CompletableDeferred<Unit>()
+            transport.onReadClosed = { inactive.complete(Unit) }
+            transport.onFlushComplete = { throw InjectedFault("the flush callback refused") }
+
+            loop.dispatch(
+                EmptyCoroutineContext,
+                Runnable {
+                    val buf = tracker.allocate(SEAM_PAYLOAD_BYTES).also { it.writerIndex = SEAM_PAYLOAD_BYTES }
+                    transport.write(buf)
+                    transport.flush()
+                },
+            )
+
+            runBlocking { withTimeout(SEAM_TIMEOUT_MS) { inactive.await() } }
+            assertEquals(1, fake.writeCalls, "the write itself must have succeeded for this case to mean anything")
+            assertEquals(0, tracker.outstandingCount, "the sent entry is released by the write, not stranded")
+            fake.assertAllConsumed()
+        } finally {
+            loop.close()
+        }
+    }
 }
