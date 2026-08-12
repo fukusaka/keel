@@ -540,15 +540,43 @@ abstract class AbstractIoTransport(
         // transport for good: [write] is already gated by outputShutdown, so
         // nothing would ever refill the queue and no completion path would run
         // to release the deferred FIN.
+        var flushCompleted = false
         try {
             flush()
+            flushCompleted = true
         } finally {
             // Covers a flush that drained synchronously — engines whose flush
             // completes asynchronously reach sendFinIfDrained from their
             // completion path instead.
             sendFinIfDrained()
+            // A flush that threw is the case the `finally` above was written
+            // for, and it is the one it cannot serve. It scheduled no tick and
+            // armed no write readiness, so nothing will call [sendFinIfDrained]
+            // again — and the entry a failing single-buffer flush now puts back
+            // on the queue is what makes [outputDrained] false, so the call
+            // just made was a no-op. Before that entry was kept, the queue was
+            // left empty and this sent a FIN for bytes that had been dropped;
+            // keeping them is right and sending the FIN would not be, but the
+            // deferral is then a promise nobody can keep, and the one thing it
+            // must not be is silent.
+            if (!flushCompleted && abandonDeferredFin()) onUnkeepableDeferredFin()
         }
     }
+
+    /**
+     * Reports a deferred FIN that no completion path will send.
+     *
+     * The base class decides *when* — it is the one that knows the deferral was
+     * made and that the flush meant to release it threw. Engines override to
+     * say so through their own logger; the default keeps an engine that has not
+     * wired one from having to.
+     *
+     * Distinct from an engine's own end-of-flush reporting, which asks whether
+     * a *stopping loop* left a deferral behind. This one fires on a live loop,
+     * where the deferral is unkeepable for a different reason: the flush that
+     * was to keep it did not return.
+     */
+    protected open fun onUnkeepableDeferredFin() = Unit
 
     /**
      * Sends a FIN that [shutdownOutputOwned] deferred, once [outputDrained]

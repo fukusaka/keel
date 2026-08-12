@@ -955,19 +955,25 @@ internal class KqueueIoTransport(
                     return false
                 }
                 is WriteResult.Failed -> {
-                    // Other error (EPIPE, ECONNRESET) — release and drop, then say so.
+                    // Other error (EPIPE, ECONNRESET) — release, say so, then
+                    // account for it.
                     //
-                    // Released before the log, not after. The entry is already
-                    // out of the deque, so anything that throws between here and
-                    // the release strands its buffer exactly as a throwing write
-                    // would. Today nothing here does: the engines wrap the
-                    // configured factory, so a `Logger` cannot escape a guard.
-                    // This orders the two so the buffer does not depend on that
-                    // guard staying in place -- the release is the obligation,
-                    // the log is the report.
+                    // The release is first because the entry is already out of
+                    // the deque, so anything that throws before it strands the
+                    // buffer exactly as a throwing write would. Nothing here
+                    // does today -- the engines wrap the configured factory, so
+                    // a `Logger` cannot escape a guard -- and this orders the
+                    // two so the buffer does not depend on that guard staying
+                    // in place.
+                    //
+                    // The report is second because `updatePendingBytes` is the
+                    // one call here that reaches user code: it invokes the
+                    // writability callback across a water mark, and a handler
+                    // that throws there would otherwise take the only signal
+                    // this failure produces with it.
                     pw.buf.release()
-                    updatePendingBytes(-pw.length)
                     eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(writeResult.errno)}" }
+                    updatePendingBytes(-pw.length)
                     return true
                 }
             }
@@ -1184,6 +1190,23 @@ internal class KqueueIoTransport(
      * stop sweep itself, where a participant closing its own output runs on the
      * loop thread with the loop already finishing.
      */
+    /**
+     * The half-close's own flush threw, so the FIN it deferred is not coming.
+     *
+     * Reported here rather than left to [reportAbandonedFin], which asks a
+     * different question -- whether a *stopping* loop left a deferral behind --
+     * and returns early while the loop is alive. This one is the live-loop
+     * case: the flush that was to release the FIN did not return, and it armed
+     * nothing that would try again.
+     */
+    override fun onUnkeepableDeferredFin() {
+        eventLoop.logger.warn {
+            "shutdownOutput() deferred the FIN behind buffered writes on fd=$fd and the flush that " +
+                "would have released it failed — the FIN is not sent, and the peer sees the close " +
+                "when this connection is closed"
+        }
+    }
+
     private fun halfCloseAndReport() {
         shutdownOutputOwned()
         reportAbandonedFin()

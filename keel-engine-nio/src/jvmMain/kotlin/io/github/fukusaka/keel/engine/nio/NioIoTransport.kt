@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.IdleReadPolicy
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
@@ -260,6 +261,21 @@ internal class NioIoTransport(
             shutdownOutputOwned()
         } else {
             eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOwned() })
+        }
+    }
+
+    /**
+     * The half-close's own flush threw, so the FIN it deferred is not coming.
+     *
+     * `SocketChannel.write` answers a reset with an `IOException`, which makes
+     * this the ordinary way a half-close on a dead connection ends here. The
+     * flush armed no OP_WRITE on its way out, so nothing will try again.
+     */
+    override fun onUnkeepableDeferredFin() {
+        eventLoop.logger.warn {
+            "shutdownOutput() deferred the FIN behind buffered writes on $socketChannel and the " +
+                "flush that would have released it failed — the FIN is not sent, and the peer sees " +
+                "the close when this connection is closed"
         }
     }
 
