@@ -165,6 +165,9 @@ class NioTransportFlushThrowSeamTest {
             inactive.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS),
             "the connection must be reported inactive, not left open with nobody told",
         )
+        // The report runs before the close that releases; the barrier is what
+        // says that close has run.
+        runOnLoopAndWait(eventLoop) { }
         runBlocking {
             val answer = CompletableDeferred<Throwable?>()
             launch(Dispatchers.Unconfined) {
@@ -326,6 +329,7 @@ class NioTransportFlushThrowSeamTest {
             inactive.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS),
             "the connection must be ended, not left open with an entry nothing will send",
         )
+        runOnLoopAndWait(eventLoop) { }
         assertEquals(0, tracker.outstandingCount, "and the stalled entry released with it")
     }
 
@@ -350,6 +354,7 @@ class NioTransportFlushThrowSeamTest {
             inactive.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS),
             "a refused read must end the connection rather than be swallowed by the loop",
         )
+        runOnLoopAndWait(eventLoop) { }
         assertEquals(0, tracker.outstandingCount, "and must not strand the buffer it had allocated")
     }
 
@@ -379,6 +384,7 @@ class NioTransportFlushThrowSeamTest {
             inactive.await(LOOP_TASK_TIMEOUT_MS, TimeUnit.MILLISECONDS),
             "the connection must be ended rather than left half-closed with an unsendable entry",
         )
+        runOnLoopAndWait(eventLoop) { }
         assertEquals(0, tracker.outstandingCount, "and the entry the failed flush gave back released")
     }
 
