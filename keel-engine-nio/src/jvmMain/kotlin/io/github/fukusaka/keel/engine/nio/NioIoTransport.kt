@@ -390,7 +390,8 @@ internal class NioIoTransport(
         // The drain is why this is staged at all. `SocketChannel.write` answers
         // a reset with an `IOException`, and this is the tick where a same-tick
         // send→close meets one; letting that escape took the release walk, the
-        // waiter wake, the key cancel and the channel close with it. Carrying
+        // key cancel and the channel close with it -- and the waiter stage
+        // below, which this transport did not have at all. Carrying
         // it instead is not enough on its own either — a single `try` around
         // the drain lets any later failure *replace* the one that started the
         // teardown, which is the mistake the POSIX staging exists to prevent.
@@ -401,11 +402,13 @@ internal class NioIoTransport(
                 performFlush()
             }
         }
-        // After the drain, not before. A stalled drain re-registers for write
-        // readiness and that arms a fresh write-idle timer; cancelling first
-        // would leave the new one holding this transport -- and the channel and
-        // pipeline graph behind it -- on the loop's scheduler until it fired.
-        // These three stages are ordered, not interchangeable.
+        // The write-idle cancel comes after the drain, not before. A stalled
+        // drain re-registers for write readiness and that arms a fresh
+        // write-idle timer; cancelling first would leave the new one holding
+        // this transport -- and the channel and pipeline graph behind it -- on
+        // the loop's scheduler until it fired. The read-idle cancel has no such
+        // dependency: the only site that arms it is the `readEnabled` setter,
+        // gated on `opened`, which is already false here.
         failure = runTeardownStage(failure) { cancelIdleTimeout() }
         failure = runTeardownStage(failure) { cancelWriteIdleTimeout() }
         // The shared drain, not the inline walk this used to keep: it takes each
@@ -420,7 +423,7 @@ internal class NioIoTransport(
         // the throw path does not arm one, since the connection is going down —
         // so nothing will ever drain the queue and resume the waiter. Without
         // this the fix for the stranded buffer would have traded a leak for a
-        // caller parked for the life of the process.
+        // caller parked for the life of its job.
         failure = runTeardownStage(failure) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
@@ -469,7 +472,7 @@ internal class NioIoTransport(
      * than a fault. Without the guard that buffer is not queued for the
      * teardown to release and not held by any caller — [write] took ownership
      * when it was enqueued — so every peer that resets mid-flush costs a pooled
-     * buffer for the life of the process.
+     * buffer for as long as this loop's allocator lives.
      */
     private fun flushSingle(pw: PendingWrite): Boolean {
         val bb = pw.buf.unsafeBuffer

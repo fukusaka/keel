@@ -314,8 +314,10 @@ abstract class AbstractIoTransport(
      *
      * [releaseAllPendingWrites] itself runs at most once per transport, after
      * the teardown claim is taken, so it has no next walker of its own; it uses
-     * this so that the two drains that share a body cannot drift apart. No other
-     * transport calls it, and what that costs them differs — **the defect needs
+     * this so that the two drains that share a body cannot drift apart. The NIO
+     * teardown adopted it without having a stopped-loop path of its own, for the
+     * order rather than the sharing. What the shape costs the transports that
+     * still carry inline copies differs — **the defect needs
      * a second walker over the same queue**, which only some have. The NIO and
      * Node transports drain on their flush path *and* on teardown, so a refused
      * release on the first leaves a buffer for the second to release again:
@@ -376,13 +378,15 @@ abstract class AbstractIoTransport(
      * anything that flushed the original offsets again would send those bytes a
      * second time. The remainder goes back at the head, keeping wire order.
      *
-     * **The caller still rethrows, and the transport is going down.** This does
-     * not decide the failure is recoverable — it decides only that the failure
-     * costs one connection rather than one connection and a pooled buffer. It
-     * does *not* register write interest: nothing is going to drain the entry
-     * it just put back, which is why a teardown that leaves a flush waiter
-     * parked turns this into a caller parked for good. Every transport calling
-     * this owes its waiters a cancel on the way down.
+     * **The caller rethrows, and this does not register write interest.**
+     * Nothing is coming to drain the entry it just put back. That is not the
+     * same as "the transport is going down": the rethrow reaches a caller who
+     * can close only on some paths — from a coalesced flush tick it is
+     * swallowed by the loop's task drain and the transport stays open. So the
+     * entry waits for a teardown, and anyone parked on that flush waits with
+     * it. Every site that can throw out of a drain owes its waiter an answer:
+     * the teardown for a waiter already stored, and the drain itself for the
+     * one running it, which is not stored anywhere yet.
      *
      * A secondary failure while putting the entry back is attached to [cause]
      * rather than replacing it: the send's failure is the one the caller is

@@ -901,9 +901,9 @@ internal class EpollIoTransport(
      * The entry arrives already removed from the deque, so a [NativeSocket]
      * that throws would strand its buffer where no teardown can reach it.
      * [NativeSocket] is a public SPI -- the engine takes one as a constructor
-     * argument -- and the production implementation answers with [WriteResult]
-     * rather than throwing, which is why the guard is here and not a branch
-     * anything in this tree drives.
+     * argument — and the production implementation answers with [WriteResult]
+     * rather than throwing, so nothing an engine builds reaches this branch. A
+     * seam test does, through the fake socket.
      */
     private fun flushSingle(pw: PendingWrite): Boolean {
         var written = 0
@@ -1087,7 +1087,30 @@ internal class EpollIoTransport(
                         // callers already suspended in `awaitPendingFlush()` short-circuit.
                         if (flushScheduled) {
                             flushScheduled = false
-                            val done = performFlush()
+                            // The drain can throw -- `flushSingle` re-queues its
+                            // entry and rethrows when the socket does -- and
+                            // [cont] is not stored anywhere yet, so an escaping
+                            // throw leaves a continuation nothing holds: not
+                            // resumable by the write callback, not reachable by
+                            // the teardown's cancel, and swallowed by the loop's
+                            // task drain when this Runnable was dispatched
+                            // rather than run inline. The caller waits for the
+                            // life of its job.
+                            //
+                            // Reached from another thread, not only inline. A
+                            // caller that dispatches its write and then awaits
+                            // without waiting for it leaves the queue as
+                            // [write, register]; the write sets `flushScheduled`
+                            // and queues the tick *behind* this registration.
+                            //
+                            // The waiter is owed an answer and the drain's
+                            // failure is the answer.
+                            val done = try {
+                                performFlush()
+                            } catch (drainFailure: Throwable) {
+                                cont.cancel(drainFailure)
+                                return@Runnable
+                            }
                             if (done && pendingWrites.isEmpty()) {
                                 sendFinIfDrained()
                                 cont.resume(Unit)
