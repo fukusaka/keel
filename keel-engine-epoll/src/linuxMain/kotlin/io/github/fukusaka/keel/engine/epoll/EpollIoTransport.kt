@@ -990,7 +990,25 @@ internal class EpollIoTransport(
                 throw writeFailure
             }
             when (writeResult) {
-                is WriteResult.Written -> written += writeResult.bytes
+                is WriteResult.Written -> {
+                    // A zero-byte write would leave `written` where it was and
+                    // send the loop round again on the same bytes, spinning this
+                    // thread and with it every connection on the loop. The
+                    // production socket maps `write(2)` returning 0 to `Failed`
+                    // for exactly that reason; a caller-supplied one need not.
+                    if (writeResult.bytes <= 0) {
+                        // Same three steps as the branch below, in the same
+                        // order and for the same reasons: the entry is out of
+                        // the deque, and `pendingBytes` still counts all of it
+                        // -- this loop's progress is only subtracted on the way
+                        // out.
+                        pw.buf.release()
+                        eventLoop.logger.warn { "write() reported no progress: fd=$fd" }
+                        updatePendingBytes(-pw.length)
+                        return true
+                    }
+                    written += writeResult.bytes
+                }
                 WriteResult.WouldBlock -> {
                     if (written > 0) partialWriteCount++
                     val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)

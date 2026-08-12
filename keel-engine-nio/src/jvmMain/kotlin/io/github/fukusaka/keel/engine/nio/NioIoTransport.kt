@@ -674,9 +674,13 @@ internal class NioIoTransport(
         val written = socketChannel.write(bbArray, 0, count)
 
         if (written >= totalBytes) {
-            for (pw in pendingWrites) pw.buf.release()
-            pendingWrites.clear()
+            // Out of the deque before released, and the accounting settled
+            // first: a refused release must not leave a released buffer queued
+            // for the teardown to release a second time -- by then the pool may
+            // have handed that buffer to another connection. The POSIX pair
+            // reaches the same order through this helper.
             updatePendingBytes(-totalBytes.toInt())
+            releaseQueuedWrites()
             return true
         }
 
@@ -694,8 +698,9 @@ internal class NioIoTransport(
             val pw = pendingWrites.first()
             if (consumed + pw.length <= written) {
                 consumed += pw.length.toLong()
-                pw.buf.release()
+                // Removed before released, for the reason above.
                 pendingWrites.removeFirst()
+                pw.buf.release()
             } else {
                 val alreadyWritten = (written - consumed).toInt()
                 pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
