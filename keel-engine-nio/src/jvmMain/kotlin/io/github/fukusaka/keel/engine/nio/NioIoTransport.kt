@@ -7,7 +7,6 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.IdleReadPolicy
-import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
@@ -258,46 +257,9 @@ internal class NioIoTransport(
      */
     override fun shutdownOutput() {
         if (eventLoop.inEventLoop()) {
-            halfCloseAndReport()
-        } else {
-            eventLoop.dispatch(EmptyCoroutineContext, Runnable { halfCloseAndReport() })
-        }
-    }
-
-    /**
-     * The half-close, plus the report a deferral it cannot keep needs.
-     *
-     * `shutdownOutputOwned` defers the FIN behind buffered output and sends it
-     * from a `finally` once the queue drains. A flush that throws is the case
-     * that `finally` cannot serve: the entry goes back on the queue, so there is
-     * nothing to send, and the throw path schedules no tick and arms no
-     * OP_WRITE, so nothing will call `sendFinIfDrained` again.
-     *
-     * That last part is a fact about this transport, not about transports in
-     * general — the ones whose flush completes asynchronously read a false
-     * `outputDrained` as "a send is still in flight" — which is why the
-     * judgement is here rather than in the base class.
-     *
-     * Reachable with flush coalescing off. With it on, `flush()` returns after
-     * scheduling a tick and the throw lands there instead, where this transport
-     * still has no reporting of its own.
-     *
-     * Not sending the FIN is right: the bytes did not go out, and a FIN would
-     * tell the peer they had. What it must not be is silent.
-     */
-    private fun halfCloseAndReport() {
-        var completed = false
-        try {
             shutdownOutputOwned()
-            completed = true
-        } finally {
-            if (!completed && abandonDeferredFin()) {
-                eventLoop.logger.warn {
-                    "shutdownOutput() deferred the FIN behind buffered writes on $socketChannel and " +
-                        "the flush that would have released it failed — the FIN is not sent, and the " +
-                        "peer sees the close when this connection is closed"
-                }
-            }
+        } else {
+            eventLoop.dispatch(EmptyCoroutineContext, Runnable { shutdownOutputOwned() })
         }
     }
 

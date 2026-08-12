@@ -541,14 +541,16 @@ abstract class AbstractIoTransport(
         // nothing would ever refill the queue and no completion path would run
         // to release the deferred FIN.
         //
-        // It cannot serve the throw itself, and this class cannot fix that. A
-        // deferral left by a flush that did not return is unkeepable only if no
-        // *earlier* work is still outstanding, and what counts as outstanding
-        // is the engine's to know: the transports that complete asynchronously
-        // read `outputDrained` false precisely when a send is still in flight,
-        // so a base-class rule that gave the deferral up on a throw would give
-        // it up exactly when a path was alive. The engines that can answer do
-        // so around their own half-close.
+        // It cannot serve the throw itself, and nothing here can yet. A
+        // deferral is unkeepable only when no completion path is left, and no
+        // transport tracks that: `outputDrained` and `flushScheduled` are
+        // proxies that disagree with it in different places -- the engines that
+        // complete asynchronously read a false `outputDrained` as "a send is in
+        // flight", and on every engine a *previous* flush that stalled leaves
+        // write readiness armed that this one knows nothing about. Giving the
+        // deferral up on a throw therefore gives it up while a path is alive:
+        // measured, the FIN that the armed readiness would have sent is lost
+        // instead. Left deferred until close, and filed.
         try {
             flush()
         } finally {

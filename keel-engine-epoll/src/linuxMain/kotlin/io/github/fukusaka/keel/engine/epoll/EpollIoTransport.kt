@@ -1174,38 +1174,10 @@ internal class EpollIoTransport(
      * loop thread with the loop already finishing.
      */
     private fun halfCloseAndReport() {
-        var completed = false
-        try {
-            shutdownOutputOwned()
-            completed = true
-        } finally {
-            if (completed) reportAbandonedFin() else reportUnkeepableDeferredFin()
-        }
+        shutdownOutputOwned()
+        reportAbandonedFin()
     }
 
-    /**
-     * Reports a deferred FIN left by a half-close whose own flush threw.
-     *
-     * A different unkeepable deferral from the one [reportAbandonedFin]
-     * describes, and on a live loop rather than a stopping one: the flush that
-     * was to release the FIN did not return, and on this transport a throwing
-     * flush schedules no tick and arms no write readiness, so nothing will call
-     * `sendFinIfDrained` again. That is a fact about this engine and not about
-     * transports in general -- the ones whose flush completes asynchronously
-     * read a false `outputDrained` as "a send is still in flight" -- which is
-     * why the judgement is here and not in the base class.
-     *
-     * Not sending the FIN is right: the bytes did not go out, and a FIN would
-     * tell the peer they had. What it must not be is silent.
-     */
-    private fun reportUnkeepableDeferredFin() {
-        if (!abandonDeferredFin()) return
-        eventLoop.logger.warn {
-            "shutdownOutput() deferred the FIN behind buffered writes on fd=$fd and the flush that " +
-                "would have released it failed — the FIN is not sent, and the peer sees the close " +
-                "when this connection is closed"
-        }
-    }
 
     /**
      * Reports a half-close whose FIN can no longer be sent.
