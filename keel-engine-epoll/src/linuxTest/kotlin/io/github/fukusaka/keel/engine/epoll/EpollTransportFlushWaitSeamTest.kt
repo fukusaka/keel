@@ -211,8 +211,9 @@ internal class EpollTransportFlushWaitSeamTest : EpollTransportSeamFixture() {
     fun `an awaited flush whose eager drain throws answers the caller`() = runBlocking {
         // The registration runs on the loop, and an off-loop caller reaches it
         // by dispatch. Its eager drain throws before the continuation is
-        // stored, so nothing is left that could answer this caller -- and the
-        // throw reaches only the loop's task drain, which logs it and moves on.
+        // stored, so nothing else is left that could answer this caller -- the
+        // throw would otherwise reach only the loop's task drain, which logs it
+        // and moves on. Answered by the registration's own catch instead.
         //
         // The ordering below is what puts the registration ahead of the tick:
         // the loop is held inside a task while the caller registers, and only
@@ -254,6 +255,12 @@ internal class EpollTransportFlushWaitSeamTest : EpollTransportSeamFixture() {
                 thrown is InjectedFault,
                 "the caller must be told what the drain failed with rather than parked, got: $thrown",
             )
+            // The caller is answered before the connection is ended, and the
+            // release is part of that ending -- so the barrier, not the answer,
+            // is what says the teardown has run.
+            val drained = CompletableDeferred<Unit>()
+            loop.dispatch(EmptyCoroutineContext, Runnable { drained.complete(Unit) })
+            withTimeout(WAIT_TIMEOUT_MS) { drained.await() }
             assertEquals(0, tracker.outstandingCount, "the entry that drain gave back is released by the close")
         } finally {
             loop.close()

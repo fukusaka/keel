@@ -285,6 +285,10 @@ class NioTransportFlushThrowSeamTest {
                 "and is told what the flush failed with, the way an on-loop caller is, got: $cause",
             )
         }
+        // The caller is answered before the connection is ended, and the release
+        // is part of that ending -- so the barrier, not the answer, is what says
+        // the teardown has run.
+        runOnLoopAndWait(eventLoop) { }
         assertEquals(0, tracker.outstandingCount, "the entry the failed drain re-queued is released by the close")
     }
 
