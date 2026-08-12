@@ -96,6 +96,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dropped (#1051)
 - `engine-kqueue`, `engine-epoll`: a write reporting no progress ends the connection instead of
   spinning the event loop on the same bytes (#1051)
+- `engine-nio`, `engine-kqueue`, `engine-epoll`: a flush whose buffer refuses the range it opens
+  returns the entry to the queue (#1051)
 - `engine-nio`: the gather flush takes each entry out of the queue before releasing it, so a refused
   release leaves no released buffer queued (#1051)
 - `engine-nio`: a read that throws anywhere before the hand-off releases its buffer instead of
