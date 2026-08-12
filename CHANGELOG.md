@@ -86,6 +86,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `engine-nio`, `engine-kqueue`, `engine-epoll`: a single-buffer flush whose write throws no longer
   strands its pooled buffer (#1051)
+- `engine-nio`, `engine-kqueue`, `engine-epoll`: a scheduled flush whose write throws now ends the
+  connection, instead of leaving it open holding an entry nothing will send and parking every later
+  `awaitPendingFlush` caller (#1051)
 - `engine-nio`: the teardown is staged, so a failing drain no longer skips the buffer release, the
   key cancel or the channel close, and it now answers a caller waiting in `awaitPendingFlush` (#1051)
 - `engine-kqueue`, `engine-epoll`: a failed write releases its buffer before reporting the failure, so
