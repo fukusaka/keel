@@ -401,6 +401,11 @@ internal class NioIoTransport(
                 performFlush()
             }
         }
+        // After the drain, not before. A stalled drain re-registers for write
+        // readiness and that arms a fresh write-idle timer; cancelling first
+        // would leave the new one holding this transport -- and the channel and
+        // pipeline graph behind it -- on the loop's scheduler until it fired.
+        // These three stages are ordered, not interchangeable.
         failure = runTeardownStage(failure) { cancelIdleTimeout() }
         failure = runTeardownStage(failure) { cancelWriteIdleTimeout() }
         // The shared drain, not the inline walk this used to keep: it takes each
@@ -616,15 +621,28 @@ internal class NioIoTransport(
                         // still coalesces SSE-style rapid emits when no one awaits.
                         if (flushScheduled) {
                             flushScheduled = false
-                            // The drain can throw here, and [cont] is not stored
-                            // yet. That is not a lost waiter: this branch is
-                            // only reached with a tick still scheduled, which
-                            // only happens when the caller is already on the
-                            // loop and this Runnable is being run inline -- so
-                            // the throw travels straight out to that caller.
-                            // A caller from another thread arrives after the
-                            // scheduled tick has run, with nothing scheduled.
-                            val done = performFlush()
+                            // The drain can throw, and [cont] is not stored
+                            // anywhere yet -- so an escaping throw leaves a
+                            // continuation nothing holds: not resumable by the
+                            // write callback, not reachable by the teardown's
+                            // cancel, and swallowed by the loop's task drain
+                            // when this Runnable was dispatched rather than run
+                            // inline. The caller waits for the life of its job.
+                            //
+                            // Reached from another thread, not only inline. A
+                            // Ktor write channel dispatches its emit and then
+                            // awaits without waiting for it, so the queue is
+                            // [emit, register]; the emit sets `flushScheduled`
+                            // and queues the tick *behind* this registration.
+                            //
+                            // The waiter is owed an answer and the drain's
+                            // failure is the answer.
+                            val done = try {
+                                performFlush()
+                            } catch (drainFailure: Throwable) {
+                                cont.cancel(drainFailure)
+                                return@Runnable
+                            }
                             if (done && pendingWrites.isEmpty()) {
                                 sendFinIfDrained()
                                 cont.resume(Unit)

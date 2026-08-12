@@ -416,15 +416,13 @@ abstract class AbstractIoTransport(
             pendingWrites.addFirst(
                 if (sent == 0) pw else PendingWrite(pw.buf, pw.offset + sent, pw.length - sent),
             )
-            // Nothing moved, nothing to account for. Skipped rather than passed
-            // as zero because the update re-evaluates the water marks, and that
-            // can reach user code — not something to do while unwinding when
-            // there is no ledger change to report.
-            if (sent > 0) updatePendingBytes(-sent)
+            updatePendingBytes(-sent)
         } catch (requeueFailure: Throwable) {
-            // Not onto itself: `addSuppressed(this)` throws, which would put the
-            // cleanup's failure in place of the send's — the one thing the
-            // attach is here to avoid.
+            // Not onto itself. On the JVM `addSuppressed(this)` throws, which
+            // would put the cleanup's failure in place of the send's — the one
+            // thing the attach is here to avoid. Kotlin/Native's own
+            // implementation was not checked; the guard costs an identity
+            // comparison and removes the question.
             if (requeueFailure !== cause) cause.addSuppressed(requeueFailure)
         }
     }
