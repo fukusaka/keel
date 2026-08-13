@@ -1,8 +1,4 @@
-@file:OptIn(InternalReadinessEngineApi::class)
-
 package io.github.fukusaka.keel.engine.kqueue
-
-import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 
 /**
  * Semantic abstraction over the `kqueue(2)`-family syscalls used by

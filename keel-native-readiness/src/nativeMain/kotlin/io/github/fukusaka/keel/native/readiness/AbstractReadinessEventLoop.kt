@@ -462,20 +462,33 @@ abstract class AbstractReadinessEventLoop :
     private var writevCapacity = INITIAL_WRITEV_CAPACITY
 
     /**
+     * Whether [writevBases] / [writevLens] are ours to free.
+     *
+     * Both this flag and the pointers are touched only from this loop's thread
+     * (the engines' `close()` claims its run with a CAS and frees after the
+     * join; the test doubles have no thread at all), so a plain `var` is enough.
+     */
+    private var ownsWritevScratch = true
+
+    /**
      * Grows [writevBases] / [writevLens] (1.5x, at least [n]) so a gather of
      * [n] buffers fits. Called on this loop's thread only.
      */
     internal fun ensureWritevCapacity(n: Int) {
         if (n <= writevCapacity) return
         val grown = maxOf(writevCapacity + (writevCapacity shr 1), n)
-        nativeHeap.free(writevBases)
-        nativeHeap.free(writevLens)
+        // Only free what we still own. A grow after the scratch was released
+        // would otherwise free the same pointers a second time — and the
+        // arrays it allocates below are owed back either way.
+        if (ownsWritevScratch) {
+            nativeHeap.free(writevBases)
+            nativeHeap.free(writevLens)
+        }
         writevBases = nativeHeap.allocArray(grown)
         writevLens = nativeHeap.allocArray(grown)
         writevCapacity = grown
+        ownsWritevScratch = true
     }
-
-    private var writevScratchFreed = false
 
     /**
      * Releases the gather scratch. Called from each engine's teardown.
@@ -486,8 +499,8 @@ abstract class AbstractReadinessEventLoop :
      * second `nativeHeap.free` of the same pointer is not a no-op.
      */
     protected fun freeWritevScratch() {
-        if (writevScratchFreed) return
-        writevScratchFreed = true
+        if (!ownsWritevScratch) return
+        ownsWritevScratch = false
         nativeHeap.free(writevBases)
         nativeHeap.free(writevLens)
     }
