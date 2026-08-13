@@ -250,9 +250,8 @@ abstract class AbstractReadinessEngine(
      *
      * The socket is created in non-blocking mode so `connect()` returns
      * immediately with `EINPROGRESS`. The coroutine then suspends on
-     * write readiness (`EVFILT_WRITE` / `EPOLLOUT`) via the EventLoop until the
- * connection is established
-     * (or fails). On loopback, `connect()` may succeed immediately
+     * write readiness (`EVFILT_WRITE` / `EPOLLOUT`) via the EventLoop until
+     * the connection is established (or fails). On loopback, `connect()` may succeed immediately
      * (returns 0) without needing to suspend.
      *
      * After connection, `getsockopt(SO_ERROR)` verifies success.

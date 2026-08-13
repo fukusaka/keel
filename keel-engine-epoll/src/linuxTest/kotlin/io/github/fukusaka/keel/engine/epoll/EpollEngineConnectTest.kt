@@ -2,9 +2,9 @@
 
 package io.github.fukusaka.keel.engine.epoll
 
-import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking

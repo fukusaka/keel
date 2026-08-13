@@ -2,10 +2,10 @@
 
 package io.github.fukusaka.keel.engine.epoll
 
-import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
