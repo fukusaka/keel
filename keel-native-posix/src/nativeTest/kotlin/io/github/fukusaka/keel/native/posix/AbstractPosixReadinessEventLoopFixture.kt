@@ -72,6 +72,7 @@ internal abstract class AbstractPosixReadinessEventLoopFixture {
         /** No connect path in this double. */
         override suspend fun awaitWriteReady(fd: Int, logger: Logger): Unit =
             error("this double has no connect path")
+
         /** What [submitArm] would have armed — the suspend path. */
         val armed = mutableListOf<Pair<Int, Interest>>()
 

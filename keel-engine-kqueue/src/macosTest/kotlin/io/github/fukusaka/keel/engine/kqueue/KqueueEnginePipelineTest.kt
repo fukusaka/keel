@@ -4,7 +4,6 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
-import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking

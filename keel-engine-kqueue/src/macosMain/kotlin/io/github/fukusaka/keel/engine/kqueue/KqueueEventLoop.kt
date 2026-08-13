@@ -9,8 +9,8 @@ import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
-import io.github.fukusaka.keel.native.posix.PosixEventLoopLifecycle
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixEventLoopLifecycle
 import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.PosixSuspendRegister
 import io.github.fukusaka.keel.native.posix.closeFdSafely
@@ -18,18 +18,11 @@ import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
-import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.asStableRef
-import kotlinx.cinterop.free
 import kotlinx.cinterop.get
-import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CancellableContinuation
@@ -47,7 +40,6 @@ import platform.posix.pthread_self
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.resumeWithException
-import kotlin.time.TimeSource
 
 /**
  * Single-threaded kqueue event loop for macOS, also serving as a [CoroutineDispatcher].
@@ -331,7 +323,6 @@ internal class KqueueEventLoop(
             )
         }
     }
-
 
     /** `internal` wrapper for this module's probes; see [participantCount]. */
     internal fun participants(): Int = participantCount()

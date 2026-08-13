@@ -59,7 +59,6 @@ class PosixIoTransport(
     idleTimeoutMillis: Long = 0,
 ) : AbstractIoTransport(allocator), FdReadyListener, LoopParticipant {
 
-
     /** Read-side idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
     override val idleTimeoutMillis: Long = idleTimeoutMillis
 

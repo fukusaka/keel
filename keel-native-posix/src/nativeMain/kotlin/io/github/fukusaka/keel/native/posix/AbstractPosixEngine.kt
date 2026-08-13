@@ -16,7 +16,6 @@ import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.bindAllOrRollback
 import io.github.fukusaka.keel.core.connectWithFallback
-import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.core.requireIp
 import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
@@ -163,7 +162,6 @@ abstract class AbstractPosixEngine(
     //
     // Closing an unstarted loop is what makes the last stage's rollback work,
     // and it runs the teardown its thread would have.
-
 
     /**
      * Binds a TCP server on [host]:[port] and returns a [StreamServer].

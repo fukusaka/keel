@@ -3,8 +3,8 @@
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.StreamEngine
+import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.native.posix.AbstractPosixEngine

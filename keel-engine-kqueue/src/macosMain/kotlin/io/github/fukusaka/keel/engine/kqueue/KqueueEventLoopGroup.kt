@@ -5,7 +5,6 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.AbstractPosixEventLoopGroup
-import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.pipeline.IoTransport
 
