@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
@@ -25,7 +25,7 @@ import kotlin.test.assertTrue
  * neither the head nor the tail — which is the only shape that exercises the
  * walk past a second hop and the tail fixup independently of each other.
  */
-@OptIn(InternalPosixEventLoopApi::class)
+@OptIn(InternalReadinessEngineApi::class)
 internal class PosixReadinessLoopLedgerTest : AbstractPosixReadinessEventLoopFixture() {
 
     @Test

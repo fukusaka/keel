@@ -1,5 +1,13 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.native.posix.AcceptResult
+import io.github.fukusaka.keel.native.posix.NativeSocket
+import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
+import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.applySocketOptions
+import io.github.fukusaka.keel.native.posix.closeFdSafely
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
@@ -32,8 +40,8 @@ import kotlin.coroutines.resumeWithException
  * @param workerGroup Worker EventLoopGroup for accepted channels (provides per-EventLoop allocator).
  * @param localAddress Bind address of this server channel.
  */
-@OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
-@InternalPosixEventLoopApi
+@OptIn(ExperimentalForeignApi::class, InternalReadinessEngineApi::class)
+@InternalReadinessEngineApi
 class PosixStreamServer(
     private val serverFd: Int,
     private val bossLoop: AbstractPosixReadinessEventLoop,

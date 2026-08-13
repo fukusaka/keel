@@ -1,8 +1,8 @@
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
-import io.github.fukusaka.keel.native.posix.FdReadyListener
-import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.readiness.FdReadyListener
+import io.github.fukusaka.keel.native.readiness.Interest
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking

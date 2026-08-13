@@ -1,5 +1,7 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.native.posix.ConnectResult
+import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.logging.Logger
 
 /**

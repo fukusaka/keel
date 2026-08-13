@@ -1,12 +1,12 @@
-@file:OptIn(InternalPosixEventLoopApi::class)
+@file:OptIn(InternalReadinessEngineApi::class)
 
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.StreamServer
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
-import io.github.fukusaka.keel.native.posix.PosixIoTransport
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.PosixIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout

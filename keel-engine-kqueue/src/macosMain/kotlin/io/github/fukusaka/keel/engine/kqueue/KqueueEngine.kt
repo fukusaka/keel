@@ -1,4 +1,4 @@
-@file:OptIn(InternalPosixEventLoopApi::class)
+@file:OptIn(InternalReadinessEngineApi::class)
 
 package io.github.fukusaka.keel.engine.kqueue
 
@@ -7,14 +7,14 @@ import io.github.fukusaka.keel.core.StreamEngine
 import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.core.requireFilesystemOnly
 import io.github.fukusaka.keel.logging.guarded
-import io.github.fukusaka.keel.native.posix.AbstractPosixEngine
-import io.github.fukusaka.keel.native.posix.AbstractPosixEventLoopGroup
-import io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.readiness.AbstractPosixEngine
+import io.github.fukusaka.keel.native.readiness.AbstractPosixEventLoopGroup
+import io.github.fukusaka.keel.native.readiness.AbstractPosixReadinessEventLoop
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.posix.PosixSuspendRegister
+import io.github.fukusaka.keel.native.readiness.PosixSuspendRegister
 
 /**
  * kqueue-backed [StreamEngine] for macOS.

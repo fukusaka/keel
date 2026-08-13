@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.usleep
@@ -29,7 +29,7 @@ import kotlin.time.TimeSource
  * @param dispatchToLoop queues a task to run on the loop thread.
  */
 @OptIn(ExperimentalForeignApi::class)
-@InternalPosixEventLoopApi
+@InternalReadinessEngineApi
 class LoopHandoff(
     private val inEventLoop: () -> Boolean,
     private val dispatchToLoop: (task: () -> Unit) -> Unit,

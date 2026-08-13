@@ -1,11 +1,11 @@
-@file:OptIn(InternalPosixEventLoopApi::class)
+@file:OptIn(InternalReadinessEngineApi::class)
 
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi

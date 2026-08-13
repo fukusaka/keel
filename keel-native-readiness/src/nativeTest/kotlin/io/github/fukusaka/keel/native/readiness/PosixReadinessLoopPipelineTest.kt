@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -23,7 +23,7 @@ import kotlin.test.assertTrue
  * Tests for the pipeline path — the readiness dispatch and callback ledger
  * that moved onto the base class.
  */
-@OptIn(InternalPosixEventLoopApi::class)
+@OptIn(InternalReadinessEngineApi::class)
 internal class PosixReadinessLoopPipelineTest : AbstractPosixReadinessEventLoopFixture() {
 
     // --- the pipeline path, which moved onto the base with this class ---

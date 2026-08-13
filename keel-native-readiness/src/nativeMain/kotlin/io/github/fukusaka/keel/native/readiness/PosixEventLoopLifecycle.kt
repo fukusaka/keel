@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 /**
  * The thread lifecycle a readiness event loop owns.

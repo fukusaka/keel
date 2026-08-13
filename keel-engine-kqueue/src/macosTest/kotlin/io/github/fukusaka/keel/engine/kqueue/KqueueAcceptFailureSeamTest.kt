@@ -1,4 +1,4 @@
-@file:OptIn(InternalPosixEventLoopApi::class)
+@file:OptIn(InternalReadinessEngineApi::class)
 
 package io.github.fukusaka.keel.engine.kqueue
 
@@ -11,10 +11,10 @@ import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
-import io.github.fukusaka.keel.native.posix.HandoffOutcome
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
-import io.github.fukusaka.keel.native.posix.LoopParticipant
-import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
+import io.github.fukusaka.keel.native.readiness.HandoffOutcome
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.LoopParticipant
+import io.github.fukusaka.keel.native.readiness.PosixPipelinedStreamServer
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Dispatchers

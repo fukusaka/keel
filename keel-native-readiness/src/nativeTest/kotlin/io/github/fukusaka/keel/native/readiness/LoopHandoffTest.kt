@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineScope
@@ -30,7 +30,7 @@ import kotlin.time.TimeSource
  * a second thread and carries a wall-clock bound, because a regression that
  * never publishes quiescence would otherwise hang rather than fail.
  */
-@OptIn(InternalPosixEventLoopApi::class, ExperimentalForeignApi::class)
+@OptIn(InternalReadinessEngineApi::class, ExperimentalForeignApi::class)
 class LoopHandoffTest {
 
     /**

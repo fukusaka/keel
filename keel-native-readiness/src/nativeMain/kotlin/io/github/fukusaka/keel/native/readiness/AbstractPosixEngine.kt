@@ -1,7 +1,15 @@
-@file:OptIn(InternalPosixEventLoopApi::class)
+@file:OptIn(InternalReadinessEngineApi::class)
 
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.native.posix.ConnectResult
+import io.github.fukusaka.keel.native.posix.NativeSocket
+import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
+import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.applySocketOptions
+import io.github.fukusaka.keel.native.posix.closeFdSafely
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.Channel
@@ -145,12 +153,12 @@ abstract class AbstractPosixEngine(
     private var closed = false
 
     /** Whether a worker loop still holds a callback for [fd] + [interest]; see the group's property. */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     fun hasWorkerRegistration(fd: Int, interest: Interest): Boolean =
         workerGroup.hasCallbackRegistration(fd, interest)
 
     /** Participants currently held by the worker loops; see the loop's probe. */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     fun workerParticipants(): Int = workerGroup.participants()
 
     // Each stage releases what it took. `pthread_create` answering `EAGAIN` is
@@ -658,7 +666,7 @@ abstract class AbstractPosixEngine(
     companion object {
         /** Resolves threads=0 to available CPU cores. */
         @OptIn(kotlin.experimental.ExperimentalNativeApi::class)
-        @InternalPosixEventLoopApi
+        @InternalReadinessEngineApi
         fun resolveThreads(config: IoEngineConfig): Int =
             if (config.threads > 0) {
                 config.threads

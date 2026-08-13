@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.logging.LogLevel
 import kotlinx.coroutines.CancellationException
@@ -30,7 +30,7 @@ import kotlin.test.assertTrue
  * Tests for the stop sweep: the ledgers are closed when it runs, and the
  * sweep is a fixed point — nothing it triggers can re-open them.
  */
-@OptIn(InternalPosixEventLoopApi::class)
+@OptIn(InternalReadinessEngineApi::class)
 internal class PosixReadinessLoopSweepTest : AbstractPosixReadinessEventLoopFixture() {
 
     // --- Ledgers closed after the sweep (the sweep is a fixed point) ---

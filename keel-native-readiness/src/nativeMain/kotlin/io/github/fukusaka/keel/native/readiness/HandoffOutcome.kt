@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 /**
  * What [LoopHandoff.runOnLoop] did with the work.

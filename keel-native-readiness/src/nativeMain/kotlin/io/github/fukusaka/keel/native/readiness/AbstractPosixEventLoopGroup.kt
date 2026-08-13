@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 import kotlin.concurrent.AtomicInt
 
@@ -19,7 +19,7 @@ import kotlin.concurrent.AtomicInt
  *
  * @param loops the loops this group owns, already built.
  */
-@OptIn(InternalPosixEventLoopApi::class)
+@OptIn(InternalReadinessEngineApi::class)
 abstract class AbstractPosixEventLoopGroup<L : AbstractPosixReadinessEventLoop>(
     private val loops: Array<L>,
 ) {
@@ -67,12 +67,12 @@ abstract class AbstractPosixEventLoopGroup<L : AbstractPosixReadinessEventLoop>(
     protected fun loops(): Array<L> = loops
 
     /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
         loops.any { it.hasCallbackRegistration(fd, interest) }
 
     /** Total participants across this group's loops. */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     fun participants(): Int = loops.sumOf { it.participantCount() }
 
     /**

@@ -6,13 +6,13 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
-import io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop
-import io.github.fukusaka.keel.native.posix.FdReadyListener
-import io.github.fukusaka.keel.native.posix.Interest
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
-import io.github.fukusaka.keel.native.posix.PosixEventLoopLifecycle
-import io.github.fukusaka.keel.native.posix.PosixIoTransport
-import io.github.fukusaka.keel.native.posix.PosixSuspendRegister
+import io.github.fukusaka.keel.native.readiness.AbstractPosixReadinessEventLoop
+import io.github.fukusaka.keel.native.readiness.FdReadyListener
+import io.github.fukusaka.keel.native.readiness.Interest
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.PosixEventLoopLifecycle
+import io.github.fukusaka.keel.native.readiness.PosixIoTransport
+import io.github.fukusaka.keel.native.readiness.PosixSuspendRegister
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
@@ -91,7 +91,7 @@ import kotlin.coroutines.resumeWithException
  *        lookup registration -> remove -> continuation.resume(Unit)
  * ```
  */
-@OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
+@OptIn(ExperimentalForeignApi::class, InternalReadinessEngineApi::class)
 internal class EpollEventLoop(
     override val logger: Logger,
     /**

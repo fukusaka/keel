@@ -1,4 +1,4 @@
-@file:OptIn(InternalPosixEventLoopApi::class)
+@file:OptIn(InternalReadinessEngineApi::class)
 
 package io.github.fukusaka.keel.engine.epoll
 
@@ -8,9 +8,9 @@ import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
-import io.github.fukusaka.keel.native.posix.Interest
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
-import io.github.fukusaka.keel.native.posix.PosixIoTransport
+import io.github.fukusaka.keel.native.readiness.Interest
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf

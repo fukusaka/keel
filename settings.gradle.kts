@@ -21,6 +21,7 @@ include(
     ":keel-io",
     ":keel-core",
     ":keel-native-posix",
+    ":keel-native-readiness",
     ":keel-engine-nio",
     ":keel-engine-netty",
     ":keel-engine-nodejs",

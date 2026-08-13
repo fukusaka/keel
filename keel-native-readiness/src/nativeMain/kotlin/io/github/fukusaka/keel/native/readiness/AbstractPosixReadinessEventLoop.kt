@@ -1,5 +1,7 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.native.posix.closeFdSafely
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.MpscQueue
@@ -94,13 +96,13 @@ import kotlin.time.TimeSource
  * on top of [dispatch] and the task queue behind it. A subclass answers
  * [inEventLoop] and should not write that branch itself.
  *
- * **Not an API**, and enforced as such: see [InternalPosixEventLoopApi]. This is
+ * **Not an API**, and enforced as such: see [InternalReadinessEngineApi]. This is
  * public only because the two loops that extend it live in other modules, where
  * `internal` does not reach. It was engine machinery before the split and still
  * is.
  */
 @OptIn(ExperimentalForeignApi::class)
-@InternalPosixEventLoopApi
+@InternalReadinessEngineApi
 abstract class AbstractPosixReadinessEventLoop :
     CoroutineDispatcher(),
     PosixEventLoopLifecycle,
@@ -406,7 +408,7 @@ abstract class AbstractPosixReadinessEventLoop :
      * A probe for the engines' tests, which ask it about a connection they have
      * just torn down. Behind the opt-in marker like the rest of this surface.
      */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     open fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean = hasCallbackFor(fd, interest)
 
     /**
@@ -419,7 +421,7 @@ abstract class AbstractPosixReadinessEventLoop :
      * registered, so the `ctl` for the next connection on that number is
      * skipped and it is watched by nobody.
      */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     open fun cleanupFd(fd: Int) {}
 
     /** Monotonic origin for [nowMillis]; per loop, so the marks never cross loops. */
@@ -790,7 +792,7 @@ abstract class AbstractPosixReadinessEventLoop :
      * does not do is cross a Gradle module boundary, and the tests are on the
      * other side of one.
      */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     fun reportRegLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
         regLockFailed.value = 1
         // A failed release leaves this thread holding the mutex; a failed
@@ -2038,7 +2040,7 @@ abstract class AbstractPosixReadinessEventLoop :
      * the retention this registry was built to end, reintroduced by a missing
      * `removeParticipant`.
      */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     fun participantCount(): Int = withRegLock { participants.size }
 
     /** Whether any waiter remains on `(fd, interest)`. Caller holds the lock. */

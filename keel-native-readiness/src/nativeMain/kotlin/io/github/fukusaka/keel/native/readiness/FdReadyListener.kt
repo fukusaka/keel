@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 /**
  * Listener for fd readiness on the pipeline (non-suspend) path.

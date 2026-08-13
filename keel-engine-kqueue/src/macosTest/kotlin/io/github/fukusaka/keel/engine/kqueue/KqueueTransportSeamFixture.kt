@@ -1,11 +1,11 @@
-@file:OptIn(InternalPosixEventLoopApi::class)
+@file:OptIn(InternalReadinessEngineApi::class)
 
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
-import io.github.fukusaka.keel.native.posix.PosixIoTransport
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.PosixIoTransport
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable

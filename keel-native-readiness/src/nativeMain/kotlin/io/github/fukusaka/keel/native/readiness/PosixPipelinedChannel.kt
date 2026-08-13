@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
@@ -14,7 +14,7 @@ import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
  * Behind the opt-in marker, like the rest of this surface: the engines build it
  * and nobody else should.
  */
-@InternalPosixEventLoopApi
+@InternalReadinessEngineApi
 class PosixPipelinedChannel(
     transport: PosixIoTransport,
     logger: Logger,

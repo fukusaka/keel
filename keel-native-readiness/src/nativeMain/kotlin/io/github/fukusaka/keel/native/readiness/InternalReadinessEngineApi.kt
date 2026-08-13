@@ -1,8 +1,8 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 /**
- * Marks the pieces of the POSIX readiness engines that live here rather than in
- * the engines themselves: [AbstractPosixReadinessEventLoop] and [LoopHandoff].
+ * Marks this module's surface, which exists for the two readiness engines and
+ * for nobody else.
  *
  * Both were lifted out of the same two loops, and both are `public` for one
  * reason — those loops are in other Gradle modules, and Kotlin's `internal`
@@ -17,10 +17,10 @@ package io.github.fukusaka.keel.native.posix
  * engines" declaration, the same shape `UnsafeIoBufApi` uses one module down.
  */
 @RequiresOptIn(
-    message = "Internal surface of the POSIX readiness event loops. Opt in only from the engines " +
+    message = "Internal surface of the readiness engines. Opt in only from the engines " +
         "that extend AbstractPosixReadinessEventLoop, or from their tests.",
     level = RequiresOptIn.Level.ERROR,
 )
 @Retention(AnnotationRetention.BINARY)
 @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY)
-public annotation class InternalPosixEventLoopApi
+public annotation class InternalReadinessEngineApi

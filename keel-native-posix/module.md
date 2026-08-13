@@ -6,16 +6,19 @@ Targets: **linuxX64**, **linuxArm64**, **macosArm64**, **macosX64**
 
 ## Role
 
-`keel-native-posix` provides the shared POSIX socket surface used by all Native engine
-modules: the `NativeSocket` / `NativeSocketOps` seams with their production
-implementations `PosixNativeSocket` / `PosixNativeSocketOps`, plus the helpers
-`errnoMessage`, `closeFdSafely`, and `applySocketOptions`, and the vocabulary the
-readiness engines share: `Interest` / `FdReadyListener` for describing and
-delivering fd readiness, the `LoopHandoff` for handing work to their
-EventLoop thread, and `AbstractPosixReadinessEventLoop`, which the epoll and
-kqueue loops extend for their shared registration ledger.
-Engine modules (`keel-engine-epoll`, `keel-engine-kqueue`, `keel-engine-io-uring`) depend on this
-module to avoid duplicating socket lifecycle code.
+`keel-native-posix` provides the POSIX socket surface shared by every native
+engine: the `NativeSocket` / `NativeSocketOps` seams with their production
+implementations `PosixNativeSocket` / `PosixNativeSocketOps`, and the helpers
+`errnoMessage`, `closeFdSafely` and `applySocketOptions`.
+
+That is all it is. `keel-engine-io-uring` (completion-based),
+`keel-engine-nwconnection` (Network.framework) and `keel-tls-mbedtls` depend on
+this module for exactly these pieces.
+
+The readiness engines' shared implementation — the event loop, the transport,
+the servers — is `keel-native-readiness`, which builds on this one. It used to
+live here, which meant the three modules above carried a readiness engine they
+never used.
 
 ## C Interop
 

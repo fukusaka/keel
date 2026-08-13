@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
@@ -40,7 +40,7 @@ import kotlin.time.Duration.Companion.seconds
  * a member, so a reference resolves to it rather than to the import — the same
  * as before the split, though the two now sit in different files.
  */
-@OptIn(InternalPosixEventLoopApi::class)
+@OptIn(InternalReadinessEngineApi::class)
 internal abstract class AbstractPosixReadinessEventLoopFixture {
 
     /**

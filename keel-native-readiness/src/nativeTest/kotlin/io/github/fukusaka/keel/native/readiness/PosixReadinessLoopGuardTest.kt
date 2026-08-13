@@ -1,4 +1,4 @@
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.logging.LogLevel
 import kotlinx.coroutines.Runnable
@@ -12,7 +12,7 @@ import kotlin.test.assertTrue
 /**
  * Tests for the two guards the base keeps on its own queue and loop.
  */
-@OptIn(InternalPosixEventLoopApi::class)
+@OptIn(InternalReadinessEngineApi::class)
 internal class PosixReadinessLoopGuardTest : AbstractPosixReadinessEventLoopFixture() {
 
     // --- the two guards on the base's own queue and loop ---

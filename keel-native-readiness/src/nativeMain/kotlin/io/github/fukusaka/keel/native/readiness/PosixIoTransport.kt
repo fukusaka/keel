@@ -1,7 +1,14 @@
-@file:OptIn(UnsafeIoBufApi::class, InternalPosixEventLoopApi::class)
+@file:OptIn(UnsafeIoBufApi::class, InternalReadinessEngineApi::class)
 
-package io.github.fukusaka.keel.native.posix
+package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.native.posix.NativeSocket
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
+import io.github.fukusaka.keel.native.posix.ReadResult
+import io.github.fukusaka.keel.native.posix.ShutdownResult
+import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.native.posix.closeFdSafely
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
@@ -404,7 +411,7 @@ class PosixIoTransport(
      * time, not a latch: every normal completion clears it again. A poller must
      * treat a `true` as "was parked", which is all the tests need.
      */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     fun hasFlushWaiter(): Boolean = flushContinuation != null
 
     /**
@@ -415,7 +422,7 @@ class PosixIoTransport(
      * the count is otherwise reachable only through `isWritable`, which a closed
      * transport reports `false` for whatever the ledger says.
      */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     fun pendingByteCount(): Int = pendingBytes
 
     // --- Read path ---
@@ -471,7 +478,7 @@ class PosixIoTransport(
      * their connect paths set it as they hand a connection to a loop, and they
      * live in their own modules.
      */
-    @InternalPosixEventLoopApi
+    @InternalReadinessEngineApi
     var joinedLoop: Boolean = false
         private set
 
