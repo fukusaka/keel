@@ -1,8 +1,12 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.Channel
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.StreamServer
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -40,8 +44,8 @@ class EpollCloseAfterLoopStopTest {
                 val port = (server.localAddress as InetSocketAddress).port
                 client = engine.connect(LOOPBACK_HOST, port)
                 serverCh = server.accept()
-                val clientFd = ((client as AbstractPipelinedChannel).transport as EpollIoTransport).fd
-                val serverChFd = ((serverCh as AbstractPipelinedChannel).transport as EpollIoTransport).fd
+                val clientFd = ((client as AbstractPipelinedChannel).transport as PosixIoTransport).fd
+                val serverChFd = ((serverCh as AbstractPipelinedChannel).transport as PosixIoTransport).fd
 
                 engine.close()
 

@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.PosixEventLoopLifecycle
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
@@ -129,7 +130,7 @@ internal class EpollEventLoop(
     override val idleTimeoutMillis: Long = 0,
     /**
      * Engine-wide [io.github.fukusaka.keel.core.IoEngineConfig.flushCoalescing]
-     * value. When `true` (default), [EpollIoTransport.flush] schedules the
+     * value. When `true` (default), [PosixIoTransport.flush] schedules the
      * actual send onto the next EL tick via [dispatch] so that same-tick
      * per-emit `requestFlush` calls collapse into one `writev(2)`. When
      * `false`, each `flush()` sends immediately (pre-#900 behaviour).
@@ -304,7 +305,7 @@ internal class EpollEventLoop(
      *
      * Requested here and only here, on a READ arm, so a listener with no READ
      * arm never sees it. Which connections hold one, and for how long, is
-     * stated at the arm itself in `EpollIoTransport.init`.
+     * stated at the arm itself in `PosixIoTransport.init`.
      *
      * A failed arm withdraws the listener, as kqueue's does. On the first arm —
      * [addOrModifyEpoll] issues `ADD` and reaches `MOD` only on `EEXIST` — the
@@ -374,7 +375,7 @@ internal class EpollEventLoop(
      * Does NOT call `epoll_ctl(DEL)` — closing the fd automatically
      * removes it from epoll.
      */
-    fun cleanupFd(fd: Int) {
+    override fun cleanupFd(fd: Int) {
         withRegLock {
             fdEvents.remove(fd)
         }

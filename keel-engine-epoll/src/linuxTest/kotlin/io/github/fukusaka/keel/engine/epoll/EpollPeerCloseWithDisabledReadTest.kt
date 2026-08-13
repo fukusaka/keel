@@ -1,7 +1,11 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
@@ -16,7 +20,7 @@ import kotlin.time.Duration.Companion.seconds
  * user has never armed read (`readEnabled = false`, no prior `read(...)`
  * call). Mirrors `KqueuePeerCloseWithDisabledReadTest` for the kqueue engine.
  *
- * **Red without fix**: `EpollIoTransport` only armed `EPOLLIN` lazily inside
+ * **Red without fix**: `PosixIoTransport` only armed `EPOLLIN` lazily inside
  * its `armRead()` path, which is reached on `readEnabled = true` or the
  * implicit `read(...)` flow. With `readEnabled = false`, the fd is not in
  * epoll's interest list, so `EPOLLHUP` / `EPOLLRDHUP` / `EPOLLERR` is never

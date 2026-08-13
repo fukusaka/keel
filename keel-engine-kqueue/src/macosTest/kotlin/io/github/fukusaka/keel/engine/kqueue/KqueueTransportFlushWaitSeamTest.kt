@@ -1,8 +1,12 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
@@ -30,7 +34,7 @@ internal class KqueueTransportFlushWaitSeamTest : KqueueTransportSeamFixture() {
      * any coroutine suspended in `awaitPendingFlush`.
      *
      * See `EpollTransportFlushWaitSeamTest` for the full rationale; this is
-     * the macOS / kqueue counterpart exercising `KqueueIoTransport`.
+     * the macOS / kqueue counterpart exercising `PosixIoTransport`.
      */
     @Test
     fun `awaitPendingFlush is cancelled when transport is torn down`() = runBlocking {
@@ -39,7 +43,7 @@ internal class KqueueTransportFlushWaitSeamTest : KqueueTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueWrite(fd, WriteResult.WouldBlock)
         }
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
         transport.write(buf)
@@ -70,7 +74,7 @@ internal class KqueueTransportFlushWaitSeamTest : KqueueTransportSeamFixture() {
         eventLoop.start()
 
         val fake = FakeNativeSocket()
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         withTimeout(500) {
             transport.awaitPendingFlush()
@@ -88,7 +92,7 @@ internal class KqueueTransportFlushWaitSeamTest : KqueueTransportSeamFixture() {
             enqueueWrite(fd, WriteResult.WouldBlock)
             enqueueWrite(fd, WriteResult.Written(4))
         }
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
         transport.write(buf)
@@ -132,7 +136,7 @@ internal class KqueueTransportFlushWaitSeamTest : KqueueTransportSeamFixture() {
             val fake = FakeNativeSocket().apply {
                 enqueueWrite(fd, WriteResult.Written(4))
             }
-            val transport = KqueueIoTransport(fd, coalescingLoop, DefaultAllocator, fake)
+            val transport = PosixIoTransport(fd, coalescingLoop, DefaultAllocator, fake)
 
             var canaryRanWhenAwaitReturned = true
             val job = launch(coalescingLoop) {

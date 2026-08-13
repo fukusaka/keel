@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.LoopParticipant
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -31,7 +32,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Seam tests for [EpollIoTransport] once its EventLoop has stopped — the
+ * Seam tests for [PosixIoTransport] once its EventLoop has stopped — the
  * entry points that used to swallow work, and the teardown that has to run
  * on the caller instead.
  */
@@ -53,7 +54,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
             // WouldBlock and the loop stops before any retry.
             enqueueWrite(fd, WriteResult.WouldBlock)
         }
-        val transport = EpollIoTransport(fd, eventLoop, tracker, fake)
+        val transport = PosixIoTransport(fd, eventLoop, tracker, fake)
         val queued = CompletableDeferred<Unit>()
         eventLoop.dispatch(
             EmptyCoroutineContext,
@@ -92,7 +93,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         // Joining when the channel attaches turns that into a refusal the site
         // can act on. This drives the window deliberately: build, sweep, attach.
         eventLoop.start()
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
         eventLoop.close()
 
         transport.onChannelAttached()
@@ -126,7 +127,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         loop.start()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = EpollIoTransport(fd, loop, tracker, fake)
+        val transport = PosixIoTransport(fd, loop, tracker, fake)
         // Joins the loop, as a real channel does: the stop notification goes
         // to participants, and a transport joins when its channel attaches.
         transport.onChannelAttached()
@@ -168,7 +169,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         loop.start()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = EpollIoTransport(fd, loop, tracker, fake)
+        val transport = PosixIoTransport(fd, loop, tracker, fake)
         // Joins the loop, as a real channel does -- this test turns on the
         // transport being in the registry alongside the participant below.
         transport.onChannelAttached()
@@ -220,7 +221,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
             enqueueWrite(fd, WriteResult.Written(SEAM_PAYLOAD_BYTES))
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = EpollIoTransport(fd, loop, tracker, fake)
+        val transport = PosixIoTransport(fd, loop, tracker, fake)
 
         val buffered = CompletableDeferred<Unit>()
         loop.dispatch(
@@ -262,7 +263,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         loop.start()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = EpollIoTransport(fd, loop, tracker, fake)
+        val transport = PosixIoTransport(fd, loop, tracker, fake)
         try {
             val issued = CompletableDeferred<Unit>()
             loop.dispatch(
@@ -305,7 +306,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
             enqueueWrite(fd, WriteResult.Written(SEAM_PAYLOAD_BYTES))
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = EpollIoTransport(fd, loop, tracker, fake)
+        val transport = PosixIoTransport(fd, loop, tracker, fake)
 
         val issued = CompletableDeferred<Unit>()
         loop.dispatch(
@@ -349,7 +350,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         loop.start()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = EpollIoTransport(fd, loop, tracker, fake)
+        val transport = PosixIoTransport(fd, loop, tracker, fake)
         // Joins the loop, as a real channel does -- this test turns on the
         // transport being in the registry alongside the participant below.
         transport.onChannelAttached()
@@ -399,7 +400,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         val loop = EpollEventLoop(warns, flushCoalescing = false)
         loop.start()
         val fake = FakeNativeSocket().apply { enqueueShutdown(fd, ShutdownResult.Ok) }
-        val transport = EpollIoTransport(fd, loop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(fd, loop, DefaultAllocator, fake)
         loop.close()
 
         // shutdownOutput() is non-blocking on every path, so this budget is a
@@ -421,7 +422,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         // there is nothing for it to cancel.
         eventLoop.start()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
         val queued = CompletableDeferred<Unit>()
         eventLoop.dispatch(
             EmptyCoroutineContext,
@@ -453,7 +454,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         // sweep is the only thing that reaches it while the channel is open.
         eventLoop.start()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
         // Joins the loop, as a real channel does: the stop notification goes
         // to participants, and a transport joins when its channel attaches.
         transport.onChannelAttached()
@@ -488,7 +489,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         // Cancelling is the fail-safe answer even for a caller that had nothing
         // queued, and the cause says which fd and why.
         eventLoop.start()
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
         eventLoop.close()
 
         val cause = withTimeout(SEAM_TIMEOUT_MS) {
@@ -511,7 +512,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         // already been past, so nothing is left to end the wait.
         eventLoop.start()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
         val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
         transport.write(buf)
         transport.flush()
@@ -556,7 +557,7 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         // suite reads one way.
         withTimeout(SEAM_TIMEOUT_MS) {
             eventLoop.start()
-            val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+            val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
             assertTrue(transport.canDispatchToOwningContext, "a live loop still takes work")
 
             eventLoop.close()

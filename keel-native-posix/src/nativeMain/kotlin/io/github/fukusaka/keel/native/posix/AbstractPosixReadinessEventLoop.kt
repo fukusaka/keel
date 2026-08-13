@@ -406,6 +406,19 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
     @InternalPosixEventLoopApi
     open fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean = hasCallbackFor(fd, interest)
 
+    /**
+     * Drops [fd] from whatever this loop keeps for it beyond the kernel's own
+     * interest set. Called from a connection's teardown.
+     *
+     * Nothing to do on a loop whose registration dies with the descriptor —
+     * a kqueue filter does. A loop that keeps its own table has to be told:
+     * left behind, that entry makes a recycled fd number look already
+     * registered, so the `ctl` for the next connection on that number is
+     * skipped and it is watched by nobody.
+     */
+    @InternalPosixEventLoopApi
+    open fun cleanupFd(fd: Int) {}
+
     /** Monotonic origin for [nowMillis]; per loop, so the marks never cross loops. */
     private val timeOrigin = TimeSource.Monotonic.markNow()
 

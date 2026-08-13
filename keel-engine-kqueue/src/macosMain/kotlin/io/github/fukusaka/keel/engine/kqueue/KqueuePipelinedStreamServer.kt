@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
@@ -448,7 +449,7 @@ internal class KqueuePipelinedStreamServer(
             // construction and attach guards below are already held to.
             val rbs = listener.config.readBufferSize ?: loop.readBufferSize
             val ito = listener.config.idleTimeoutMillis ?: loop.idleTimeoutMillis
-            KqueueIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
+            PosixIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
         } catch (constructionFailure: Throwable) {
             // Nothing owns the descriptor yet, so this is the raw close the
             // accept loop's setup-failure branch makes for the same reason.

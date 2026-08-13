@@ -1,8 +1,12 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -402,7 +406,7 @@ class KqueueEngineReadWriteTest {
         // "half-close logic" — it guards an emergent property of the
         // *whole real engine stack* that the seam tests cannot reach:
         //
-        //  - No layer (KqueueIoTransport / KqueueEventLoop / the core
+        //  - No layer (PosixIoTransport / KqueueEventLoop / the core
         //    AbstractPipelinedChannel) closes the channel's write side on
         //    a peer read-EOF. AbstractPipelinedChannelTest pins this for
         //    the core channel alone, over a fake transport; only a

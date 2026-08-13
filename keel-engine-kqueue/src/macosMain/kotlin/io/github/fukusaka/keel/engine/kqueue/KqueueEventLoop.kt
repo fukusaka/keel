@@ -11,6 +11,7 @@ import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.PosixEventLoopLifecycle
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
@@ -128,7 +129,7 @@ internal class KqueueEventLoop(
     override val idleTimeoutMillis: Long = 0,
     /**
      * Engine-wide [io.github.fukusaka.keel.core.IoEngineConfig.flushCoalescing]
-     * value. When `true` (default), [KqueueIoTransport.flush] schedules the
+     * value. When `true` (default), [PosixIoTransport.flush] schedules the
      * actual send onto the next EL tick via [dispatch] so that same-tick
      * per-emit `requestFlush` calls collapse into one `writev(2)`. When
      * `false`, each `flush()` sends immediately (pre-#899 behaviour).
@@ -431,7 +432,7 @@ internal class KqueueEventLoop(
                 // EV_EOF surfaces peer-FIN / peer-RST regardless of which filter
                 // is armed. Pass it to the listener so write-only push clients
                 // (`PipelinedChannel.readEnabled = false`) can still detect
-                // peer close: see `KqueueIoTransport.onPeerClosed` for how the
+                // peer close: see `PosixIoTransport.onPeerClosed` for how the
                 // signal reaches `IoTransport.onReadClosed`.
                 val eofFlag = (ev.flags and EV_EOF) != 0
                 dispatchReady(fd, interest, eofFlag)

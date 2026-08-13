@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
@@ -197,7 +198,7 @@ internal class KqueueStreamServer(
             val workerLoop = workerGroup.next()
             val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
             val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
-            KqueueIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+            PosixIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
         } catch (constructionFailure: Throwable) {
             releaseAndRaise(
                 clientFd,
@@ -298,7 +299,7 @@ internal class KqueueStreamServer(
      */
     private fun releaseAndRaise(
         clientFd: Int,
-        transport: KqueueIoTransport?,
+        transport: PosixIoTransport?,
         cause: Throwable,
         what: String,
         // Only consulted on the `transport == null` path; once one exists the
@@ -350,7 +351,7 @@ internal class KqueueStreamServer(
      * otherwise of a public accept.
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun releaseAfterFailedAccept(transport: KqueueIoTransport, cause: Throwable) {
+    private fun releaseAfterFailedAccept(transport: PosixIoTransport, cause: Throwable) {
         try {
             transport.close()
         } catch (releaseFailure: Throwable) {

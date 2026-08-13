@@ -38,7 +38,7 @@ import kotlin.coroutines.resume
  * caller is off-loop — and everything else must already be on it.
  */
 @OptIn(ExperimentalForeignApi::class)
-abstract class AbstractPosixIoTransport(
+class PosixIoTransport(
     /**
      * The connection's file descriptor. `internal` rather than `private` so a
      * test can ask the loop whether this fd's registrations were withdrawn.
@@ -59,16 +59,6 @@ abstract class AbstractPosixIoTransport(
     idleTimeoutMillis: Long = 0,
 ) : AbstractIoTransport(allocator), FdReadyListener, LoopParticipant {
 
-    /**
-     * Drops [fd] from whatever the loop keeps for it beyond the kernel's own
-     * interest set, as a teardown stage of its own.
-     *
-     * Nothing on a loop whose readiness registration dies with the descriptor;
-     * on one that keeps its own table, closing the fd leaves that table naming
-     * a number the kernel has already handed back, so the next connection on
-     * that number is treated as already registered and watched by nobody.
-     */
-    protected open fun withdrawFdFromLoop(fd: Int) {}
 
     /** Read-side idle (no-progress) timeout for this connection; see [AbstractIoTransport]. */
     override val idleTimeoutMillis: Long = idleTimeoutMillis
@@ -833,7 +823,7 @@ abstract class AbstractPosixIoTransport(
         failure = runTeardownStage(failure) { eventLoop.unregisterCallback(fd, Interest.READ) }
         failure = runTeardownStage(failure) { eventLoop.unregisterCallback(fd, Interest.WRITE) }
         failure = runTeardownStage(failure) { eventLoop.removeParticipant(this) }
-        failure = runTeardownStage(failure) { withdrawFdFromLoop(fd) }
+        failure = runTeardownStage(failure) { eventLoop.cleanupFd(fd) }
         // Reached whatever the stages above did: `closeFdSafely` reports rather
         // than throws, so the descriptor is released on every path out of here.
         closeFdSafely(fd, eventLoop.logger, "transport teardown")

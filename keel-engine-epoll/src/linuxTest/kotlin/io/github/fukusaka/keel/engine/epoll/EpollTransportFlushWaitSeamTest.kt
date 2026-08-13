@@ -1,8 +1,12 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
@@ -48,7 +52,7 @@ internal class EpollTransportFlushWaitSeamTest : EpollTransportSeamFixture() {
             // EAGAIN on the first write — flush returns false, awaitPendingFlush suspends.
             enqueueWrite(fd, WriteResult.WouldBlock)
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
         transport.write(buf)
@@ -85,7 +89,7 @@ internal class EpollTransportFlushWaitSeamTest : EpollTransportSeamFixture() {
         eventLoop.start()
 
         val fake = FakeNativeSocket()
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         withTimeout(500) {
             transport.awaitPendingFlush()
@@ -130,7 +134,7 @@ internal class EpollTransportFlushWaitSeamTest : EpollTransportSeamFixture() {
             enqueueWrite(fd, WriteResult.WouldBlock)
             enqueueWrite(fd, WriteResult.Written(4))
         }
-        val transport = EpollIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
         transport.write(buf)
@@ -178,7 +182,7 @@ internal class EpollTransportFlushWaitSeamTest : EpollTransportSeamFixture() {
             val fake = FakeNativeSocket().apply {
                 enqueueWrite(fd, WriteResult.Written(4))
             }
-            val transport = EpollIoTransport(fd, coalescingLoop, DefaultAllocator, fake)
+            val transport = PosixIoTransport(fd, coalescingLoop, DefaultAllocator, fake)
 
             var canaryRanWhenAwaitReturned = true
             val job = launch(coalescingLoop) {

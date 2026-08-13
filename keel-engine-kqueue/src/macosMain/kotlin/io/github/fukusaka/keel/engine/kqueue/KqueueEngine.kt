@@ -27,6 +27,7 @@ import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
@@ -321,7 +322,7 @@ class KqueueEngine(
         val transport = releaseOnFailure(fd) {
             val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
             val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
-            KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+            PosixIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
         }
         // Built before the check: the transport joins the loop when the channel
         // attaches, so that this connection is in the registry only once there
@@ -414,7 +415,7 @@ class KqueueEngine(
         val transport = releaseOnFailure(fd) {
             val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
             val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
-            KqueueIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+            PosixIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
         }
         // Built before the check; see the sibling connect path.
         val channel = releaseOnFailure(transport) {
@@ -500,7 +501,7 @@ class KqueueEngine(
      * `connect` is waiting for. Attached to that answer instead.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun <T> releaseOnFailure(transport: KqueueIoTransport, crossinline build: () -> T): T =
+    private inline fun <T> releaseOnFailure(transport: PosixIoTransport, crossinline build: () -> T): T =
         try {
             build()
         } catch (buildFailure: Throwable) {
@@ -518,7 +519,7 @@ class KqueueEngine(
      * nothing saying the loop stopped. Attached to [cause] and logged instead.
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun releaseTransport(transport: KqueueIoTransport, cause: Throwable) {
+    private fun releaseTransport(transport: PosixIoTransport, cause: Throwable) {
         try {
             transport.close()
         } catch (releaseFailure: Throwable) {

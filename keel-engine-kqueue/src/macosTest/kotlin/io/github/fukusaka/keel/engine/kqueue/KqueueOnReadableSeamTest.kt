@@ -1,3 +1,5 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
@@ -8,6 +10,8 @@ import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.ReadResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
@@ -36,7 +40,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * Seam-level unit tests for [KqueueIoTransport.onReadable] — macOS
+ * Seam-level unit tests for [PosixIoTransport.onReadable] — macOS
  * counterpart of `EpollOnReadableSeamTest`, same 4-case coverage of
  * the [ReadResult] branch space via scripted [FakeNativeSocket]
  * responses. Direct regression coverage for the PR #321
@@ -157,7 +161,7 @@ class KqueueOnReadableSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.Bytes(3), ReadResult.WouldBlock)
         }
-        val transport = KqueueIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(readFd, eventLoop, DefaultAllocator, fake)
 
         val firstRead = CompletableDeferred<Int>()
         transport.onRead = { buf ->
@@ -177,7 +181,7 @@ class KqueueOnReadableSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.Eof)
         }
-        val transport = KqueueIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(readFd, eventLoop, DefaultAllocator, fake)
 
         val closedSignal = CompletableDeferred<Unit>()
         var readFired = 0
@@ -199,7 +203,7 @@ class KqueueOnReadableSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.WouldBlock, ReadResult.Eof)
         }
-        val transport = KqueueIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(readFd, eventLoop, DefaultAllocator, fake)
 
         val closedSignal = CompletableDeferred<Unit>()
         var readFired = 0
@@ -221,7 +225,7 @@ class KqueueOnReadableSeamTest {
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.Failed(platform.posix.ECONNRESET))
         }
-        val transport = KqueueIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+        val transport = PosixIoTransport(readFd, eventLoop, DefaultAllocator, fake)
 
         val closedSignal = CompletableDeferred<Unit>()
         var readFired = 0
@@ -246,7 +250,7 @@ class KqueueOnReadableSeamTest {
             // nothing above it to catch -- ending the process, and with it every
             // other connection on this engine, over one socket's buffer.
             val fake = FakeNativeSocket()
-            val transport = KqueueIoTransport(readFd, eventLoop, FailingAllocator, fake)
+            val transport = PosixIoTransport(readFd, eventLoop, FailingAllocator, fake)
             surrenderReadFd()
             transport.onChannelAttached()
             transport.readEnabled = true
@@ -275,7 +279,7 @@ class KqueueOnReadableSeamTest {
             val fake = FakeNativeSocket().apply {
                 readThrowsOnce = IllegalStateException("the read path failed mid-flight")
             }
-            val transport = KqueueIoTransport(readFd, eventLoop, tracker, fake)
+            val transport = PosixIoTransport(readFd, eventLoop, tracker, fake)
             surrenderReadFd()
             transport.onChannelAttached()
             transport.readEnabled = true
@@ -299,7 +303,7 @@ class KqueueOnReadableSeamTest {
             // loop survived and the connection sat in CLOSE-WAIT holding its
             // descriptor, with nobody left who would close it.
             val fake = FakeNativeSocket()
-            val transport = KqueueIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+            val transport = PosixIoTransport(readFd, eventLoop, DefaultAllocator, fake)
             transport.onChannelAttached()
             val notifyCalls = AtomicInt(0)
             transport.onReadClosed = failsOnceLikeProduction("the close handler failed", notifyCalls)
@@ -347,7 +351,7 @@ class KqueueOnReadableSeamTest {
             // and this is never consulted -- which is what the syscall
             // assertion down there has come to mean too.
             val fake = FakeNativeSocket().apply { defaultWrite = WriteResult.Written(4) }
-            val transport = KqueueIoTransport(readFd, eventLoop, FailingAllocator, fake)
+            val transport = PosixIoTransport(readFd, eventLoop, FailingAllocator, fake)
             // The teardown closes this itself now, and the assertion at the
             // end is that it did. Taken before surrendering, because that is
             // what stops `tearDown` from closing a descriptor the transport
@@ -454,7 +458,7 @@ class KqueueOnReadableSeamTest {
             // revert of this one arm alone passes every other test.
             val tracker = TrackingAllocator(DefaultAllocator)
             val fake = FakeNativeSocket().apply { enqueueRead(readFd, ReadResult.Failed(ECONNRESET)) }
-            val transport = KqueueIoTransport(readFd, eventLoop, tracker, fake)
+            val transport = PosixIoTransport(readFd, eventLoop, tracker, fake)
             transport.onChannelAttached()
             val notifyCalls = AtomicInt(0)
             transport.onReadClosed = failsOnceLikeProduction("the failed-read handler failed", notifyCalls)
@@ -482,7 +486,7 @@ class KqueueOnReadableSeamTest {
             // the flush waiter. One refused release, a whole connection.
             val tracker = TrackingAllocator(DefaultAllocator)
             val fake = FakeNativeSocket().apply { enqueueWritev(readFd, WriteResult.Written(8)) }
-            val transport = KqueueIoTransport(readFd, eventLoop, tracker, fake)
+            val transport = PosixIoTransport(readFd, eventLoop, tracker, fake)
             val abandonedFd = readFd
             surrenderReadFd()
             transport.onChannelAttached()
@@ -533,7 +537,7 @@ class KqueueOnReadableSeamTest {
             // which makes it the common way in, not a corner.
             val tracker = TrackingAllocator(DefaultAllocator)
             val fake = FakeNativeSocket().apply { enqueueRead(readFd, ReadResult.Eof) }
-            val transport = KqueueIoTransport(readFd, eventLoop, tracker, fake)
+            val transport = PosixIoTransport(readFd, eventLoop, tracker, fake)
             transport.onChannelAttached()
             val notifyCalls = AtomicInt(0)
             transport.onReadClosed = failsOnceLikeProduction("the EOF handler failed", notifyCalls)
@@ -599,7 +603,7 @@ class KqueueOnReadableSeamTest {
             // revision closed without it, leaking the first three per failed
             // connection and hanging the fourth for good.
             val fake = FakeNativeSocket()
-            val transport = KqueueIoTransport(readFd, eventLoop, FailingAllocator, fake)
+            val transport = PosixIoTransport(readFd, eventLoop, FailingAllocator, fake)
             surrenderReadFd()
             var reportedInactive = 0
             transport.onChannelAttached()
@@ -630,7 +634,7 @@ class KqueueOnReadableSeamTest {
             // still armed, re-entering the same failure every turn. The
             // teardown claim is spent by then, so no later close() retries it.
             val fake = FakeNativeSocket()
-            val transport = KqueueIoTransport(readFd, eventLoop, FailingAllocator, fake)
+            val transport = PosixIoTransport(readFd, eventLoop, FailingAllocator, fake)
             surrenderReadFd()
             transport.onChannelAttached()
             transport.onReadClosed = failsOnceLikeProduction("the teardown failed too")
