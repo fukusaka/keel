@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop
 import io.github.fukusaka.keel.native.posix.FdReadyListener
 import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.posix.PosixEventLoopLifecycle
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -135,7 +136,7 @@ internal class EpollEventLoop(
      */
     val flushCoalescing: Boolean = true,
     private val syscallOps: EpollSyscallOps = PosixEpollSyscallOps,
-) : AbstractPosixReadinessEventLoop(), EpollSuspendRegister {
+) : AbstractPosixReadinessEventLoop(), EpollSuspendRegister, PosixEventLoopLifecycle {
 
     /**
      * The epoll file descriptor, created at construction.
@@ -282,7 +283,7 @@ internal class EpollEventLoop(
      * synchronisation point; nothing in the tree starts a loop concurrently
      * with closing it, and this does not make that safe.
      */
-    fun start() {
+    override fun start() {
         if (isTerminationClaimed()) {
             // Someone already owns this loop's end: a `close()` that released
             // the arena `threadPtr` lives in, or a `loop()` that ran and
@@ -595,7 +596,7 @@ internal class EpollEventLoop(
      * not quite "written": the flag is set just before that call, and the
      * comment on it describes the window that leaves open.
      */
-    fun close() {
+    override fun close() {
         if (running.compareAndSet(1, 0)) {
             if (threadCreated.value == 0) {
                 // No thread, so no drain is coming and nothing below can wait

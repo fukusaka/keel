@@ -1,0 +1,18 @@
+package io.github.fukusaka.keel.native.posix
+
+/**
+ * The thread lifecycle a readiness event loop owns.
+ *
+ * Separate from [AbstractPosixReadinessEventLoop] rather than declared on it:
+ * the loop base has test doubles that drive its ledger and its sweep without
+ * ever owning a thread, and making them implement a lifecycle they do not have
+ * would be a lie the compiler asks for. What needs the pair is
+ * [AbstractPosixEventLoopGroup], which starts and closes what it holds.
+ */
+public interface PosixEventLoopLifecycle {
+    /** Starts this loop's thread. */
+    public fun start()
+
+    /** Stops this loop's thread and releases what it holds. */
+    public fun close()
+}
