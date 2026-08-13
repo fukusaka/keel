@@ -464,11 +464,16 @@ abstract class AbstractReadinessEventLoop :
     /**
      * Whether [writevBases] / [writevLens] are ours to free.
      *
-     * Both this flag and the pointers are touched only from this loop's thread
-     * (the engines' `close()` claims its run with a CAS and frees after the
-     * join; the test doubles have no thread at all), so a plain `var` is enough.
+     * A plain `var`, and not because the loop thread owns it — the thread that
+     * frees is the one that called `close()`, and on the never-started branch
+     * there is no thread to join at all. What serialises it is that only one
+     * caller ever reaches the free: the engines claim `close()` with a CAS, and
+     * the branch that skips the join refuses to release until the loop reports
+     * itself stopped. Construction failure frees before any thread exists, and
+     * the test doubles have none. So a release never runs beside a gather.
      */
-    private var ownsWritevScratch = true
+    internal var ownsWritevScratch = true
+        private set
 
     /**
      * Grows [writevBases] / [writevLens] (1.5x, at least [n]) so a gather of
@@ -501,6 +506,11 @@ abstract class AbstractReadinessEventLoop :
     protected fun freeWritevScratch() {
         if (!ownsWritevScratch) return
         ownsWritevScratch = false
+        // Capacity goes with the memory. Left at its old value, the early
+        // return in [ensureWritevCapacity] would hand a gather the pointers
+        // this just freed for every request that fits the capacity we no
+        // longer have.
+        writevCapacity = 0
         nativeHeap.free(writevBases)
         nativeHeap.free(writevLens)
     }
