@@ -44,9 +44,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `HttpResponseBodyAggregator`, and the `addHttp1ClientCodec` installer (#962)
 
 ### Changed
-- `engine-kqueue`, `engine-epoll`, `native-posix`: the two readiness engines share one
-  implementation. Transport, servers, channel and suspend seam are one class each in the new
-  `keel-native-readiness`, which `keel-native-posix` no longer carries (#TBD)
+- `engine-kqueue`, `engine-epoll`: the two readiness engines now share one implementation, in the new
+  `keel-native-readiness` module (#1052)
+- `native-posix`: no longer carries that implementation, so `engine-io-uring`,
+  `engine-nwconnection` and `tls-mbedtls` no longer pull it in (#1052)
 - `native-posix`: `AbstractPosixReadinessEventLoop.reportRegLockFailure` is public under
   `@InternalPosixEventLoopApi`, reachable from the engines' tests (#1050)
 - `build`, `ci`: add a `detektTestSources` task and run it in the gate — no detekt task
