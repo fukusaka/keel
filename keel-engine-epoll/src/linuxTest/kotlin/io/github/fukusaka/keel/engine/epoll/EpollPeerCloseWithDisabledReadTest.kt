@@ -16,7 +16,7 @@ import kotlin.time.Duration.Companion.seconds
  * user has never armed read (`readEnabled = false`, no prior `read(...)`
  * call). Mirrors `KqueuePeerCloseWithDisabledReadTest` for the kqueue engine.
  *
- * **Red without fix**: `EpollIoTransport` only armed `EPOLLIN` lazily inside
+ * **Red without fix**: `ReadinessIoTransport` only armed `EPOLLIN` lazily inside
  * its `armRead()` path, which is reached on `readEnabled = true` or the
  * implicit `read(...)` flow. With `readEnabled = false`, the fd is not in
  * epoll's interest list, so `EPOLLHUP` / `EPOLLRDHUP` / `EPOLLERR` is never

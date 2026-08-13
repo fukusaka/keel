@@ -18,7 +18,7 @@ import kotlin.time.Duration.Companion.seconds
  * connection lifetime — the natural shape of a write-only push client,
  * one-direction logger, or monitoring metrics sender.
  *
- * **Failure scenario without the fix**: `KqueueIoTransport` only armed
+ * **Failure scenario without the fix**: `ReadinessIoTransport` only armed
  * `EVFILT_READ` lazily inside its `armRead()` path, which is reached on
  * `readEnabled = true` or the implicit `read(...)` flow. When `readEnabled`
  * stayed `false`, `EVFILT_READ` was never registered, so kqueue delivered

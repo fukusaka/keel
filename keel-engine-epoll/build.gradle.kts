@@ -26,6 +26,7 @@ kotlin {
             dependencies {
                 implementation(project(":keel-core"))
                 implementation(project(":keel-native-posix"))
+                implementation(project(":keel-native-readiness"))
             }
         }
         val linuxMain by getting {

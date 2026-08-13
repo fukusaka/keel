@@ -6,27 +6,23 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
-import io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop
-import io.github.fukusaka.keel.native.posix.FdReadyListener
-import io.github.fukusaka.keel.native.posix.Interest
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEventLoop
+import io.github.fukusaka.keel.native.readiness.FdReadyListener
+import io.github.fukusaka.keel.native.readiness.Interest
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.ReadinessEventLoopLifecycle
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
+import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
-import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.asStableRef
-import kotlinx.cinterop.free
 import kotlinx.cinterop.get
-import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CancellableContinuation
@@ -44,7 +40,6 @@ import platform.posix.pthread_self
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.resumeWithException
-import kotlin.time.TimeSource
 
 /**
  * Single-threaded kqueue event loop for macOS, also serving as a [CoroutineDispatcher].
@@ -95,7 +90,7 @@ import kotlin.time.TimeSource
  *                         on the key; if neither was there → WARN + EV_DELETE
  * ```
  */
-@OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
+@OptIn(ExperimentalForeignApi::class, InternalReadinessEngineApi::class)
 internal class KqueueEventLoop(
     override val logger: Logger,
     /**
@@ -107,7 +102,7 @@ internal class KqueueEventLoop(
      * [DefaultAllocator] for boss / test loops that do not perform reads
      * and therefore never invoke the allocator.
      */
-    val allocator: BufferAllocator = DefaultAllocator,
+    override val allocator: BufferAllocator = DefaultAllocator,
     /**
      * Engine-wide default read buffer size
      * ([io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]) for
@@ -116,7 +111,7 @@ internal class KqueueEventLoop(
      * [io.github.fukusaka.keel.core.ConnectConfig.readBufferSize] is `null`;
      * the effective size is captured per connection on the transport.
      */
-    val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    override val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     /**
      * Engine-wide default idle (no-progress) timeout in milliseconds
      * ([io.github.fukusaka.keel.core.IoEngineConfig.idleTimeoutMillis]) for
@@ -124,22 +119,23 @@ internal class KqueueEventLoop(
      * [io.github.fukusaka.keel.core.BindConfig.idleTimeoutMillis] /
      * [io.github.fukusaka.keel.core.ConnectConfig.idleTimeoutMillis] is `null`.
      */
-    val idleTimeoutMillis: Long = 0,
+    override val idleTimeoutMillis: Long = 0,
     /**
      * Engine-wide [io.github.fukusaka.keel.core.IoEngineConfig.flushCoalescing]
-     * value. When `true` (default), [KqueueIoTransport.flush] schedules the
+     * value. When `true` (default), [ReadinessIoTransport.flush] schedules the
      * actual send onto the next EL tick via [dispatch] so that same-tick
      * per-emit `requestFlush` calls collapse into one `writev(2)`. When
      * `false`, each `flush()` sends immediately (pre-#899 behaviour).
      */
-    val flushCoalescing: Boolean = true,
+    override val flushCoalescing: Boolean = true,
     private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps(logger),
-) : AbstractPosixReadinessEventLoop(), KqueueSuspendRegister {
+) : AbstractReadinessEventLoop(), ReadinessSuspendRegister, ReadinessEventLoopLifecycle {
 
     /**
      * The kqueue file descriptor, created at construction.
-     * Exposed for [KqueueEngine.bind] to register server fds directly
-     * via `kevent(kqFd, ...)`. Channel fds are registered via [register].
+     * Used by this loop's own syscalls; nothing outside reads it. Server and
+     * channel fds both reach the kernel through the loop's registration path,
+     * never by naming this.
      */
     val kqFd: Int
 
@@ -148,41 +144,6 @@ internal class KqueueEventLoop(
     // whose fields are overwritten by [KqueueSyscallOps.waitEvents].
     // Only accessed from the EventLoop thread.
     private val eventBuffer: Array<KqEvent> = Array(MAX_EVENTS) { KqEvent() }
-
-    /**
-     * Shared gather-write scratch: one native (bases, lens) pair reused by
-     * every transport flush on this loop (see [KqueueIoTransport.flushGather]). Kept per
-     * EventLoop rather than per connection so every flush on this thread
-     * touches the same hot memory — mirroring the locality of the memScoped
-     * arena this replaced — while performing no per-flush allocation.
-     * EL-confined like [eventBuffer]; freed by [releaseConstructionScratch],
-     * from [close] once the loop's terminal sequence has finished (whoever ran
-     * it, so no flush can be in flight) or from the constructor's own unwind
-     * for a loop that never came to exist.
-     */
-    internal var writevBases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
-        private set
-
-    /** Byte lengths (`size_t`) paired with [writevBases]. */
-    internal var writevLens: CPointer<ULongVar> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
-        private set
-
-    private var writevCapacity: Int = INITIAL_WRITEV_CAPACITY
-
-    /**
-     * Grows [writevBases] / [writevLens] (1.5x, at least [n]) so a gather
-     * flush of [n] regions fits. EventLoop thread only — callers run inside
-     * the flush path, which is confined to this loop.
-     */
-    internal fun ensureWritevCapacity(n: Int) {
-        if (writevCapacity >= n) return
-        val grown = maxOf(writevCapacity + (writevCapacity shr 1), n)
-        nativeHeap.free(writevBases)
-        nativeHeap.free(writevLens)
-        writevBases = nativeHeap.allocArray(grown)
-        writevLens = nativeHeap.allocArray(grown)
-        writevCapacity = grown
-    }
 
     private val wakeupFds = IntArray(2) // [readFd, writeFd]
 
@@ -219,11 +180,12 @@ internal class KqueueEventLoop(
     // unreachable for the rest of the process, and the scratch and
     // descriptors would be held until it exits.
     //
-    // The property initialisers are outside this -- the ones above and the two
-    // below it -- and an allocation failing in any of them leaves the ones
-    // before it with no unwind at all. That is left as
-    // it is because a `nativeHeap` allocation of a few dozen bytes failing is
-    // not a condition this process continues past.
+    // The property initialisers above are outside this, and an allocation
+    // failing in any of them leaves the ones before it with no unwind at all.
+    // That is left as it is because a `nativeHeap` allocation of a few dozen
+    // bytes failing is not a condition this process continues past. The gather
+    // scratch used to be among them; it belongs to the shared loop base now,
+    // which pairs its two allocations rather than relying on that.
     //
     // One of the stages fails by throwing rather than by returning an errno --
     // the wakeup fds are made non-blocking by an op whose contract is to
@@ -281,7 +243,7 @@ internal class KqueueEventLoop(
      * synchronisation point; nothing in the tree starts a loop concurrently
      * with closing it, and this does not make that safe.
      */
-    fun start() {
+    override fun start() {
         if (isTerminationClaimed()) {
             // Someone already owns this loop's end: a `close()` that released
             // the arena `threadPtr` lives in, or a `loop()` that ran and
@@ -364,13 +326,6 @@ internal class KqueueEventLoop(
         }
     }
 
-    /** `internal` wrapper for this module's `EventLoopGroup`; see [hasCallbackFor]. */
-    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
-        hasCallbackFor(fd, interest)
-
-    /** `internal` wrapper for this module's probes; see [participantCount]. */
-    internal fun participants(): Int = participantCount()
-
     /**
      * Arms [fd] + [interest] for the pipeline path with a persistent `EV_ADD`.
      *
@@ -427,21 +382,6 @@ internal class KqueueEventLoop(
      *    are pending, blocking otherwise)
      * 3. Process ready fds — resume associated coroutine continuations
      */
-    // --- Idle/read deadline timer (progress-bound mechanism) ---
-
-    private val timeOrigin = TimeSource.Monotonic.markNow()
-
-    private fun nowMillis(): Long = timeOrigin.elapsedNow().inWholeMilliseconds
-
-    /**
-     * Per-EventLoop deadline timer backing the transport idle (no-progress) timeout.
-     * Confined to this EventLoop thread: transports on this loop schedule / touch /
-     * cancel idle deadlines through it, [loop] drives the `kevent` timeout from
-     * [DeadlineScheduler.nextDeadlineMillis], and fires due timers via
-     * [DeadlineScheduler.expireDue] after each wake.
-     */
-    internal val deadlineScheduler = DeadlineScheduler(::nowMillis, logger)
-
     override fun loopBody() {
         while (running.value != 0) {
             // The registration lock failing means the ledgers stopped being
@@ -482,7 +422,7 @@ internal class KqueueEventLoop(
                 // EV_EOF surfaces peer-FIN / peer-RST regardless of which filter
                 // is armed. Pass it to the listener so write-only push clients
                 // (`PipelinedChannel.readEnabled = false`) can still detect
-                // peer close: see `KqueueIoTransport.onPeerClosed` for how the
+                // peer close: see `ReadinessIoTransport.onPeerClosed` for how the
                 // signal reaches `IoTransport.onReadClosed`.
                 val eofFlag = (ev.flags and EV_EOF) != 0
                 dispatchReady(fd, interest, eofFlag)
@@ -557,7 +497,7 @@ internal class KqueueEventLoop(
      * the flag is set just before that call, and the comment on it describes
      * the window that leaves open.
      */
-    fun close() {
+    override fun close() {
         if (running.compareAndSet(1, 0)) {
             if (threadCreated.value == 0) {
                 // No thread, so no drain is coming and nothing below can wait
@@ -649,7 +589,7 @@ internal class KqueueEventLoop(
         closeFdSafely(kqFd, logger, "event loop teardown (kqFd)")
         // The registration lock is deliberately not destroyed or freed:
         // a cancellation arriving after this point takes it, and those
-        // arrive without bound (see AbstractPosixReadinessEventLoop's
+        // arrive without bound (see AbstractReadinessEventLoop's
         // regMutex). The task queue is lock-free, so it has none either.
         //
         // The arena and the writev scratch go together, and what makes that
@@ -720,10 +660,10 @@ internal class KqueueEventLoop(
      *
      * Called from both ends of the loop's life — [releaseLoopResources] for
      * one that ran, and [releaseOnConstructionFailure] for one that never came
-     * to exist. Kept as a single function so a fourth allocation cannot be
+     * to exist. Kept as a single function so a third allocation cannot be
      * released along one of those and forgotten along the other.
      *
-     * The three releases are not staged against each other the way
+     * The two releases are not staged against each other the way
      * [releaseOnConstructionFailure] stages its two: none of them can fail
      * short of a corrupt heap, and a `nativeHeap` this process cannot free is
      * not one it continues past.
@@ -734,22 +674,18 @@ internal class KqueueEventLoop(
      */
     private fun releaseConstructionScratch() {
         arena.clear()
-        nativeHeap.free(writevBases)
-        nativeHeap.free(writevLens)
+        freeWritevScratch()
     }
 
-    // --- KqueueSuspendRegister impl (seam for connect InProgress) ---
+    // --- ReadinessSuspendRegister impl (seam for connect InProgress) ---
 
     override suspend fun awaitWriteReady(fd: Int, logger: Logger) = awaitWritableOwningFd(fd, logger)
 
     companion object {
 
-        /** Initial capacity of the shared writev scratch arrays (grows 1.5x). */
-        const val INITIAL_WRITEV_CAPACITY = 8
-
         /**
          * Maximum events per kevent() call. 64 balances memory usage
-         * (64 * sizeof(kevent) = ~2.5 KiB on arm64) against reducing
+         * (64 * sizeof(kevent) = 2 KiB on arm64) against reducing
          * the number of kevent() syscalls under high fd counts.
          * Netty uses 4096; 64 is conservative for initial implementation.
          */

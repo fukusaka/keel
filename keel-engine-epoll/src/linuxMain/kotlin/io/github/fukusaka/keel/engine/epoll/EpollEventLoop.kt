@@ -6,27 +6,23 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
-import io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop
-import io.github.fukusaka.keel.native.posix.FdReadyListener
-import io.github.fukusaka.keel.native.posix.Interest
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEventLoop
+import io.github.fukusaka.keel.native.readiness.FdReadyListener
+import io.github.fukusaka.keel.native.readiness.Interest
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.ReadinessEventLoopLifecycle
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
+import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.StableRef
-import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.asStableRef
-import kotlinx.cinterop.free
 import kotlinx.cinterop.get
-import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
 import kotlinx.coroutines.CancellableContinuation
@@ -47,7 +43,6 @@ import platform.posix.pthread_self
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.resumeWithException
-import kotlin.time.TimeSource
 
 /**
  * Single-threaded epoll event loop for Linux, also serving as a [CoroutineDispatcher].
@@ -96,7 +91,7 @@ import kotlin.time.TimeSource
  *        lookup registration -> remove -> continuation.resume(Unit)
  * ```
  */
-@OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
+@OptIn(ExperimentalForeignApi::class, InternalReadinessEngineApi::class)
 internal class EpollEventLoop(
     override val logger: Logger,
     /**
@@ -108,7 +103,7 @@ internal class EpollEventLoop(
      * [DefaultAllocator] for boss / test loops that do not perform reads
      * and therefore never invoke the allocator.
      */
-    val allocator: BufferAllocator = DefaultAllocator,
+    override val allocator: BufferAllocator = DefaultAllocator,
     /**
      * Engine-wide default read buffer size
      * ([io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]) for
@@ -117,7 +112,7 @@ internal class EpollEventLoop(
      * [io.github.fukusaka.keel.core.ConnectConfig.readBufferSize] is `null`;
      * the effective size is captured per connection on the transport.
      */
-    val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    override val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     /**
      * Engine-wide default idle (no-progress) timeout in milliseconds
      * ([io.github.fukusaka.keel.core.IoEngineConfig.idleTimeoutMillis]) for
@@ -125,22 +120,23 @@ internal class EpollEventLoop(
      * [io.github.fukusaka.keel.core.BindConfig.idleTimeoutMillis] /
      * [io.github.fukusaka.keel.core.ConnectConfig.idleTimeoutMillis] is `null`.
      */
-    val idleTimeoutMillis: Long = 0,
+    override val idleTimeoutMillis: Long = 0,
     /**
      * Engine-wide [io.github.fukusaka.keel.core.IoEngineConfig.flushCoalescing]
-     * value. When `true` (default), [EpollIoTransport.flush] schedules the
+     * value. When `true` (default), [ReadinessIoTransport.flush] schedules the
      * actual send onto the next EL tick via [dispatch] so that same-tick
      * per-emit `requestFlush` calls collapse into one `writev(2)`. When
      * `false`, each `flush()` sends immediately (pre-#900 behaviour).
      */
-    val flushCoalescing: Boolean = true,
+    override val flushCoalescing: Boolean = true,
     private val syscallOps: EpollSyscallOps = PosixEpollSyscallOps,
-) : AbstractPosixReadinessEventLoop(), EpollSuspendRegister {
+) : AbstractReadinessEventLoop(), ReadinessSuspendRegister, ReadinessEventLoopLifecycle {
 
     /**
      * The epoll file descriptor, created at construction.
-     * Exposed for [EpollEngine.bind] to register server fds directly
-     * via `epoll_ctl(epFd, ...)`. Channel fds are registered via [register].
+     * Used by this loop's own syscalls; nothing outside reads it. Server and
+     * channel fds both reach the kernel through the loop's registration path,
+     * never by naming this.
      */
     val epFd: Int
 
@@ -153,41 +149,6 @@ internal class EpollEventLoop(
     // whose fields are overwritten by [EpollSyscallOps.waitEvents].
     // Only accessed from the EventLoop thread.
     private val eventBuffer: Array<EpEvent> = Array(MAX_EVENTS) { EpEvent() }
-
-    /**
-     * Shared gather-write scratch: one native (bases, lens) pair reused by
-     * every transport flush on this loop (see [EpollIoTransport.flushGather]). Kept per
-     * EventLoop rather than per connection so every flush on this thread
-     * touches the same hot memory — mirroring the locality of the memScoped
-     * arena this replaced — while performing no per-flush allocation.
-     * EL-confined like [eventBuffer]; freed by [releaseConstructionScratch],
-     * from [close] once the loop's terminal sequence has finished (whoever ran
-     * it, so no flush can be in flight) or from the constructor's own unwind
-     * for a loop that never came to exist.
-     */
-    internal var writevBases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
-        private set
-
-    /** Byte lengths (`size_t`) paired with [writevBases]. */
-    internal var writevLens: CPointer<ULongVar> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
-        private set
-
-    private var writevCapacity: Int = INITIAL_WRITEV_CAPACITY
-
-    /**
-     * Grows [writevBases] / [writevLens] (1.5x, at least [n]) so a gather
-     * flush of [n] regions fits. EventLoop thread only — callers run inside
-     * the flush path, which is confined to this loop.
-     */
-    internal fun ensureWritevCapacity(n: Int) {
-        if (writevCapacity >= n) return
-        val grown = maxOf(writevCapacity + (writevCapacity shr 1), n)
-        nativeHeap.free(writevBases)
-        nativeHeap.free(writevLens)
-        writevBases = nativeHeap.allocArray(grown)
-        writevLens = nativeHeap.allocArray(grown)
-        writevCapacity = grown
-    }
 
     private val wakeupFd: Int
     private val running = AtomicInt(1) // 1 = running, 0 = stopped
@@ -219,11 +180,12 @@ internal class EpollEventLoop(
     // unreachable for the rest of the process, and the scratch and
     // descriptors would be held until it exits.
     //
-    // The property initialisers are outside this -- the ones above and the two
-    // below it -- and an allocation failing in any of them leaves the ones
-    // before it with no unwind at all. That is left as
-    // it is because a `nativeHeap` allocation of a few dozen bytes failing is
-    // not a condition this process continues past.
+    // The property initialisers above are outside this, and an allocation
+    // failing in any of them leaves the ones before it with no unwind at all.
+    // That is left as it is because a `nativeHeap` allocation of a few dozen
+    // bytes failing is not a condition this process continues past. The gather
+    // scratch used to be among them; it belongs to the shared loop base now,
+    // which pairs its two allocations rather than relying on that.
     //
     // The catches are not decoration on this engine either: every syscall here
     // reports by errno, but each report is raised as an `error(...)` inside the
@@ -282,7 +244,7 @@ internal class EpollEventLoop(
      * synchronisation point; nothing in the tree starts a loop concurrently
      * with closing it, and this does not make that safe.
      */
-    fun start() {
+    override fun start() {
         if (isTerminationClaimed()) {
             // Someone already owns this loop's end: a `close()` that released
             // the arena `threadPtr` lives in, or a `loop()` that ran and
@@ -338,7 +300,7 @@ internal class EpollEventLoop(
      *
      * Requested here and only here, on a READ arm, so a listener with no READ
      * arm never sees it. Which connections hold one, and for how long, is
-     * stated at the arm itself in `EpollIoTransport.init`.
+     * stated at the arm itself in `ReadinessIoTransport.init`.
      *
      * A failed arm withdraws the listener, as kqueue's does. On the first arm —
      * [addOrModifyEpoll] issues `ADD` and reaches `MOD` only on `EEXIST` — the
@@ -396,13 +358,6 @@ internal class EpollEventLoop(
         }
     }
 
-    /** `internal` wrapper for this module's `EventLoopGroup`; see [hasCallbackFor]. */
-    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
-        hasCallbackFor(fd, interest)
-
-    /** `internal` wrapper for this module's probes; see [participantCount]. */
-    internal fun participants(): Int = participantCount()
-
     /**
      * Removes all tracking state for [fd] from [fdEvents].
      *
@@ -411,7 +366,7 @@ internal class EpollEventLoop(
      * Does NOT call `epoll_ctl(DEL)` — closing the fd automatically
      * removes it from epoll.
      */
-    fun cleanupFd(fd: Int) {
+    override fun cleanupFd(fd: Int) {
         withRegLock {
             fdEvents.remove(fd)
         }
@@ -461,21 +416,6 @@ internal class EpollEventLoop(
      *    tasks are pending, blocking otherwise)
      * 3. Process ready fds — resume associated coroutine continuations
      */
-    // --- Idle/read deadline timer (progress-bound mechanism) ---
-
-    private val timeOrigin = TimeSource.Monotonic.markNow()
-
-    private fun nowMillis(): Long = timeOrigin.elapsedNow().inWholeMilliseconds
-
-    /**
-     * Per-EventLoop deadline timer backing the transport idle (no-progress) timeout.
-     * Confined to this EventLoop thread: transports on this loop schedule / touch /
-     * cancel idle deadlines through it, [loop] drives the `epoll_wait` timeout from
-     * [DeadlineScheduler.nextDeadlineMillis], and fires due timers via
-     * [DeadlineScheduler.expireDue] after each wake.
-     */
-    internal val deadlineScheduler = DeadlineScheduler(::nowMillis, logger)
-
     override fun loopBody() {
         while (running.value != 0) {
             // The registration lock failing means the ledgers stopped being
@@ -595,7 +535,7 @@ internal class EpollEventLoop(
      * not quite "written": the flag is set just before that call, and the
      * comment on it describes the window that leaves open.
      */
-    fun close() {
+    override fun close() {
         if (running.compareAndSet(1, 0)) {
             if (threadCreated.value == 0) {
                 // No thread, so no drain is coming and nothing below can wait
@@ -686,7 +626,7 @@ internal class EpollEventLoop(
         closeFdSafely(epFd, logger, "event loop teardown (epFd)")
         // The registration lock is deliberately not destroyed or freed:
         // a cancellation arriving after this point takes it, and those
-        // arrive without bound (see AbstractPosixReadinessEventLoop's
+        // arrive without bound (see AbstractReadinessEventLoop's
         // regMutex). The task queue is lock-free, so it has none either.
         //
         // The arena and the writev scratch go together, and what makes that
@@ -757,10 +697,10 @@ internal class EpollEventLoop(
      *
      * Called from both ends of the loop's life — [releaseLoopResources] for
      * one that ran, and [releaseOnConstructionFailure] for one that never came
-     * to exist. Kept as a single function so a fourth allocation cannot be
+     * to exist. Kept as a single function so a third allocation cannot be
      * released along one of those and forgotten along the other.
      *
-     * The three releases are not staged against each other the way
+     * The two releases are not staged against each other the way
      * [releaseOnConstructionFailure] stages its two: none of them can fail
      * short of a corrupt heap, and a `nativeHeap` this process cannot free is
      * not one it continues past.
@@ -771,8 +711,7 @@ internal class EpollEventLoop(
      */
     private fun releaseConstructionScratch() {
         arena.clear()
-        nativeHeap.free(writevBases)
-        nativeHeap.free(writevLens)
+        freeWritevScratch()
     }
 
     // --- Helpers ---
@@ -873,14 +812,11 @@ internal class EpollEventLoop(
         }
     }
 
-    // --- EpollSuspendRegister impl (seam for connect InProgress) ---
+    // --- ReadinessSuspendRegister impl (seam for connect InProgress) ---
 
     override suspend fun awaitWriteReady(fd: Int, logger: Logger) = awaitWritableOwningFd(fd, logger)
 
     companion object {
-
-        /** Initial capacity of the shared writev scratch arrays (grows 1.5x). */
-        const val INITIAL_WRITEV_CAPACITY = 8
 
         /**
          * Maximum events per epoll_wait() call. 64 balances memory usage

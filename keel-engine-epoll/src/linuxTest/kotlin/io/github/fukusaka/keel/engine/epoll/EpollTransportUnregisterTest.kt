@@ -1,8 +1,12 @@
+@file:OptIn(InternalReadinessEngineApi::class)
+
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
-import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.readiness.Interest
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -33,7 +37,7 @@ class EpollTransportUnregisterTest {
 
             val client = engine.connect(LOOPBACK_HOST, port)
             val accepted = server.accept()
-            val fd = ((client as AbstractPipelinedChannel).transport as EpollIoTransport).fd
+            val fd = ((client as AbstractPipelinedChannel).transport as ReadinessIoTransport).fd
 
             client.close()
             accepted.close()
@@ -63,7 +67,7 @@ class EpollTransportUnregisterTest {
 
             val client = engine.connect(LOOPBACK_HOST, port)
             val accepted = server.accept()
-            val transport = (client as AbstractPipelinedChannel).transport as EpollIoTransport
+            val transport = (client as AbstractPipelinedChannel).transport as ReadinessIoTransport
             val fd = transport.fd
 
             // The peer never reads, so the kernel buffers fill and the write

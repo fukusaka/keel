@@ -134,6 +134,7 @@ keel は両方を提供します:
 | `keel-io` | `IoBuf`、`SuspendSource`、`SuspendSink`、`BufferAllocator` |
 | `keel-tls` | `TlsConfig`、`TlsCodecFactory`、証明書ユーティリティ（TLS プロトコル primitives。 server-side install 配管は `keel-server` 側） |
 | `keel-native-posix` | POSIX ソケットユーティリティ（Native エンジンの内部利用） |
+| `keel-native-readiness` | epoll / kqueue が共有する readiness ループ実装（内部利用） |
 
 ### エンジン（ターゲットプラットフォームごとに 1 つ選ぶ）
 

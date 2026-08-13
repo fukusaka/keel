@@ -1,12 +1,16 @@
+@file:OptIn(InternalReadinessEngineApi::class)
+
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
-import io.github.fukusaka.keel.native.posix.LoopParticipant
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.LoopParticipant
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -28,7 +32,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Seam tests for [KqueueIoTransport] once its EventLoop has stopped — the
+ * Seam tests for [ReadinessIoTransport] once its EventLoop has stopped — the
  * entry points that used to swallow work, and the teardown that has to run
  * on the caller instead.
  */
@@ -50,7 +54,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
             // WouldBlock and the loop stops before any retry.
             enqueueWrite(fd, WriteResult.WouldBlock)
         }
-        val transport = KqueueIoTransport(fd, eventLoop, tracker, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, tracker, fake)
         val queued = CompletableDeferred<Unit>()
         eventLoop.dispatch(
             EmptyCoroutineContext,
@@ -91,7 +95,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         // Joining when the channel attaches turns that into a refusal the site
         // can act on. This drives the window deliberately: build, sweep, attach.
         eventLoop.start()
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
         eventLoop.close()
 
         transport.onChannelAttached()
@@ -125,7 +129,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         loop.start()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = KqueueIoTransport(fd, loop, tracker, fake)
+        val transport = ReadinessIoTransport(fd, loop, tracker, fake)
         // Joins the loop, as a real channel does: the stop notification goes
         // to participants, and a transport joins when its channel attaches.
         transport.onChannelAttached()
@@ -167,7 +171,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         loop.start()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = KqueueIoTransport(fd, loop, tracker, fake)
+        val transport = ReadinessIoTransport(fd, loop, tracker, fake)
         // Joins the loop, as a real channel does -- this test turns on the
         // transport being in the registry alongside the participant below.
         transport.onChannelAttached()
@@ -219,7 +223,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
             enqueueWrite(fd, WriteResult.Written(SEAM_PAYLOAD_BYTES))
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = KqueueIoTransport(fd, loop, tracker, fake)
+        val transport = ReadinessIoTransport(fd, loop, tracker, fake)
 
         val buffered = CompletableDeferred<Unit>()
         loop.dispatch(
@@ -261,7 +265,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         loop.start()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = KqueueIoTransport(fd, loop, tracker, fake)
+        val transport = ReadinessIoTransport(fd, loop, tracker, fake)
         try {
             val issued = CompletableDeferred<Unit>()
             loop.dispatch(
@@ -304,7 +308,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
             enqueueWrite(fd, WriteResult.Written(SEAM_PAYLOAD_BYTES))
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = KqueueIoTransport(fd, loop, tracker, fake)
+        val transport = ReadinessIoTransport(fd, loop, tracker, fake)
 
         val issued = CompletableDeferred<Unit>()
         loop.dispatch(
@@ -348,7 +352,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         loop.start()
         val tracker = TrackingAllocator()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = KqueueIoTransport(fd, loop, tracker, fake)
+        val transport = ReadinessIoTransport(fd, loop, tracker, fake)
         // Joins the loop, as a real channel does -- this test turns on the
         // transport being in the registry alongside the participant below.
         transport.onChannelAttached()
@@ -398,7 +402,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         val loop = KqueueEventLoop(warns, flushCoalescing = false)
         loop.start()
         val fake = FakeNativeSocket().apply { enqueueShutdown(fd, ShutdownResult.Ok) }
-        val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, loop, DefaultAllocator, fake)
         loop.close()
 
         // shutdownOutput() is non-blocking on every path, so this budget is a
@@ -420,7 +424,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         // there is nothing for it to cancel.
         eventLoop.start()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
         val queued = CompletableDeferred<Unit>()
         eventLoop.dispatch(
             EmptyCoroutineContext,
@@ -452,7 +456,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         // sweep is the only thing that reaches it while the channel is open.
         eventLoop.start()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
         // Joins the loop, as a real channel does: the stop notification goes
         // to participants, and a transport joins when its channel attaches.
         transport.onChannelAttached()
@@ -487,7 +491,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         // Cancelling is the fail-safe answer even for a caller that had nothing
         // queued, and the cause says which fd and why.
         eventLoop.start()
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
         eventLoop.close()
 
         val cause = withTimeout(SEAM_TIMEOUT_MS) {
@@ -510,7 +514,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         // already been past, so nothing is left to end the wait.
         eventLoop.start()
         val fake = FakeNativeSocket().apply { enqueueWrite(fd, WriteResult.WouldBlock) }
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
         val buf = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
         transport.write(buf)
         transport.flush()
@@ -555,7 +559,7 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         // suite reads one way.
         withTimeout(SEAM_TIMEOUT_MS) {
             eventLoop.start()
-            val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
+            val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, FakeNativeSocket())
             assertTrue(transport.canDispatchToOwningContext, "a live loop still takes work")
 
             eventLoop.close()

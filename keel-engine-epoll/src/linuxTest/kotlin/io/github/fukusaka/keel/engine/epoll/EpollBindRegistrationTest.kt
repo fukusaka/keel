@@ -19,7 +19,7 @@ import kotlin.time.Duration.Companion.seconds
  * until an `accept()` waiter exists to receive the event.
  *
  * The event loop holds the invariant that a registered interest has a handler
- * behind it — `AbstractPosixReadinessEventLoop.dispatchReady`'s no-handler branch logs a WARN
+ * behind it — `AbstractReadinessEventLoop.dispatchReady`'s no-handler branch logs a WARN
  * and removes the interest, calling the state stale. Registering at bind time
  * broke that on the normal path, because `accept()` only registers a
  * continuation once its non-blocking accept returns EAGAIN, so a connection
@@ -29,7 +29,7 @@ import kotlin.time.Duration.Companion.seconds
  * asynchronous, so it can land after a later `bind()` has registered the same
  * recycled fd number, leaving a live listener watched by nobody. On this engine
  * the same fd number is dangerous for a second reason — the loop's own interest
- * bookkeeping, see `EpollStreamServer.close`.
+ * bookkeeping, see `ReadinessStreamServer.close`.
  */
 @OptIn(ExperimentalForeignApi::class)
 class EpollBindRegistrationTest {
@@ -138,7 +138,7 @@ class EpollBindRegistrationTest {
     private companion object {
         val TEST_TIMEOUT = 15.seconds
 
-        /** Substring of the no-handler WARN in `AbstractPosixReadinessEventLoop.dispatchReady`. */
+        /** Substring of the no-handler WARN in `AbstractReadinessEventLoop.dispatchReady`. */
         const val STALE_INTEREST_MARKER = "no handler"
 
         const val PORT_RELEASE_BUDGET_MS = 2_000L

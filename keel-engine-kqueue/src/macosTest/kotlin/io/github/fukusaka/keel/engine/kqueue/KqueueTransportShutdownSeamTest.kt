@@ -1,12 +1,16 @@
+@file:OptIn(InternalReadinessEngineApi::class)
+
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
-import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.native.readiness.Interest
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
@@ -19,7 +23,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Seam tests for [KqueueIoTransport]'s half-close: the `shutdownOutput`
+ * Seam tests for [ReadinessIoTransport]'s half-close: the `shutdownOutput`
  * errno branches, and the ordering that holds the FIN back until the
  * buffered writes have drained.
  */
@@ -36,7 +40,7 @@ internal class KqueueTransportShutdownSeamTest : KqueueTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         transport.shutdownOutput()
 
@@ -51,7 +55,7 @@ internal class KqueueTransportShutdownSeamTest : KqueueTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         transport.shutdownOutput()
         transport.shutdownOutput()
@@ -77,7 +81,7 @@ internal class KqueueTransportShutdownSeamTest : KqueueTransportSeamFixture() {
             val fake = FakeNativeSocket().apply {
                 enqueueShutdown(fd, ShutdownResult.Failed(EPIPE))
             }
-            val transport = KqueueIoTransport(fd, loop, DefaultAllocator, fake)
+            val transport = ReadinessIoTransport(fd, loop, DefaultAllocator, fake)
 
             transport.shutdownOutput()
 
@@ -112,7 +116,7 @@ internal class KqueueTransportShutdownSeamTest : KqueueTransportSeamFixture() {
             enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.WouldBlock, WriteResult.Written(SEAM_PAYLOAD_BYTES))
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         // Observed inside the same loop task as the half-close. The fixture fd is
         // an unconnected socket, so arming it for write readiness can make the
@@ -154,7 +158,7 @@ internal class KqueueTransportShutdownSeamTest : KqueueTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = KqueueIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
         val tracker = TrackingAllocator()
 
         eventLoop.dispatch(

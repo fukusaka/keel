@@ -2,9 +2,9 @@ package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
-import io.github.fukusaka.keel.native.posix.Interest
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.readiness.Interest
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
@@ -33,7 +33,7 @@ import kotlin.time.Duration.Companion.seconds
  * through a real `accept()` cannot land in it reliably, and a test that cannot
  * fail is worse than no test.
  */
-@OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
+@OptIn(ExperimentalForeignApi::class, InternalReadinessEngineApi::class)
 class EpollRegisterIfSeamTest {
 
     private val probeOps = PosixNativeSocketOps(NoopLoggerFactory.logger("probe"))

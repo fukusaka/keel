@@ -92,7 +92,7 @@ internal interface KqueueSyscallOps {
     /**
      * Removes [fd]'s write filter from [kqFd] (`EV_DELETE` + `EVFILT_WRITE`).
      *
-     * Called from `AbstractPosixReadinessEventLoop.dispatchReady` on the pipeline path when a
+     * Called from `AbstractReadinessEventLoop.dispatchReady` on the pipeline path when a
      * WRITE callback does not re-register after firing, to prevent the
      * persistent `EV_ADD` filter from causing a level-triggered busy loop.
      *
@@ -169,6 +169,6 @@ internal class KqEvent {
     /** Kqueue filter that fired (`ev.filter`, e.g. `EVFILT_READ` / `EVFILT_WRITE`). */
     var filter: Int = 0
 
-    /** Kqueue flags (`ev.flags`, e.g. `EV_EOF`). Kept for future use; currently unread. */
+    /** Kqueue flags (`ev.flags`, e.g. `EV_EOF`). Read by the loop to derive peer-FIN. */
     var flags: Int = 0
 }

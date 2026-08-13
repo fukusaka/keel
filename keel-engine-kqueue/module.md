@@ -16,7 +16,7 @@ Used for high-performance HTTP servers.
 callbacks to suspend. Used for interactive protocols (SMTP, Redis) and Ktor.
 
 **Pipeline direction**: inbound (read) flows HEAD → TAIL; outbound (write/flush)
-flows TAIL → HEAD. `HeadHandler` connects the pipeline to `KqueueIoTransport`.
+flows TAIL → HEAD. `HeadHandler` connects the pipeline to `ReadinessIoTransport`.
 
 ## Architecture
 
@@ -25,8 +25,8 @@ KqueueEngine
 ├── bossLoop (KqueueEventLoop) ── accept readiness on server fd
 │     └── kevent(EVFILT_READ) → accept() → assign to worker
 └── workerGroup (KqueueEventLoopGroup, N workers)
-      ├── worker[0]: KqueuePipelinedChannel A, D, ...
-      ├── worker[1]: KqueuePipelinedChannel B, E, ...
+      ├── worker[0]: ReadinessPipelinedChannel A, D, ...
+      ├── worker[1]: ReadinessPipelinedChannel B, E, ...
       └── worker[N]: ...
 ```
 
@@ -65,21 +65,21 @@ App:                        suspend channel.read(buf) ← dequeue
 ## Write/Flush Path
 
 Both modes share the same outbound path. The pipeline terminates at `HeadHandler`,
-which delegates to `KqueueIoTransport`.
+which delegates to `ReadinessIoTransport`.
 
 **Pipeline**: a handler calls `ctx.propagateWrite/Flush` to push data toward HEAD.
 
 ```
 handler (e.g. Encoder)
-  → ctx.propagateWrite(buf) → HeadHandler.onWrite → KqueueIoTransport.write(buf)
-  → ctx.propagateFlush()   → HeadHandler.onFlush → KqueueIoTransport.flush()
+  → ctx.propagateWrite(buf) → HeadHandler.onWrite → ReadinessIoTransport.write(buf)
+  → ctx.propagateFlush()   → HeadHandler.onFlush → ReadinessIoTransport.flush()
 ```
 
 **Coroutine**: the app enters the pipeline at TAIL.
 
 ```
-App: channel.write(buf)           → pipeline.requestWrite(buf) → ... → KqueueIoTransport.write(buf)
-App: channel.requestFlush()       → pipeline.requestFlush()    → ... → KqueueIoTransport.flush()
+App: channel.write(buf)           → pipeline.requestWrite(buf) → ... → ReadinessIoTransport.write(buf)
+App: channel.requestFlush()       → pipeline.requestFlush()    → ... → ReadinessIoTransport.flush()
 App: channel.awaitFlushComplete() → transport.awaitPendingFlush()
 ```
 
@@ -92,10 +92,10 @@ and EVFILT_WRITE is deleted.
 | Class | Role |
 |-------|------|
 | `KqueueEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
-| `KqueuePipelinedChannel` | Unified channel: Pipeline + Coroutine modes |
-| `KqueuePipelinedStreamServer` | Pipeline-mode server (callback-driven accept) |
-| `KqueueStreamServer` | Coroutine-mode server (suspend-based accept) |
-| `KqueueIoTransport` | `IoTransport` for write/flush with EVFILT_WRITE backpressure |
+| `ReadinessPipelinedChannel` | Unified channel: Pipeline + Coroutine modes — shared with the other readiness engine, in `keel-native-readiness` |
+| `ReadinessPipelinedStreamServer` | Pipeline-mode server (callback-driven accept) — shared, in `keel-native-readiness` |
+| `ReadinessStreamServer` | Coroutine-mode server (suspend-based accept) — shared, in `keel-native-readiness` |
+| `ReadinessIoTransport` | `IoTransport` for write/flush with EVFILT_WRITE backpressure — shared with the epoll engine, in `keel-native-readiness` |
 | `KqueueEventLoop` | Single-threaded kqueue loop + `CoroutineDispatcher` |
 | `KqueueEventLoopGroup` | Round-robin distribution of channels across EventLoops |
 | `KqueueSyscallOps` / `PosixKqueueSyscallOps` | Seam over the `kqueue(2)`-family syscalls, making error branches testable without a real kernel |
@@ -106,4 +106,4 @@ from the shared `keel-native-posix` module (`NativeSocketOps` / `NativeSocket`).
 # Package io.github.fukusaka.keel.engine.kqueue
 
 macOS kqueue-based IoEngine with multi-threaded EventLoop, unified Pipeline + Coroutine
-mode via `KqueuePipelinedChannel`, and zero-copy I/O via `IoBuf.unsafePointer`.
+mode via a shared `ReadinessPipelinedChannel`, and zero-copy I/O via `IoBuf.unsafePointer`.

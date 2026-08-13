@@ -59,6 +59,7 @@ keel/
 ├── keel-io/                     # IoBuf / chunk ベース pooled BufferAllocator / kotlinx-io ブリッジ
 ├── keel-core/                   # IoEngine / Channel / StreamServer / Pipeline / DNS resolver
 ├── keel-native-posix/           # Native エンジン共有 POSIX ソケット層
+├── keel-native-readiness/       # epoll + kqueue が共有する readiness ループ実装
 ├── keel-engine-epoll/           # linuxX64, linuxArm64 (epoll)
 ├── keel-engine-kqueue/          # macosArm64, macosX64 (kqueue)
 ├── keel-engine-io-uring/        # linuxX64, linuxArm64 (io_uring, Linux 5.6+)

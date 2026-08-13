@@ -1,3 +1,5 @@
+@file:OptIn(InternalReadinessEngineApi::class)
+
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.BindConfig
@@ -10,6 +12,9 @@ import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.ReadinessPipelinedStreamServer
+import io.github.fukusaka.keel.native.readiness.ReadinessStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -29,8 +34,8 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * Seam-level tests for `accept`-path branches on the kqueue engine:
- * [KqueueStreamServer.accept] (suspend-based) and
- * [KqueuePipelinedStreamServer.onAcceptable] (callback-based).
+ * [ReadinessStreamServer.accept] (suspend-based) and
+ * [ReadinessPipelinedStreamServer.onAcceptable] (callback-based).
  *
  * Complements [KqueueEngineLifecycleSeamTest] (connect + bind) by
  * exercising the third engine-state transition — accept. Both paths
@@ -42,7 +47,7 @@ import kotlin.time.Duration.Companion.seconds
  * ## What this file does NOT cover
  *
  * - **`accept` `WouldBlock` suspend path (coroutine-based)** —
- *   `KqueueStreamServer.accept()`'s `WouldBlock` branch registers the server
+ *   `ReadinessStreamServer.accept()`'s `WouldBlock` branch registers the server
  *   fd on the boss event loop's real kqueue and suspends the
  *   continuation; resuming requires the real socket to become readable.
  *   Exercised by `KqueueEngineTest` integration tests.
@@ -77,7 +82,7 @@ class KqueueAcceptSeamTest {
         return fd
     }
 
-    // --- KqueueStreamServer.accept: Failed branches ---
+    // --- ReadinessStreamServer.accept: Failed branches ---
 
     @Test
     fun `accept Failed ECONNABORTED throws with errno message`() = runBlocking {
@@ -147,7 +152,7 @@ class KqueueAcceptSeamTest {
         }
     }
 
-    // --- KqueueStreamServer.accept: Accepted branch (happy path + setSocketOption chain) ---
+    // --- ReadinessStreamServer.accept: Accepted branch (happy path + setSocketOption chain) ---
 
     @Test
     fun `accept Accepted returns channel with setNonBlocking plus scripted addresses`() = runBlocking {
@@ -236,9 +241,9 @@ class KqueueAcceptSeamTest {
         }
     }
 
-    // --- KqueuePipelinedStreamServer.onAcceptable: Failed / WouldBlock ---
+    // --- ReadinessPipelinedStreamServer.onAcceptable: Failed / WouldBlock ---
     //
-    // bindPipeline returns a KqueuePipelinedStreamServer; we cast and call
+    // bindPipeline returns a ReadinessPipelinedStreamServer; we cast and call
     // the internal onAcceptable() directly to drive the accept loop branches
     // deterministically (no real event delivery). The sentinel fd is needed
     // so start() and the re-arm kevent(EV_ADD) calls succeed — the fd is
@@ -264,7 +269,7 @@ class KqueueAcceptSeamTest {
                     InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                     BindConfig(),
                 ) { /* no-op initializer */ }
-                val pipelined = server as KqueuePipelinedStreamServer
+                val pipelined = server as ReadinessPipelinedStreamServer
                 pipelined.onAcceptable()
                 assertEquals(1, fakeSocket.acceptCalls)
                 // No Accepted → no setNonBlocking / address reads.
@@ -309,7 +314,7 @@ class KqueueAcceptSeamTest {
                     InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                     BindConfig(),
                 ) { /* no-op initializer */ }
-                val pipelined = server as KqueuePipelinedStreamServer
+                val pipelined = server as ReadinessPipelinedStreamServer
 
                 pipelined.onAcceptable()
 
@@ -365,7 +370,7 @@ class KqueueAcceptSeamTest {
                     InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                     BindConfig(),
                 ) { /* no-op initializer */ }
-                val pipelined = server as KqueuePipelinedStreamServer
+                val pipelined = server as ReadinessPipelinedStreamServer
                 // Any value the wrap passes through; -1 makes an unmasked
                 // modulo negative for every group size above one.
                 pipelined.setWorkerIndexForTest(-1)
@@ -407,7 +412,7 @@ class KqueueAcceptSeamTest {
                     InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                     BindConfig(),
                 ) { /* no-op */ }
-                val pipelined = server as KqueuePipelinedStreamServer
+                val pipelined = server as ReadinessPipelinedStreamServer
                 pipelined.onAcceptable()
                 assertEquals(1, fakeSocket.acceptCalls)
                 assertTrue(fakeOps.nonBlockingFds.isEmpty())
@@ -446,7 +451,7 @@ class KqueueAcceptSeamTest {
                     InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                     BindConfig(),
                 ) { /* no-op initializer */ }
-                val pipelined = server as KqueuePipelinedStreamServer
+                val pipelined = server as ReadinessPipelinedStreamServer
 
                 pipelined.dispatchAcceptReadiness()
 

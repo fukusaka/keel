@@ -14,8 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dispatcher will still run, so the pipeline can release rather than strand it (#1013)
 - `io`: `LongObjectMap.forEachValue` — inline walk over the values, for callers that have to
   drain a map without allocating per entry (#1004)
-- `native-posix`: `AbstractPosixReadinessEventLoop` — the loop, both ledgers and readiness
-  dispatch that epoll and kqueue each kept a copy of (#1002, #1005, #1006, #1007)
+- `native-readiness`: `AbstractReadinessEventLoop` — the loop, both ledgers and readiness
+  dispatch that epoll and kqueue each kept a copy of (#1002, #1005, #1006, #1007, #1052)
 - `client-http`: follow `301` / `302` / `303` / `307` / `308` redirects (RFC 9110 §15.4) — `303` and a
   redirected POST become GET, `307` / `308` preserve method and body, a relative `Location` is resolved,
   and `Authorization` is dropped on a cross-origin hop. Configurable via `followRedirects` /
@@ -45,16 +45,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `native-posix`: `AbstractPosixReadinessEventLoop.reportRegLockFailure` is public under
-  `@InternalPosixEventLoopApi`, reachable from the engines' tests (#1050)
+- `engine-kqueue`, `engine-epoll`: the two readiness engines now share one implementation, in the new
+  `keel-native-readiness` module (#1052)
+- `native-posix`: no longer carries that implementation, so `engine-io-uring`,
+  `engine-nwconnection` and `tls-mbedtls` no longer pull it in (#1052)
+- `native-readiness`: `AbstractReadinessEventLoop.reportRegLockFailure` is public under
+  `@InternalReadinessEngineApi`, reachable from the engines' tests (#1050)
 - `build`, `ci`: add a `detektTestSources` task and run it in the gate — no detekt task
   analysed `commonTest` / `nativeTest` / `macosTest` / `linuxTest` / `appleTest` before, and
   `engine-netty` reached no test sources at all. Pre-existing findings were grandfathered per
   module while they were worked through, and the last baseline is now gone; `FunctionNaming`
   excludes the native-family test source sets, as it already did for `commonTest` / `jvmTest` /
   `jsTest` (#1018, #1033)
-- **BREAKING** (`native-posix`): `LoopHandoff` now requires opting in to
-  `@InternalPosixEventLoopApi` (#1002)
+- `native-posix`: `LoopHandoff` is gone from this module's surface — the readiness engines
+  share one implementation now, so it is internal to it (#1002, #1052)
 - `core`: the pipeline's non-suspend outbound entry points (`requestWrite` / `requestFlush` /
   `requestClose` and the handler-side `propagate*`) now run on the transport's owning EventLoop —
   inline when the caller is already there, dispatched onto it otherwise — instead of touching the

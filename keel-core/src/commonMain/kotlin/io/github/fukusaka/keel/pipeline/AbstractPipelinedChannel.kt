@@ -16,8 +16,8 @@ import kotlinx.coroutines.CoroutineDispatcher
  *
  * ```
  * Engine creates:
- *   val transport = KqueueIoTransport(fd, eventLoop, allocator)
- *   val channel = KqueuePipelinedChannel(transport, logger, remote, local)
+ *   val transport = ReadinessIoTransport(fd, eventLoop, allocator)
+ *   val channel = ReadinessPipelinedChannel(transport, logger, remote, local)
  *
  * AbstractPipelinedChannel wires:
  *   transport.onRead        → pipeline.notifyRead(buf)

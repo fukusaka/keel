@@ -54,16 +54,16 @@ Accept した各接続は `Pipeline` — **HEAD** と **TAIL** の 2 つの固�
 ```
 IoTransport (interface)
   └── AbstractIoTransport (write バッファリング、backpressure、コールバック)
-       └── KqueueIoTransport / EpollIoTransport / NioIoTransport / ...
+       └── ReadinessIoTransport (kqueue, epoll) / NioIoTransport / ...
             (プラットフォーム固有: read syscall、flush syscall、EventLoop 登録)
 
 PipelinedChannel (interface)
   └── AbstractPipelinedChannel (IoTransport ↔ Pipeline の接続、ensureBridge)
-       └── KqueuePipelinedChannel / EpollPipelinedChannel / ...
+       └── ReadinessPipelinedChannel (kqueue, epoll) / NioPipelinedChannel / ...
             (空または最小限 — 全ロジックは IoTransport に)
 ```
 
-エンジン固有の PipelinedChannel は通常空のサブクラスです。全 I/O ロジックは `IoTransport` にあります。
+PipelinedChannel の実装はほとんど何も持ちません — I/O ロジックはすべて `IoTransport` にあります。kqueue と epoll は、どちらも固有の中身を持たなかったため 1 つを共有します。
 
 ## ハンドラの実装
 
@@ -214,12 +214,12 @@ interface PipelinedChannel : Channel {
 
 `armRead()` はインターフェースのメンバーではありません。各エンジンが `bindPipeline` のイニシャライザ返却後に内部で呼び出すため、イニシャライザから呼ぶ必要はありません。
 
-全 7 エンジンが `PipelinedChannel` を実装しています:
+すべてのエンジンが `PipelinedChannel` に到達しますが、kqueue と epoll は同じものに到達します:
 
 | エンジン | 実装クラス |
 |--------|---------------|
-| kqueue | `KqueuePipelinedChannel` |
-| epoll | `EpollPipelinedChannel` |
+| kqueue | `ReadinessPipelinedChannel` (shared) |
+| epoll | `ReadinessPipelinedChannel` (shared) |
 | io_uring | `IoUringPipelinedChannel` |
 | NIO | `NioPipelinedChannel` |
 | Netty | `NettyPipelinedChannel` |

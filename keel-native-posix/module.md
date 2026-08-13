@@ -6,16 +6,20 @@ Targets: **linuxX64**, **linuxArm64**, **macosArm64**, **macosX64**
 
 ## Role
 
-`keel-native-posix` provides the shared POSIX socket surface used by all Native engine
-modules: the `NativeSocket` / `NativeSocketOps` seams with their production
-implementations `PosixNativeSocket` / `PosixNativeSocketOps`, plus the helpers
-`errnoMessage`, `closeFdSafely`, and `applySocketOptions`, and the vocabulary the
-readiness engines share: `Interest` / `FdReadyListener` for describing and
-delivering fd readiness, the `LoopHandoff` for handing work to their
-EventLoop thread, and `AbstractPosixReadinessEventLoop`, which the epoll and
-kqueue loops extend for their shared registration ledger.
-Engine modules (`keel-engine-epoll`, `keel-engine-kqueue`, `keel-engine-io-uring`) depend on this
-module to avoid duplicating socket lifecycle code.
+`keel-native-posix` provides the POSIX socket surface shared by every native
+engine: the `NativeSocket` / `NativeSocketOps` seams with their production
+implementations `PosixNativeSocket` / `PosixNativeSocketOps`, and the helpers
+`errnoMessage`, `closeFdSafely` and `applySocketOptions`.
+
+That is all it is. `keel-engine-io-uring` (completion-based),
+`keel-engine-nwconnection` (Network.framework), `keel-tls-mbedtls` and
+`keel-testing-internal` depend on this module for exactly these pieces.
+
+The readiness engines' shared implementation — the event loop, the transport,
+the servers — is `keel-native-readiness`, which builds on this one. The loop
+base was here until that module existed, so the four modules above were
+carrying it, and the transport and servers would have landed here too once the
+two engines merged.
 
 ## C Interop
 
@@ -32,7 +36,7 @@ Two cinterop definitions expose POSIX functions that Kotlin/Native cannot bind d
 - `htons` / `ntohs` / `htonl`: C macros — cinterop cannot bind macros. Wrapped as `keel_htons` / `keel_ntohs` / `keel_htonl`.
 - `INADDR_LOOPBACK`: C macro — exposed as `keel_loopback_addr()`.
 - `sin_family` type: differs between Linux (`UShort`) and macOS (`UByte`), causing commonization errors. `keel_init_sockaddr_in` sets all `sockaddr_in` fields from C, avoiding the type divergence.
-- `writev`: provided as `keel_writev(fd, bases[], lens[], count)` — builds `iovec[]` internally for gather-write in a single syscall. Used by epoll and kqueue `IoTransport` for multiple pending buffers.
+- `writev`: provided as `keel_writev(fd, bases[], lens[], count)` — builds `iovec[]` internally for gather-write in a single syscall. Used by the readiness and io_uring transports for multiple pending buffers.
 
 ## NativeSocketOps
 
@@ -69,12 +73,6 @@ fails on some Kotlin/Native versions. `getsockopt` and `setsockopt` calls use
 | `errnoMessage(errno)` | Thread-safe errno-to-string helper (`strerror_r`-based) |
 | `closeFdSafely(fd, logger, context)` | Cleanup-path `close(2)` that logs failures instead of dropping them silently |
 | `applySocketOptions(fd, options)` | Applies a `SocketOptions` set through `NativeSocketOps.setSocketOption` |
-| `Interest` | Enum. The readiness a registration waits for (`READ` / `WRITE`). Callers above the engine describe what they wait for in these terms; the mapping onto kqueue filters or an epoll event mask is the engine's business |
-| `FdReadyListener` | Interface. Readiness callbacks on the pipeline (non-suspend) path: `onReady` plus a defaulted `onPeerClosed` for peer FIN / RST. Implemented by transports and servers so the receiver passes `this` — no per-call lambda on the read re-arm fast path |
-| `LoopParticipant` | Interface. The connection-lifetime half: `onLoopStopped`, told once per participant when its loop stops — keyed on the loop's participant registry, not the readiness ledger, so a paused connection holding no registration is still told |
-| `AbstractPosixReadinessEventLoop` | Base class for the epoll and kqueue loops. Requires `@InternalPosixEventLoopApi`. Owns the loop, its task queue, both registration ledgers, the participant registry (`addParticipant` / `removeParticipant`) and the readiness dispatch over them; a subclass supplies `logger`, `inEventLoop`, `loopBody`, `wakeup`, `submitArm`, `submitArmCallback` and `removeInterest` |
-| `LoopHandoff` | Off-loop to EventLoop hand-off for the readiness engines: runs work on the loop thread, or a fallback on the caller once the loop has stopped. Shared by `keel-engine-epoll` / `keel-engine-kqueue` so the shutdown-race handling has one implementation. Requires `@InternalPosixEventLoopApi` |
-| `InternalPosixEventLoopApi` | Opt-in marker at `ERROR` level on `AbstractPosixReadinessEventLoop` and `LoopHandoff`. Both are `public` only because the loops that use them are in other modules; the marker is what keeps that from reading as a supported API |
 
 Test doubles for these seams (`FakeNativeSocket`, `FakeNativeSocketOps`, and the
 blocking loopback client `PosixRawClient`) live in the `keel-testing-internal`

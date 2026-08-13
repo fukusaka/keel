@@ -2,7 +2,7 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.EBADF
 import platform.posix.EINVAL
@@ -39,7 +39,7 @@ import kotlin.test.assertTrue
  * thread: the fatal `waitEvents` result scripted below ends the loop even if
  * the check under test is gone, so a regression fails rather than hangs.
  */
-@OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
+@OptIn(ExperimentalForeignApi::class, InternalReadinessEngineApi::class)
 class KqueueRegLockFailureSeamTest {
 
     @Test

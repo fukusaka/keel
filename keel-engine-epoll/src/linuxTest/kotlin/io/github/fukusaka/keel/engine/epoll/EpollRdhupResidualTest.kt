@@ -3,8 +3,8 @@ package io.github.fukusaka.keel.engine.epoll
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
-import io.github.fukusaka.keel.native.posix.FdReadyListener
-import io.github.fukusaka.keel.native.posix.Interest
+import io.github.fukusaka.keel.native.readiness.FdReadyListener
+import io.github.fukusaka.keel.native.readiness.Interest
 import platform.linux.EPOLLERR
 import platform.linux.EPOLLIN
 import platform.linux.EPOLLRDHUP

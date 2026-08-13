@@ -1,7 +1,11 @@
+@file:OptIn(InternalReadinessEngineApi::class)
+
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
+import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
@@ -31,7 +35,7 @@ internal const val SEAM_POLL_MS = 5L
 internal const val SEAM_PAYLOAD_BYTES = 5
 
 /**
- * The fixture shared by the [EpollIoTransport] seam tests.
+ * The fixture shared by the [ReadinessIoTransport] seam tests.
  *
  * Part of the project's two-layer seam + integration testing strategy: the
  * seam tests exhaust the errno-branch space of the synchronous code paths
@@ -96,7 +100,7 @@ internal abstract class EpollTransportSeamFixture {
      * releases the queue, and without it the pooled buffers outlive the test.
      * The sibling flush tests assert this the same way.
      */
-    protected fun assertStrandedWritesReleased(transport: EpollIoTransport, tracker: TrackingAllocator) {
+    protected fun assertStrandedWritesReleased(transport: ReadinessIoTransport, tracker: TrackingAllocator) {
         transport.close()
         assertEquals(0, tracker.outstandingCount, "the stranded writes must be released on close")
     }
