@@ -14,8 +14,7 @@ import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
  * Behind the opt-in marker, like the rest of this surface: the engines build it
  * and nobody else should.
  */
-@InternalReadinessEngineApi
-class PosixPipelinedChannel(
+internal class PosixPipelinedChannel(
     transport: PosixIoTransport,
     logger: Logger,
     remoteAddress: SocketAddress? = null,

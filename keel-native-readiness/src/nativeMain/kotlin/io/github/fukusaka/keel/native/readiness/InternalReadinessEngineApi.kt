@@ -4,17 +4,18 @@ package io.github.fukusaka.keel.native.readiness
  * Marks this module's surface, which exists for the two readiness engines and
  * for nobody else.
  *
- * Both were lifted out of the same two loops, and both are `public` for one
- * reason — those loops are in other Gradle modules, and Kotlin's `internal`
- * does not cross that boundary — and
- * neither is meant for callers outside them. A `Registration` carries another
- * subsystem's continuation; `cancelAll` fails every waiter on a file descriptor
- * whether or not the caller owns it; `markFinished` / `markQuiescent` move a
- * live loop's shutdown state. All of it assumes the caller knows which thread
- * it is on.
+ * Every declaration that carries this would be `internal` if the engines were
+ * in this module. They are not — an engine's readiness primitive needs headers
+ * only one host has, so each is its own Gradle module — and Kotlin's `internal`
+ * does not cross that boundary. The marker is what `internal` cannot say here,
+ * and it says it less well: `internal` is checked, an opt-in is declared.
  *
- * Opting in is a deliberate, auditable "I am one of the POSIX readiness
- * engines" declaration, the same shape `UnsafeIoBufApi` uses one module down.
+ * **Most of what it marks is there for tests.** Of the declarations behind it,
+ * the engines' production code reaches four — the loop's `cleanupFd`, its
+ * participant count, the engine's thread resolution and its listeners; the rest
+ * are probes their seam tests ask about a connection they have just torn down.
+ * That is worth knowing before treating this surface as a design: it is mostly
+ * the cost of testing an implementation from the module next door.
  */
 @RequiresOptIn(
     message = "Internal surface of the readiness engines. Opt in only from the engines " +

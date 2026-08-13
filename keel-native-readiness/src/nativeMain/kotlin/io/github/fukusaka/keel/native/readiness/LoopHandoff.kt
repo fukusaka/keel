@@ -29,8 +29,7 @@ import kotlin.time.TimeSource
  * @param dispatchToLoop queues a task to run on the loop thread.
  */
 @OptIn(ExperimentalForeignApi::class)
-@InternalReadinessEngineApi
-class LoopHandoff(
+internal class LoopHandoff(
     private val inEventLoop: () -> Boolean,
     private val dispatchToLoop: (task: () -> Unit) -> Unit,
 ) {
