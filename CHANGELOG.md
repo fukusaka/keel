@@ -57,8 +57,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   module while they were worked through, and the last baseline is now gone; `FunctionNaming`
   excludes the native-family test source sets, as it already did for `commonTest` / `jvmTest` /
   `jsTest` (#1018, #1033)
-- **BREAKING** (`native-posix`): `LoopHandoff` is gone from this module's surface — the
-  readiness engines share one implementation now, so it is internal to it (#1002, #1052)
+- `native-posix`: `LoopHandoff` is gone from this module's surface — the readiness engines
+  share one implementation now, so it is internal to it (#1002, #1052)
 - `core`: the pipeline's non-suspend outbound entry points (`requestWrite` / `requestFlush` /
   `requestClose` and the handler-side `propagate*`) now run on the transport's owning EventLoop —
   inline when the caller is already there, dispatched onto it otherwise — instead of touching the

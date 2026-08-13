@@ -301,8 +301,8 @@ class ReadinessIoTransport(
 
     /**
      * Surfaces peer-FIN / peer-RST (observed via `EV_EOF` on kqueue,
-     * `EPOLLHUP | EPOLLERR | EPOLLRDHUP` on epoll — a reset arrives as one of
-     * the first two, not as `RDHUP`) to user code via
+     * `EPOLLHUP | EPOLLERR | EPOLLRDHUP` on epoll — the first two arrive
+     * whether or not they were armed) to user code via
      * [onReadClosed], regardless of [readEnabled] state. Without this, a
      * write-only push client would silently linger in CLOSE-WAIT until the
      * next write attempt or the `SO_KEEPALIVE` timer (~2 hours by default).
@@ -562,8 +562,7 @@ class ReadinessIoTransport(
         // busy-loop — unless a suspend waiter is queued on the same key, which
         // still needs it armed. The kernel rcvbuf retains the data and applies
         // back-pressure to the peer (TCP window). The setter's armRead()
-        // call re-registers the filter when readEnabled is flipped back to
-        // true.
+        // call arms it again when readEnabled is flipped back to true.
         //
         // Returning here also gives up peer-close detection until read is
         // re-enabled. On kqueue the filter carries EOF, so deleting it deletes

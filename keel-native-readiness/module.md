@@ -41,9 +41,11 @@ to measure, not before.
 
 Seven types are behind `@InternalReadinessEngineApi`: the loop, its group, the
 engine base, the transport, the two servers, and the lifecycle the loop
-implements. Twelve members are too — three reached by the engines' production
-code, two by the engine base within this module, and seven only by the engines'
-seam tests, which ask a torn-down connection whether its registrations went.
+implements. Twelve members are too. The engines' production code
+reaches exactly three of them — the loop's `cleanupFd`, its participant count,
+and the engine's thread resolution. The other nine are used inside this module,
+or are probes the engines' seam tests ask about a connection they have just torn
+down, or both.
 
 The marker is not an API: it is `internal` that had to cross a Gradle module
 boundary, which Kotlin's `internal` does not do. It is also weaker than

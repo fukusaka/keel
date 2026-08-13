@@ -11,11 +11,11 @@ package io.github.fukusaka.keel.native.readiness
  * and it says it less well: `internal` is checked, an opt-in is declared.
  *
  * **Most of the members it marks are there for tests.** Seven types are behind
- * it, and twelve members. Of the members the engines' production code reaches
- * three — the loop's `cleanupFd`, its participant count, and the engine's
- * thread resolution; two more are used by the engine base within this module. The
- * remaining seven are probes their seam tests ask about a connection they have
- * just torn down.
+ * it, and twelve members. Of those members the engines' production code reaches
+ * exactly three — the loop's `cleanupFd`, its participant count, and the
+ * engine's thread resolution. The other nine are used inside this module, or
+ * are probes the engines' seam tests ask about a connection they have just torn
+ * down, or both.
  * That is worth knowing before treating this surface as a design: it is mostly
  * the cost of testing an implementation from the module next door.
  */
