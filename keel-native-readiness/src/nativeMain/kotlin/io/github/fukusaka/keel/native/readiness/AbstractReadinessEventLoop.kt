@@ -465,12 +465,18 @@ abstract class AbstractReadinessEventLoop :
      * Whether [writevBases] / [writevLens] are ours to free.
      *
      * A plain `var`, and not because the loop thread owns it — the thread that
-     * frees is the one that called `close()`, and on the never-started branch
-     * there is no thread to join at all. What serialises it is that only one
-     * caller ever reaches the free: the engines claim `close()` with a CAS, and
-     * the branch that skips the join refuses to release until the loop reports
-     * itself stopped. Construction failure frees before any thread exists, and
-     * the test doubles have none. So a release never runs beside a gather.
+     * frees is the one that called `close()`. The engines' CAS on `close()`
+     * settles which caller reaches the release, but a single caller is not the
+     * same as no concurrency. What supplies that is quiescence, established
+     * differently on each route: `pthread_join` where a thread was started; the
+     * loop reporting itself stopped where one was not (and where the terminal
+     * sequence throws, `terminate` publishes quiescence from a `finally`, so
+     * the `catch` that releases is covered too); and nothing to be concurrent
+     * with when construction fails or when a test double closes.
+     *
+     * A stopped-loop teardown does reach a transport on another thread while
+     * this runs, which is why it does not flush — see the transport's
+     * `teardownAfterLoopStopped`. So a release never runs beside a gather.
      */
     internal var ownsWritevScratch = true
         private set
@@ -482,10 +488,14 @@ abstract class AbstractReadinessEventLoop :
     internal fun ensureWritevCapacity(n: Int) {
         if (n <= writevCapacity) return
         val grown = maxOf(writevCapacity + (writevCapacity shr 1), n)
-        // Only free what we still own. A grow after the scratch was released
-        // would otherwise free the same pointers a second time — and the
-        // arrays it allocates below are owed back either way.
+        // Give up the old scratch before freeing it, not after: an allocation
+        // that throws below would otherwise leave the loop still claiming
+        // pointers it no longer holds, at a capacity that says they are big
+        // enough to gather through. Disowned first, the failure leaves nothing
+        // to double-free and nothing a later gather can reach.
         if (ownsWritevScratch) {
+            ownsWritevScratch = false
+            writevCapacity = 0
             nativeHeap.free(writevBases)
             nativeHeap.free(writevLens)
         }
@@ -507,9 +517,9 @@ abstract class AbstractReadinessEventLoop :
         if (!ownsWritevScratch) return
         ownsWritevScratch = false
         // Capacity goes with the memory. Left at its old value, the early
-        // return in [ensureWritevCapacity] would hand a gather the pointers
-        // this just freed for every request that fits the capacity we no
-        // longer have.
+        // return in ensureWritevCapacity would hand a gather the pointers this
+        // just freed for every request that fits the capacity we no longer
+        // have.
         writevCapacity = 0
         nativeHeap.free(writevBases)
         nativeHeap.free(writevLens)
