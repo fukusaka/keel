@@ -4,7 +4,7 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
-import io.github.fukusaka.keel.native.readiness.AbstractPosixEventLoopGroup
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEventLoopGroup
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.pipeline.IoTransport
 
@@ -21,7 +21,7 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  *
  * Everything a group does once its loops exist — round-robin, all-or-none
  * start, close, and the rollback both build paths need — is
- * [AbstractPosixEventLoopGroup]'s. What is here is what a kqueue loop needs to
+ * [AbstractReadinessEventLoopGroup]'s. What is here is what a kqueue loop needs to
  * be built with.
  *
  * @param size Number of EventLoop threads. Must be >= 1.
@@ -44,7 +44,7 @@ internal class KqueueEventLoopGroup(
     idleTimeoutMillis: Long = 0,
     flushCoalescing: Boolean = true,
     syscallOps: KqueueSyscallOps? = null,
-) : AbstractPosixEventLoopGroup<KqueueEventLoop>(
+) : AbstractReadinessEventLoopGroup<KqueueEventLoop>(
     buildLoops(size) {
         KqueueEventLoop(
             logger,

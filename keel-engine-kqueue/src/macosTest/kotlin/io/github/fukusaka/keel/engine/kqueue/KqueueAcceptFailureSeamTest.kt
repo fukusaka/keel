@@ -14,7 +14,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.native.readiness.HandoffOutcome
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.native.readiness.LoopParticipant
-import io.github.fukusaka.keel.native.readiness.PosixPipelinedStreamServer
+import io.github.fukusaka.keel.native.readiness.ReadinessPipelinedStreamServer
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Dispatchers
@@ -102,9 +102,9 @@ class KqueueAcceptFailureSeamTest {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(acceptedFd))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
-            val server = PosixPipelinedStreamServer(
+            val server = ReadinessPipelinedStreamServer(
                 listeners = listOf(
-                    PosixPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                    ReadinessPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
                 ),
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -185,8 +185,8 @@ class KqueueAcceptFailureSeamTest {
         // 12.8s inside one readiness callback, with the boss loop serving no
         // other listener and draining no task for the whole of it. The bound
         // has to belong to the callback.
-        val full = PosixPipelinedStreamServer.STOPPING_WORKER_WAIT_MICROS
-        val fresh = PosixPipelinedStreamServer.DropTally()
+        val full = ReadinessPipelinedStreamServer.STOPPING_WORKER_WAIT_MICROS
+        val fresh = ReadinessPipelinedStreamServer.DropTally()
         assertEquals(full, fresh.remainingBudget(), "the first hand-off of a callback has the whole allowance")
 
         // A hand-off that waits and then sees quiescence costs this thread just
@@ -240,9 +240,9 @@ class KqueueAcceptFailureSeamTest {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
-            val server = PosixPipelinedStreamServer(
+            val server = ReadinessPipelinedStreamServer(
                 listeners = listOf(
-                    PosixPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                    ReadinessPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
                 ),
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -316,9 +316,9 @@ class KqueueAcceptFailureSeamTest {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
-            val server = PosixPipelinedStreamServer(
+            val server = ReadinessPipelinedStreamServer(
                 listeners = listOf(
-                    PosixPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                    ReadinessPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
                 ),
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -427,9 +427,9 @@ class KqueueAcceptFailureSeamTest {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
-            val server = PosixPipelinedStreamServer(
+            val server = ReadinessPipelinedStreamServer(
                 listeners = listOf(
-                    PosixPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                    ReadinessPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
                 ),
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -528,9 +528,9 @@ class KqueueAcceptFailureSeamTest {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(doomed))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
-            val server = PosixPipelinedStreamServer(
+            val server = ReadinessPipelinedStreamServer(
                 listeners = listOf(
-                    PosixPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                    ReadinessPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
                 ),
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,

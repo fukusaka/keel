@@ -405,7 +405,7 @@ class KqueueEngineReadWriteTest {
         // "half-close logic" — it guards an emergent property of the
         // *whole real engine stack* that the seam tests cannot reach:
         //
-        //  - No layer (PosixIoTransport / KqueueEventLoop / the core
+        //  - No layer (ReadinessIoTransport / KqueueEventLoop / the core
         //    AbstractPipelinedChannel) closes the channel's write side on
         //    a peer read-EOF. AbstractPipelinedChannelTest pins this for
         //    the core channel alone, over a fake transport; only a

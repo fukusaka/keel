@@ -33,7 +33,7 @@ import kotlin.coroutines.resume
 /**
  * the readiness loop [IoTransport] implementation for macOS.
  *
- * **Read path**: registers read readiness via `AbstractPosixReadinessEventLoop.registerCallback`.
+ * **Read path**: registers read readiness via `AbstractReadinessEventLoop.registerCallback`.
  * On data arrival, allocates a buffer, calls POSIX `read()`, and delivers
  * via [onRead]. EAGAIN triggers automatic re-arm.
  *
@@ -45,13 +45,13 @@ import kotlin.coroutines.resume
  * caller is off-loop — and everything else must already be on it.
  */
 @OptIn(ExperimentalForeignApi::class)
-class PosixIoTransport(
+class ReadinessIoTransport(
     /**
      * The connection's file descriptor. `internal` rather than `private` so a
      * test can ask the loop whether this fd's registrations were withdrawn.
      */
     val fd: Int,
-    protected val eventLoop: AbstractPosixReadinessEventLoop,
+    protected val eventLoop: AbstractReadinessEventLoop,
     allocator: BufferAllocator,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     /**
@@ -91,7 +91,7 @@ class PosixIoTransport(
 
     /**
      * [FdReadyListener] dispatch — passing `this` to
-     * `AbstractPosixReadinessEventLoop.registerCallback` avoids per-call lambda allocation
+     * `AbstractReadinessEventLoop.registerCallback` avoids per-call lambda allocation
      * on the read re-arm fast path. Branch on [interest] is a single enum
      * compare (negligible vs. surrounding syscall + buffer alloc).
      */
@@ -863,7 +863,7 @@ class PosixIoTransport(
 
     /**
      * Teardown on the closing caller's thread, for a loop that has stopped:
-     * [runOnLoop][AbstractPosixReadinessEventLoop.runOnLoop] takes this branch only after the loop
+     * [runOnLoop][AbstractReadinessEventLoop.runOnLoop] takes this branch only after the loop
      * published quiescence **for a caller that hands in no wait budget**, which
      * this one is: nothing on the loop side then runs concurrently, and the
      * loop-written fields are read through that flag's acquire edge. A caller

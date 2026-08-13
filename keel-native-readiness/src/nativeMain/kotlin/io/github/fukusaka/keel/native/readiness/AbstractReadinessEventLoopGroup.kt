@@ -20,7 +20,7 @@ import kotlin.concurrent.AtomicInt
  * @param loops the loops this group owns, already built.
  */
 @OptIn(InternalReadinessEngineApi::class)
-abstract class AbstractPosixEventLoopGroup<L : AbstractPosixReadinessEventLoop>(
+abstract class AbstractReadinessEventLoopGroup<L : AbstractReadinessEventLoop>(
     private val loops: Array<L>,
 ) {
 
@@ -108,7 +108,7 @@ abstract class AbstractPosixEventLoopGroup<L : AbstractPosixReadinessEventLoop>(
          * native scratch and an allocator child that only its own `close()`
          * returns. Nothing else has a reference to them, so nothing ever will.
          */
-        public inline fun <reified L : AbstractPosixReadinessEventLoop> buildLoops(
+        public inline fun <reified L : AbstractReadinessEventLoop> buildLoops(
             size: Int,
             create: (Int) -> L,
         ): Array<L> {
@@ -130,7 +130,7 @@ abstract class AbstractPosixEventLoopGroup<L : AbstractPosixReadinessEventLoop>(
          * not one from the cleanup after it.
          */
         @PublishedApi
-        internal fun closeAll(toRelease: List<AbstractPosixReadinessEventLoop>, cause: Throwable) {
+        internal fun closeAll(toRelease: List<AbstractReadinessEventLoop>, cause: Throwable) {
             for (loop in toRelease) {
                 try {
                     loop.close()

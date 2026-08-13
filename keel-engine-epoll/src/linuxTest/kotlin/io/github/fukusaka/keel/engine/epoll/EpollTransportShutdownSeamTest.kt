@@ -10,7 +10,7 @@ import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.native.readiness.Interest
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
-import io.github.fukusaka.keel.native.readiness.PosixIoTransport
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
@@ -23,7 +23,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Seam tests for [PosixIoTransport]'s half-close: the `shutdownOutput`
+ * Seam tests for [ReadinessIoTransport]'s half-close: the `shutdownOutput`
  * errno branches, and the ordering that holds the FIN back until the
  * buffered writes have drained.
  */
@@ -38,7 +38,7 @@ internal class EpollTransportShutdownSeamTest : EpollTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         transport.shutdownOutput()
 
@@ -53,7 +53,7 @@ internal class EpollTransportShutdownSeamTest : EpollTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         transport.shutdownOutput()
         transport.shutdownOutput()
@@ -80,7 +80,7 @@ internal class EpollTransportShutdownSeamTest : EpollTransportSeamFixture() {
             val fake = FakeNativeSocket().apply {
                 enqueueShutdown(fd, ShutdownResult.Failed(EPIPE))
             }
-            val transport = PosixIoTransport(fd, loop, DefaultAllocator, fake)
+            val transport = ReadinessIoTransport(fd, loop, DefaultAllocator, fake)
 
             transport.shutdownOutput()
 
@@ -115,7 +115,7 @@ internal class EpollTransportShutdownSeamTest : EpollTransportSeamFixture() {
             enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.WouldBlock, WriteResult.Written(SEAM_PAYLOAD_BYTES))
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         // Observed inside the same loop task as the half-close. The fixture fd is
         // an unconnected socket, so arming it for write readiness can make the
@@ -157,7 +157,7 @@ internal class EpollTransportShutdownSeamTest : EpollTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueShutdown(fd, ShutdownResult.Ok)
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
         val tracker = TrackingAllocator()
 
         eventLoop.dispatch(

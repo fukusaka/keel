@@ -11,7 +11,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.native.readiness.Interest
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
-import io.github.fukusaka.keel.native.readiness.PosixIoTransport
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -113,8 +113,8 @@ class KqueueTeardownFailureSeamTest {
     private fun newTransport(
         fake: FakeNativeSocket,
         allocator: BufferAllocator = DefaultAllocator,
-    ): PosixIoTransport =
-        PosixIoTransport(readFd, eventLoop, allocator, fake).also {
+    ): ReadinessIoTransport =
+        ReadinessIoTransport(readFd, eventLoop, allocator, fake).also {
             it.onChannelAttached()
             it.readEnabled = true
         }
@@ -225,7 +225,7 @@ class KqueueTeardownFailureSeamTest {
             // `onLoopStopped` returns on that first line -- so the route taken
             // here is the deterministic one to an identical starting point.
             val tracker = TrackingAllocator()
-            val transport = PosixIoTransport(readFd, eventLoop, tracker, fake)
+            val transport = ReadinessIoTransport(readFd, eventLoop, tracker, fake)
             val failing = FailingReleaseIoBuf(
                 tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
             )
@@ -327,7 +327,7 @@ class KqueueTeardownFailureSeamTest {
             // second inactive notification: the pipeline's is idempotent, so a
             // stray one is either swallowed or, after a local close, the first.
             val fake = FakeNativeSocket().apply { enqueueWrite(readFd, WriteResult.WouldBlock) }
-            val transport = PosixIoTransport(
+            val transport = ReadinessIoTransport(
                 readFd,
                 eventLoop,
                 DefaultAllocator,
@@ -387,7 +387,7 @@ class KqueueTeardownFailureSeamTest {
             // through a teardown's drain -- a different call site, converging
             // on the same `WouldBlock` -> `registerWriteCallback`.
             val fake = FakeNativeSocket().apply { enqueueWrite(readFd, WriteResult.WouldBlock) }
-            val transport = PosixIoTransport(
+            val transport = ReadinessIoTransport(
                 readFd,
                 eventLoop,
                 DefaultAllocator,
@@ -510,7 +510,7 @@ class KqueueTeardownFailureSeamTest {
             // outcome this timeout is the last defence against, defeated by the
             // report it makes on the way.
             val fake = FakeNativeSocket()
-            val transport = PosixIoTransport(
+            val transport = ReadinessIoTransport(
                 readFd,
                 eventLoop,
                 DefaultAllocator,
@@ -548,7 +548,7 @@ class KqueueTeardownFailureSeamTest {
             // one-or-the-other would trade the defect above for a quieter one.
             val fake = FakeNativeSocket()
             val tracker = TrackingAllocator()
-            val transport = PosixIoTransport(
+            val transport = ReadinessIoTransport(
                 readFd,
                 eventLoop,
                 tracker,

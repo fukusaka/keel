@@ -27,7 +27,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * The fixture shared by the [AbstractPosixReadinessEventLoop] tests.
+ * The fixture shared by the [AbstractReadinessEventLoop] tests.
  *
  * Holds what the split would otherwise have duplicated four times: the seven
  * test doubles, the `loopTest` / `suspendOn` / `chainOf` helpers, and the
@@ -41,7 +41,7 @@ import kotlin.time.Duration.Companion.seconds
  * as before the split, though the two now sit in different files.
  */
 @OptIn(InternalReadinessEngineApi::class)
-internal abstract class AbstractPosixReadinessEventLoopFixture {
+internal abstract class AbstractReadinessEventLoopFixture {
 
     /**
      * Records what would have been armed instead of issuing a syscall.
@@ -61,7 +61,7 @@ internal abstract class AbstractPosixReadinessEventLoopFixture {
     protected class FakeLoop(
         var onLoopThread: Boolean = true,
         val runDispatchedInline: Boolean = true,
-    ) : AbstractPosixReadinessEventLoop() {
+    ) : AbstractReadinessEventLoop() {
 
         /** No thread of its own; the fixture drives the ledger and the sweep directly. */
         override fun start() = Unit
@@ -351,7 +351,7 @@ internal abstract class AbstractPosixReadinessEventLoopFixture {
      * run, which means the base's `drainTasks` -- its re-entrancy claim, its
      * per-task backstop -- never executes there. This one exists to reach them.
      */
-    protected class RealQueueLoop(var onLoopThread: Boolean = true) : AbstractPosixReadinessEventLoop() {
+    protected class RealQueueLoop(var onLoopThread: Boolean = true) : AbstractReadinessEventLoop() {
 
         /** No thread of its own; the fixture drives the ledger and the sweep directly. */
         override fun start() = Unit
@@ -452,7 +452,7 @@ internal abstract class AbstractPosixReadinessEventLoopFixture {
      * its continuation is resumed — normally, or with the failure it was given.
      */
     protected class Waiter(
-        val reg: AbstractPosixReadinessEventLoop.Registration,
+        val reg: AbstractReadinessEventLoop.Registration,
         val resumed: CompletableDeferred<Unit>,
     )
 

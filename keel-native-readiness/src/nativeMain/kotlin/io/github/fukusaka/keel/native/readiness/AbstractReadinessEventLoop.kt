@@ -103,10 +103,10 @@ import kotlin.time.TimeSource
  */
 @OptIn(ExperimentalForeignApi::class)
 @InternalReadinessEngineApi
-abstract class AbstractPosixReadinessEventLoop :
+abstract class AbstractReadinessEventLoop :
     CoroutineDispatcher(),
-    PosixEventLoopLifecycle,
-    PosixSuspendRegister {
+    ReadinessEventLoopLifecycle,
+    ReadinessSuspendRegister {
 
     /**
      * Guards [registrations] — and, through [withRegLock], whatever else a
@@ -782,7 +782,7 @@ abstract class AbstractPosixReadinessEventLoop :
      *
      * The opt-in is not a formality here: this is the only member of the
      * surface carrying the marker itself. A class-level marker gates *naming*
-     * [AbstractPosixReadinessEventLoop], which a caller reaching an inherited
+     * [AbstractReadinessEventLoop], which a caller reaching an inherited
      * member through a concrete engine type never does — such a caller reaches
      * [loop] with no opt-in at all. Strip the marker from this declaration and
      * it is callable from any module that depends on an engine.

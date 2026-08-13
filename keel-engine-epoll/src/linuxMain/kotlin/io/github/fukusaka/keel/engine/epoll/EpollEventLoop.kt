@@ -8,13 +8,13 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io.github.fukusaka.keel.native.readiness.AbstractPosixReadinessEventLoop
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEventLoop
 import io.github.fukusaka.keel.native.readiness.FdReadyListener
 import io.github.fukusaka.keel.native.readiness.Interest
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
-import io.github.fukusaka.keel.native.readiness.PosixEventLoopLifecycle
-import io.github.fukusaka.keel.native.readiness.PosixIoTransport
-import io.github.fukusaka.keel.native.readiness.PosixSuspendRegister
+import io.github.fukusaka.keel.native.readiness.ReadinessEventLoopLifecycle
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
+import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena
@@ -123,14 +123,14 @@ internal class EpollEventLoop(
     override val idleTimeoutMillis: Long = 0,
     /**
      * Engine-wide [io.github.fukusaka.keel.core.IoEngineConfig.flushCoalescing]
-     * value. When `true` (default), [PosixIoTransport.flush] schedules the
+     * value. When `true` (default), [ReadinessIoTransport.flush] schedules the
      * actual send onto the next EL tick via [dispatch] so that same-tick
      * per-emit `requestFlush` calls collapse into one `writev(2)`. When
      * `false`, each `flush()` sends immediately (pre-#900 behaviour).
      */
     override val flushCoalescing: Boolean = true,
     private val syscallOps: EpollSyscallOps = PosixEpollSyscallOps,
-) : AbstractPosixReadinessEventLoop(), PosixSuspendRegister, PosixEventLoopLifecycle {
+) : AbstractReadinessEventLoop(), ReadinessSuspendRegister, ReadinessEventLoopLifecycle {
 
     /**
      * The epoll file descriptor, created at construction.
@@ -298,7 +298,7 @@ internal class EpollEventLoop(
      *
      * Requested here and only here, on a READ arm, so a listener with no READ
      * arm never sees it. Which connections hold one, and for how long, is
-     * stated at the arm itself in `PosixIoTransport.init`.
+     * stated at the arm itself in `ReadinessIoTransport.init`.
      *
      * A failed arm withdraws the listener, as kqueue's does. On the first arm —
      * [addOrModifyEpoll] issues `ADD` and reaches `MOD` only on `EEXIST` — the
@@ -628,7 +628,7 @@ internal class EpollEventLoop(
         closeFdSafely(epFd, logger, "event loop teardown (epFd)")
         // The registration lock is deliberately not destroyed or freed:
         // a cancellation arriving after this point takes it, and those
-        // arrive without bound (see AbstractPosixReadinessEventLoop's
+        // arrive without bound (see AbstractReadinessEventLoop's
         // regMutex). The task queue is lock-free, so it has none either.
         //
         // The arena and the writev scratch go together, and what makes that
@@ -814,7 +814,7 @@ internal class EpollEventLoop(
         }
     }
 
-    // --- PosixSuspendRegister impl (seam for connect InProgress) ---
+    // --- ReadinessSuspendRegister impl (seam for connect InProgress) ---
 
     override suspend fun awaitWriteReady(fd: Int, logger: Logger) = awaitWritableOwningFd(fd, logger)
 

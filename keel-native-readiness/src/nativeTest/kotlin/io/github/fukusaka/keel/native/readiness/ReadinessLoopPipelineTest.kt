@@ -24,7 +24,7 @@ import kotlin.test.assertTrue
  * that moved onto the base class.
  */
 @OptIn(InternalReadinessEngineApi::class)
-internal class PosixReadinessLoopPipelineTest : AbstractPosixReadinessEventLoopFixture() {
+internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
 
     // --- the pipeline path, which moved onto the base with this class ---
 

@@ -6,7 +6,7 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
-import io.github.fukusaka.keel.native.readiness.PosixIoTransport
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.ECONNRESET
 import platform.posix.EPIPE
@@ -16,7 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Seam tests for [PosixIoTransport]'s flush paths — the single-buffer
+ * Seam tests for [ReadinessIoTransport]'s flush paths — the single-buffer
  * `write()` and the multi-buffer `writev()` gather — across their errno
  * and partial-write branches.
  */
@@ -30,7 +30,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueWrite(fd, WriteResult.Written(5))
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf = DefaultAllocator.allocate(16)
         buf.writerIndex = 5
@@ -57,7 +57,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
                 WriteResult.Written(2),
             )
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf = DefaultAllocator.allocate(16)
         buf.writerIndex = 5
@@ -88,7 +88,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
                 WriteResult.Written(2),
             )
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf = DefaultAllocator.allocate(16)
         buf.writerIndex = 5
@@ -111,7 +111,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueWrite(fd, WriteResult.Failed(ECONNRESET))
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf = DefaultAllocator.allocate(16)
         buf.writerIndex = 5
@@ -130,7 +130,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
     @Test
     fun `flush with no pending writes returns true without syscall`() {
         val fake = FakeNativeSocket()
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val done = transport.flush()
 
@@ -146,7 +146,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueWritev(fd, WriteResult.Written(7))
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf1 = DefaultAllocator.allocate(16).also { it.writerIndex = 3 }
         val buf2 = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
@@ -171,7 +171,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
             enqueueWritev(fd, WriteResult.Written(4))
             enqueueWrite(fd, WriteResult.Written(6))
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf1 = DefaultAllocator.allocate(16).also { it.writerIndex = 3 }
         val buf2 = DefaultAllocator.allocate(16).also { it.writerIndex = 7 }
@@ -198,7 +198,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
                 WriteResult.Written(7),
             )
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf1 = DefaultAllocator.allocate(16).also { it.writerIndex = 3 }
         val buf2 = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }
@@ -216,7 +216,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
         val fake = FakeNativeSocket().apply {
             enqueueWritev(fd, WriteResult.Failed(EPIPE))
         }
-        val transport = PosixIoTransport(fd, eventLoop, DefaultAllocator, fake)
+        val transport = ReadinessIoTransport(fd, eventLoop, DefaultAllocator, fake)
 
         val buf1 = DefaultAllocator.allocate(16).also { it.writerIndex = 3 }
         val buf2 = DefaultAllocator.allocate(16).also { it.writerIndex = 4 }

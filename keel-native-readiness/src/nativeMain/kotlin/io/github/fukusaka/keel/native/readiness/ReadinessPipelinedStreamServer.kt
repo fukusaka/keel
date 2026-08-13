@@ -27,17 +27,17 @@ import kotlin.time.TimeSource
  * One server owns one or more [Listener]s (one per bound address — the
  * multi-address `bindPipeline` overload; a single-address bind is the
  * one-element case). Every listener fd is armed for read readiness on the shared
- * boss [AbstractPosixReadinessEventLoop]; accepted connections are distributed to worker
+ * boss [AbstractReadinessEventLoop]; accepted connections are distributed to worker
  * EventLoops in round-robin regardless of the listener they arrived on.
  *
  * Same architecture as [EpollPipelinedStreamServer][io.github.fukusaka.keel.engine.epoll.EpollPipelinedStreamServer].
  */
 @OptIn(ExperimentalForeignApi::class)
 @InternalReadinessEngineApi
-class PosixPipelinedStreamServer(
+class ReadinessPipelinedStreamServer(
     private val listeners: List<Listener>,
-    private val bossLoop: AbstractPosixReadinessEventLoop,
-    private val workerGroup: AbstractPosixEventLoopGroup<*>,
+    private val bossLoop: AbstractReadinessEventLoop,
+    private val workerGroup: AbstractReadinessEventLoopGroup<*>,
     private val logger: Logger,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
@@ -63,7 +63,7 @@ class PosixPipelinedStreamServer(
 
     /**
      * One persistent [FdReadyListener] per listener —
-     * passing the same object to every `AbstractPosixReadinessEventLoop.registerCallback`
+     * passing the same object to every `AbstractReadinessEventLoop.registerCallback`
      * avoids per-call lambda allocation on the accept re-arm fast path
      * while carrying which listener became readable. Only `READ` is
      * registered; `WRITE` is never armed for a listening fd.
@@ -322,15 +322,15 @@ class PosixPipelinedStreamServer(
      *
      * Masked rather than taken modulo directly: [workerIndex] wraps to negative
      * after `Int.MAX_VALUE` accepts, and a negative index throws out of
-     * [AbstractPosixEventLoopGroup.at]. The per-socket guard catches that, so the loop
+     * [AbstractReadinessEventLoopGroup.at]. The per-socket guard catches that, so the loop
      * survives — and closes and drops the connection instead. The counter keeps
      * incrementing either way, so from then on it lands on a usable index once
-     * per [AbstractPosixEventLoopGroup.size] and every other accept is dropped with one
+     * per [AbstractReadinessEventLoopGroup.size] and every other accept is dropped with one
      * warning, for as long as the server runs. A single-worker group loses
      * nothing: `n % 1` is `0` for every `n`. Matches the sibling counter
-     * in `AbstractPosixEventLoopGroup.next()`.
+     * in `AbstractReadinessEventLoopGroup.next()`.
      */
-    private fun nextWorker(): AbstractPosixReadinessEventLoop =
+    private fun nextWorker(): AbstractReadinessEventLoop =
         workerGroup.at((workerIndex++ and Int.MAX_VALUE) % workerGroup.size)
 
     /**
@@ -349,7 +349,7 @@ class PosixPipelinedStreamServer(
      * afterwards. Either way the loop runs the work. This window is after all
      * of them, where nothing runs it at all.
      *
-     * [io.github.fukusaka.keel.native.posix.AbstractPosixReadinessEventLoop.runOnLoop]
+     * [io.github.fukusaka.keel.native.posix.AbstractReadinessEventLoop.runOnLoop]
      * rather than asking the loop whether it has stopped and branching on the
      * answer: the ask and the offer are two steps, and a loop that goes
      * quiescent between them takes the task into the dead queue after all. The
@@ -398,7 +398,7 @@ class PosixPipelinedStreamServer(
      * connection goes unreported — the descriptor is already released by then.
      */
     private fun dispatchToWorker(
-        workerLoop: AbstractPosixReadinessEventLoop,
+        workerLoop: AbstractReadinessEventLoop,
         clientFd: Int,
         listener: Listener,
         waitBudgetMicros: Long,
@@ -436,7 +436,7 @@ class PosixPipelinedStreamServer(
      * Nothing before the attach is known to throw today; that half is a guard
      * against a construction step gaining one, not a fix for a reachable leak.
      */
-    private fun onWorkerAccept(clientFd: Int, loop: AbstractPosixReadinessEventLoop, listener: Listener) {
+    private fun onWorkerAccept(clientFd: Int, loop: AbstractReadinessEventLoop, listener: Listener) {
         val transport = try {
             // Inside the guard: they read a descriptor's worth of config with
             // that descriptor already accepted and nobody holding it. Neither
@@ -445,7 +445,7 @@ class PosixPipelinedStreamServer(
             // construction and attach guards below are already held to.
             val rbs = listener.config.readBufferSize ?: loop.readBufferSize
             val ito = listener.config.idleTimeoutMillis ?: loop.idleTimeoutMillis
-            PosixIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
+            ReadinessIoTransport(clientFd, loop, loop.allocator, nativeSocket, rbs, ito)
         } catch (constructionFailure: Throwable) {
             // Nothing owns the descriptor yet, so this is the raw close the
             // accept loop's setup-failure branch makes for the same reason.
@@ -481,7 +481,7 @@ class PosixPipelinedStreamServer(
         // attaches, so this connection is in the registry only once there is
         // something to deliver a stop notification to.
         val channel = try {
-            PosixPipelinedChannel(transport, logger, localAddress = channelLocal)
+            ReadinessPipelinedChannel(transport, logger, localAddress = channelLocal)
         } catch (attachFailure: Throwable) {
             // The transport exists, so it owns the descriptor and closing it is
             // how the descriptor goes. Whether the attach got as far as joining

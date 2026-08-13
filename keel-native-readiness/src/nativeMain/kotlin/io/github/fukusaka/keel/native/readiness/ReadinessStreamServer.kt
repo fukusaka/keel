@@ -23,7 +23,7 @@ import kotlin.coroutines.resumeWithException
 /**
  * the readiness loop-based [StreamServer] implementation for macOS.
  *
- * Listens on [serverFd] and uses the boss [AbstractPosixReadinessEventLoop] to wait for
+ * Listens on [serverFd] and uses the boss [AbstractReadinessEventLoop] to wait for
  * incoming connections. Accepted channels are assigned to worker EventLoops
  * from [workerGroup] in round-robin order.
  *
@@ -32,24 +32,24 @@ import kotlin.coroutines.resumeWithException
  *   bossLoop: kevent() fires read readiness on serverFd → resume
  *   POSIX accept(serverFd) → clientFd
  *   workerGroup.next() → assign worker EventLoop
- *   → PosixPipelinedChannel(clientFd, transport, workerLoop, allocator)
+ *   → ReadinessPipelinedChannel(clientFd, transport, workerLoop, allocator)
  * ```
  *
  * @param serverFd    The listening server socket fd (non-blocking).
- * @param bossLoop    The boss [AbstractPosixReadinessEventLoop] for accept readiness notification.
+ * @param bossLoop    The boss [AbstractReadinessEventLoop] for accept readiness notification.
  * @param workerGroup Worker EventLoopGroup for accepted channels (provides per-EventLoop allocator).
  * @param localAddress Bind address of this server channel.
  */
 @OptIn(ExperimentalForeignApi::class, InternalReadinessEngineApi::class)
 @InternalReadinessEngineApi
-class PosixStreamServer(
+class ReadinessStreamServer(
     private val serverFd: Int,
-    private val bossLoop: AbstractPosixReadinessEventLoop,
-    private val workerGroup: AbstractPosixEventLoopGroup<*>,
+    private val bossLoop: AbstractReadinessEventLoop,
+    private val workerGroup: AbstractReadinessEventLoopGroup<*>,
     override val localAddress: SocketAddress,
     private val bindConfig: BindConfig,
     private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger(
-        "PosixStreamServer",
+        "ReadinessStreamServer",
     ),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
@@ -74,7 +74,7 @@ class PosixStreamServer(
      * Suspends until an incoming connection arrives, then accepts it.
      *
      * Uses POSIX `accept()` in non-blocking mode. If no connection is
-     * pending (EAGAIN), registers the server fd with the [AbstractPosixReadinessEventLoop]
+     * pending (EAGAIN), registers the server fd with the [AbstractReadinessEventLoop]
      * and suspends until readiness is reported. The EventLoop maintains
      * a FIFO chain of waiters per `(fd, interest)` key, so multiple
      * coroutines may call [accept] concurrently — each gets its own
@@ -83,7 +83,7 @@ class PosixStreamServer(
      * thread-safe (kernel disperses queued connections among callers).
      *
      * The accepted connection is assigned to the next worker EventLoop
-     * in round-robin order and returned as a [PosixPipelinedChannel]
+     * in round-robin order and returned as a [ReadinessPipelinedChannel]
      * supporting both Pipeline mode and Coroutine mode.
      *
      * @throws IllegalStateException if the server channel is already closed.
@@ -196,7 +196,7 @@ class PosixStreamServer(
             val workerLoop = workerGroup.next()
             val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
             val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
-            PosixIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+            ReadinessIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
         } catch (constructionFailure: Throwable) {
             releaseAndRaise(
                 clientFd,
@@ -210,7 +210,7 @@ class PosixStreamServer(
         // registry only once there is something to deliver a stop
         // notification to.
         val channel = try {
-            PosixPipelinedChannel(transport, logger, remoteAddr, localAddr)
+            ReadinessPipelinedChannel(transport, logger, remoteAddr, localAddr)
         } catch (attachFailure: Throwable) {
             releaseAndRaise(
                 clientFd,
@@ -297,7 +297,7 @@ class PosixStreamServer(
      */
     private fun releaseAndRaise(
         clientFd: Int,
-        transport: PosixIoTransport?,
+        transport: ReadinessIoTransport?,
         cause: Throwable,
         what: String,
         // Only consulted on the `transport == null` path; once one exists the
@@ -349,7 +349,7 @@ class PosixStreamServer(
      * otherwise of a public accept.
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun releaseAfterFailedAccept(transport: PosixIoTransport, cause: Throwable) {
+    private fun releaseAfterFailedAccept(transport: ReadinessIoTransport, cause: Throwable) {
         try {
             transport.close()
         } catch (releaseFailure: Throwable) {
@@ -372,7 +372,7 @@ class PosixStreamServer(
      * Idempotent: subsequent calls are no-ops. Every suspended [accept]
      * coroutine — there may be many, queued in [bossLoop]'s registration
      * chain for this fd — is resumed with [CancellationException] via
-     * [AbstractPosixReadinessEventLoop.cancelAll].
+     * [AbstractReadinessEventLoop.cancelAll].
      *
      * **Thread safety**: safe to call from any thread. [_active] is published before the
      * teardown is queued, and the accept-side check reads it inside the
@@ -395,7 +395,7 @@ class PosixStreamServer(
         // after any arm already queued for this fd, so the close(2) cannot let
         // the kernel re-hand the number before that arm runs -- the recycled-fd
         // hazard LoopHandoff.runOnLoop exists for.
-        // See PosixPipelinedStreamServer.close for the close(2) half.
+        // See ReadinessPipelinedStreamServer.close for the close(2) half.
         bossLoop.runOnLoop(
             onLoop = {
                 bossLoop.cancelAll(

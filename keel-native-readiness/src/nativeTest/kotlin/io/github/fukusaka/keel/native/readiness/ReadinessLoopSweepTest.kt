@@ -31,7 +31,7 @@ import kotlin.test.assertTrue
  * sweep is a fixed point — nothing it triggers can re-open them.
  */
 @OptIn(InternalReadinessEngineApi::class)
-internal class PosixReadinessLoopSweepTest : AbstractPosixReadinessEventLoopFixture() {
+internal class ReadinessLoopSweepTest : AbstractReadinessEventLoopFixture() {
 
     // --- Ledgers closed after the sweep (the sweep is a fixed point) ---
     //
@@ -109,7 +109,7 @@ internal class PosixReadinessLoopSweepTest : AbstractPosixReadinessEventLoopFixt
     fun `registerIf after the sweep declines like a caller that stopped wanting it`() = loopTest { loop ->
         loop.failRemainingWaiters()
 
-        val declined = CompletableDeferred<AbstractPosixReadinessEventLoop.Registration?>()
+        val declined = CompletableDeferred<AbstractReadinessEventLoop.Registration?>()
         launch {
             suspendCancellableCoroutine { cont ->
                 declined.complete(loop.registerIf(FD, Interest.READ, cont) { true })
@@ -316,7 +316,7 @@ internal class PosixReadinessLoopSweepTest : AbstractPosixReadinessEventLoopFixt
         // registerIf is the accept() arming path; register's off-loop route is
         // covered separately, and a regression in this one would not show there.
         loop.onLoopThread = false
-        val accepted = CompletableDeferred<AbstractPosixReadinessEventLoop.Registration?>()
+        val accepted = CompletableDeferred<AbstractReadinessEventLoop.Registration?>()
         launch {
             suspendCancellableCoroutine { cont ->
                 accepted.complete(loop.registerIf(FD, Interest.READ, cont) { true })

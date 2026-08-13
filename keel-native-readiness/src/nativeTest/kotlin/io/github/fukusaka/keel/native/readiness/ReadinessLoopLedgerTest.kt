@@ -12,7 +12,7 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
- * Chain bookkeeping of [AbstractPosixReadinessEventLoop], driven directly:
+ * Chain bookkeeping of [AbstractReadinessEventLoop], driven directly:
  * how waiters are appended, popped and withdrawn, and what the chain looks
  * like from the loop's side.
  *
@@ -26,7 +26,7 @@ import kotlin.test.assertTrue
  * walk past a second hop and the tail fixup independently of each other.
  */
 @OptIn(InternalReadinessEngineApi::class)
-internal class PosixReadinessLoopLedgerTest : AbstractPosixReadinessEventLoopFixture() {
+internal class ReadinessLoopLedgerTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a single waiter is popped and the key becomes empty`() = loopTest { loop ->
@@ -168,7 +168,7 @@ internal class PosixReadinessLoopLedgerTest : AbstractPosixReadinessEventLoopFix
 
     @Test
     fun `registerIf appends and arms when wanted`() = loopTest { loop ->
-        val accepted = CompletableDeferred<AbstractPosixReadinessEventLoop.Registration?>()
+        val accepted = CompletableDeferred<AbstractReadinessEventLoop.Registration?>()
         launch {
             suspendCancellableCoroutine { cont ->
                 accepted.complete(loop.registerIf(FD, Interest.READ, cont) { true })
@@ -182,7 +182,7 @@ internal class PosixReadinessLoopLedgerTest : AbstractPosixReadinessEventLoopFix
 
     @Test
     fun `registerIf declines without appending or arming`() = loopTest { loop ->
-        val declined = CompletableDeferred<AbstractPosixReadinessEventLoop.Registration?>()
+        val declined = CompletableDeferred<AbstractReadinessEventLoop.Registration?>()
         launch {
             suspendCancellableCoroutine { cont ->
                 declined.complete(loop.registerIf(FD, Interest.READ, cont) { false })

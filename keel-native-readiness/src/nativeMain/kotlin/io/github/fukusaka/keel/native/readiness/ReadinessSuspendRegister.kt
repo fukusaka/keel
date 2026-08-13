@@ -4,28 +4,28 @@ import io.github.fukusaka.keel.logging.Logger
 
 /**
  * Narrow seam over the "suspend until fd is write-ready" pattern
- * used by [AbstractPosixEngine]'s `connect()` path. Both readiness engines use it.
+ * used by [AbstractReadinessEngine]'s `connect()` path. Both readiness engines use it.
  *
  * Abstracts only the `workerLoop.register(fd, WRITE, cont)` +
  * `suspendCancellableCoroutine` combo, not the full
- * [AbstractPosixReadinessEventLoop] API. Hot paths remain direct; this seam only
+ * [AbstractReadinessEventLoop] API. Hot paths remain direct; this seam only
  * covers the per-connection `connect()` suspend/resume.
  *
  * ## Rationale
  *
- * Unit tests driving [AbstractPosixEngine.connect] through the
+ * Unit tests driving [AbstractReadinessEngine.connect] through the
  * `ConnectResult.InProgress` branch cannot use a fake fd because
- * [AbstractPosixReadinessEventLoop.register] calls real `kevent(EVFILT_WRITE, fd)`
+ * [AbstractReadinessEventLoop.register] calls real `kevent(EVFILT_WRITE, fd)`
  * which fails for unregistered fds, leaving the suspended
  * continuation stuck. Injecting an immediate-resume
- * [PosixSuspendRegister] gives tests deterministic control over
+ * [ReadinessSuspendRegister] gives tests deterministic control over
  * the `SO_ERROR == 0` (happy) and `SO_ERROR != 0` (error) branches
  * after the suspend resumes.
  *
  * ## Production impl
  *
- * [AbstractPosixReadinessEventLoop] implements this interface directly. Tests
- * override via [AbstractPosixEngine]'s `suspendRegisterOverride`
+ * [AbstractReadinessEventLoop] implements this interface directly. Tests
+ * override via [AbstractReadinessEngine]'s `suspendRegisterOverride`
  * constructor parameter.
  *
  * ## Ownership contract
@@ -48,7 +48,7 @@ import io.github.fukusaka.keel.logging.Logger
  * cancellation handler. The connect socket was then open with no
  * reference left to close it by.
  */
-public fun interface PosixSuspendRegister {
+public fun interface ReadinessSuspendRegister {
 
     /**
      * Suspends until [fd] is write-ready. Returns normally on

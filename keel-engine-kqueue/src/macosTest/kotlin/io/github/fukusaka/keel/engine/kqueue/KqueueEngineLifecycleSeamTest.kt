@@ -15,7 +15,7 @@ import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
-import io.github.fukusaka.keel.native.readiness.PosixSuspendRegister
+import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -50,7 +50,7 @@ import kotlin.time.Duration.Companion.seconds
  *   sentinel (see `bindInet / bindUnix happy path` tests). `bindListener`
  *   is scripted to return a `socket(AF_INET, SOCK_STREAM, 0)` fd so
  *   `kevent(EV_ADD, serverFd)` on the boss loop succeeds; the engine
- *   then reads the scripted local address and constructs `PosixStreamServer`.
+ *   then reads the scripted local address and constructs `ReadinessStreamServer`.
  *   Full accept flow (client → kernel → EVFILT_READ → accept) is still
  *   integration-only.
  */
@@ -60,7 +60,7 @@ class KqueueEngineLifecycleSeamTest {
     private fun newEngine(
         fakeSocket: FakeNativeSocket = FakeNativeSocket(),
         fakeOps: FakeNativeSocketOps = FakeNativeSocketOps(),
-        suspendRegisterOverride: PosixSuspendRegister? = null,
+        suspendRegisterOverride: ReadinessSuspendRegister? = null,
     ): KqueueEngine = KqueueEngine(
         config = IoEngineConfig(threads = 1),
         nativeSocket = fakeSocket,
@@ -69,7 +69,7 @@ class KqueueEngineLifecycleSeamTest {
     )
 
     /** Immediate-resume fake: returns normally from `awaitWriteReady`. */
-    private val immediateSuspendRegister = PosixSuspendRegister { _, _ ->
+    private val immediateSuspendRegister = ReadinessSuspendRegister { _, _ ->
         // Deliberately empty: resume immediately.
     }
 

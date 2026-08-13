@@ -44,7 +44,7 @@ kotlin {
         commonMain {
             dependencies {
                 implementation(project(":keel-core"))
-                // api, not implementation: AbstractPosixReadinessEventLoop extends
+                // api, not implementation: AbstractReadinessEventLoop extends
                 // CoroutineDispatcher and takes CancellableContinuation in its public
                 // signatures, so consumers need these types on their compile classpath.
                 api(libs.kotlinx.coroutines.core)

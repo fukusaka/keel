@@ -52,11 +52,11 @@ import kotlin.coroutines.CoroutineContext
  * cross-thread dispatch.
  *
  * ```
- * AbstractPosixEngine
+ * AbstractReadinessEngine
  *   |
  *   +-- bossLoop (accept EventLoop)
  *   |     |
- *   |     +-- bind() → PosixStreamServer
+ *   |     +-- bind() → ReadinessStreamServer
  *   |           |
  *   |           +-- accept() → assign to workerGroup.next()
  *   |
@@ -84,11 +84,11 @@ import kotlin.coroutines.CoroutineContext
  *                       kernel.
  */
 @OptIn(ExperimentalForeignApi::class)
-abstract class AbstractPosixEngine(
+abstract class AbstractReadinessEngine(
     override val config: IoEngineConfig = IoEngineConfig(),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     nativeSocketOps: NativeSocketOps? = null,
-    private val suspendRegisterOverride: PosixSuspendRegister? = null,
+    private val suspendRegisterOverride: ReadinessSuspendRegister? = null,
 ) : StreamEngine {
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
@@ -123,7 +123,7 @@ abstract class AbstractPosixEngine(
      */
     private val guardedLoggerFactory = config.loggerFactory.guarded()
 
-    private val logger = guardedLoggerFactory.logger("AbstractPosixEngine")
+    private val logger = guardedLoggerFactory.logger("AbstractReadinessEngine")
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
 
     /**
@@ -136,8 +136,8 @@ abstract class AbstractPosixEngine(
      * engine reference never leaving the constructor, so [close] could never be
      * called on any of it.
      */
-    protected abstract val bossLoop: AbstractPosixReadinessEventLoop
-    protected abstract val workerGroup: AbstractPosixEventLoopGroup<*>
+    protected abstract val bossLoop: AbstractReadinessEventLoop
+    protected abstract val workerGroup: AbstractReadinessEventLoopGroup<*>
 
     /**
      * Set once by [close]; read by every entry point's `check(!closed)`.
@@ -174,7 +174,7 @@ abstract class AbstractPosixEngine(
     /**
      * Binds a TCP server on [host]:[port] and returns a [StreamServer].
      *
-     * Creates a server socket and returns a [PosixStreamServer] whose
+     * Creates a server socket and returns a [ReadinessStreamServer] whose
      * [accept][StreamServer.accept] distributes connections to worker EventLoops
      * in round-robin. The listener is armed on the boss EventLoop's the readiness loop by
      * `accept()`, not here, so binding alone does not leave a watch with no
@@ -195,11 +195,11 @@ abstract class AbstractPosixEngine(
 
         return releaseOnFailure(serverFd, "bindUnix cleanup") {
             // The listener is left unarmed here; accept() arms it through
-            // [AbstractPosixReadinessEventLoop.register] once it has a waiter to hand the event
+            // [AbstractReadinessEventLoop.register] once it has a waiter to hand the event
             // to. Arming earlier would break the loop's armed-implies-handler
             // invariant, whose no-handler branch clears the watch again.
             logger.debug { "Bound to $address" }
-            PosixStreamServer(
+            ReadinessStreamServer(
                 serverFd,
                 bossLoop,
                 workerGroup,
@@ -221,12 +221,12 @@ abstract class AbstractPosixEngine(
 
         return releaseOnFailure(serverFd, "bindInet cleanup") {
             // The listener is left unarmed here; accept() arms it through
-            // [AbstractPosixReadinessEventLoop.register] once it has a waiter to hand the event
+            // [AbstractReadinessEventLoop.register] once it has a waiter to hand the event
             // to. Arming earlier would break the loop's armed-implies-handler
             // invariant, whose no-handler branch clears the watch again.
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            PosixStreamServer(
+            ReadinessStreamServer(
                 serverFd,
                 bossLoop,
                 workerGroup,
@@ -302,13 +302,13 @@ abstract class AbstractPosixEngine(
         val transport = releaseOnFailure(fd) {
             val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
             val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
-            PosixIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+            ReadinessIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
         }
         // Built before the check: the transport joins the loop when the channel
         // attaches, so that this connection is in the registry only once there
         // is something to deliver a stop notification to.
         val channel = releaseOnFailure(transport) {
-            PosixPipelinedChannel(transport, logger, address, null)
+            ReadinessPipelinedChannel(transport, logger, address, null)
         }
         if (!transport.joinedLoop) {
             // The loop swept between this call's check at the top and that join.
@@ -395,11 +395,11 @@ abstract class AbstractPosixEngine(
         val transport = releaseOnFailure(fd) {
             val rbs = readBufferSizeOverride ?: workerLoop.readBufferSize
             val ito = idleTimeoutOverride ?: workerLoop.idleTimeoutMillis
-            PosixIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
+            ReadinessIoTransport(fd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
         }
         // Built before the check; see the sibling connect path.
         val channel = releaseOnFailure(transport) {
-            PosixPipelinedChannel(transport, logger, remoteAddr, localAddr)
+            ReadinessPipelinedChannel(transport, logger, remoteAddr, localAddr)
         }
         if (!transport.joinedLoop) {
             // The loop swept between this call's check at the top and that join.
@@ -481,7 +481,7 @@ abstract class AbstractPosixEngine(
      * `connect` is waiting for. Attached to that answer instead.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun <T> releaseOnFailure(transport: PosixIoTransport, crossinline build: () -> T): T =
+    private inline fun <T> releaseOnFailure(transport: ReadinessIoTransport, crossinline build: () -> T): T =
         try {
             build()
         } catch (buildFailure: Throwable) {
@@ -499,7 +499,7 @@ abstract class AbstractPosixEngine(
      * nothing saying the loop stopped. Attached to [cause] and logged instead.
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun releaseTransport(transport: PosixIoTransport, cause: Throwable) {
+    private fun releaseTransport(transport: ReadinessIoTransport, cause: Throwable) {
         try {
             transport.close()
         } catch (releaseFailure: Throwable) {
@@ -517,7 +517,7 @@ abstract class AbstractPosixEngine(
      *
      * The boss EventLoop accepts connections and distributes them to worker
      * EventLoops in round-robin order. Each worker creates a
-     * [PosixPipelinedChannel] and arms read callbacks.
+     * [ReadinessPipelinedChannel] and arms read callbacks.
      *
      * @param host Bind address (e.g. "0.0.0.0").
      * @param port Bind port.
@@ -533,7 +533,7 @@ abstract class AbstractPosixEngine(
 
     /**
      * Multi-address pipeline bind: every entry of [binds] becomes one
-     * listener of a single [PosixPipelinedStreamServer], all armed on the
+     * listener of a single [ReadinessPipelinedStreamServer], all armed on the
      * shared boss loop. All-or-nothing: a failing bind closes the
      * listeners bound so far and rethrows.
      */
@@ -545,7 +545,7 @@ abstract class AbstractPosixEngine(
         val listeners = bindAllOrRollback(
             binds = binds,
             logger = logger,
-            closeOne = { listener: PosixPipelinedStreamServer.Listener ->
+            closeOne = { listener: ReadinessPipelinedStreamServer.Listener ->
                 closeFdSafely(listener.serverFd, logger, "multi-address bind rollback")
             },
         ) { spec -> openPipelineListener(spec) }
@@ -556,7 +556,7 @@ abstract class AbstractPosixEngine(
         // still bound. Nothing in the constructor is known to throw, which is
         // the same footing the listener branches below stand on.
         val serverChannel = releaseListenersOnFailure(listeners) {
-            PosixPipelinedStreamServer(
+            ReadinessPipelinedStreamServer(
                 listeners = listeners,
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -585,7 +585,7 @@ abstract class AbstractPosixEngine(
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun <T> releaseListenersOnFailure(
-        listeners: List<PosixPipelinedStreamServer.Listener>,
+        listeners: List<ReadinessPipelinedStreamServer.Listener>,
         crossinline build: () -> T,
     ): T =
         try {
@@ -602,14 +602,14 @@ abstract class AbstractPosixEngine(
      * failure so [bindAllOrRollback] only has to roll back the listeners
      * that were fully opened before it.
      */
-    private fun openPipelineListener(spec: BindSpec): PosixPipelinedStreamServer.Listener {
+    private fun openPipelineListener(spec: BindSpec): ReadinessPipelinedStreamServer.Listener {
         return when (val address = spec.address) {
             is InetSocketAddress -> {
                 val serverFd = nativeSocketOps.bindListener(address.requireIp(), address.port, spec.config.backlog)
                 releaseOnFailure(serverFd, "bindPipeline listener cleanup") {
                     val localAddr = nativeSocketOps.getLocalAddress(serverFd)
                     logger.debug { "Pipeline bound to $localAddr" }
-                    PosixPipelinedStreamServer.Listener(serverFd, localAddr, spec.config)
+                    ReadinessPipelinedStreamServer.Listener(serverFd, localAddr, spec.config)
                 }
             }
             is UnixSocketAddress -> {
@@ -621,7 +621,7 @@ abstract class AbstractPosixEngine(
                 // window, and only one of them was answering for it.
                 releaseOnFailure(serverFd, "bindPipeline listener cleanup") {
                     logger.debug { "Pipeline bound to $address" }
-                    PosixPipelinedStreamServer.Listener(serverFd, address, spec.config)
+                    ReadinessPipelinedStreamServer.Listener(serverFd, address, spec.config)
                 }
             }
         }

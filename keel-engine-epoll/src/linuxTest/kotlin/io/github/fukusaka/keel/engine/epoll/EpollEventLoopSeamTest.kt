@@ -618,7 +618,7 @@ class EpollEventLoopSeamTest {
             listener = object : FdReadyListener {
                 override fun onReady(interest: Interest) {
                     readCalled = true
-                    // Re-arm: mirrors what PosixIoTransport.armRead() does.
+                    // Re-arm: mirrors what ReadinessIoTransport.armRead() does.
                     el.registerCallback(
                         fd = 2000,
                         interest = interest,

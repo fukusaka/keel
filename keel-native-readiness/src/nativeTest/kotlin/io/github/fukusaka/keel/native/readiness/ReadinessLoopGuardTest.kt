@@ -13,7 +13,7 @@ import kotlin.test.assertTrue
  * Tests for the two guards the base keeps on its own queue and loop.
  */
 @OptIn(InternalReadinessEngineApi::class)
-internal class PosixReadinessLoopGuardTest : AbstractPosixReadinessEventLoopFixture() {
+internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     // --- the two guards on the base's own queue and loop ---
 

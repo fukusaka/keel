@@ -19,7 +19,7 @@ package io.github.fukusaka.keel.native.readiness
  */
 @RequiresOptIn(
     message = "Internal surface of the readiness engines. Opt in only from the engines " +
-        "that extend AbstractPosixReadinessEventLoop, or from their tests.",
+        "that extend AbstractReadinessEventLoop, or from their tests.",
     level = RequiresOptIn.Level.ERROR,
 )
 @Retention(AnnotationRetention.BINARY)

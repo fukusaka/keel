@@ -22,7 +22,7 @@ import kotlin.time.Duration.Companion.seconds
  * an `accept()` waiter exists to receive the event.
  *
  * The event loop holds the invariant that an armed filter has a handler behind
- * it — `AbstractPosixReadinessEventLoop.dispatchReady`'s no-handler branch logs a WARN and
+ * it — `AbstractReadinessEventLoop.dispatchReady`'s no-handler branch logs a WARN and
  * issues `EV_DELETE`, calling the state "armed without a corresponding
  * handler". Arming at bind time broke that on the normal path, because
  * `accept()` only registers a continuation once its non-blocking accept returns
@@ -140,7 +140,7 @@ class KqueueBindRegistrationTest {
     private companion object {
         val TEST_TIMEOUT = 15.seconds
 
-        /** Substring of the no-handler WARN in `AbstractPosixReadinessEventLoop.dispatchReady`. */
+        /** Substring of the no-handler WARN in `AbstractReadinessEventLoop.dispatchReady`. */
         const val STALE_FILTER_MARKER = "no handler"
 
         const val PORT_RELEASE_BUDGET_MS = 2_000L

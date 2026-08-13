@@ -17,7 +17,7 @@ package io.github.fukusaka.keel.native.readiness
  * notification on the ledger missed exactly that participant.
  *
  * **Membership is explicit.** A transport adds itself with
- * [AbstractPosixReadinessEventLoop.addParticipant] when it is built and removes
+ * [AbstractReadinessEventLoop.addParticipant] when it is built and removes
  * itself in its teardown; registering a readiness callback does not imply
  * membership, and the accept arms of the pipelined servers never join — a
  * server's own `close()` already works on a stopped loop through its

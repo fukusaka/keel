@@ -41,7 +41,7 @@ class KqueueEnginePipelineTest {
             }
 
             // Discover bound port from server fd (use SocketUtils).
-            // bindPipeline returns AutoCloseable (PosixPipelinedStreamServer).
+            // bindPipeline returns AutoCloseable (ReadinessPipelinedStreamServer).
             // We need the port — extract from engine or use a fixed port.
             // For simplicity, use a fixed port with retry.
             server.close()

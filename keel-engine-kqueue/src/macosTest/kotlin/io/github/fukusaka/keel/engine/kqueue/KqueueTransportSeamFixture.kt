@@ -5,7 +5,7 @@ package io.github.fukusaka.keel.engine.kqueue
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
-import io.github.fukusaka.keel.native.readiness.PosixIoTransport
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable
@@ -34,7 +34,7 @@ internal const val SEAM_POLL_MS = 5L
 internal const val SEAM_PAYLOAD_BYTES = 5
 
 /**
- * The fixture shared by the [PosixIoTransport] seam tests — the macOS
+ * The fixture shared by the [ReadinessIoTransport] seam tests — the macOS
  * counterpart of `EpollTransportSeamFixture`.
  *
  * Part of the project's two-layer seam + integration testing strategy: the
@@ -100,7 +100,7 @@ internal abstract class KqueueTransportSeamFixture {
      * releases the queue, and without it the pooled buffers outlive the test.
      * The sibling flush tests assert this the same way.
      */
-    protected fun assertStrandedWritesReleased(transport: PosixIoTransport, tracker: TrackingAllocator) {
+    protected fun assertStrandedWritesReleased(transport: ReadinessIoTransport, tracker: TrackingAllocator) {
         transport.close()
         assertEquals(0, tracker.outstandingCount, "the stranded writes must be released on close")
     }

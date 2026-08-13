@@ -8,13 +8,13 @@ import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io.github.fukusaka.keel.native.readiness.AbstractPosixReadinessEventLoop
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEventLoop
 import io.github.fukusaka.keel.native.readiness.FdReadyListener
 import io.github.fukusaka.keel.native.readiness.Interest
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
-import io.github.fukusaka.keel.native.readiness.PosixEventLoopLifecycle
-import io.github.fukusaka.keel.native.readiness.PosixIoTransport
-import io.github.fukusaka.keel.native.readiness.PosixSuspendRegister
+import io.github.fukusaka.keel.native.readiness.ReadinessEventLoopLifecycle
+import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
+import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena
@@ -122,14 +122,14 @@ internal class KqueueEventLoop(
     override val idleTimeoutMillis: Long = 0,
     /**
      * Engine-wide [io.github.fukusaka.keel.core.IoEngineConfig.flushCoalescing]
-     * value. When `true` (default), [PosixIoTransport.flush] schedules the
+     * value. When `true` (default), [ReadinessIoTransport.flush] schedules the
      * actual send onto the next EL tick via [dispatch] so that same-tick
      * per-emit `requestFlush` calls collapse into one `writev(2)`. When
      * `false`, each `flush()` sends immediately (pre-#899 behaviour).
      */
     override val flushCoalescing: Boolean = true,
     private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps(logger),
-) : AbstractPosixReadinessEventLoop(), PosixSuspendRegister, PosixEventLoopLifecycle {
+) : AbstractReadinessEventLoop(), ReadinessSuspendRegister, ReadinessEventLoopLifecycle {
 
     /**
      * The kqueue file descriptor, created at construction.
@@ -424,7 +424,7 @@ internal class KqueueEventLoop(
                 // EV_EOF surfaces peer-FIN / peer-RST regardless of which filter
                 // is armed. Pass it to the listener so write-only push clients
                 // (`PipelinedChannel.readEnabled = false`) can still detect
-                // peer close: see `PosixIoTransport.onPeerClosed` for how the
+                // peer close: see `ReadinessIoTransport.onPeerClosed` for how the
                 // signal reaches `IoTransport.onReadClosed`.
                 val eofFlag = (ev.flags and EV_EOF) != 0
                 dispatchReady(fd, interest, eofFlag)
@@ -591,7 +591,7 @@ internal class KqueueEventLoop(
         closeFdSafely(kqFd, logger, "event loop teardown (kqFd)")
         // The registration lock is deliberately not destroyed or freed:
         // a cancellation arriving after this point takes it, and those
-        // arrive without bound (see AbstractPosixReadinessEventLoop's
+        // arrive without bound (see AbstractReadinessEventLoop's
         // regMutex). The task queue is lock-free, so it has none either.
         //
         // The arena and the writev scratch go together, and what makes that
@@ -679,7 +679,7 @@ internal class KqueueEventLoop(
         freeWritevScratch()
     }
 
-    // --- PosixSuspendRegister impl (seam for connect InProgress) ---
+    // --- ReadinessSuspendRegister impl (seam for connect InProgress) ---
 
     override suspend fun awaitWriteReady(fd: Int, logger: Logger) = awaitWritableOwningFd(fd, logger)
 
