@@ -54,7 +54,7 @@ Every engine follows the same pattern:
 ```
 IoTransport (interface)
   └── AbstractIoTransport (write buffering, backpressure, callbacks)
-       └── KqueueIoTransport / EpollIoTransport / NioIoTransport / ...
+       └── ReadinessIoTransport (kqueue, epoll) / NioIoTransport / ...
             (platform-specific: read syscall, flush syscall, EventLoop registration)
 
 PipelinedChannel (interface)

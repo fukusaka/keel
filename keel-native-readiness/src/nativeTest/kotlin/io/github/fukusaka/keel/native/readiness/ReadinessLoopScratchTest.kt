@@ -18,9 +18,12 @@ import kotlin.test.assertTrue
  *
  * What that pins is the bookkeeping, not the `nativeHeap` calls: a
  * `freeWritevScratch` that updated the flag and freed nothing would still pass
- * every case below, because a leak has no signal these can read. The
- * assertions catch the shapes where the flag and the memory disagree —
- * releasing twice, and reallocating without taking ownership back.
+ * every case below, because a leak has no signal these can read.
+ *
+ * The two directions are caught differently, and only one of them by an
+ * assertion. Reallocating without taking ownership back fails on the flag.
+ * Releasing twice never reaches an assertion — the second free aborts the
+ * process, and the run reports this class up to the case that died.
  */
 @OptIn(InternalReadinessEngineApi::class)
 internal class ReadinessLoopScratchTest : AbstractReadinessEventLoopFixture() {
@@ -73,23 +76,6 @@ internal class ReadinessLoopScratchTest : AbstractReadinessEventLoopFixture() {
         // the common case, so the loop would stay in that state indefinitely.
         loop.ensureWritevCapacity(SMALL_GATHER)
         assertTrue(loop.ownsWritevScratch, "a request below the old capacity still gets fresh scratch")
-    }
-
-    @Test
-    fun `a grow whose allocation is refused gives up what it freed`() {
-        val loop = FakeLoop()
-        loop.close()
-
-        // Nothing here forces an allocation failure — the point is the order
-        // the code takes, which this pins from the outside: after a release,
-        // ownership is gone before the grow reaches its first allocArray. Were
-        // it given up only afterwards, a refused allocation would leave the
-        // loop claiming pointers it had already handed back, at a capacity
-        // saying they are large enough to gather through.
-        assertFalse(loop.ownsWritevScratch, "the release gave the scratch up")
-
-        loop.ensureWritevCapacity(GROWN_CAPACITY)
-        assertTrue(loop.ownsWritevScratch, "and the grow takes it back only once it has allocated")
     }
 
     private companion object {

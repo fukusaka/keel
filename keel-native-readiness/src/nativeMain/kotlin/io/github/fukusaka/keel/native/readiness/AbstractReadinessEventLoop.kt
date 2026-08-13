@@ -465,7 +465,9 @@ abstract class AbstractReadinessEventLoop :
      * Whether [writevBases] / [writevLens] are ours to free.
      *
      * A plain `var`, and not because the loop thread owns it — the thread that
-     * frees is the one that called `close()`. The engines' CAS on `close()`
+     * frees is whichever one is tearing the loop down: the caller of `close()`,
+     * or the constructing thread when construction fails. The engines' CAS on
+     * `close()`
      * settles which caller reaches the release, but a single caller is not the
      * same as no concurrency. What supplies that is quiescence, established
      * differently on each route: `pthread_join` where a thread was started; the
@@ -499,8 +501,19 @@ abstract class AbstractReadinessEventLoop :
             nativeHeap.free(writevBases)
             nativeHeap.free(writevLens)
         }
-        writevBases = nativeHeap.allocArray(grown)
-        writevLens = nativeHeap.allocArray(grown)
+        // Into locals, and the second allocation guarded: a throw between the
+        // two would otherwise strand the first array with no owner — this
+        // method skips its free block while disowned, and the release path
+        // returns early for the same reason.
+        val bases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(grown)
+        val lens: CPointer<ULongVar> = try {
+            nativeHeap.allocArray(grown)
+        } catch (allocationFailure: Throwable) {
+            nativeHeap.free(bases)
+            throw allocationFailure
+        }
+        writevBases = bases
+        writevLens = lens
         writevCapacity = grown
         ownsWritevScratch = true
     }

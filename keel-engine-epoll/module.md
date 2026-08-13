@@ -16,7 +16,7 @@ Used for high-performance HTTP servers.
 callbacks to suspend. Used for interactive protocols (SMTP, Redis) and Ktor.
 
 **Pipeline direction**: inbound (read) flows HEAD → TAIL; outbound (write/flush)
-flows TAIL → HEAD. `HeadHandler` connects the pipeline to `EpollIoTransport`.
+flows TAIL → HEAD. `HeadHandler` connects the pipeline to `ReadinessIoTransport`.
 
 ## Architecture
 
@@ -25,8 +25,8 @@ EpollEngine
 ├── bossLoop (EpollEventLoop) ── accept readiness on server fd
 │     └── epoll_wait(EPOLLIN) → accept() → assign to worker
 └── workerGroup (EpollEventLoopGroup, N workers)
-      ├── worker[0]: EpollPipelinedChannel A, D, ...
-      ├── worker[1]: EpollPipelinedChannel B, E, ...
+      ├── worker[0]: ReadinessPipelinedChannel A, D, ...
+      ├── worker[1]: ReadinessPipelinedChannel B, E, ...
       └── worker[N]: ...
 ```
 
@@ -64,21 +64,21 @@ App:                        suspend channel.read(buf) ← dequeue
 ## Write/Flush Path
 
 Both modes share the same outbound path. The pipeline terminates at `HeadHandler`,
-which delegates to `EpollIoTransport`.
+which delegates to `ReadinessIoTransport`.
 
 **Pipeline**: a handler calls `ctx.propagateWrite/Flush` to push data toward HEAD.
 
 ```
 handler (e.g. Encoder)
-  → ctx.propagateWrite(buf) → HeadHandler.onWrite → EpollIoTransport.write(buf)
-  → ctx.propagateFlush()   → HeadHandler.onFlush → EpollIoTransport.flush()
+  → ctx.propagateWrite(buf) → HeadHandler.onWrite → ReadinessIoTransport.write(buf)
+  → ctx.propagateFlush()   → HeadHandler.onFlush → ReadinessIoTransport.flush()
 ```
 
 **Coroutine**: the app enters the pipeline at TAIL.
 
 ```
-App: channel.write(buf)           → pipeline.requestWrite(buf) → ... → EpollIoTransport.write(buf)
-App: channel.requestFlush()       → pipeline.requestFlush()    → ... → EpollIoTransport.flush()
+App: channel.write(buf)           → pipeline.requestWrite(buf) → ... → ReadinessIoTransport.write(buf)
+App: channel.requestFlush()       → pipeline.requestFlush()    → ... → ReadinessIoTransport.flush()
 App: channel.awaitFlushComplete() → transport.awaitPendingFlush()
 ```
 
@@ -103,10 +103,10 @@ the hot path after the initial registration.
 | Class | Role |
 |-------|------|
 | `EpollEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
-| `EpollPipelinedChannel` | Unified channel: Pipeline + Coroutine modes |
-| `EpollPipelinedStreamServer` | Pipeline-mode server (callback-driven accept) |
-| `EpollStreamServer` | Coroutine-mode server (suspend-based accept) |
-| `EpollIoTransport` | `IoTransport` for write/flush with EPOLLOUT backpressure |
+| `ReadinessPipelinedChannel` | Unified channel: Pipeline + Coroutine modes — shared, in `keel-native-readiness` |
+| `ReadinessPipelinedStreamServer` | Pipeline-mode server (callback-driven accept) — shared, in `keel-native-readiness` |
+| `ReadinessStreamServer` | Coroutine-mode server (suspend-based accept) — shared, in `keel-native-readiness` |
+| `ReadinessIoTransport` | `IoTransport` for write/flush with EPOLLOUT backpressure — shared with the kqueue engine, in `keel-native-readiness` |
 | `EpollEventLoop` | Single-threaded epoll loop + `CoroutineDispatcher` |
 | `EpollEventLoopGroup` | Round-robin distribution of channels across EventLoops |
 | `EpollSyscallOps` / `PosixEpollSyscallOps` | Seam over the `epoll(7)`-family syscalls, making error branches testable without a real kernel |
@@ -117,4 +117,4 @@ from the shared `keel-native-posix` module (`NativeSocketOps` / `NativeSocket`).
 # Package io.github.fukusaka.keel.engine.epoll
 
 Linux epoll-based IoEngine with multi-threaded EventLoop, unified Pipeline + Coroutine
-mode via `EpollPipelinedChannel`, and zero-copy I/O via `IoBuf.unsafePointer`.
+mode via `ReadinessPipelinedChannel`, and zero-copy I/O via `IoBuf.unsafePointer`.

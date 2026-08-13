@@ -686,7 +686,6 @@ internal class KqueueEventLoop(
     companion object {
 
         /** Initial capacity of the shared writev scratch arrays (grows 1.5x). */
-        const val INITIAL_WRITEV_CAPACITY = 8
 
         /**
          * Maximum events per kevent() call. 64 balances memory usage

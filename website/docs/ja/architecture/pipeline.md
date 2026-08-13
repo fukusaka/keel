@@ -54,7 +54,7 @@ Accept した各接続は `Pipeline` — **HEAD** と **TAIL** の 2 つの固�
 ```
 IoTransport (interface)
   └── AbstractIoTransport (write バッファリング、backpressure、コールバック)
-       └── KqueueIoTransport / EpollIoTransport / NioIoTransport / ...
+       └── ReadinessIoTransport (kqueue, epoll) / NioIoTransport / ...
             (プラットフォーム固有: read syscall、flush syscall、EventLoop 登録)
 
 PipelinedChannel (interface)

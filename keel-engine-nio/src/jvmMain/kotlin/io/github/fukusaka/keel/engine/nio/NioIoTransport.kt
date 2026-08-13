@@ -108,7 +108,7 @@ internal class NioIoTransport(
     // `Array<ByteBuffer>` allocation the old rebuild-per-call path required.
     // Slots beyond `count` may hold stale ByteBuffer references between flushes;
     // they are never read (the write call is bounded by `count`) and are
-    // overwritten when needed. Counterpart of [EpollIoTransport]'s
+    // overwritten when needed. Counterpart of the readiness engines'
     // `writevPtrs` / `writevLens` primitive-array cache.
     private var bbArray: Array<ByteBuffer?> = arrayOfNulls(INITIAL_BB_ARRAY_CAPACITY)
 
@@ -430,7 +430,7 @@ internal class NioIoTransport(
      * On partial write, fully-written buffers are released and the
      * partially-written entry is mutated in place at the head of the deque
      * (the trailing untouched entries stay as-is). Counterpart of
-     * [EpollIoTransport]'s `flushGather` — the cached [bbArray] scratch and
+     * the readiness engines' `flushGather` — the cached [bbArray] scratch and
      * the in-place head-mutation pattern together eliminate the per-flush
      * `Array<ByteBuffer>` and (on partial) the `mutableListOf<PendingWrite>`
      * rebuild that the old code required, reducing the `PendingWrite`
@@ -564,9 +564,10 @@ internal class NioIoTransport(
         const val READ_BUFFER_HINT_COUNT = 16
 
         /**
-         * Initial size of the reusable `bbArray` scratch. Matches
-         * [EpollIoTransport]'s `INITIAL_WRITEV_CAPACITY` for cross-engine
-         * consistency; covers the steady-state pendingWrites depth without
+         * Initial size of the reusable `bbArray` scratch. Sized for this
+         * engine alone — the readiness engines' gather scratch starts larger,
+         * and nothing keeps the two in step; covers the steady-state
+         * pendingWrites depth without
          * triggering [ensureBbArrayCapacity] in common workloads.
          */
         const val INITIAL_BB_ARRAY_CAPACITY = 8
