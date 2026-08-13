@@ -133,7 +133,7 @@ internal class KqueueEventLoop(
      * per-emit `requestFlush` calls collapse into one `writev(2)`. When
      * `false`, each `flush()` sends immediately (pre-#899 behaviour).
      */
-    val flushCoalescing: Boolean = true,
+    override val flushCoalescing: Boolean = true,
     private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps(logger),
 ) : AbstractPosixReadinessEventLoop(), KqueueSuspendRegister, PosixEventLoopLifecycle {
 
@@ -149,41 +149,6 @@ internal class KqueueEventLoop(
     // whose fields are overwritten by [KqueueSyscallOps.waitEvents].
     // Only accessed from the EventLoop thread.
     private val eventBuffer: Array<KqEvent> = Array(MAX_EVENTS) { KqEvent() }
-
-    /**
-     * Shared gather-write scratch: one native (bases, lens) pair reused by
-     * every transport flush on this loop (see [KqueueIoTransport.flushGather]). Kept per
-     * EventLoop rather than per connection so every flush on this thread
-     * touches the same hot memory — mirroring the locality of the memScoped
-     * arena this replaced — while performing no per-flush allocation.
-     * EL-confined like [eventBuffer]; freed by [releaseConstructionScratch],
-     * from [close] once the loop's terminal sequence has finished (whoever ran
-     * it, so no flush can be in flight) or from the constructor's own unwind
-     * for a loop that never came to exist.
-     */
-    internal var writevBases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
-        private set
-
-    /** Byte lengths (`size_t`) paired with [writevBases]. */
-    internal var writevLens: CPointer<ULongVar> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
-        private set
-
-    private var writevCapacity: Int = INITIAL_WRITEV_CAPACITY
-
-    /**
-     * Grows [writevBases] / [writevLens] (1.5x, at least [n]) so a gather
-     * flush of [n] regions fits. EventLoop thread only — callers run inside
-     * the flush path, which is confined to this loop.
-     */
-    internal fun ensureWritevCapacity(n: Int) {
-        if (writevCapacity >= n) return
-        val grown = maxOf(writevCapacity + (writevCapacity shr 1), n)
-        nativeHeap.free(writevBases)
-        nativeHeap.free(writevLens)
-        writevBases = nativeHeap.allocArray(grown)
-        writevLens = nativeHeap.allocArray(grown)
-        writevCapacity = grown
-    }
 
     private val wakeupFds = IntArray(2) // [readFd, writeFd]
 
@@ -429,20 +394,6 @@ internal class KqueueEventLoop(
      * 3. Process ready fds — resume associated coroutine continuations
      */
     // --- Idle/read deadline timer (progress-bound mechanism) ---
-
-    private val timeOrigin = TimeSource.Monotonic.markNow()
-
-    private fun nowMillis(): Long = timeOrigin.elapsedNow().inWholeMilliseconds
-
-    /**
-     * Per-EventLoop deadline timer backing the transport idle (no-progress) timeout.
-     * Confined to this EventLoop thread: transports on this loop schedule / touch /
-     * cancel idle deadlines through it, [loop] drives the `kevent` timeout from
-     * [DeadlineScheduler.nextDeadlineMillis], and fires due timers via
-     * [DeadlineScheduler.expireDue] after each wake.
-     */
-    internal val deadlineScheduler = DeadlineScheduler(::nowMillis, logger)
-
     override fun loopBody() {
         while (running.value != 0) {
             // The registration lock failing means the ledgers stopped being
@@ -735,8 +686,7 @@ internal class KqueueEventLoop(
      */
     private fun releaseConstructionScratch() {
         arena.clear()
-        nativeHeap.free(writevBases)
-        nativeHeap.free(writevLens)
+        freeWritevScratch()
     }
 
     // --- KqueueSuspendRegister impl (seam for connect InProgress) ---

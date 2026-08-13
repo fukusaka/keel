@@ -5,8 +5,16 @@ import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.pipeline.DeadlineScheduler
+import kotlin.time.TimeSource
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.free
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
@@ -348,6 +356,77 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * its config, and the transports on that engine read it through the loop.
      */
     abstract val logger: Logger
+
+    /**
+     * Engine-wide flush coalescing, from the engine config.
+     *
+     * Read by the transports on this loop to decide whether `flush()` sends
+     * inline or schedules a tick. Both engines took it as a constructor
+     * parameter with the same default; it is declared here so a transport can
+     * ask the loop it has rather than the engine's subtype.
+     *
+     * Defaulted rather than abstract: this base has test doubles that drive the
+     * ledger and the sweep without any transport on them, and making them
+     * declare a flush policy they never consult would be noise.
+     */
+    open val flushCoalescing: Boolean get() = true
+
+    /** Monotonic origin for [nowMillis]; per loop, so the marks never cross loops. */
+    private val timeOrigin = TimeSource.Monotonic.markNow()
+
+    /** Milliseconds since this loop was constructed. */
+    protected fun nowMillis(): Long = timeOrigin.elapsedNow().inWholeMilliseconds
+
+    /**
+     * Per-EventLoop deadline timer backing the transport idle (no-progress)
+     * timeout.
+     *
+     * Confined to this loop's thread: transports on it schedule, touch and
+     * cancel idle deadlines through this, the loop body drives its wait timeout
+     * from [DeadlineScheduler.nextDeadlineMillis], and fires what is due via
+     * [DeadlineScheduler.expireDue].
+     *
+     * Built on first use, not in this constructor: [logger] is the subclass's,
+     * and reading it from here runs before the subclass has assigned it.
+     */
+    val deadlineScheduler: DeadlineScheduler by lazy { DeadlineScheduler(::nowMillis, logger) }
+
+    /**
+     * Base pointers for a gather write's `iovec` array, reused across flushes.
+     *
+     * Per loop rather than per transport: only the loop's own thread builds a
+     * gather, so one scratch serves every transport on it, and the alternative
+     * is an allocation on each multi-buffer flush.
+     */
+    internal var writevBases: CPointer<CPointerVar<ByteVar>> =
+        nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
+        private set
+
+    /** Byte lengths (`size_t`) paired with [writevBases]. */
+    internal var writevLens: CPointer<ULongVar> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
+        private set
+
+    private var writevCapacity = INITIAL_WRITEV_CAPACITY
+
+    /**
+     * Grows [writevBases] / [writevLens] (1.5x, at least [n]) so a gather of
+     * [n] buffers fits. Called on this loop's thread only.
+     */
+    internal fun ensureWritevCapacity(n: Int) {
+        if (n <= writevCapacity) return
+        val grown = maxOf(writevCapacity + (writevCapacity shr 1), n)
+        nativeHeap.free(writevBases)
+        nativeHeap.free(writevLens)
+        writevBases = nativeHeap.allocArray(grown)
+        writevLens = nativeHeap.allocArray(grown)
+        writevCapacity = grown
+    }
+
+    /** Releases the gather scratch. Called from each engine's teardown. */
+    protected fun freeWritevScratch() {
+        nativeHeap.free(writevBases)
+        nativeHeap.free(writevLens)
+    }
 
     /**
      * True when the caller already runs on this loop's thread.
@@ -1953,5 +2032,8 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
 
         /** The fd half of a [registrationKey]: the low 32 bits, without sign extension. */
         private const val FD_MASK = 0xFFFFFFFFL
+
+        /** Initial gather capacity; grows on demand via [ensureWritevCapacity]. */
+        private const val INITIAL_WRITEV_CAPACITY = 16
     }
 }
