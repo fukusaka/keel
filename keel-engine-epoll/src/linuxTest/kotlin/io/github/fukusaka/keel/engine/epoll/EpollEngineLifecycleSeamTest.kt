@@ -1,3 +1,5 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.core.BindConfig
@@ -12,6 +14,8 @@ import io.github.fukusaka.keel.core.UnixSocketAddress
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -49,7 +53,7 @@ import kotlin.time.Duration.Companion.seconds
  *   sentinel (see `bindInet / bindUnix happy path` tests). `bindListener`
  *   is scripted to return a `socket(AF_INET, SOCK_STREAM, 0)` fd so
  *   `epoll_ctl(ADD, serverFd)` on the boss loop succeeds; the engine
- *   then reads the scripted local address and constructs `EpollStreamServer`.
+ *   then reads the scripted local address and constructs `PosixStreamServer`.
  *   Full accept flow (client → kernel → EPOLLIN → accept) is still
  *   integration-only.
  */

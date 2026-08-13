@@ -14,6 +14,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
+import io.github.fukusaka.keel.native.posix.PosixStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -33,7 +34,7 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * Seam-level tests for `accept`-path branches on the epoll engine:
- * [EpollStreamServer.accept] (suspend-based) and
+ * [PosixStreamServer.accept] (suspend-based) and
  * [PosixPipelinedStreamServer.onAcceptable] (callback-based).
  *
  * Complements [EpollEngineLifecycleSeamTest] (connect + bind) by
@@ -46,7 +47,7 @@ import kotlin.time.Duration.Companion.seconds
  * ## What this file does NOT cover
  *
  * - **`accept` `WouldBlock` suspend path (coroutine-based)** —
- *   `EpollStreamServer.accept()`'s `WouldBlock` branch registers the server
+ *   `PosixStreamServer.accept()`'s `WouldBlock` branch registers the server
  *   fd on the boss event loop's real epoll and suspends the
  *   continuation; resuming requires the real socket to become readable.
  *   Exercised by `EpollEngineTest` integration tests.
@@ -81,7 +82,7 @@ class EpollAcceptSeamTest {
         return fd
     }
 
-    // --- EpollStreamServer.accept: Failed branches ---
+    // --- PosixStreamServer.accept: Failed branches ---
 
     @Test
     fun `accept Failed ECONNABORTED throws with errno message`() = runBlocking {
@@ -151,7 +152,7 @@ class EpollAcceptSeamTest {
         }
     }
 
-    // --- EpollStreamServer.accept: Accepted branch (happy path + setSocketOption chain) ---
+    // --- PosixStreamServer.accept: Accepted branch (happy path + setSocketOption chain) ---
 
     @Test
     fun `accept Accepted returns channel with setNonBlocking plus scripted addresses`() = runBlocking {

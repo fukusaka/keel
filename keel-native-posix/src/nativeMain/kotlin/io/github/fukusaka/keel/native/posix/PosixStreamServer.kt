@@ -1,22 +1,9 @@
-package io.github.fukusaka.keel.engine.kqueue
+package io.github.fukusaka.keel.native.posix
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.core.StreamServer
 import io.github.fukusaka.keel.logging.warn
-import io.github.fukusaka.keel.native.posix.AcceptResult
-import io.github.fukusaka.keel.native.posix.Interest
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
-import io.github.fukusaka.keel.native.posix.NativeSocket
-import io.github.fukusaka.keel.native.posix.NativeSocketOps
-import io.github.fukusaka.keel.native.posix.PosixIoTransport
-import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
-import io.github.fukusaka.keel.native.posix.PosixPipelinedChannel
-import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
-import io.github.fukusaka.keel.native.posix.applySocketOptions
-import io.github.fukusaka.keel.native.posix.closeFdSafely
-import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
@@ -26,34 +13,35 @@ import kotlin.concurrent.Volatile
 import kotlin.coroutines.resumeWithException
 
 /**
- * kqueue-based [StreamServer] implementation for macOS.
+ * the readiness loop-based [StreamServer] implementation for macOS.
  *
- * Listens on [serverFd] and uses the boss [KqueueEventLoop] to wait for
+ * Listens on [serverFd] and uses the boss [AbstractPosixReadinessEventLoop] to wait for
  * incoming connections. Accepted channels are assigned to worker EventLoops
  * from [workerGroup] in round-robin order.
  *
  * ```
  * accept() flow:
- *   bossLoop: kevent() fires EVFILT_READ on serverFd → resume
+ *   bossLoop: kevent() fires read readiness on serverFd → resume
  *   POSIX accept(serverFd) → clientFd
  *   workerGroup.next() → assign worker EventLoop
  *   → PosixPipelinedChannel(clientFd, transport, workerLoop, allocator)
  * ```
  *
  * @param serverFd    The listening server socket fd (non-blocking).
- * @param bossLoop    The boss [KqueueEventLoop] for accept readiness notification.
+ * @param bossLoop    The boss [AbstractPosixReadinessEventLoop] for accept readiness notification.
  * @param workerGroup Worker EventLoopGroup for accepted channels (provides per-EventLoop allocator).
  * @param localAddress Bind address of this server channel.
  */
 @OptIn(ExperimentalForeignApi::class, InternalPosixEventLoopApi::class)
-internal class KqueueStreamServer(
+@InternalPosixEventLoopApi
+class PosixStreamServer(
     private val serverFd: Int,
-    private val bossLoop: KqueueEventLoop,
-    private val workerGroup: KqueueEventLoopGroup,
+    private val bossLoop: AbstractPosixReadinessEventLoop,
+    private val workerGroup: AbstractPosixEventLoopGroup<*>,
     override val localAddress: SocketAddress,
     private val bindConfig: BindConfig,
     private val logger: io.github.fukusaka.keel.logging.Logger = io.github.fukusaka.keel.logging.NoopLoggerFactory.logger(
-        "KqueueStreamServer",
+        "PosixStreamServer",
     ),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     private val nativeSocketOps: NativeSocketOps = PosixNativeSocketOps(logger),
@@ -78,11 +66,11 @@ internal class KqueueStreamServer(
      * Suspends until an incoming connection arrives, then accepts it.
      *
      * Uses POSIX `accept()` in non-blocking mode. If no connection is
-     * pending (EAGAIN), registers the server fd with the [KqueueEventLoop]
+     * pending (EAGAIN), registers the server fd with the [AbstractPosixReadinessEventLoop]
      * and suspends until readiness is reported. The EventLoop maintains
      * a FIFO chain of waiters per `(fd, interest)` key, so multiple
      * coroutines may call [accept] concurrently — each gets its own
-     * registration in the chain, kqueue's level-triggered fire cascades
+     * registration in the chain, the readiness loop's level-triggered fire cascades
      * through them as connections arrive, and POSIX `accept` is itself
      * thread-safe (kernel disperses queued connections among callers).
      *
@@ -376,7 +364,7 @@ internal class KqueueStreamServer(
      * Idempotent: subsequent calls are no-ops. Every suspended [accept]
      * coroutine — there may be many, queued in [bossLoop]'s registration
      * chain for this fd — is resumed with [CancellationException] via
-     * [KqueueEventLoop.cancelAll].
+     * [AbstractPosixReadinessEventLoop.cancelAll].
      *
      * **Thread safety**: safe to call from any thread. [_active] is published before the
      * teardown is queued, and the accept-side check reads it inside the
@@ -407,6 +395,7 @@ internal class KqueueStreamServer(
                     Interest.READ,
                     CancellationException("StreamServer closed"),
                 )
+                bossLoop.cleanupFd(serverFd)
                 closeFdSafely(serverFd, logger, "server close")
             },
             // Loop gone: its registry is dead (any waiters died with it), so

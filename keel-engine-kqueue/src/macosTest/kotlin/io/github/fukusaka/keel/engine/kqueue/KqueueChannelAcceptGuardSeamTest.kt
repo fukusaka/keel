@@ -1,3 +1,5 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
@@ -11,6 +13,8 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixStreamServer
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -216,7 +220,7 @@ class KqueueChannelAcceptGuardSeamTest {
             val fakeSocket = FakeNativeSocket().apply {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(doomed))
             }
-            val server = KqueueStreamServer(
+            val server = PosixStreamServer(
                 serverFd = sentinelFd,
                 bossLoop = bossLoop,
                 workerGroup = sweptGroup,
@@ -292,7 +296,7 @@ class KqueueChannelAcceptGuardSeamTest {
             val fakeSocket = FakeNativeSocket().apply {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(alreadyClosed))
             }
-            val server = KqueueStreamServer(
+            val server = PosixStreamServer(
                 serverFd = sentinelFd,
                 bossLoop = bossLoop,
                 workerGroup = sweptGroup,

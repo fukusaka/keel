@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -32,7 +33,7 @@ import kotlin.time.Duration.Companion.seconds
  * asynchronous, so it can land after a later `bind()` has registered the same
  * recycled fd number, leaving a live listener watched by nobody. On this engine
  * the same fd number is dangerous for a second reason — the loop's own interest
- * bookkeeping, see `EpollStreamServer.close`.
+ * bookkeeping, see `PosixStreamServer.close`.
  */
 @OptIn(ExperimentalForeignApi::class)
 class EpollBindRegistrationTest {

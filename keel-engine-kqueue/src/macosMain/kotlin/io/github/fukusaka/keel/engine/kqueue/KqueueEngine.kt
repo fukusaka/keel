@@ -32,6 +32,7 @@ import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixPipelinedChannel
 import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
+import io.github.fukusaka.keel.native.posix.PosixStreamServer
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -62,7 +63,7 @@ import kotlin.coroutines.CoroutineContext
  *   |
  *   +-- bossLoop (accept EventLoop)
  *   |     |
- *   |     +-- bind() → KqueueStreamServer
+ *   |     +-- bind() → PosixStreamServer
  *   |           |
  *   |           +-- accept() → assign to workerGroup.next()
  *   |
@@ -192,7 +193,7 @@ class KqueueEngine(
     /**
      * Binds a TCP server on [host]:[port] and returns a [StreamServer].
      *
-     * Creates a server socket and returns a [KqueueStreamServer] whose
+     * Creates a server socket and returns a [PosixStreamServer] whose
      * [accept][StreamServer.accept] distributes connections to worker EventLoops
      * in round-robin. The listener is armed on the boss EventLoop's kqueue by
      * `accept()`, not here, so binding alone does not leave a watch with no
@@ -219,7 +220,7 @@ class KqueueEngine(
             // to. Arming earlier would break the loop's armed-implies-handler
             // invariant, whose no-handler branch clears the watch again.
             logger.debug { "Bound to $address" }
-            KqueueStreamServer(
+            PosixStreamServer(
                 serverFd,
                 bossLoop,
                 workerGroup,
@@ -246,7 +247,7 @@ class KqueueEngine(
             // invariant, whose no-handler branch clears the watch again.
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
-            KqueueStreamServer(
+            PosixStreamServer(
                 serverFd,
                 bossLoop,
                 workerGroup,
