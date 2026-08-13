@@ -21,7 +21,8 @@ everything above the primitive is the same code. It lives here:
 | `AbstractReadinessEventLoopGroup` | round-robin across loop threads |
 | `Interest`, `FdReadyListener`, `LoopParticipant`, `HandoffOutcome`, `ReadinessSuspendRegister`, `ReadinessEventLoopLifecycle` | the vocabulary those pieces share (`LoopHandoff` itself is internal to this module) |
 
-The engines supply the readiness primitive and its cinterop, and nothing else.
+The engines supply the readiness primitive and its cinterop, their `StreamEngine`
+entry point, and the loop group that names their loop type.
 
 ## What is not here
 

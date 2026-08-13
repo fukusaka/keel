@@ -25,10 +25,12 @@ import kotlin.time.TimeSource
  * is complete. That is coverage the engines could only reach through a live
  * kqueue / epoll before this was extracted.
  *
- * Most of these never block: they either take the inline path or return at the
- * `loopFinished` guard. The one that does enter the quiesce spin drives it from
- * a second thread and carries a wall-clock bound, because a regression that
- * never publishes quiescence would otherwise hang rather than fail.
+ * Three of these never block: they take the inline path, return at the
+ * `loopFinished` guard, or find the loop already quiescent so the spin never
+ * iterates. The four that do enter it carry a wall-clock bound, because a
+ * regression that never publishes quiescence would otherwise hang rather than
+ * fail. One drives the spin from a second thread; the rest deliberately do not
+ * join what they launch, and say why where they do it.
  */
 @OptIn(InternalReadinessEngineApi::class, ExperimentalForeignApi::class)
 class LoopHandoffTest {

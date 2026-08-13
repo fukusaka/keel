@@ -16,9 +16,10 @@ That is all it is. `keel-engine-io-uring` (completion-based),
 this module for exactly these pieces.
 
 The readiness engines' shared implementation — the event loop, the transport,
-the servers — is `keel-native-readiness`, which builds on this one. It used to
-live here, which meant the three modules above carried a readiness engine they
-never used.
+the servers — is `keel-native-readiness`, which builds on this one. The loop
+base was here until that module existed, so the three modules above were
+carrying it, and the transport and servers would have landed here too once the
+two engines merged.
 
 ## C Interop
 
@@ -35,7 +36,7 @@ Two cinterop definitions expose POSIX functions that Kotlin/Native cannot bind d
 - `htons` / `ntohs` / `htonl`: C macros — cinterop cannot bind macros. Wrapped as `keel_htons` / `keel_ntohs` / `keel_htonl`.
 - `INADDR_LOOPBACK`: C macro — exposed as `keel_loopback_addr()`.
 - `sin_family` type: differs between Linux (`UShort`) and macOS (`UByte`), causing commonization errors. `keel_init_sockaddr_in` sets all `sockaddr_in` fields from C, avoiding the type divergence.
-- `writev`: provided as `keel_writev(fd, bases[], lens[], count)` — builds `iovec[]` internally for gather-write in a single syscall. Used by epoll and kqueue `IoTransport` for multiple pending buffers.
+- `writev`: provided as `keel_writev(fd, bases[], lens[], count)` — builds `iovec[]` internally for gather-write in a single syscall. Used by the readiness and io_uring transports for multiple pending buffers.
 
 ## NativeSocketOps
 

@@ -106,8 +106,9 @@ class ReadinessStreamServer(
                     // neighbouring reason, an fd torn down in the window it
                     // dispatches across, rather than for this one. The
                     // throw reaches the accept loop, which logs, backs off and
-                    // retries, so an unreleased descriptor here is one per
-                    // accept until the table is full.
+                    // retries, so an unreleased descriptor here would have been
+                    // one per accept until the table filled. The catch below
+                    // releases it.
                     val remoteAddr: SocketAddress
                     val localAddr: SocketAddress
                     try {

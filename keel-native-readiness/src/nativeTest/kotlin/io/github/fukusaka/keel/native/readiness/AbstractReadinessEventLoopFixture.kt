@@ -83,7 +83,8 @@ internal abstract class AbstractReadinessEventLoopFixture {
          * The keys [submitArmCallback] was handed.
          *
          * Recorded because the real overrides are the parameter's only
-         * consumers — on arm failure each withdraws `popCallback(key)` — so a
+         * consumers — on arm failure each withdraws by identity, through
+         * `popCallbackIfCurrent(key, listener)` — so a
          * base that computed the key from the wrong interest would take the
          * wrong listener out, and nothing that probes through [dispatchReady]
          * (which derives its own key) could see it.

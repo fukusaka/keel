@@ -564,11 +564,11 @@ internal class NioIoTransport(
         const val READ_BUFFER_HINT_COUNT = 16
 
         /**
-         * Initial size of the reusable `bbArray` scratch. Sized for this
-         * engine alone — the readiness engines' gather scratch starts larger,
-         * and nothing keeps the two in step; covers the steady-state
-         * pendingWrites depth without
-         * triggering [ensureBbArrayCapacity] in common workloads.
+         * Initial size of the reusable `bbArray` scratch. The readiness engines
+         * start their gather scratch at the same 8, but nothing keeps the two in
+         * step and neither reads the other's constant. Covers the steady-state
+         * pendingWrites depth without triggering [ensureBbArrayCapacity] in
+         * common workloads.
          */
         const val INITIAL_BB_ARRAY_CAPACITY = 8
     }

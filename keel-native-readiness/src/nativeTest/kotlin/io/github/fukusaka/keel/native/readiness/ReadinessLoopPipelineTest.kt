@@ -84,7 +84,8 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `the arm is handed the key of the interest it is arming`() = loopTest { loop ->
-        // Both real overrides withdraw `popCallback(key)` when the arm fails,
+        // Both real overrides withdraw `popCallbackIfCurrent(key, listener)`
+        // when the arm fails,
         // so a key derived from the wrong interest takes the wrong listener out
         // of the ledger. Nothing else here can see that: every
         // other probe goes through dispatchReady, which computes its own key.
@@ -181,9 +182,11 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
         FakeLoop(onLoopThread = false, runDispatchedInline = false),
     ) { loop ->
         // The pipeline twin of the suspend path's deferred-arm test, and the
-        // window the callback path's missing stale-registration guard lives in:
-        // the listener is in the ledger and the kernel knows nothing yet, so a
-        // teardown landing here withdraws a listener whose arm still runs.
+        // window the callback path's stale-registration guard exists for: the
+        // listener is in the ledger and the kernel knows nothing yet, so a
+        // teardown landing here would withdraw a listener whose arm still runs.
+        // The queued arm re-checks the ledger, which is what the assertion
+        // below holds it to.
         val listener = RecordingListener()
 
         loop.registerCallback(FD, Interest.READ, listener)
