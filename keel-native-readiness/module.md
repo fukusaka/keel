@@ -17,7 +17,7 @@ everything above the primitive is the same code. It lives here:
 | `AbstractReadinessEventLoop` | the loop: interest ledger, dispatch, shutdown sweep |
 | `ReadinessIoTransport` | a connection: read, write, gather-flush, half-close, teardown |
 | `AbstractReadinessEngine` | `bind` / `connect`, and the loops' lifecycle |
-| `ReadinessStreamServer`, `ReadinessPipelinedStreamServer`, `ReadinessPipelinedChannel` | accepting and handing connections to workers |
+| `ReadinessStreamServer`, `ReadinessPipelinedStreamServer`, `ReadinessPipelinedChannel` (internal) | accepting and handing connections to workers |
 | `AbstractReadinessEventLoopGroup` | round-robin across loop threads |
 | `Interest`, `FdReadyListener`, `LoopParticipant`, `HandoffOutcome`, `ReadinessSuspendRegister`, `ReadinessEventLoopLifecycle` | the vocabulary those pieces share (`LoopHandoff` itself is internal to this module) |
 

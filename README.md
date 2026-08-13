@@ -59,6 +59,7 @@ keel/
 ├── keel-io/                     # IoBuf / chunk-based pooled BufferAllocator / kotlinx-io bridges
 ├── keel-core/                   # IoEngine / Channel / StreamServer / Pipeline / DNS resolver
 ├── keel-native-posix/           # Shared POSIX socket layer for Native engines
+├── keel-native-readiness/       # Shared readiness-loop engine (epoll + kqueue)
 ├── keel-engine-epoll/           # linuxX64, linuxArm64 (epoll)
 ├── keel-engine-kqueue/          # macosArm64, macosX64 (kqueue)
 ├── keel-engine-io-uring/        # linuxX64, linuxArm64 (io_uring, Linux 5.6+)

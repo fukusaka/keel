@@ -29,7 +29,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * The fixture shared by the [AbstractReadinessEventLoop] tests.
  *
- * Holds what the split would otherwise have duplicated four times: the seven
+ * Holds what the split would otherwise have duplicated five times: the seven
  * test doubles, the `loopTest` / `suspendOn` / `chainOf` helpers, and the
  * constants.
  *
@@ -352,6 +352,9 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * per-task backstop -- never executes there. This one exists to reach them.
      */
     protected class RealQueueLoop(var onLoopThread: Boolean = true) : AbstractReadinessEventLoop() {
+
+        /** Whether anything is still sitting on the base's task queue. */
+        fun queueHoldsWork(): Boolean = hasTasksPending()
 
         /** No thread of its own; the fixture drives the ledger and the sweep directly. */
         override fun start() = Unit

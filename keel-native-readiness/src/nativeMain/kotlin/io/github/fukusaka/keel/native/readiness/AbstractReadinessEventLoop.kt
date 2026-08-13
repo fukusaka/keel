@@ -43,8 +43,9 @@ import kotlin.time.TimeSource
 // Kept out of the KDoc because Dokka publishes that, and this is a note to
 // whoever works on these two loops next: the callback registry and its dispatch
 // path are here now too, so a bug in either is fixed once. What is still written
-// twice is the lifecycle -- start, close, the arena and the writev scratch --
-// and the syscall wrappers each kernel interface needs. The measurements are in
+// twice is the lifecycle -- start, close and the arena -- and the syscall
+// wrappers each kernel interface needs. The writev scratch is here now; what
+// each engine still repeats is the one call that gives it back. The measurements are in
 // the pull requests, where they stay attached to the revisions that took them.
 /**
  * The loop the POSIX readiness engines — epoll and kqueue — run on, and what it
@@ -451,13 +452,31 @@ abstract class AbstractReadinessEventLoop :
      * gather, so one scratch serves every transport on it, and the alternative
      * is an allocation on each multi-buffer flush.
      */
-    internal var writevBases: CPointer<CPointerVar<ByteVar>> =
-        nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
+    internal var writevBases: CPointer<CPointerVar<ByteVar>>
         private set
 
     /** Byte lengths (`size_t`) paired with [writevBases]. */
-    internal var writevLens: CPointer<ULongVar> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
+    internal var writevLens: CPointer<ULongVar>
         private set
+
+    init {
+        // Paired here rather than left as two initialisers, so a refused second
+        // allocation gives the first one back. The engines accept that failure
+        // in their own initialisers, on the grounds that a `nativeHeap`
+        // allocation of a few dozen bytes failing is not a condition the
+        // process continues past — but that stance is stated about theirs, and
+        // these are not theirs any more. A base initialiser that throws leaves
+        // no reference for anyone to clean up: the engines' recovery is a `try`
+        // in their own `init`, which a throw from here never reaches.
+        val bases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
+        writevLens = try {
+            nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
+        } catch (allocationFailure: Throwable) {
+            nativeHeap.free(bases)
+            throw allocationFailure
+        }
+        writevBases = bases
+    }
 
     private var writevCapacity = INITIAL_WRITEV_CAPACITY
 
@@ -467,8 +486,8 @@ abstract class AbstractReadinessEventLoop :
      * A plain `var`, and not because the loop thread owns it — the thread that
      * frees is whichever one is tearing the loop down: the caller of `close()`,
      * or the constructing thread when construction fails. The engines' CAS on
-     * `close()`
-     * settles which caller reaches the release, but a single caller is not the
+     * `close()` settles which caller reaches the release, but a single caller
+     * is not the
      * same as no concurrency. What supplies that is quiescence, established
      * differently on each route: `pthread_join` where a thread was started; the
      * loop reporting itself stopped where one was not (and where the terminal
@@ -1036,12 +1055,13 @@ abstract class AbstractReadinessEventLoop :
      * **The release runs on the loop, and that ordering is the point.** Both
      * endings can be reached from a thread that is not the loop's, while the
      * loop still has this fd's arm queued or in flight — [submitArm] checks
-     * that the waiter is registered and then arms in a *second* acquisition of
-     * the registration lock, so a release landing between the two closes the
-     * descriptor and then lets the arm run. What follows is the recycled-fd
-     * hazard: an `epoll_ctl` against a number the kernel may already have
-     * handed to somebody else, and a mask recorded for it that nothing will
-     * ever clear. Handing the release to the loop puts it after that arm.
+     * that the waiter is registered before arming, so a release landing between
+     * the check and the arm closes the descriptor and then lets the arm run.
+     * What follows is the recycled-fd hazard: an arm against a number the kernel
+     * may already have handed to somebody else. On epoll the check and the arm
+     * take the registration lock separately, which widens that window, and its
+     * user-space mask is then recorded for a descriptor nothing will ever clear
+     * it for; kqueue takes the lock once and keeps no such mask. Handing the release to the loop puts it after that arm.
      * `StreamServer.close()` reaches the same conclusion for the listening fd
      * and says so; this is the same shape for the connect fd.
      *
@@ -1779,18 +1799,12 @@ abstract class AbstractReadinessEventLoop :
     /**
      * Withdraws the callback registered for [fd] + [interest], if any.
      *
-     * Here rather than in each engine, for the reason its callers give: they are
-     * the same four classes that call [registerCallback] — each engine's
-     * `IoTransport` on teardown and its pipelined server when it stops accepting
-     * — and they live in the engine modules, so both members need to reach
-     * across a module boundary. Keeping this one engine-side while
-     * [registerCallback] is published here would not narrow anything: the entry
-     * point into the ledger is already open, and withdrawal is the safer half.
-     *
-     * `hasCallbackRegistration` is the member that does *not* follow, and the
-     * difference is its callers: each engine's `EventLoopGroup` and, through it,
-     * the transport-withdrawal tests. `internal` there is what keeps a test
-     * probe from becoming published API.
+     * Here rather than in each engine, alongside [registerCallback]: the callers
+     * of both are the transport on teardown and the pipelined server when it
+     * stops accepting, and the consolidation brought those into this module.
+     * They no longer reach across a boundary, but splitting the pair would not
+     * narrow anything either — the entry point into the ledger is open here, and
+     * withdrawal is the safer half to keep beside it.
      *
      * **The kernel interest is left armed.** Whoever owns the fd disarms it, and
      * until they do the registration keeps re-firing into readiness dispatch's
@@ -2077,13 +2091,12 @@ abstract class AbstractReadinessEventLoop :
     /**
      * Whether `fd` still has a callback registered for [interest], taking the lock.
      *
-     * The keyed pair the engines' `internal hasCallbackRegistration` wraps. It is
-     * `protected` and therefore unpublished, while the wrapper has to be
-     * `internal` in its own module: its callers — each engine's `EventLoopGroup`
-     * and `Engine`, and the transport-withdrawal tests through them — are not
-     * subclasses. A wrapper of the same name over this one would not compile
-     * (`hides member of supertype ... needs an 'override' modifier`), which is
-     * why the two names differ.
+     * The keyed pair [hasCallbackRegistration] wraps. This one is `protected`
+     * and therefore unpublished; the wrapper is behind the opt-in marker,
+     * because its callers — the group, the engine, and the seam tests through
+     * them — are not subclasses. The names differ because a same-named wrapper
+     * would have to `override` rather than wrap, which is what the fixture's
+     * double does.
      */
     protected fun hasCallbackFor(fd: Int, interest: Interest): Boolean =
         withRegLock { hasCallbackListener(registrationKey(fd, interest)) }

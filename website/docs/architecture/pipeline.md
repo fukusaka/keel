@@ -59,11 +59,11 @@ IoTransport (interface)
 
 PipelinedChannel (interface)
   └── AbstractPipelinedChannel (wires IoTransport ↔ Pipeline, ensureBridge)
-       └── KqueuePipelinedChannel / EpollPipelinedChannel / ...
+       └── ReadinessPipelinedChannel (kqueue, epoll) / NioPipelinedChannel / ...
             (empty or minimal — all logic is in IoTransport)
 ```
 
-Engine-specific PipelinedChannels are typically empty subclasses. All I/O logic lives in `IoTransport`.
+PipelinedChannel implementations carry almost nothing — all I/O logic lives in `IoTransport`. kqueue and epoll share one, since neither had anything of its own to put in it.
 
 ## Writing handlers
 
@@ -214,12 +214,12 @@ Handlers that need to throttle output should monitor writability changes via `on
 
 `armRead()` is not part of the interface. Each engine calls it internally after the `bindPipeline` initializer returns, so the initializer does not need to call it.
 
-All 7 engines implement `PipelinedChannel`:
+Every engine reaches a `PipelinedChannel`, though kqueue and epoll reach the same one:
 
 | Engine | Implementation |
 |--------|---------------|
-| kqueue | `KqueuePipelinedChannel` |
-| epoll | `EpollPipelinedChannel` |
+| kqueue | `ReadinessPipelinedChannel` (shared) |
+| epoll | `ReadinessPipelinedChannel` (shared) |
 | io_uring | `IoUringPipelinedChannel` |
 | NIO | `NioPipelinedChannel` |
 | Netty | `NettyPipelinedChannel` |

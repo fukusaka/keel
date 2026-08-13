@@ -132,6 +132,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         loop.dispatch(EmptyCoroutineContext, Runnable { ran = true })
         assertEquals(0, loop.wakeups, "a quiescent loop must not be woken")
         assertFalse(ran, "and nothing runs the task -- the queue is dead")
+        assertTrue(loop.queueHoldsWork(), "the offer stays: dropping it is not what this guard does")
     }
 
     // --- what the backstop withdraws when a listener throws ---

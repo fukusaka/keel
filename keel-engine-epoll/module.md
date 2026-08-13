@@ -25,8 +25,8 @@ EpollEngine
 ├── bossLoop (EpollEventLoop) ── accept readiness on server fd
 │     └── epoll_wait(EPOLLIN) → accept() → assign to worker
 └── workerGroup (EpollEventLoopGroup, N workers)
-      ├── worker[0]: ReadinessPipelinedChannel A, D, ...
-      ├── worker[1]: ReadinessPipelinedChannel B, E, ...
+      ├── worker[0]: PipelinedChannel A, D, ...
+      ├── worker[1]: PipelinedChannel B, E, ...
       └── worker[N]: ...
 ```
 
@@ -103,7 +103,7 @@ the hot path after the initial registration.
 | Class | Role |
 |-------|------|
 | `EpollEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
-| `ReadinessPipelinedChannel` | Unified channel: Pipeline + Coroutine modes — shared, in `keel-native-readiness` |
+| `PipelinedChannel` | Unified channel: Pipeline + Coroutine modes. The implementation is shared with the other readiness engine and internal to `keel-native-readiness`, so it has no page of its own |
 | `ReadinessPipelinedStreamServer` | Pipeline-mode server (callback-driven accept) — shared, in `keel-native-readiness` |
 | `ReadinessStreamServer` | Coroutine-mode server (suspend-based accept) — shared, in `keel-native-readiness` |
 | `ReadinessIoTransport` | `IoTransport` for write/flush with EPOLLOUT backpressure — shared with the kqueue engine, in `keel-native-readiness` |
@@ -117,4 +117,4 @@ from the shared `keel-native-posix` module (`NativeSocketOps` / `NativeSocket`).
 # Package io.github.fukusaka.keel.engine.epoll
 
 Linux epoll-based IoEngine with multi-threaded EventLoop, unified Pipeline + Coroutine
-mode via `ReadinessPipelinedChannel`, and zero-copy I/O via `IoBuf.unsafePointer`.
+mode via a shared `PipelinedChannel`, and zero-copy I/O via `IoBuf.unsafePointer`.

@@ -100,8 +100,8 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a failed arm withdraws the listener for that interest and no other`() = loopTest { loop ->
-        // What the recorded key is actually for. Both engines withdraw
-        // `popCallback(key)` when the arm fails, so a base handing over a key
+        // What the recorded key is actually for. A failed arm withdraws through
+        // `popCallbackIfCurrent(key, listener)`, so a base handing over a key
         // built from the wrong interest silently removes the wrong listener --
         // and both would still look armed from dispatchReady, which derives its
         // own key.

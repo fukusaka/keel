@@ -16,9 +16,9 @@ package io.github.fukusaka.keel.native.readiness
  * keel's own flow control pauses reads at a high watermark. Keying the
  * notification on the ledger missed exactly that participant.
  *
- * **Membership is explicit.** A transport adds itself with
- * [AbstractReadinessEventLoop.addParticipant] when it is built and removes
- * itself in its teardown; registering a readiness callback does not imply
+ * **Membership is explicit.** A transport joins through
+ * [AbstractReadinessEventLoop.joinLoop] when its channel attaches — not when it
+ * is built — and removes itself in its teardown; registering a readiness callback does not imply
  * membership, and the accept arms of the pipelined servers never join — a
  * server's own `close()` already works on a stopped loop through its
  * `ifStopped` fallback.

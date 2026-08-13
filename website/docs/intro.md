@@ -134,6 +134,7 @@ See [Coroutine Mode](./architecture/coroutine.md) and [Pipeline Mode](./architec
 | `keel-io` | `IoBuf`, `SuspendSource`, `SuspendSink`, `BufferAllocator` |
 | `keel-tls` | `TlsConfig`, `TlsCodecFactory`, certificate utilities (TLS protocol primitives; server-side install plumbing lives in `keel-server`) |
 | `keel-native-posix` | Shared POSIX socket utilities (internal use by Native engines) |
+| `keel-native-readiness` | Shared readiness-loop engine implementation for epoll and kqueue (internal use) |
 
 ### Engines (select one per target platform)
 

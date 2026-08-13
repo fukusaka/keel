@@ -179,11 +179,12 @@ internal class KqueueEventLoop(
     // unreachable for the rest of the process, and the scratch and
     // descriptors would be held until it exits.
     //
-    // The property initialisers are outside this -- the ones above and the two
-    // below it -- and an allocation failing in any of them leaves the ones
-    // before it with no unwind at all. That is left as
-    // it is because a `nativeHeap` allocation of a few dozen bytes failing is
-    // not a condition this process continues past.
+    // The property initialisers above are outside this, and an allocation
+    // failing in any of them leaves the ones before it with no unwind at all.
+    // That is left as it is because a `nativeHeap` allocation of a few dozen
+    // bytes failing is not a condition this process continues past. The gather
+    // scratch used to be among them; it belongs to the shared loop base now,
+    // which pairs its two allocations rather than relying on that.
     //
     // One of the stages fails by throwing rather than by returning an errno --
     // the wakeup fds are made non-blocking by an op whose contract is to
@@ -684,8 +685,6 @@ internal class KqueueEventLoop(
     override suspend fun awaitWriteReady(fd: Int, logger: Logger) = awaitWritableOwningFd(fd, logger)
 
     companion object {
-
-        /** Initial capacity of the shared writev scratch arrays (grows 1.5x). */
 
         /**
          * Maximum events per kevent() call. 64 balances memory usage

@@ -49,8 +49,9 @@ import kotlin.coroutines.resume
 @InternalReadinessEngineApi
 class ReadinessIoTransport(
     /**
-     * The connection's file descriptor. `internal` rather than `private` so a
-     * test can ask the loop whether this fd's registrations were withdrawn.
+     * The connection's file descriptor. Readable rather than `private` so a test
+     * can ask the loop whether this fd's registrations were withdrawn — behind
+     * the class's opt-in marker, like the rest of it.
      */
     val fd: Int,
     protected val eventLoop: AbstractReadinessEventLoop,
@@ -421,7 +422,7 @@ class ReadinessIoTransport(
     /**
      * The write ledger's current byte count.
      *
-     * `internal` for the same reason as [hasFlushWaiter]: a test needs to see
+     * Behind the marker for the same reason as [hasFlushWaiter]: a test needs to see
      * that a teardown zeroed it even though the release before that throws, and
      * the count is otherwise reachable only through `isWritable`, which a closed
      * transport reports `false` for whatever the ledger says.
@@ -479,8 +480,10 @@ class ReadinessIoTransport(
      * flag answers for it too.
      *
      * Behind the opt-in marker rather than `internal`: the engines' servers and
-     * their connect paths set it as they hand a connection to a loop, and they
-     * live in their own modules.
+     * their connect paths set it as they hand a connection to a loop. Every one
+     * of those is in this module now, so `internal` would reach them — the
+     * marker is what keeps the seam tests, which read it from the engines, from
+     * needing anything wider.
      */
     @InternalReadinessEngineApi
     var joinedLoop: Boolean = false
@@ -508,9 +511,13 @@ class ReadinessIoTransport(
         // arms it again. A write-only client that receives
         // nothing keeps the arm for its whole lifetime and is fully covered —
         // one that receives anything at all is not, and a later close reaches
-        // it only once it reads. Closing that gap needs a close-only interest,
-        // which read readiness cannot express: it wakes on data too, so leaving it
-        // armed under back-pressure is a busy loop.
+        // it only once it reads. Closing that gap needs a close-only interest.
+        // `EVFILT_READ` cannot express one — it wakes on data too, so leaving it
+        // armed under back-pressure is a busy loop. epoll can: `EPOLLRDHUP` is
+        // its own bit. What stops us using it is on our side, not the kernel's —
+        // the loop derives read readiness from `EPOLLIN|EPOLLERR|EPOLLHUP`, so an
+        // RDHUP-only registration would return from every wait with nothing able
+        // to dispatch it.
         // Joined and armed by [onChannelAttached], not here: the registry
         // decides who is told when the loop stops, and until the channel has
         // wired the callbacks there is nobody to tell.
