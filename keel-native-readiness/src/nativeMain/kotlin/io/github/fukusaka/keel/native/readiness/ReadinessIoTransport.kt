@@ -314,7 +314,7 @@ class ReadinessIoTransport(
      * is not defensive at all is a connection with reads disabled: [onReadable]
      * returns at once while `readEnabled` is false, so the `read()` that would
      * return 0 never runs and this is the only path to `onReadClosed`. What that
-     * covers, and where it stops, is written at the arm in `init` — the
+     * covers, and where it stops, is written at the arm in [onChannelAttached] — the
      * registration is one-shot, so a connection that receives anything before
      * the close is not covered by it.
      * Calling `onReadClosed` twice is benign — the cancel guards in the

@@ -278,8 +278,8 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
         // both engines do pass the flag on their write filter, so this pins the
         // dispatch contract rather than a transport outcome.
         //
-        // No transport reacts to a WRITE eof today: both onPeerClosed overrides
-        // return early on anything but READ. What the test holds is that the
+        // No transport reacts to a WRITE eof today: the one that ships returns
+        // early on anything but READ. What the test holds is that the
         // base does not silently drop half the parameter's domain.
         val listener = RecordingListener()
         loop.registerCallback(FD, Interest.WRITE, listener)

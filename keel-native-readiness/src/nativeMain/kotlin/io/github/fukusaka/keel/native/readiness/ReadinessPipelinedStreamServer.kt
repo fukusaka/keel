@@ -224,7 +224,7 @@ class ReadinessPipelinedStreamServer(
      * to [reportDrops] as one thing; the accept path allocates one of these per
      * readiness callback, not per connection.
      *
-     * `internal` for its test: [remainingBudget] is the whole of the
+     * Behind the class's marker for its test: [remainingBudget] is the whole of the
      * boss-liveness guarantee, and the window it governs — a worker that has
      * finished polling but not yet gone quiet — is one the engine seam cannot
      * hold open.
@@ -309,7 +309,7 @@ class ReadinessPipelinedStreamServer(
      * Winds [workerIndex] to [value] so a test can reach the wrap without
      * accepting `Int.MAX_VALUE` connections.
      *
-     * `internal` for the same reason the other probes here are: the counter and
+     * Behind the marker for the same reason the other probes here are: the counter and
      * the round-robin over it are private, and the boundary they exist for is
      * two billion accepts away from any test that drives real ones.
      */

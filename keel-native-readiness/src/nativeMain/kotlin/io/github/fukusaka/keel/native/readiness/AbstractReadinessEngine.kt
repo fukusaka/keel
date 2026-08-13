@@ -169,7 +169,7 @@ abstract class AbstractReadinessEngine(
     fun workerParticipants(): Int = workerGroup.participants()
 
     /**
-     * Binds a TCP server on [host]:[port] and returns a [StreamServer].
+     * Binds a server on [address] and returns a [StreamServer].
      *
      * Creates a server socket and returns a [ReadinessStreamServer] whose
      * [accept][StreamServer.accept] distributes connections to worker EventLoops
@@ -191,9 +191,8 @@ abstract class AbstractReadinessEngine(
         val serverFd = nativeSocketOps.bindUnixListener(address, bindConfig.backlog)
 
         return releaseOnFailure(serverFd, "bindUnix cleanup") {
-            // The listener is left unarmed here; accept() arms it through
-            // [AbstractReadinessEventLoop.register] once it has a waiter to hand the event
-            // to. Arming earlier would break the loop's armed-implies-handler
+            // The listener is left unarmed here; accept() arms it through the
+            // loop's `registerIf` once it has a waiter to hand the event to. Arming earlier would break the loop's armed-implies-handler
             // invariant, whose no-handler branch clears the watch again.
             logger.debug { "Bound to $address" }
             ReadinessStreamServer(
@@ -217,9 +216,8 @@ abstract class AbstractReadinessEngine(
         val serverFd = nativeSocketOps.bindListener(ip, port, bindConfig.backlog)
 
         return releaseOnFailure(serverFd, "bindInet cleanup") {
-            // The listener is left unarmed here; accept() arms it through
-            // [AbstractReadinessEventLoop.register] once it has a waiter to hand the event
-            // to. Arming earlier would break the loop's armed-implies-handler
+            // The listener is left unarmed here; accept() arms it through the
+            // loop's `registerIf` once it has a waiter to hand the event to. Arming earlier would break the loop's armed-implies-handler
             // invariant, whose no-handler branch clears the watch again.
             val localAddr = nativeSocketOps.getLocalAddress(serverFd)
             logger.debug { "Bound to $localAddr" }
@@ -506,7 +504,7 @@ abstract class AbstractReadinessEngine(
     }
 
     /**
-     * Binds a pipeline-based server on [host]:[port].
+     * Binds a pipeline-based server on [address].
      *
      * Unlike [bind] which returns a suspend-based [StreamServer], this creates
      * a callback-driven server that processes connections entirely through
@@ -516,8 +514,7 @@ abstract class AbstractReadinessEngine(
      * EventLoops in round-robin order. Each worker creates a
      * [ReadinessPipelinedChannel] and arms read callbacks.
      *
-     * @param host Bind address (e.g. "0.0.0.0").
-     * @param port Bind port.
+     * @param address Bind address.
      * @param pipelineInitializer Callback to configure the pipeline for each
      *        accepted connection (add handlers via addLast).
      * @return A [PipelinedStreamServer] for lifecycle management.

@@ -93,7 +93,8 @@ import kotlin.time.TimeSource
  * real ones are covered.
  *
  * **Thread safety**: the ledger is guarded by a `pthread_mutex_t`, and both
- * paths funnel their arming syscalls to the loop thread through [submitOnLoop],
+ * paths get their arming syscalls onto the loop thread — the suspend path
+ * through [submitOnLoop], the callback path by spelling the same fork out —
  * on top of [dispatch] and the task queue behind it. A subclass answers
  * [inEventLoop] and should not write that branch itself.
  *
@@ -931,8 +932,8 @@ abstract class AbstractReadinessEventLoop :
      * @return the [Registration], or `null` when it was **not appended** —
      *   either [stillWanted] returned false, or the loop has stopped and closed
      *   its ledgers. A caller cannot tell those apart and must not describe the
-     *   result as one of them: the two servers that answer `null` with a
-     *   `CancellationException` name both causes in its message for that reason.
+     *   result as one of them: the server that answers `null` with a
+     *   `CancellationException` names both causes in its message for that reason.
      */
     fun registerIf(
         fd: Int,
@@ -1046,7 +1047,7 @@ abstract class AbstractReadinessEventLoop :
      * [unregister] runs on both paths too, and is documented as a no-op when the
      * node is already gone — which it is on the [submitArm] path, which removes
      * it before resuming. Keeping it on the failure path is defensive: the only
-     * other way to fail a waiter is [cancelAll], whose two callers pass
+     * other way to fail a waiter is [cancelAll], whose one caller passes
      * `Interest.READ` on a server fd, so nothing reaches here with a node still
      * in the chain today. It stays because a stale node makes a later append
      * land where nothing pops it, and the check costs a lock on a path taken
@@ -1911,8 +1912,8 @@ abstract class AbstractReadinessEventLoop :
             // declines the wake -- a transport with reads disabled returns
             // from onReady without reading -- this call is the only one left
             // that can surface the close. How far that covers a given
-            // connection is the transport's to state, and each one does, at
-            // the arm in its own `init`.
+            // connection is the transport's to state, and it does, at the arm
+            // its channel attach makes.
             // Backstop, below the two guards that know what a failure means:
             // a server's accept loop closes the descriptor it could not prepare,
             // a transport closes the connection whose readiness it could not

@@ -33,7 +33,7 @@ import kotlin.coroutines.resumeWithException
  *   bossLoop: kevent() / epoll_wait() fires read readiness on serverFd → resume
  *   POSIX accept(serverFd) → clientFd
  *   workerGroup.next() → assign worker EventLoop
- *   → ReadinessPipelinedChannel(clientFd, transport, workerLoop, allocator)
+ *   → ReadinessPipelinedChannel(transport, logger, remoteAddr, localAddr)
  * ```
  *
  * @param serverFd    The listening server socket fd (non-blocking).

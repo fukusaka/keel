@@ -133,8 +133,9 @@ internal class KqueueEventLoop(
 
     /**
      * The kqueue file descriptor, created at construction.
-     * Exposed for [KqueueEngine.bind] to register server fds directly
-     * via `kevent(kqFd, ...)`. Channel fds are registered via [register].
+     * Used by this loop's own syscalls; nothing outside reads it. Server and
+     * channel fds both reach the kernel through the loop's registration path,
+     * never by naming this.
      */
     val kqFd: Int
 
@@ -688,7 +689,7 @@ internal class KqueueEventLoop(
 
         /**
          * Maximum events per kevent() call. 64 balances memory usage
-         * (64 * sizeof(kevent) = ~2.5 KiB on arm64) against reducing
+         * (64 * sizeof(kevent) = 2 KiB on arm64) against reducing
          * the number of kevent() syscalls under high fd counts.
          * Netty uses 4096; 64 is conservative for initial implementation.
          */

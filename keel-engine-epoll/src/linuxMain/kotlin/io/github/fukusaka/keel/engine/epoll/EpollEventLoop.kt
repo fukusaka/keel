@@ -134,8 +134,9 @@ internal class EpollEventLoop(
 
     /**
      * The epoll file descriptor, created at construction.
-     * Exposed for [EpollEngine.bind] to register server fds directly
-     * via `epoll_ctl(epFd, ...)`. Channel fds are registered via [register].
+     * Used by this loop's own syscalls; nothing outside reads it. Server and
+     * channel fds both reach the kernel through the loop's registration path,
+     * never by naming this.
      */
     val epFd: Int
 

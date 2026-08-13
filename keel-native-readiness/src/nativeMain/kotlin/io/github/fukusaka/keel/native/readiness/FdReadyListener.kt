@@ -15,9 +15,9 @@ package io.github.fukusaka.keel.native.readiness
  * by `close()`, not by peer FIN), while a transport overrides both, because the
  * peer-close path is what fires `onReadClosed` to user code even when the user
  * never enabled reads (a write-only push client with `readEnabled = false`).
- * That connection reaches this callback because both transports arm READ at
- * construction regardless of `readEnabled`, not because the callback works
- * without an arm.
+ * That connection reaches this callback because the readiness transport arms
+ * READ when its channel attaches, regardless of `readEnabled`, not because the
+ * callback works without an arm.
  */
 interface FdReadyListener {
     /**
