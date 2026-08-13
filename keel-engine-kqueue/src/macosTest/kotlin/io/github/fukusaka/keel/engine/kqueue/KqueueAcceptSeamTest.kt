@@ -1,3 +1,5 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.BindConfig
@@ -10,6 +12,8 @@ import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -30,7 +34,7 @@ import kotlin.time.Duration.Companion.seconds
 /**
  * Seam-level tests for `accept`-path branches on the kqueue engine:
  * [KqueueStreamServer.accept] (suspend-based) and
- * [KqueuePipelinedStreamServer.onAcceptable] (callback-based).
+ * [PosixPipelinedStreamServer.onAcceptable] (callback-based).
  *
  * Complements [KqueueEngineLifecycleSeamTest] (connect + bind) by
  * exercising the third engine-state transition — accept. Both paths
@@ -236,9 +240,9 @@ class KqueueAcceptSeamTest {
         }
     }
 
-    // --- KqueuePipelinedStreamServer.onAcceptable: Failed / WouldBlock ---
+    // --- PosixPipelinedStreamServer.onAcceptable: Failed / WouldBlock ---
     //
-    // bindPipeline returns a KqueuePipelinedStreamServer; we cast and call
+    // bindPipeline returns a PosixPipelinedStreamServer; we cast and call
     // the internal onAcceptable() directly to drive the accept loop branches
     // deterministically (no real event delivery). The sentinel fd is needed
     // so start() and the re-arm kevent(EV_ADD) calls succeed — the fd is
@@ -264,7 +268,7 @@ class KqueueAcceptSeamTest {
                     InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                     BindConfig(),
                 ) { /* no-op initializer */ }
-                val pipelined = server as KqueuePipelinedStreamServer
+                val pipelined = server as PosixPipelinedStreamServer
                 pipelined.onAcceptable()
                 assertEquals(1, fakeSocket.acceptCalls)
                 // No Accepted → no setNonBlocking / address reads.
@@ -309,7 +313,7 @@ class KqueueAcceptSeamTest {
                     InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                     BindConfig(),
                 ) { /* no-op initializer */ }
-                val pipelined = server as KqueuePipelinedStreamServer
+                val pipelined = server as PosixPipelinedStreamServer
 
                 pipelined.onAcceptable()
 
@@ -365,7 +369,7 @@ class KqueueAcceptSeamTest {
                     InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                     BindConfig(),
                 ) { /* no-op initializer */ }
-                val pipelined = server as KqueuePipelinedStreamServer
+                val pipelined = server as PosixPipelinedStreamServer
                 // Any value the wrap passes through; -1 makes an unmasked
                 // modulo negative for every group size above one.
                 pipelined.setWorkerIndexForTest(-1)
@@ -407,7 +411,7 @@ class KqueueAcceptSeamTest {
                     InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                     BindConfig(),
                 ) { /* no-op */ }
-                val pipelined = server as KqueuePipelinedStreamServer
+                val pipelined = server as PosixPipelinedStreamServer
                 pipelined.onAcceptable()
                 assertEquals(1, fakeSocket.acceptCalls)
                 assertTrue(fakeOps.nonBlockingFds.isEmpty())
@@ -446,7 +450,7 @@ class KqueueAcceptSeamTest {
                     InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 0),
                     BindConfig(),
                 ) { /* no-op initializer */ }
-                val pipelined = server as KqueuePipelinedStreamServer
+                val pipelined = server as PosixPipelinedStreamServer
 
                 pipelined.dispatchAcceptReadiness()
 

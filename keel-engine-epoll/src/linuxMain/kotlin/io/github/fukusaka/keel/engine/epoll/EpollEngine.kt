@@ -29,6 +29,8 @@ import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixPipelinedChannel
+import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -190,7 +192,7 @@ class EpollEngine(
      * Binds a suspend-based server on [host]:[port].
      *
      * Creates a server socket and returns an [EpollStreamServer] whose
-     * [accept][EpollStreamServer.accept] returns [EpollPipelinedChannel]
+     * [accept][EpollStreamServer.accept] returns [PosixPipelinedChannel]
      * instances. The listener is registered with the boss EventLoop's epoll by
      * `accept()`, not here, so binding alone does not leave a watch with no
      * waiter behind it.
@@ -320,7 +322,7 @@ class EpollEngine(
         // attaches, so that this connection is in the registry only once there
         // is something to deliver a stop notification to.
         val channel = releaseOnFailure(transport) {
-            EpollPipelinedChannel(transport, logger, address, null)
+            PosixPipelinedChannel(transport, logger, address, null)
         }
         if (!transport.joinedLoop) {
             // The loop swept between this call's check at the top and that join.
@@ -411,7 +413,7 @@ class EpollEngine(
         }
         // Built before the check; see the sibling connect path.
         val channel = releaseOnFailure(transport) {
-            EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
+            PosixPipelinedChannel(transport, logger, remoteAddr, localAddr)
         }
         if (!transport.joinedLoop) {
             // The loop swept between this call's check at the top and that join.
@@ -537,7 +539,7 @@ class EpollEngine(
 
     /**
      * Multi-address pipeline bind: every entry of [binds] becomes one
-     * listener of a single [EpollPipelinedStreamServer], all armed on the
+     * listener of a single [PosixPipelinedStreamServer], all armed on the
      * shared boss loop. All-or-nothing: a failing bind closes the
      * listeners bound so far and rethrows.
      */
@@ -549,7 +551,7 @@ class EpollEngine(
         val listeners = bindAllOrRollback(
             binds = binds,
             logger = logger,
-            closeOne = { listener: EpollPipelinedStreamServer.Listener ->
+            closeOne = { listener: PosixPipelinedStreamServer.Listener ->
                 closeFdSafely(listener.serverFd, logger, "multi-address bind rollback")
             },
         ) { spec -> openPipelineListener(spec) }
@@ -560,7 +562,7 @@ class EpollEngine(
         // still bound. Nothing in the constructor is known to throw, which is
         // the same footing the listener branches below stand on.
         val serverChannel = releaseListenersOnFailure(listeners) {
-            EpollPipelinedStreamServer(
+            PosixPipelinedStreamServer(
                 listeners = listeners,
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -589,7 +591,7 @@ class EpollEngine(
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun <T> releaseListenersOnFailure(
-        listeners: List<EpollPipelinedStreamServer.Listener>,
+        listeners: List<PosixPipelinedStreamServer.Listener>,
         crossinline build: () -> T,
     ): T =
         try {
@@ -606,14 +608,14 @@ class EpollEngine(
      * failure so [bindAllOrRollback] only has to roll back the listeners
      * that were fully opened before it.
      */
-    private fun openPipelineListener(spec: BindSpec): EpollPipelinedStreamServer.Listener {
+    private fun openPipelineListener(spec: BindSpec): PosixPipelinedStreamServer.Listener {
         return when (val address = spec.address) {
             is InetSocketAddress -> {
                 val serverFd = nativeSocketOps.bindListener(address.requireIp(), address.port, spec.config.backlog)
                 releaseOnFailure(serverFd, "bindPipeline listener cleanup") {
                     val localAddr = nativeSocketOps.getLocalAddress(serverFd)
                     logger.debug { "Pipeline bound to $localAddr" }
-                    EpollPipelinedStreamServer.Listener(serverFd, localAddr, spec.config)
+                    PosixPipelinedStreamServer.Listener(serverFd, localAddr, spec.config)
                 }
             }
             is UnixSocketAddress -> {
@@ -624,7 +626,7 @@ class EpollEngine(
                 // window, and only one of them was answering for it.
                 releaseOnFailure(serverFd, "bindPipeline listener cleanup") {
                     logger.debug { "Pipeline bound to $address" }
-                    EpollPipelinedStreamServer.Listener(serverFd, address, spec.config)
+                    PosixPipelinedStreamServer.Listener(serverFd, address, spec.config)
                 }
             }
         }

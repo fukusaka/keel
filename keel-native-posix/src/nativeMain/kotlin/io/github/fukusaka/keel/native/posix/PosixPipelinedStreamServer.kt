@@ -1,25 +1,12 @@
 @file:OptIn(InternalPosixEventLoopApi::class)
 
-package io.github.fukusaka.keel.engine.kqueue
+package io.github.fukusaka.keel.native.posix
 
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
-import io.github.fukusaka.keel.native.posix.AcceptResult
-import io.github.fukusaka.keel.native.posix.FdReadyListener
-import io.github.fukusaka.keel.native.posix.HandoffOutcome
-import io.github.fukusaka.keel.native.posix.Interest
-import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
-import io.github.fukusaka.keel.native.posix.NativeSocket
-import io.github.fukusaka.keel.native.posix.NativeSocketOps
-import io.github.fukusaka.keel.native.posix.PosixIoTransport
-import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
-import io.github.fukusaka.keel.native.posix.applySocketOptions
-import io.github.fukusaka.keel.native.posix.closeFdSafely
-import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -27,21 +14,22 @@ import kotlin.concurrent.AtomicInt
 import kotlin.time.TimeSource
 
 /**
- * Pipeline server channel for kqueue-based connection acceptance.
+ * Pipeline server channel for the readiness loop-based connection acceptance.
  *
  * One server owns one or more [Listener]s (one per bound address — the
  * multi-address `bindPipeline` overload; a single-address bind is the
- * one-element case). Every listener fd is armed for EVFILT_READ on the shared
- * boss [KqueueEventLoop]; accepted connections are distributed to worker
+ * one-element case). Every listener fd is armed for read readiness on the shared
+ * boss [AbstractPosixReadinessEventLoop]; accepted connections are distributed to worker
  * EventLoops in round-robin regardless of the listener they arrived on.
  *
  * Same architecture as [EpollPipelinedStreamServer][io.github.fukusaka.keel.engine.epoll.EpollPipelinedStreamServer].
  */
 @OptIn(ExperimentalForeignApi::class)
-internal class KqueuePipelinedStreamServer(
+@InternalPosixEventLoopApi
+class PosixPipelinedStreamServer(
     private val listeners: List<Listener>,
-    private val bossLoop: KqueueEventLoop,
-    private val workerGroup: KqueueEventLoopGroup,
+    private val bossLoop: AbstractPosixReadinessEventLoop,
+    private val workerGroup: AbstractPosixEventLoopGroup<*>,
     private val logger: Logger,
     private val pipelineInitializer: (PipelinedChannel) -> Unit,
     private val nativeSocket: NativeSocket = PosixNativeSocket,
@@ -92,10 +80,10 @@ internal class KqueuePipelinedStreamServer(
 
     /**
      * Seam-test convenience: drives the first (in seam scenarios, only)
-     * listener's accept loop directly without kqueue readiness delivery.
+     * listener's accept loop directly without the readiness loop readiness delivery.
      * The production call site is [AcceptArm.onReady].
      */
-    internal fun onAcceptable() {
+    fun onAcceptable() {
         onAcceptable(acceptArms.first())
     }
 
@@ -107,7 +95,7 @@ internal class KqueuePipelinedStreamServer(
      * simply never accepts again. Nothing in the public surface separates that
      * from an idle server.
      */
-    internal fun isFirstListenerArmed(): Boolean =
+    fun isFirstListenerArmed(): Boolean =
         bossLoop.hasCallbackRegistration(listeners.first().serverFd, Interest.READ)
 
     /**
@@ -120,7 +108,7 @@ internal class KqueuePipelinedStreamServer(
      * [onAcceptable] directly leaves the arm from `start()` in place and would
      * report a listener as armed whether or not the loop re-armed it.
      */
-    internal fun dispatchAcceptReadiness() {
+    fun dispatchAcceptReadiness() {
         val arm = acceptArms.first()
         bossLoop.unregisterCallback(arm.listener.serverFd, Interest.READ)
         onAcceptable(arm)
@@ -233,7 +221,7 @@ internal class KqueuePipelinedStreamServer(
      * finished polling but not yet gone quiet — is one the engine seam cannot
      * hold open.
      */
-    internal data class DropTally(
+    data class DropTally(
         val dropped: Int = 0,
         val gaveUp: Int = 0,
         val firstDroppedFd: Int = -1,
@@ -317,7 +305,7 @@ internal class KqueuePipelinedStreamServer(
      * the round-robin over it are private, and the boundary they exist for is
      * two billion accepts away from any test that drives real ones.
      */
-    internal fun setWorkerIndexForTest(value: Int) {
+    fun setWorkerIndexForTest(value: Int) {
         workerIndex = value
     }
 
@@ -326,15 +314,15 @@ internal class KqueuePipelinedStreamServer(
      *
      * Masked rather than taken modulo directly: [workerIndex] wraps to negative
      * after `Int.MAX_VALUE` accepts, and a negative index throws out of
-     * [KqueueEventLoopGroup.at]. The per-socket guard catches that, so the loop
+     * [AbstractPosixEventLoopGroup.at]. The per-socket guard catches that, so the loop
      * survives — and closes and drops the connection instead. The counter keeps
      * incrementing either way, so from then on it lands on a usable index once
-     * per [KqueueEventLoopGroup.size] and every other accept is dropped with one
+     * per [AbstractPosixEventLoopGroup.size] and every other accept is dropped with one
      * warning, for as long as the server runs. A single-worker group loses
      * nothing: `n % 1` is `0` for every `n`. Matches the sibling counter
-     * in `KqueueEventLoopGroup.next()`.
+     * in `AbstractPosixEventLoopGroup.next()`.
      */
-    private fun nextWorker(): KqueueEventLoop =
+    private fun nextWorker(): AbstractPosixReadinessEventLoop =
         workerGroup.at((workerIndex++ and Int.MAX_VALUE) % workerGroup.size)
 
     /**
@@ -402,7 +390,7 @@ internal class KqueuePipelinedStreamServer(
      * connection goes unreported — the descriptor is already released by then.
      */
     private fun dispatchToWorker(
-        workerLoop: KqueueEventLoop,
+        workerLoop: AbstractPosixReadinessEventLoop,
         clientFd: Int,
         listener: Listener,
         waitBudgetMicros: Long,
@@ -440,7 +428,7 @@ internal class KqueuePipelinedStreamServer(
      * Nothing before the attach is known to throw today; that half is a guard
      * against a construction step gaining one, not a fix for a reachable leak.
      */
-    private fun onWorkerAccept(clientFd: Int, loop: KqueueEventLoop, listener: Listener) {
+    private fun onWorkerAccept(clientFd: Int, loop: AbstractPosixReadinessEventLoop, listener: Listener) {
         val transport = try {
             // Inside the guard: they read a descriptor's worth of config with
             // that descriptor already accepted and nobody holding it. Neither
@@ -485,7 +473,7 @@ internal class KqueuePipelinedStreamServer(
         // attaches, so this connection is in the registry only once there is
         // something to deliver a stop notification to.
         val channel = try {
-            KqueuePipelinedChannel(transport, logger, localAddress = channelLocal)
+            PosixPipelinedChannel(transport, logger, localAddress = channelLocal)
         } catch (attachFailure: Throwable) {
             // The transport exists, so it owns the descriptor and closing it is
             // how the descriptor goes. Whether the attach got as far as joining
@@ -537,7 +525,7 @@ internal class KqueuePipelinedStreamServer(
      * boss loop was watching while that loop sat parked in `kevent()` — and a
      * registration dispatched moments earlier could still be queued for the
      * same fd. Handing the teardown to the loop removes both: the close is
-     * issued by the thread that owns the kqueue, and the queue's order puts it
+     * issued by the thread that owns the the readiness loop, and the queue's order puts it
      * after any pending arm. Netty reaches the same state by executing every
      * channel close on its EventLoop. Pending accept callbacks become no-ops
      * (closed flag check). Idempotent.
@@ -548,6 +536,7 @@ internal class KqueuePipelinedStreamServer(
             onLoop = {
                 for (listener in listeners) {
                     bossLoop.unregisterCallback(listener.serverFd, Interest.READ)
+                    bossLoop.cleanupFd(listener.serverFd)
                     closeFdSafely(listener.serverFd, logger, "pipelined server close")
                 }
             },
@@ -565,13 +554,13 @@ internal class KqueuePipelinedStreamServer(
      * address, and the per-address config applied to connections accepted
      * on it.
      */
-    internal class Listener(
+    class Listener(
         val serverFd: Int,
         val localAddress: SocketAddress,
         val config: BindConfig,
     )
 
-    internal companion object {
+    companion object {
         /**
          * How long the accept hand-off waits for a stopping worker before
          * releasing the descriptor regardless.

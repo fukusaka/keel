@@ -1,3 +1,5 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
@@ -10,7 +12,9 @@ import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.native.posix.HandoffOutcome
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.LoopParticipant
+import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Dispatchers
@@ -98,9 +102,9 @@ class EpollAcceptFailureSeamTest {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(acceptedFd))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
-            val server = EpollPipelinedStreamServer(
+            val server = PosixPipelinedStreamServer(
                 listeners = listOf(
-                    EpollPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                    PosixPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
                 ),
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -181,8 +185,8 @@ class EpollAcceptFailureSeamTest {
         // 12.8s inside one readiness callback, with the boss loop serving no
         // other listener and draining no task for the whole of it. The bound
         // has to belong to the callback.
-        val full = EpollPipelinedStreamServer.STOPPING_WORKER_WAIT_MICROS
-        val fresh = EpollPipelinedStreamServer.DropTally()
+        val full = PosixPipelinedStreamServer.STOPPING_WORKER_WAIT_MICROS
+        val fresh = PosixPipelinedStreamServer.DropTally()
         assertEquals(full, fresh.remainingBudget(), "the first hand-off of a callback has the whole allowance")
 
         // A hand-off that waits and then sees quiescence costs this thread just
@@ -236,9 +240,9 @@ class EpollAcceptFailureSeamTest {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
-            val server = EpollPipelinedStreamServer(
+            val server = PosixPipelinedStreamServer(
                 listeners = listOf(
-                    EpollPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                    PosixPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
                 ),
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -312,9 +316,9 @@ class EpollAcceptFailureSeamTest {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
-            val server = EpollPipelinedStreamServer(
+            val server = PosixPipelinedStreamServer(
                 listeners = listOf(
-                    EpollPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                    PosixPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
                 ),
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -423,9 +427,9 @@ class EpollAcceptFailureSeamTest {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(second))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
-            val server = EpollPipelinedStreamServer(
+            val server = PosixPipelinedStreamServer(
                 listeners = listOf(
-                    EpollPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                    PosixPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
                 ),
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -524,9 +528,9 @@ class EpollAcceptFailureSeamTest {
                 enqueueAccept(sentinelFd, AcceptResult.Accepted(doomed))
                 enqueueAccept(sentinelFd, AcceptResult.WouldBlock)
             }
-            val server = EpollPipelinedStreamServer(
+            val server = PosixPipelinedStreamServer(
                 listeners = listOf(
-                    EpollPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
+                    PosixPipelinedStreamServer.Listener(sentinelFd, scriptedLocal, BindConfig()),
                 ),
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,

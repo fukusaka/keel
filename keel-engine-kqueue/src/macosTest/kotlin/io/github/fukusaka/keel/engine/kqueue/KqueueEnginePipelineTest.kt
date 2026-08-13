@@ -1,6 +1,10 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.core.IoEngineConfig
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
+import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
@@ -38,7 +42,7 @@ class KqueueEnginePipelineTest {
             }
 
             // Discover bound port from server fd (use SocketUtils).
-            // bindPipeline returns AutoCloseable (KqueuePipelinedStreamServer).
+            // bindPipeline returns AutoCloseable (PosixPipelinedStreamServer).
             // We need the port — extract from engine or use a fixed port.
             // For simplicity, use a fixed port with retry.
             server.close()

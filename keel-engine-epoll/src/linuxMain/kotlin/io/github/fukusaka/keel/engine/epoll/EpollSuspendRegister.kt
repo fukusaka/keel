@@ -1,6 +1,9 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 
 /**
  * Narrow seam over the "suspend until fd is write-ready" pattern

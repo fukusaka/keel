@@ -1,4 +1,8 @@
+@file:OptIn(InternalPosixEventLoopApi::class)
+
 package io.github.fukusaka.keel.engine.kqueue
+
+import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 
 /**
  * Semantic abstraction over the `kqueue(2)`-family syscalls used by

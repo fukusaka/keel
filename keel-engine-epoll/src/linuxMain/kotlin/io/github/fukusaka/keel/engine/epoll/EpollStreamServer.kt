@@ -13,6 +13,7 @@ import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixPipelinedChannel
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -36,7 +37,7 @@ import kotlin.coroutines.resumeWithException
  *   bossLoop: epoll_wait() fires EPOLLIN on serverFd → resume
  *   POSIX accept(serverFd) → clientFd
  *   workerGroup.next() → assign worker EventLoop
- *   → EpollPipelinedChannel(clientFd, transport, workerLoop, allocator)
+ *   → PosixPipelinedChannel(clientFd, transport, workerLoop, allocator)
  * ```
  *
  * @param serverFd    The listening server socket fd (non-blocking).
@@ -205,7 +206,7 @@ internal class EpollStreamServer(
         // registry only once there is something to deliver a stop
         // notification to.
         val channel = try {
-            EpollPipelinedChannel(transport, logger, remoteAddr, localAddr)
+            PosixPipelinedChannel(transport, logger, remoteAddr, localAddr)
         } catch (attachFailure: Throwable) {
             releaseAndRaise(
                 clientFd,

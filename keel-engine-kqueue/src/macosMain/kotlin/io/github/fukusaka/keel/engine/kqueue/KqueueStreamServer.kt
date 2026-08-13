@@ -12,6 +12,8 @@ import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixPipelinedChannel
+import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -35,7 +37,7 @@ import kotlin.coroutines.resumeWithException
  *   bossLoop: kevent() fires EVFILT_READ on serverFd → resume
  *   POSIX accept(serverFd) → clientFd
  *   workerGroup.next() → assign worker EventLoop
- *   → KqueuePipelinedChannel(clientFd, transport, workerLoop, allocator)
+ *   → PosixPipelinedChannel(clientFd, transport, workerLoop, allocator)
  * ```
  *
  * @param serverFd    The listening server socket fd (non-blocking).
@@ -85,7 +87,7 @@ internal class KqueueStreamServer(
      * thread-safe (kernel disperses queued connections among callers).
      *
      * The accepted connection is assigned to the next worker EventLoop
-     * in round-robin order and returned as a [KqueuePipelinedChannel]
+     * in round-robin order and returned as a [PosixPipelinedChannel]
      * supporting both Pipeline mode and Coroutine mode.
      *
      * @throws IllegalStateException if the server channel is already closed.
@@ -212,7 +214,7 @@ internal class KqueueStreamServer(
         // registry only once there is something to deliver a stop
         // notification to.
         val channel = try {
-            KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
+            PosixPipelinedChannel(transport, logger, remoteAddr, localAddr)
         } catch (attachFailure: Throwable) {
             releaseAndRaise(
                 clientFd,
@@ -397,7 +399,7 @@ internal class KqueueStreamServer(
         // after any arm already queued for this fd, so the close(2) cannot let
         // the kernel re-hand the number before that arm runs -- the recycled-fd
         // hazard LoopHandoff.runOnLoop exists for.
-        // See KqueuePipelinedStreamServer.close for the close(2) half.
+        // See PosixPipelinedStreamServer.close for the close(2) half.
         bossLoop.runOnLoop(
             onLoop = {
                 bossLoop.cancelAll(

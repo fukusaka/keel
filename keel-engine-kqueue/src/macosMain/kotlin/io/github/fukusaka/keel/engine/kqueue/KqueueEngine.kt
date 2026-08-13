@@ -30,6 +30,8 @@ import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixIoTransport
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixPipelinedChannel
+import io.github.fukusaka.keel.native.posix.PosixPipelinedStreamServer
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
@@ -328,7 +330,7 @@ class KqueueEngine(
         // attaches, so that this connection is in the registry only once there
         // is something to deliver a stop notification to.
         val channel = releaseOnFailure(transport) {
-            KqueuePipelinedChannel(transport, logger, address, null)
+            PosixPipelinedChannel(transport, logger, address, null)
         }
         if (!transport.joinedLoop) {
             // The loop swept between this call's check at the top and that join.
@@ -419,7 +421,7 @@ class KqueueEngine(
         }
         // Built before the check; see the sibling connect path.
         val channel = releaseOnFailure(transport) {
-            KqueuePipelinedChannel(transport, logger, remoteAddr, localAddr)
+            PosixPipelinedChannel(transport, logger, remoteAddr, localAddr)
         }
         if (!transport.joinedLoop) {
             // The loop swept between this call's check at the top and that join.
@@ -537,7 +539,7 @@ class KqueueEngine(
      *
      * The boss EventLoop accepts connections and distributes them to worker
      * EventLoops in round-robin order. Each worker creates a
-     * [KqueuePipelinedChannel] and arms read callbacks.
+     * [PosixPipelinedChannel] and arms read callbacks.
      *
      * @param host Bind address (e.g. "0.0.0.0").
      * @param port Bind port.
@@ -553,7 +555,7 @@ class KqueueEngine(
 
     /**
      * Multi-address pipeline bind: every entry of [binds] becomes one
-     * listener of a single [KqueuePipelinedStreamServer], all armed on the
+     * listener of a single [PosixPipelinedStreamServer], all armed on the
      * shared boss loop. All-or-nothing: a failing bind closes the
      * listeners bound so far and rethrows.
      */
@@ -565,7 +567,7 @@ class KqueueEngine(
         val listeners = bindAllOrRollback(
             binds = binds,
             logger = logger,
-            closeOne = { listener: KqueuePipelinedStreamServer.Listener ->
+            closeOne = { listener: PosixPipelinedStreamServer.Listener ->
                 closeFdSafely(listener.serverFd, logger, "multi-address bind rollback")
             },
         ) { spec -> openPipelineListener(spec) }
@@ -576,7 +578,7 @@ class KqueueEngine(
         // still bound. Nothing in the constructor is known to throw, which is
         // the same footing the listener branches below stand on.
         val serverChannel = releaseListenersOnFailure(listeners) {
-            KqueuePipelinedStreamServer(
+            PosixPipelinedStreamServer(
                 listeners = listeners,
                 bossLoop = bossLoop,
                 workerGroup = workerGroup,
@@ -605,7 +607,7 @@ class KqueueEngine(
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun <T> releaseListenersOnFailure(
-        listeners: List<KqueuePipelinedStreamServer.Listener>,
+        listeners: List<PosixPipelinedStreamServer.Listener>,
         crossinline build: () -> T,
     ): T =
         try {
@@ -622,14 +624,14 @@ class KqueueEngine(
      * failure so [bindAllOrRollback] only has to roll back the listeners
      * that were fully opened before it.
      */
-    private fun openPipelineListener(spec: BindSpec): KqueuePipelinedStreamServer.Listener {
+    private fun openPipelineListener(spec: BindSpec): PosixPipelinedStreamServer.Listener {
         return when (val address = spec.address) {
             is InetSocketAddress -> {
                 val serverFd = nativeSocketOps.bindListener(address.requireIp(), address.port, spec.config.backlog)
                 releaseOnFailure(serverFd, "bindPipeline listener cleanup") {
                     val localAddr = nativeSocketOps.getLocalAddress(serverFd)
                     logger.debug { "Pipeline bound to $localAddr" }
-                    KqueuePipelinedStreamServer.Listener(serverFd, localAddr, spec.config)
+                    PosixPipelinedStreamServer.Listener(serverFd, localAddr, spec.config)
                 }
             }
             is UnixSocketAddress -> {
@@ -643,7 +645,7 @@ class KqueueEngine(
                 // window, and only one of them was answering for it.
                 releaseOnFailure(serverFd, "bindPipeline listener cleanup") {
                     logger.debug { "Pipeline bound to $address" }
-                    KqueuePipelinedStreamServer.Listener(serverFd, address, spec.config)
+                    PosixPipelinedStreamServer.Listener(serverFd, address, spec.config)
                 }
             }
         }
