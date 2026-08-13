@@ -2161,12 +2161,12 @@ abstract class AbstractReadinessEventLoop :
         /**
          * Initial gather capacity; grows on demand via [ensureWritevCapacity].
          *
-         * Both engines started at 8 before they shared this. Doubling it is
-         * about a hundred bytes per loop, not per connection — one scratch
-         * serves every transport on the loop — and it buys the steady-state
-         * `pendingWrites` depth of a pipelined responder without the first
-         * multi-buffer flush paying for a grow.
+         * What both engines used before they shared this. It briefly became 16
+         * when the scratch moved here, with nothing recorded and nothing
+         * measured — and the neighbouring engine documents 8 as covering the
+         * same `pendingWrites` depth, so the two would have disagreed about one
+         * deque. Changing it is a separate question from moving it.
          */
-        private const val INITIAL_WRITEV_CAPACITY = 16
+        private const val INITIAL_WRITEV_CAPACITY = 8
     }
 }

@@ -168,17 +168,6 @@ abstract class AbstractReadinessEngine(
     @InternalReadinessEngineApi
     fun workerParticipants(): Int = workerGroup.participants()
 
-    // Each stage releases what it took. `pthread_create` answering `EAGAIN` is
-    // the condition this is for -- a process out of threads -- and it lands in
-    // the middle of building an engine, where nothing else can clean up: the
-    // reference never leaves this constructor, so [close] is unreachable for
-    // the rest of the process and every loop already built keeps its readiness
-    // fd, its wakeup channel (a pipe on kqueue, an eventfd on epoll), native
-    // scratch and allocator child.
-    //
-    // Closing an unstarted loop is what makes the last stage's rollback work,
-    // and it runs the teardown its thread would have.
-
     /**
      * Binds a TCP server on [host]:[port] and returns a [StreamServer].
      *

@@ -424,10 +424,11 @@ class ReadinessIoTransport(
     /**
      * The write ledger's current byte count.
      *
-     * Behind the marker for the same reason as [hasFlushWaiter]: a test needs to see
-     * that a teardown zeroed it even though the release before that throws, and
-     * the count is otherwise reachable only through `isWritable`, which a closed
-     * transport reports `false` for whatever the ledger says.
+     * Behind the marker for the same reason as [hasFlushWaiter]: a test needs to
+     * see that a teardown zeroed it even though the release before that throws.
+     * Nothing else exposes the number — `isWritable` reports which side of the
+     * water marks the ledger last crossed, which is not the same question and
+     * does not move when a teardown zeroes the count.
      */
     @InternalReadinessEngineApi
     fun pendingByteCount(): Int = pendingBytes

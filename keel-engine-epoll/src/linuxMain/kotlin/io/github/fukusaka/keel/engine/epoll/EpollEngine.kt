@@ -37,6 +37,11 @@ class EpollEngine(
     // holds an epoll fd, a wakeup eventfd, native scratch and an allocator
     // child.
     //
+    // `pthread_create` answering `EAGAIN` -- a process out of threads -- is the
+    // condition this is for, and it lands in the middle of building an engine
+    // where nothing else can clean up: the reference never leaves this
+    // constructor, so `close` is unreachable for the rest of the process.
+    //
     // Closing an unstarted loop is what makes the last stage's rollback work,
     // and it runs the teardown its thread would have.
     init {
