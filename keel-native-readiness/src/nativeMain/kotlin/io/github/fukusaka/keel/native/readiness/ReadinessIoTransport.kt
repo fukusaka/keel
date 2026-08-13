@@ -711,8 +711,9 @@ class ReadinessIoTransport(
     /**
      * Attempts to send all pending writes via POSIX `write()`.
      *
-     * @return `true` if all data was sent synchronously, `false` if EAGAIN
-     *         was encountered and an async write readiness callback is pending.
+     * @return `true` if the queue is empty when this returns. `false` otherwise
+     *         — which under the default coalescing means only that the drain was
+     *         deferred to the loop, not that anything hit `EAGAIN`.
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true

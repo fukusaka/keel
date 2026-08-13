@@ -326,9 +326,6 @@ internal class KqueueEventLoop(
         }
     }
 
-    /** `internal` wrapper for this module's probes; see [participantCount]. */
-    internal fun participants(): Int = participantCount()
-
     /**
      * Arms [fd] + [interest] for the pipeline path with a persistent `EV_ADD`.
      *

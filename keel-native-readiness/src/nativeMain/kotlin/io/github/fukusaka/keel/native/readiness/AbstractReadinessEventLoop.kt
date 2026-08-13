@@ -43,8 +43,10 @@ import kotlin.time.TimeSource
 // Kept out of the KDoc because Dokka publishes that, and this is a note to
 // whoever works on these two loops next: the callback registry and its dispatch
 // path are here now too, so a bug in either is fixed once. What is still written
-// twice is the lifecycle -- start, close and the arena -- and the syscall
-// wrappers each kernel interface needs. The writev scratch is here now; what
+// twice is the lifecycle -- start, close and the arena -- the syscall wrappers
+// each kernel interface needs, and one line neither of those covers: the
+// `ReadinessSuspendRegister` member, which both engines implement identically by
+// delegating to this class's own `awaitWritableOwningFd`. The writev scratch is here now; what
 // each engine still repeats is the one call that gives it back. The measurements are in
 // the pull requests, where they stay attached to the revisions that took them.
 /**
@@ -182,7 +184,7 @@ abstract class AbstractReadinessEventLoop :
 
     /**
      * Connection-lifetime participants of this loop, told once each when it
-     * stops. Identity-keyed: a [LoopParticipant] joins at construction and
+     * stops. Identity-keyed: a [LoopParticipant] joins when its channel attaches and
      * leaves in its teardown, and none of the in-tree participants overrides
      * `equals`, so the default identity semantics are the contract.
      *
@@ -1022,7 +1024,7 @@ abstract class AbstractReadinessEventLoop :
      * Suspends until [fd] is write-ready, **owning [fd] for the duration**: if
      * the wait ends any way other than readiness, this closes it.
      *
-     * The `connect()` paths of both engines wait here on `EINPROGRESS`. The
+     * The shared `connect()` path waits here on `EINPROGRESS`. The
      * descriptor exists but belongs to nobody yet — no transport has been built
      * around it — so an abnormal exit that leaves it open leaks it for the life
      * of the process, with no handle left to close it by.

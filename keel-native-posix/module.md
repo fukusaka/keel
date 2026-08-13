@@ -12,12 +12,12 @@ implementations `PosixNativeSocket` / `PosixNativeSocketOps`, and the helpers
 `errnoMessage`, `closeFdSafely` and `applySocketOptions`.
 
 That is all it is. `keel-engine-io-uring` (completion-based),
-`keel-engine-nwconnection` (Network.framework) and `keel-tls-mbedtls` depend on
-this module for exactly these pieces.
+`keel-engine-nwconnection` (Network.framework), `keel-tls-mbedtls` and
+`keel-testing-internal` depend on this module for exactly these pieces.
 
 The readiness engines' shared implementation — the event loop, the transport,
 the servers — is `keel-native-readiness`, which builds on this one. The loop
-base was here until that module existed, so the three modules above were
+base was here until that module existed, so the four modules above were
 carrying it, and the transport and servers would have landed here too once the
 two engines merged.
 

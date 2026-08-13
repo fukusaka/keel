@@ -12,10 +12,9 @@ package io.github.fukusaka.keel.native.readiness
  *
  * **Most of the members it marks are there for tests.** Seven types are behind
  * it, and twelve members. Of those members the engines' production code reaches
- * exactly three — the loop's `cleanupFd`, its participant count, and the
- * engine's thread resolution. The other nine are used inside this module, or
- * are probes the engines' seam tests ask about a connection they have just torn
- * down, or both.
+ * exactly two — the loop's `cleanupFd` and the engine's thread resolution. The
+ * other ten are used inside this module, or are probes the engines' seam tests
+ * ask about a connection they have just torn down, or both.
  * That is worth knowing before treating this surface as a design: it is mostly
  * the cost of testing an implementation from the module next door.
  */

@@ -30,8 +30,9 @@ entry point, and the loop group that names their loop type.
 and the rest — is `keel-native-posix`, which this module depends on. Those are
 used by every native engine, including the ones that are not readiness-based
 (`keel-engine-io-uring` is completion-based; `keel-engine-nwconnection` is
-Network.framework), and by `keel-tls-mbedtls`. Keeping them apart is what lets
-those three depend on the socket seam without taking a readiness engine with it.
+Network.framework), and by `keel-tls-mbedtls` and `keel-testing-internal`.
+Keeping them apart is what lets those four depend on the socket seam without
+taking a readiness engine with it.
 
 **A completion-based counterpart** does not exist. io_uring's implementation
 stands alone today; whether it and a future Windows IOCP engine share enough to
@@ -43,10 +44,9 @@ to measure, not before.
 Seven types are behind `@InternalReadinessEngineApi`: the loop, its group, the
 engine base, the transport, the two servers, and the lifecycle the loop
 implements. Twelve members are too. The engines' production code
-reaches exactly three of them — the loop's `cleanupFd`, its participant count,
-and the engine's thread resolution. The other nine are used inside this module,
-or are probes the engines' seam tests ask about a connection they have just torn
-down, or both.
+reaches exactly two of them — the loop's `cleanupFd` and the engine's thread
+resolution. The other ten are used inside this module, or are probes the
+engines' seam tests ask about a connection they have just torn down, or both.
 
 The marker is not an API: it is `internal` that had to cross a Gradle module
 boundary, which Kotlin's `internal` does not do. It is also weaker than

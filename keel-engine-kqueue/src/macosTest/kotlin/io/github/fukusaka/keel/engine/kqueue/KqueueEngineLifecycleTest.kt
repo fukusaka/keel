@@ -335,6 +335,10 @@ class KqueueEngineLifecycleTest {
                 val addr = UnixSocketAddress.abstract("keel-abstract-should-fail")
                 assertFailsWith<UnsupportedOperationException> { engine.bind(addr) }
                 assertFailsWith<UnsupportedOperationException> { engine.connect(addr) }
+                // The third site, and the one nothing held: the consolidation
+                // replaced three literal checks with one override, so a call
+                // that forgets to make it fails only here.
+                assertFailsWith<UnsupportedOperationException> { engine.bindPipeline(addr) {} }
             } finally {
                 engine.close()
             }

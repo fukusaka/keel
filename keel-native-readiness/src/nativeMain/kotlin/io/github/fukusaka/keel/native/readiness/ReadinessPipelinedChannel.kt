@@ -12,7 +12,7 @@ import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
  * in it but the transport's type, and that type is now one.
  *
  * `internal` rather than behind the opt-in marker: every construction site is
- * in this module — the two servers and the engine's connect path — so the
+ * in this module — the two servers, and the engine's bind and connect paths — so the
  * compiler can enforce it outright instead of asking anyone to opt in.
  */
 @OptIn(InternalReadinessEngineApi::class)

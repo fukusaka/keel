@@ -358,9 +358,6 @@ internal class EpollEventLoop(
         }
     }
 
-    /** `internal` wrapper for this module's probes; see [participantCount]. */
-    internal fun participants(): Int = participantCount()
-
     /**
      * Removes all tracking state for [fd] from [fdEvents].
      *

@@ -26,7 +26,8 @@ import io.github.fukusaka.keel.logging.Logger
  *
  * ## Production impl
  *
- * [AbstractReadinessEventLoop] implements this interface directly. Tests
+ * Each engine's loop implements this over [AbstractReadinessEventLoop]'s own
+ * `awaitWritableOwningFd`, in one line. Tests
  * override via [AbstractReadinessEngine]'s `suspendRegisterOverride`
  * constructor parameter.
  *
