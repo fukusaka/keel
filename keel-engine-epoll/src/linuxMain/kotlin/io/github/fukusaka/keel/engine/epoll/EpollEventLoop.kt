@@ -416,7 +416,6 @@ internal class EpollEventLoop(
      *    tasks are pending, blocking otherwise)
      * 3. Process ready fds — resume associated coroutine continuations
      */
-    // --- Idle/read deadline timer (progress-bound mechanism) ---
     override fun loopBody() {
         while (running.value != 0) {
             // The registration lock failing means the ledgers stopped being

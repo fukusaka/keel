@@ -44,9 +44,10 @@ import kotlin.time.TimeSource
 // whoever works on these two loops next: the callback registry and its dispatch
 // path are here now too, so a bug in either is fixed once. What is still written
 // twice is the lifecycle -- start, close and the arena -- the syscall wrappers
-// each kernel interface needs, and one line neither of those covers: the
+// each kernel interface needs, and two things neither of those covers: the
 // `ReadinessSuspendRegister` member, which both engines implement identically by
-// delegating to this class's own `awaitWritableOwningFd`. The writev scratch is here now; what
+// delegating to this class's own `awaitWritableOwningFd`, and `inEventLoop`,
+// which both write as the same three lines over `pthread_equal`. The writev scratch is here now; what
 // each engine still repeats is the one call that gives it back. The measurements are in
 // the pull requests, where they stay attached to the revisions that took them.
 /**
