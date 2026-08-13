@@ -15,8 +15,10 @@ import io.github.fukusaka.keel.logging.Logger
  *
  * Unit tests driving [AbstractReadinessEngine.connect] through the
  * `ConnectResult.InProgress` branch cannot use a fake fd because
- * [AbstractReadinessEventLoop.register] calls real `kevent(EVFILT_WRITE, fd)`
- * which fails for unregistered fds, leaving the suspended
+ * [AbstractReadinessEventLoop.register] issues the real arm —
+ * `kevent(EVFILT_WRITE, fd)` on kqueue, `epoll_ctl(EPOLLOUT, fd)` on
+ * epoll — which fails for a descriptor the kernel does not know
+ * (`EBADF` on epoll), leaving the suspended
  * continuation stuck. Injecting an immediate-resume
  * [ReadinessSuspendRegister] gives tests deterministic control over
  * the `SO_ERROR == 0` (happy) and `SO_ERROR != 0` (error) branches
@@ -31,23 +33,34 @@ import io.github.fukusaka.keel.logging.Logger
  * ## Ownership contract
  *
  * The implementation owns [fd] while it waits. Any end other than
- * readiness — cancellation *or* failure — MUST drop the waiter and
- * close the fd via
- * [io.github.fukusaka.keel.native.posix.closeFdSafely].
+ * readiness — cancellation *or* failure — MUST drop the waiter, drop
+ * whatever the loop records about the fd, and close it via
+ * [io.github.fukusaka.keel.native.posix.closeFdSafely]. Both
+ * production and fake impls are required to honour this.
  *
- * No explicit `EV_DELETE` is owed: a knote is keyed on the descriptor
- * itself and closing that descriptor removes it (`the readiness loop(2)`), so this
- * holds even for a duplicate. the readiness loop also keeps nothing in user space
- * that could outlive the fd. epoll's counterpart is weaker on both
- * counts — it registers the open file description, and it mirrors the
- * mask — so the two contracts are not identical here.
+ * The middle obligation is the one that is easy to miss: the loop's
+ * own user-space ledger for the fd. Left behind, it makes the next
+ * socket handed that number look already-armed, and its arm is
+ * skipped. This is what [AbstractReadinessEventLoop.cleanupFd] is for.
+ *
+ * No explicit kernel-side removal (`EV_DELETE` / `epoll_ctl(DEL)`) is
+ * owed for the descriptors this path is given, but the two engines
+ * reach that conclusion differently. A kqueue knote is keyed on the
+ * descriptor itself, so closing it removes the knote even if the fd
+ * was duplicated (`kqueue(2)`). epoll registers the open *file
+ * description*, so the entry goes only with the last descriptor
+ * referring to it (`epoll(7)`, Q6/A6) — the connect fd is the only
+ * one and nothing dups it, but a caller that did hand over a
+ * duplicate would owe the `DEL`, and could not issue it afterwards.
+ * So do not hand one over.
  *
  * Naming only cancellation, as this contract once did, left the
- * reachable half out: `kevent(EV_ADD)` failing resumes the waiter
- * with an exception, and an exceptional resume does not run a
- * cancellation handler. The connect socket was then open with no
- * reference left to close it by.
+ * reachable half out: a failing arm (`kevent(EV_ADD)` /
+ * `epoll_ctl(EPOLL_CTL_ADD)`) resumes the waiter with an exception,
+ * and an exceptional resume does not run a cancellation handler. The
+ * connect socket was then open with no reference left to close it by.
  */
+@InternalReadinessEngineApi
 public fun interface ReadinessSuspendRegister {
 
     /**

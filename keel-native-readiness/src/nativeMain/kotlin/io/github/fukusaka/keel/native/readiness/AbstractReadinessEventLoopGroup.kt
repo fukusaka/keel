@@ -20,6 +20,7 @@ import kotlin.concurrent.AtomicInt
  * @param loops the loops this group owns, already built.
  */
 @OptIn(InternalReadinessEngineApi::class)
+@InternalReadinessEngineApi
 abstract class AbstractReadinessEventLoopGroup<L : AbstractReadinessEventLoop>(
     private val loops: Array<L>,
 ) {
@@ -62,9 +63,6 @@ abstract class AbstractReadinessEventLoopGroup<L : AbstractReadinessEventLoop>(
 
     /** Returns the loop at [index], bypassing the round-robin. */
     fun at(index: Int): L = loops[index]
-
-    /** Every loop in this group, in construction order. */
-    protected fun loops(): Array<L> = loops
 
     /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
     @InternalReadinessEngineApi

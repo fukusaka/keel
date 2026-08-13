@@ -67,7 +67,7 @@ import kotlin.time.TimeSource
  * share it: io_uring tracks its registrations too, but as a completion model
  * its ledger has a different shape, and the JDK-backed loop delegates its to a
  * `Selector`.
- * `PosixReadiness` is in the name so it is not mistaken for a base every engine
+ * `Readiness` is in the name so it is not mistaken for a base every engine
  * extends — it still ends in `EventLoop`, because that is what it is part of.
  *
  * **What a subclass supplies** is the kernel interface — [loopBody] (which

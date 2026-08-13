@@ -21,7 +21,8 @@ import kotlin.concurrent.Volatile
 import kotlin.coroutines.resumeWithException
 
 /**
- * the readiness loop-based [StreamServer] implementation for macOS.
+ * Readiness-loop [StreamServer] implementation, shared by the kqueue and
+ * epoll engines.
  *
  * Listens on [serverFd] and uses the boss [AbstractReadinessEventLoop] to wait for
  * incoming connections. Accepted channels are assigned to worker EventLoops
@@ -29,7 +30,7 @@ import kotlin.coroutines.resumeWithException
  *
  * ```
  * accept() flow:
- *   bossLoop: kevent() fires read readiness on serverFd → resume
+ *   bossLoop: kevent() / epoll_wait() fires read readiness on serverFd → resume
  *   POSIX accept(serverFd) → clientFd
  *   workerGroup.next() → assign worker EventLoop
  *   → ReadinessPipelinedChannel(clientFd, transport, workerLoop, allocator)

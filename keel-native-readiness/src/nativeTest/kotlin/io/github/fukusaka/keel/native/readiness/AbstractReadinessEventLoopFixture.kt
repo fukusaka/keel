@@ -66,8 +66,8 @@ internal abstract class AbstractReadinessEventLoopFixture {
         /** No thread of its own; the fixture drives the ledger and the sweep directly. */
         override fun start() = Unit
 
-        /** No thread of its own; the fixture drives the ledger and the sweep directly. */
-        override fun close() = Unit
+        /** No thread to stop, but the base's gather scratch is still owed back. */
+        override fun close() = freeWritevScratch()
 
         /** No connect path in this double. */
         override suspend fun awaitWriteReady(fd: Int, logger: Logger): Unit =
@@ -356,8 +356,8 @@ internal abstract class AbstractReadinessEventLoopFixture {
         /** No thread of its own; the fixture drives the ledger and the sweep directly. */
         override fun start() = Unit
 
-        /** No thread of its own; the fixture drives the ledger and the sweep directly. */
-        override fun close() = Unit
+        /** No thread to stop, but the base's gather scratch is still owed back. */
+        override fun close() = freeWritevScratch()
 
         /** No connect path in this double. */
         override suspend fun awaitWriteReady(fd: Int, logger: Logger): Unit =

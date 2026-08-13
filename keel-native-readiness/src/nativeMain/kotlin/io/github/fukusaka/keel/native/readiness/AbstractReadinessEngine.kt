@@ -39,7 +39,8 @@ import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
 
 /**
- * macOS the readiness loop-based [StreamEngine] implementation with multi-threaded EventLoop.
+ * Readiness-loop [StreamEngine] implementation with multi-threaded EventLoop,
+ * shared by the kqueue and epoll engines.
  *
  * Uses a boss/worker EventLoop model (same as NIO and Netty):
  * - **Boss EventLoop**: handles `accept()` readiness on server fds
@@ -67,6 +68,9 @@ import kotlin.coroutines.CoroutineContext
  *         +-- worker[N]: ...
  * ```
  *
+ * @param logTag Names this engine in its log statements. A constructor parameter
+ *               rather than an abstract member: the logger is built here, and a
+ *               base constructor must not read what a subclass has yet to assign.
  * @param config Engine-wide configuration. [IoEngineConfig.threads] controls
  *               the number of worker EventLoop threads. 0 (default) resolves
  *               to `availableProcessors()`.
@@ -84,7 +88,9 @@ import kotlin.coroutines.CoroutineContext
  *                       kernel.
  */
 @OptIn(ExperimentalForeignApi::class)
+@InternalReadinessEngineApi
 abstract class AbstractReadinessEngine(
+    logTag: String,
     override val config: IoEngineConfig = IoEngineConfig(),
     private val nativeSocket: NativeSocket = PosixNativeSocket,
     nativeSocketOps: NativeSocketOps? = null,
@@ -123,7 +129,7 @@ abstract class AbstractReadinessEngine(
      */
     private val guardedLoggerFactory = config.loggerFactory.guarded()
 
-    private val logger = guardedLoggerFactory.logger("AbstractReadinessEngine")
+    private val logger = guardedLoggerFactory.logger(logTag)
     private val nativeSocketOps: NativeSocketOps = nativeSocketOps ?: PosixNativeSocketOps(logger)
 
     /**
@@ -244,7 +250,8 @@ abstract class AbstractReadinessEngine(
      *
      * The socket is created in non-blocking mode so `connect()` returns
      * immediately with `EINPROGRESS`. The coroutine then suspends on
-     * `EVFILT_WRITE` via the EventLoop until the connection is established
+     * write readiness (`EVFILT_WRITE` / `EPOLLOUT`) via the EventLoop until the
+ * connection is established
      * (or fails). On loopback, `connect()` may succeed immediately
      * (returns 0) without needing to suspend.
      *

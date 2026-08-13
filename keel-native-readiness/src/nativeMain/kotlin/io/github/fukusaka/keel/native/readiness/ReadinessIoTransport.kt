@@ -31,7 +31,8 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 
 /**
- * the readiness loop [IoTransport] implementation for macOS.
+ * Readiness-loop [IoTransport] implementation, shared by the kqueue and
+ * epoll engines.
  *
  * **Read path**: registers read readiness via `AbstractReadinessEventLoop.registerCallback`.
  * On data arrival, allocates a buffer, calls POSIX `read()`, and delivers
@@ -45,6 +46,7 @@ import kotlin.coroutines.resume
  * caller is off-loop — and everything else must already be on it.
  */
 @OptIn(ExperimentalForeignApi::class)
+@InternalReadinessEngineApi
 class ReadinessIoTransport(
     /**
      * The connection's file descriptor. `internal` rather than `private` so a
@@ -298,7 +300,8 @@ class ReadinessIoTransport(
     }
 
     /**
-     * Surfaces peer-FIN / peer-RST (observed via `EV_EOF`) to user code via
+     * Surfaces peer-FIN / peer-RST (observed via `EV_EOF` on kqueue,
+     * `EPOLLIN | EPOLLRDHUP` on epoll) to user code via
      * [onReadClosed], regardless of [readEnabled] state. Without this, a
      * write-only push client would silently linger in CLOSE-WAIT until the
      * next write attempt or the `SO_KEEPALIVE` timer (~2 hours by default).
@@ -483,19 +486,21 @@ class ReadinessIoTransport(
         private set
 
     init {
-        // Arm read readiness at construction so peer-FIN is surfaced via
-        // EV_EOF + [onPeerClosed] without the user ever setting
+        // Arm read readiness at construction so peer-FIN is surfaced
+        // (`EV_EOF` / `EPOLLIN | EPOLLRDHUP`) to [onPeerClosed] without the
+        // user ever setting
         // readEnabled = true (e.g. write-only push client, one-direction
         // logger, monitoring metrics sender). Without this, the readiness loop would
         // deliver no event on graceful peer close until the next write attempt
         // or the SO_KEEPALIVE timer (~2 hours by default) — a public API
-        // contract gap. The arm is cheap (one EV_ADD syscall).
+        // contract gap. The arm is cheap (one `EV_ADD` / `EPOLL_CTL_MOD` syscall).
         //
         // The registration is one-shot, so this covers the connection only
         // until something first fires on it. A peer that sends data before
         // closing takes the back-pressure path in [onReadable], which declines
-        // to re-arm; unless a suspend waiter is queued on the same key, EV_DELETE
-        // then drops the filter and readEnabled = true is the only thing that
+        // to re-arm; unless a suspend waiter is queued on the same key, the
+        // withdrawal (`EV_DELETE` / `EPOLL_CTL_MOD` clearing the bit)
+        // then drops the interest and readEnabled = true is the only thing that
         // arms it again. A write-only client that receives
         // nothing keeps the arm for its whole lifetime and is fully covered —
         // one that receives anything at all is not, and a later close reaches
@@ -545,7 +550,8 @@ class ReadinessIoTransport(
 
         // Back-pressure path: if data is ready but the user has disabled
         // read, do not consume the data and do not re-arm. dispatchReady's
-        // "no re-register" branch EV_DELETEs the filter so the readiness loop does not
+        // "no re-register" branch withdraws the interest (`EV_DELETE` /
+        // `EPOLL_CTL_MOD`) so the readiness loop does not
         // busy-loop — unless a suspend waiter is queued on the same key, which
         // still needs it armed. The kernel rcvbuf retains the data and applies
         // back-pressure to the peer (TCP window). The setter's armRead()
@@ -1033,9 +1039,10 @@ class ReadinessIoTransport(
         // would drain may be the wreckage of a teardown that threw part-way:
         // buffers already released, or never releasable. `onReadable` has
         // guarded on this since it existed; the write half reached the same
-        // readiness with nothing in the way, and an `EV_ADD` filter is
-        // persistent, so write readiness keeps arriving until the registration
-        // is withdrawn.
+        // readiness with nothing in the way, and the arm persists on both
+        // engines — a kqueue `EV_ADD` filter and a level-triggered `EPOLLOUT`
+        // alike keep reporting write readiness until the registration is
+        // withdrawn.
         //
         // That window opens on an ordinary close too, not only a failed one:
         // `markClosing()` flips this flag off the loop and the teardown is
@@ -1080,12 +1087,16 @@ class ReadinessIoTransport(
                     !opened -> cont.cancel(closedTransportFlushCause())
                     pendingWrites.isEmpty() -> cont.resume(Unit)
                     else -> {
-                        // Mirror of the epoll defer eager-run: when a caller reaches
-                        // this branch, they are about to suspend and pay for a full EL
-                        // tick before the coalesced flush drains. Run the deferred
-                        // flush inline so the caller wakes on this dispatch instead of
-                        // the next one. The `flush()` deferral path is unchanged and
-                        // still coalesces SSE-style rapid emits when no one awaits.
+                        // If a coalesced flush is already queued to run on the next
+                        // EL tick, run it now instead of waiting for the tick to fire.
+                        // The awaitFlushComplete path is the backpressure gate under
+                        // high-concurrency /large workloads; the extra EL-tick round-trip
+                        // was measured at ~-25% throughput on 32-core Linux epoll
+                        // (16t/500c) because every producer that reaches this branch
+                        // pays one tick of latency before the flush drains. SSE-style
+                        // rapid emits still benefit from coalescing when no one is
+                        // waiting: `flush()` continues to defer as before, and only
+                        // callers already suspended in `awaitPendingFlush()` short-circuit.
                         if (flushScheduled) {
                             flushScheduled = false
                             val done = performFlush()

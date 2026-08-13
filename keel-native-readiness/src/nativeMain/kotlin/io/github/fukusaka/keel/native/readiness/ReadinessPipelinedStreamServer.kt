@@ -88,7 +88,7 @@ class ReadinessPipelinedStreamServer(
 
     /**
      * Seam-test convenience: drives the first (in seam scenarios, only)
-     * listener's accept loop directly without the readiness loop readiness delivery.
+     * listener's accept loop directly without readiness delivery.
      * The production call site is [AcceptArm.onReady].
      */
     fun onAcceptable() {
@@ -349,7 +349,7 @@ class ReadinessPipelinedStreamServer(
      * afterwards. Either way the loop runs the work. This window is after all
      * of them, where nothing runs it at all.
      *
-     * [io.github.fukusaka.keel.native.posix.AbstractReadinessEventLoop.runOnLoop]
+     * [AbstractReadinessEventLoop.runOnLoop]
      * rather than asking the loop whether it has stopped and branching on the
      * answer: the ask and the offer are two steps, and a loop that goes
      * quiescent between them takes the task into the dead queue after all. The
@@ -530,10 +530,10 @@ class ReadinessPipelinedStreamServer(
      * EventLoop thread.
      *
      * Closing from the caller's thread meant issuing `close(2)` for a fd the
-     * boss loop was watching while that loop sat parked in `kevent()` — and a
+     * boss loop was watching while that loop sat parked in its wait syscall — and a
      * registration dispatched moments earlier could still be queued for the
      * same fd. Handing the teardown to the loop removes both: the close is
-     * issued by the thread that owns the the readiness loop, and the queue's order puts it
+     * issued by the thread that owns the readiness loop, and the queue's order puts it
      * after any pending arm. Netty reaches the same state by executing every
      * channel close on its EventLoop. Pending accept callbacks become no-ops
      * (closed flag check). Idempotent.

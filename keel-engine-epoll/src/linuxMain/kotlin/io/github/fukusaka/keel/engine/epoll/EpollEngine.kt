@@ -8,16 +8,16 @@ import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.readiness.AbstractPosixEngine
-import io.github.fukusaka.keel.native.readiness.AbstractPosixEventLoopGroup
-import io.github.fukusaka.keel.native.readiness.AbstractPosixReadinessEventLoop
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEngine
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEventLoopGroup
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEventLoop
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
-import io.github.fukusaka.keel.native.readiness.PosixSuspendRegister
+import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
 
 /**
  * epoll-backed [StreamEngine] for Linux.
  *
- * Everything the engine does is [AbstractPosixEngine]'s: the two readiness
+ * Everything the engine does is [AbstractReadinessEngine]'s: the two readiness
  * engines' versions of this class were 675 and 694 lines that differed in one
  * platform check, which Linux does not need — it has an abstract namespace.
  * What is here is the loops this engine builds, because the rollback their
@@ -27,11 +27,11 @@ class EpollEngine(
     config: IoEngineConfig = IoEngineConfig(),
     nativeSocket: NativeSocket = PosixNativeSocket,
     nativeSocketOps: NativeSocketOps? = null,
-    suspendRegisterOverride: PosixSuspendRegister? = null,
-) : AbstractPosixEngine(config, nativeSocket, nativeSocketOps, suspendRegisterOverride) {
+    suspendRegisterOverride: ReadinessSuspendRegister? = null,
+) : AbstractReadinessEngine("EpollEngine", config, nativeSocket, nativeSocketOps, suspendRegisterOverride) {
 
-    override val bossLoop: AbstractPosixReadinessEventLoop
-    override val workerGroup: AbstractPosixEventLoopGroup<*>
+    override val bossLoop: AbstractReadinessEventLoop
+    override val workerGroup: AbstractReadinessEventLoopGroup<*>
 
     // Built one at a time so a failure gives back what came before it: a loop
     // holds an epoll fd, a wakeup eventfd, native scratch and an allocator

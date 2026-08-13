@@ -11,9 +11,11 @@ import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
  * through [AbstractPipelinedChannel]. Both engines had this class with nothing
  * in it but the transport's type, and that type is now one.
  *
- * Behind the opt-in marker, like the rest of this surface: the engines build it
- * and nobody else should.
+ * `internal` rather than behind the opt-in marker: every construction site is
+ * in this module — the two servers and the engine's connect path — so the
+ * compiler can enforce it outright instead of asking anyone to opt in.
  */
+@OptIn(InternalReadinessEngineApi::class)
 internal class ReadinessPipelinedChannel(
     transport: ReadinessIoTransport,
     logger: Logger,

@@ -10,16 +10,16 @@ import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.readiness.AbstractPosixEngine
-import io.github.fukusaka.keel.native.readiness.AbstractPosixEventLoopGroup
-import io.github.fukusaka.keel.native.readiness.AbstractPosixReadinessEventLoop
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEngine
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEventLoopGroup
+import io.github.fukusaka.keel.native.readiness.AbstractReadinessEventLoop
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
-import io.github.fukusaka.keel.native.readiness.PosixSuspendRegister
+import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
 
 /**
  * kqueue-backed [StreamEngine] for macOS.
  *
- * Everything the engine does is [AbstractPosixEngine]'s: the two readiness
+ * Everything the engine does is [AbstractReadinessEngine]'s: the two readiness
  * engines' versions of this class were 694 and 675 lines that differed in the
  * Unix-address check below. What is here is that check, and the loops this
  * engine builds — construction stays with the concrete engine because the
@@ -29,11 +29,11 @@ class KqueueEngine(
     config: IoEngineConfig = IoEngineConfig(),
     nativeSocket: NativeSocket = PosixNativeSocket,
     nativeSocketOps: NativeSocketOps? = null,
-    suspendRegisterOverride: PosixSuspendRegister? = null,
-) : AbstractPosixEngine(config, nativeSocket, nativeSocketOps, suspendRegisterOverride) {
+    suspendRegisterOverride: ReadinessSuspendRegister? = null,
+) : AbstractReadinessEngine("KqueueEngine", config, nativeSocket, nativeSocketOps, suspendRegisterOverride) {
 
-    override val bossLoop: AbstractPosixReadinessEventLoop
-    override val workerGroup: AbstractPosixEventLoopGroup<*>
+    override val bossLoop: AbstractReadinessEventLoop
+    override val workerGroup: AbstractReadinessEventLoopGroup<*>
 
     // Built one at a time so a failure gives back what came before it: a loop
     // holds a kqueue fd, a wakeup pipe, native scratch and an allocator child.
