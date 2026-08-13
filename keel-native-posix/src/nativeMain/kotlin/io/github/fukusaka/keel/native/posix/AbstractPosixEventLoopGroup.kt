@@ -20,9 +20,9 @@ import kotlin.concurrent.AtomicInt
  * @param loops the loops this group owns, already built.
  */
 @OptIn(InternalPosixEventLoopApi::class)
-abstract class AbstractPosixEventLoopGroup<L>(
+abstract class AbstractPosixEventLoopGroup<L : AbstractPosixReadinessEventLoop>(
     private val loops: Array<L>,
-) where L : AbstractPosixReadinessEventLoop, L : PosixEventLoopLifecycle {
+) {
 
     private val index = AtomicInt(0)
 
@@ -66,6 +66,15 @@ abstract class AbstractPosixEventLoopGroup<L>(
     /** Every loop in this group, in construction order. */
     protected fun loops(): Array<L> = loops
 
+    /** Whether any loop in this group still holds a callback for [fd] + [interest]. */
+    @InternalPosixEventLoopApi
+    fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
+        loops.any { it.hasCallbackRegistration(fd, interest) }
+
+    /** Total participants across this group's loops. */
+    @InternalPosixEventLoopApi
+    fun participants(): Int = loops.sumOf { it.participantCount() }
+
     /**
      * Stops every loop's thread and releases what the group holds.
      *
@@ -99,10 +108,10 @@ abstract class AbstractPosixEventLoopGroup<L>(
          * native scratch and an allocator child that only its own `close()`
          * returns. Nothing else has a reference to them, so nothing ever will.
          */
-        public inline fun <reified L> buildLoops(
+        public inline fun <reified L : AbstractPosixReadinessEventLoop> buildLoops(
             size: Int,
             create: (Int) -> L,
-        ): Array<L> where L : AbstractPosixReadinessEventLoop, L : PosixEventLoopLifecycle {
+        ): Array<L> {
             val built = ArrayList<L>(size)
             try {
                 repeat(size) { built += create(it) }
@@ -121,7 +130,7 @@ abstract class AbstractPosixEventLoopGroup<L>(
          * not one from the cleanup after it.
          */
         @PublishedApi
-        internal fun closeAll(toRelease: List<PosixEventLoopLifecycle>, cause: Throwable) {
+        internal fun closeAll(toRelease: List<AbstractPosixReadinessEventLoop>, cause: Throwable) {
             for (loop in toRelease) {
                 try {
                     loop.close()

@@ -12,6 +12,7 @@ import io.github.fukusaka.keel.native.posix.Interest
 import io.github.fukusaka.keel.native.posix.PosixEventLoopLifecycle
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.PosixIoTransport
+import io.github.fukusaka.keel.native.posix.PosixSuspendRegister
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
@@ -136,7 +137,7 @@ internal class KqueueEventLoop(
      */
     override val flushCoalescing: Boolean = true,
     private val syscallOps: KqueueSyscallOps = PosixKqueueSyscallOps(logger),
-) : AbstractPosixReadinessEventLoop(), KqueueSuspendRegister, PosixEventLoopLifecycle {
+) : AbstractPosixReadinessEventLoop(), PosixSuspendRegister, PosixEventLoopLifecycle {
 
     /**
      * The kqueue file descriptor, created at construction.
@@ -687,7 +688,7 @@ internal class KqueueEventLoop(
         freeWritevScratch()
     }
 
-    // --- KqueueSuspendRegister impl (seam for connect InProgress) ---
+    // --- PosixSuspendRegister impl (seam for connect InProgress) ---
 
     override suspend fun awaitWriteReady(fd: Int, logger: Logger) = awaitWritableOwningFd(fd, logger)
 

@@ -62,6 +62,16 @@ internal abstract class AbstractPosixReadinessEventLoopFixture {
         var onLoopThread: Boolean = true,
         val runDispatchedInline: Boolean = true,
     ) : AbstractPosixReadinessEventLoop() {
+
+        /** No thread of its own; the fixture drives the ledger and the sweep directly. */
+        override fun start() = Unit
+
+        /** No thread of its own; the fixture drives the ledger and the sweep directly. */
+        override fun close() = Unit
+
+        /** No connect path in this double. */
+        override suspend fun awaitWriteReady(fd: Int, logger: Logger): Unit =
+            error("this double has no connect path")
         /** What [submitArm] would have armed — the suspend path. */
         val armed = mutableListOf<Pair<Int, Interest>>()
 
@@ -341,6 +351,16 @@ internal abstract class AbstractPosixReadinessEventLoopFixture {
      * per-task backstop -- never executes there. This one exists to reach them.
      */
     protected class RealQueueLoop(var onLoopThread: Boolean = true) : AbstractPosixReadinessEventLoop() {
+
+        /** No thread of its own; the fixture drives the ledger and the sweep directly. */
+        override fun start() = Unit
+
+        /** No thread of its own; the fixture drives the ledger and the sweep directly. */
+        override fun close() = Unit
+
+        /** No connect path in this double. */
+        override suspend fun awaitWriteReady(fd: Int, logger: Logger): Unit =
+            error("this double has no connect path")
         val logged: List<Pair<LogLevel, String>> get() = logger.logged
 
         /** How many times the base's own drain ran. Teardown must not repeat it. */

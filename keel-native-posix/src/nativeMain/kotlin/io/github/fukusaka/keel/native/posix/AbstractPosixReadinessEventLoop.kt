@@ -101,7 +101,10 @@ import kotlin.coroutines.resumeWithException
  */
 @OptIn(ExperimentalForeignApi::class)
 @InternalPosixEventLoopApi
-abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
+abstract class AbstractPosixReadinessEventLoop :
+    CoroutineDispatcher(),
+    PosixEventLoopLifecycle,
+    PosixSuspendRegister {
 
     /**
      * Guards [registrations] — and, through [withRegLock], whatever else a
@@ -2035,7 +2038,8 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * the retention this registry was built to end, reintroduced by a missing
      * `removeParticipant`.
      */
-    protected fun participantCount(): Int = withRegLock { participants.size }
+    @InternalPosixEventLoopApi
+    fun participantCount(): Int = withRegLock { participants.size }
 
     /** Whether any waiter remains on `(fd, interest)`. Caller holds the lock. */
     protected fun hasWaiters(key: Long): Boolean = registrations[key] != null

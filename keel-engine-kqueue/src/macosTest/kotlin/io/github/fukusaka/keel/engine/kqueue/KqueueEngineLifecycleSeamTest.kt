@@ -16,6 +16,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.native.posix.InternalPosixEventLoopApi
 import io.github.fukusaka.keel.native.posix.PosixStreamServer
+import io.github.fukusaka.keel.native.posix.PosixSuspendRegister
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -60,7 +61,7 @@ class KqueueEngineLifecycleSeamTest {
     private fun newEngine(
         fakeSocket: FakeNativeSocket = FakeNativeSocket(),
         fakeOps: FakeNativeSocketOps = FakeNativeSocketOps(),
-        suspendRegisterOverride: KqueueSuspendRegister? = null,
+        suspendRegisterOverride: PosixSuspendRegister? = null,
     ): KqueueEngine = KqueueEngine(
         config = IoEngineConfig(threads = 1),
         nativeSocket = fakeSocket,
@@ -69,7 +70,7 @@ class KqueueEngineLifecycleSeamTest {
     )
 
     /** Immediate-resume fake: returns normally from `awaitWriteReady`. */
-    private val immediateSuspendRegister = KqueueSuspendRegister { _, _ ->
+    private val immediateSuspendRegister = PosixSuspendRegister { _, _ ->
         // Deliberately empty: resume immediately.
     }
 
