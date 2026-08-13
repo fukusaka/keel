@@ -6,11 +6,11 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
+import io.github.fukusaka.keel.native.posix.ShutdownResult
+import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.native.readiness.Interest
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.native.readiness.PosixIoTransport
-import io.github.fukusaka.keel.native.posix.ShutdownResult
-import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Runnable

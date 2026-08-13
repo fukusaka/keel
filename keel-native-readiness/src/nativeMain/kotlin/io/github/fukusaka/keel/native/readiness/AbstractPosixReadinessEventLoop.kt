@@ -1,7 +1,5 @@
 package io.github.fukusaka.keel.native.readiness
 
-import io.github.fukusaka.keel.native.posix.closeFdSafely
-import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.MpscQueue
@@ -9,6 +7,8 @@ import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.closeFdSafely
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.ByteVar

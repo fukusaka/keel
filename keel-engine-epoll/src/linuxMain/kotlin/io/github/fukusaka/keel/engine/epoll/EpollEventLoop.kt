@@ -6,6 +6,8 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.closeFdSafely
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.readiness.AbstractPosixReadinessEventLoop
 import io.github.fukusaka.keel.native.readiness.FdReadyListener
 import io.github.fukusaka.keel.native.readiness.Interest
@@ -13,8 +15,6 @@ import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.native.readiness.PosixEventLoopLifecycle
 import io.github.fukusaka.keel.native.readiness.PosixIoTransport
 import io.github.fukusaka.keel.native.readiness.PosixSuspendRegister
-import io.github.fukusaka.keel.native.posix.closeFdSafely
-import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena

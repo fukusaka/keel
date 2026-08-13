@@ -170,6 +170,7 @@ dependencies {
     dokka(project(":keel-io"))
     dokka(project(":keel-core"))
     dokka(project(":keel-native-posix"))
+    dokka(project(":keel-native-readiness"))
     if (isLinux) dokka(project(":keel-engine-epoll"))
     if (isMacos) dokka(project(":keel-engine-kqueue"))
     dokka(project(":keel-engine-nio"))

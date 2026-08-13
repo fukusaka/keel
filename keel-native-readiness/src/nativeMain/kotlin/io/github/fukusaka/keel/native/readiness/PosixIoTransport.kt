@@ -2,6 +2,11 @@
 
 package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.UnsafeIoBufApi
+import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
@@ -9,11 +14,6 @@ import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io.github.fukusaka.keel.buf.BufferAllocator
-import io.github.fukusaka.keel.buf.IoBuf
-import io.github.fukusaka.keel.buf.UnsafeIoBufApi
-import io.github.fukusaka.keel.buf.unsafePointer
-import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer

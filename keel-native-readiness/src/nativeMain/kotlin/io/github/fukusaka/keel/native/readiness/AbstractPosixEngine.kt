@@ -2,14 +2,6 @@
 
 package io.github.fukusaka.keel.native.readiness
 
-import io.github.fukusaka.keel.native.posix.ConnectResult
-import io.github.fukusaka.keel.native.posix.NativeSocket
-import io.github.fukusaka.keel.native.posix.NativeSocketOps
-import io.github.fukusaka.keel.native.posix.PosixNativeSocket
-import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
-import io.github.fukusaka.keel.native.posix.applySocketOptions
-import io.github.fukusaka.keel.native.posix.closeFdSafely
-import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.Channel
@@ -29,6 +21,14 @@ import io.github.fukusaka.keel.core.resolveFirst
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.guarded
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.ConnectResult
+import io.github.fukusaka.keel.native.posix.NativeSocket
+import io.github.fukusaka.keel.native.posix.NativeSocketOps
+import io.github.fukusaka.keel.native.posix.PosixNativeSocket
+import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
+import io.github.fukusaka.keel.native.posix.applySocketOptions
+import io.github.fukusaka.keel.native.posix.closeFdSafely
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.SupervisorJob

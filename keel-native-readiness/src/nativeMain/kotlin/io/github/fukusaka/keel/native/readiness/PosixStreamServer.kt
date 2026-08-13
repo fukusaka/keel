@@ -1,5 +1,9 @@
 package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.core.BindConfig
+import io.github.fukusaka.keel.core.SocketAddress
+import io.github.fukusaka.keel.core.StreamServer
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.NativeSocketOps
@@ -8,10 +12,6 @@ import io.github.fukusaka.keel.native.posix.PosixNativeSocketOps
 import io.github.fukusaka.keel.native.posix.applySocketOptions
 import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
-import io.github.fukusaka.keel.core.BindConfig
-import io.github.fukusaka.keel.core.SocketAddress
-import io.github.fukusaka.keel.core.StreamServer
-import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
