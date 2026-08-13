@@ -49,6 +49,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `keel-native-readiness` module (#1052)
 - `native-posix`: no longer carries that implementation, so `engine-io-uring`,
   `engine-nwconnection` and `tls-mbedtls` no longer pull it in (#1052)
+- `engine-kqueue`, `engine-epoll`: the per-loop gather scratch starts at 16 entries rather
+  than 8 — about a hundred bytes more per event loop, not per connection (#1052)
 - `native-readiness`: `AbstractReadinessEventLoop.reportRegLockFailure` is public under
   `@InternalReadinessEngineApi`, reachable from the engines' tests (#1050)
 - `build`, `ci`: add a `detektTestSources` task and run it in the gate — no detekt task

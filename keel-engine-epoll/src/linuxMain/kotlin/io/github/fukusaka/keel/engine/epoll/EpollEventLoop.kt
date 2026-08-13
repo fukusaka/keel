@@ -700,10 +700,10 @@ internal class EpollEventLoop(
      *
      * Called from both ends of the loop's life — [releaseLoopResources] for
      * one that ran, and [releaseOnConstructionFailure] for one that never came
-     * to exist. Kept as a single function so a fourth allocation cannot be
+     * to exist. Kept as a single function so a third allocation cannot be
      * released along one of those and forgotten along the other.
      *
-     * The three releases are not staged against each other the way
+     * The two releases are not staged against each other the way
      * [releaseOnConstructionFailure] stages its two: none of them can fail
      * short of a corrupt heap, and a `nativeHeap` this process cannot free is
      * not one it continues past.

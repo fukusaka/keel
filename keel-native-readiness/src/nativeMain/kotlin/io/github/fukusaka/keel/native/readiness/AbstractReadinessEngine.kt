@@ -47,7 +47,7 @@ import kotlin.coroutines.CoroutineContext
  * - **Worker EventLoopGroup**: handles `read`/`write`/`flush` on accepted channels
  *
  * New connections are assigned to worker EventLoops in round-robin order.
- * Each worker thread runs its own the readiness loop fd and acts as a
+ * Each worker thread runs its own readiness fd and acts as a
  * [CoroutineDispatcher][kotlinx.coroutines.CoroutineDispatcher], so all
  * I/O + request processing for a channel runs on a single thread without
  * cross-thread dispatch.
@@ -135,8 +135,9 @@ abstract class AbstractReadinessEngine(
     /**
      * The accept loop, and the worker loops it hands connections to.
      *
-     * Assigned in the `init` below rather than here, so that a failure part way
-     * through has something to unwind. As property initialisers they had none:
+     * Assigned by each engine in its own `init` rather than as initialisers
+     * here, so that a failure part way through has something to unwind. As
+     * property initialisers they had none:
      * a throw from the group's constructor discarded a fully built boss loop,
      * and a throw from either `start()` left running threads behind — with the
      * engine reference never leaving the constructor, so [close] could never be
@@ -171,8 +172,9 @@ abstract class AbstractReadinessEngine(
     // the condition this is for -- a process out of threads -- and it lands in
     // the middle of building an engine, where nothing else can clean up: the
     // reference never leaves this constructor, so [close] is unreachable for
-    // the rest of the process and every loop already built keeps its the readiness loop fd,
-    // wakeup pipe, native scratch and allocator child.
+    // the rest of the process and every loop already built keeps its readiness
+    // fd, its wakeup channel (a pipe on kqueue, an eventfd on epoll), native
+    // scratch and allocator child.
     //
     // Closing an unstarted loop is what makes the last stage's rollback work,
     // and it runs the teardown its thread would have.
@@ -182,7 +184,7 @@ abstract class AbstractReadinessEngine(
      *
      * Creates a server socket and returns a [ReadinessStreamServer] whose
      * [accept][StreamServer.accept] distributes connections to worker EventLoops
-     * in round-robin. The listener is armed on the boss EventLoop's the readiness loop by
+     * in round-robin. The listener is armed on the boss EventLoop by
      * `accept()`, not here, so binding alone does not leave a watch with no
      * waiter behind it.
      *

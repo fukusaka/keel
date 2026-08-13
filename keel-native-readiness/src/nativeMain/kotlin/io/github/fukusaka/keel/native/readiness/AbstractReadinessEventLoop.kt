@@ -856,8 +856,8 @@ abstract class AbstractReadinessEventLoop :
      * then check that the loop it belongs to stops — which is the half of the
      * wiring that would otherwise be held by nothing.
      *
-     * The opt-in is not a formality here: this is the only member of the
-     * surface carrying the marker itself. A class-level marker gates *naming*
+     * The opt-in is not a formality here — the marker is on this member, not
+     * only on the class. A class-level marker gates *naming*
      * [AbstractReadinessEventLoop], which a caller reaching an inherited
      * member through a concrete engine type never does — such a caller reaches
      * [loop] with no opt-in at all. Strip the marker from this declaration and
@@ -2091,10 +2091,11 @@ abstract class AbstractReadinessEventLoop :
     /**
      * Whether `fd` still has a callback registered for [interest], taking the lock.
      *
-     * The keyed pair [hasCallbackRegistration] wraps. This one is `protected`
-     * and therefore unpublished; the wrapper is behind the opt-in marker,
-     * because its callers — the group, the engine, and the seam tests through
-     * them — are not subclasses. The names differ because a same-named wrapper
+     * The keyed pair [hasCallbackRegistration] wraps. This one is `protected`,
+     * which reaches subclasses; the wrapper is behind the opt-in marker for the
+     * callers that are not — the group, the engine, and the seam tests through
+     * them. Neither modifier hides anything from the API docs: this project
+     * documents every visibility, down to `private`. The names differ because a same-named wrapper
      * would have to `override` rather than wrap, which is what the fixture's
      * double does.
      */
@@ -2157,7 +2158,15 @@ abstract class AbstractReadinessEventLoop :
         /** The fd half of a [registrationKey]: the low 32 bits, without sign extension. */
         private const val FD_MASK = 0xFFFFFFFFL
 
-        /** Initial gather capacity; grows on demand via [ensureWritevCapacity]. */
+        /**
+         * Initial gather capacity; grows on demand via [ensureWritevCapacity].
+         *
+         * Both engines started at 8 before they shared this. Doubling it is
+         * about a hundred bytes per loop, not per connection — one scratch
+         * serves every transport on the loop — and it buys the steady-state
+         * `pendingWrites` depth of a pipelined responder without the first
+         * multi-buffer flush paying for a grow.
+         */
         private const val INITIAL_WRITEV_CAPACITY = 16
     }
 }

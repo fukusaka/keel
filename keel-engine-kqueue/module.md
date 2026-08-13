@@ -25,8 +25,8 @@ KqueueEngine
 ├── bossLoop (KqueueEventLoop) ── accept readiness on server fd
 │     └── kevent(EVFILT_READ) → accept() → assign to worker
 └── workerGroup (KqueueEventLoopGroup, N workers)
-      ├── worker[0]: PipelinedChannel A, D, ...
-      ├── worker[1]: PipelinedChannel B, E, ...
+      ├── worker[0]: ReadinessPipelinedChannel A, D, ...
+      ├── worker[1]: ReadinessPipelinedChannel B, E, ...
       └── worker[N]: ...
 ```
 
@@ -92,7 +92,7 @@ and EVFILT_WRITE is deleted.
 | Class | Role |
 |-------|------|
 | `KqueueEngine` | `StreamEngine` implementation. Creates boss + worker EventLoops |
-| `PipelinedChannel` | Unified channel: Pipeline + Coroutine modes. The implementation is shared with the other readiness engine and internal to `keel-native-readiness`, so it has no page of its own |
+| `ReadinessPipelinedChannel` | Unified channel: Pipeline + Coroutine modes — shared with the other readiness engine, in `keel-native-readiness` |
 | `ReadinessPipelinedStreamServer` | Pipeline-mode server (callback-driven accept) — shared, in `keel-native-readiness` |
 | `ReadinessStreamServer` | Coroutine-mode server (suspend-based accept) — shared, in `keel-native-readiness` |
 | `ReadinessIoTransport` | `IoTransport` for write/flush with EVFILT_WRITE backpressure — shared with the epoll engine, in `keel-native-readiness` |
@@ -106,4 +106,4 @@ from the shared `keel-native-posix` module (`NativeSocketOps` / `NativeSocket`).
 # Package io.github.fukusaka.keel.engine.kqueue
 
 macOS kqueue-based IoEngine with multi-threaded EventLoop, unified Pipeline + Coroutine
-mode via a shared `PipelinedChannel`, and zero-copy I/O via `IoBuf.unsafePointer`.
+mode via a shared `ReadinessPipelinedChannel`, and zero-copy I/O via `IoBuf.unsafePointer`.

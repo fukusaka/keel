@@ -407,9 +407,11 @@ class ReadinessIoTransport(
     /**
      * Whether a caller is parked in [awaitPendingFlush] right now.
      *
-     * `internal`, and declared here rather than on the base: this exists so a
-     * test can wait for a waiter to reach its park instead of asserting on one
-     * that has not, and a test probe should not become published API.
+     * Behind the opt-in marker, and declared here rather than on the base: this
+     * exists so a test can wait for a waiter to reach its park instead of
+     * asserting on one that has not. The marker is what says so — it does not
+     * keep the member out of the API docs, which this project generates for
+     * every visibility.
      *
      * The field is written by the loop thread and is not volatile, so an
      * off-loop reader sees it only eventually — and the answer is a moment in
@@ -480,10 +482,10 @@ class ReadinessIoTransport(
      * flag answers for it too.
      *
      * Behind the opt-in marker rather than `internal`: the engines' servers and
-     * their connect paths set it as they hand a connection to a loop. Every one
-     * of those is in this module now, so `internal` would reach them — the
-     * marker is what keeps the seam tests, which read it from the engines, from
-     * needing anything wider.
+     * their connect paths read it to decide whether a teardown still has a loop
+     * to run on. Only [onChannelAttached] writes it. Every reader is in this
+     * module now, so `internal` would reach them — the marker is what keeps the
+     * seam tests, which read it from the engines, from needing anything wider.
      */
     @InternalReadinessEngineApi
     var joinedLoop: Boolean = false

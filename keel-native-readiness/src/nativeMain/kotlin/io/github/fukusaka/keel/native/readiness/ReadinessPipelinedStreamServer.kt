@@ -22,7 +22,7 @@ import kotlin.concurrent.AtomicInt
 import kotlin.time.TimeSource
 
 /**
- * Pipeline server channel for the readiness loop-based connection acceptance.
+ * Pipeline server channel for readiness-driven connection acceptance.
  *
  * One server owns one or more [Listener]s (one per bound address — the
  * multi-address `bindPipeline` overload; a single-address bind is the
