@@ -301,7 +301,8 @@ class ReadinessIoTransport(
 
     /**
      * Surfaces peer-FIN / peer-RST (observed via `EV_EOF` on kqueue,
-     * `EPOLLIN | EPOLLRDHUP` on epoll) to user code via
+     * `EPOLLHUP | EPOLLERR | EPOLLRDHUP` on epoll — a reset arrives as one of
+     * the first two, not as `RDHUP`) to user code via
      * [onReadClosed], regardless of [readEnabled] state. Without this, a
      * write-only push client would silently linger in CLOSE-WAIT until the
      * next write attempt or the `SO_KEEPALIVE` timer (~2 hours by default).
@@ -487,19 +488,22 @@ class ReadinessIoTransport(
 
     init {
         // Arm read readiness at construction so peer-FIN is surfaced
-        // (`EV_EOF` / `EPOLLIN | EPOLLRDHUP`) to [onPeerClosed] without the
-        // user ever setting
+        // (`EV_EOF` / `EPOLLHUP | EPOLLERR | EPOLLRDHUP`) to [onPeerClosed]
+        // without the user ever setting
         // readEnabled = true (e.g. write-only push client, one-direction
         // logger, monitoring metrics sender). Without this, the readiness loop would
         // deliver no event on graceful peer close until the next write attempt
         // or the SO_KEEPALIVE timer (~2 hours by default) — a public API
-        // contract gap. The arm is cheap (one `EV_ADD` / `EPOLL_CTL_MOD` syscall).
+        // contract gap. The arm is cheap: one `EV_ADD` on kqueue, one
+        // `EPOLL_CTL_ADD` on epoll — and on epoll not even that when the bits
+        // already match.
         //
         // The registration is one-shot, so this covers the connection only
         // until something first fires on it. A peer that sends data before
         // closing takes the back-pressure path in [onReadable], which declines
         // to re-arm; unless a suspend waiter is queued on the same key, the
-        // withdrawal (`EV_DELETE` / `EPOLL_CTL_MOD` clearing the bit)
+        // withdrawal (`EV_DELETE` on kqueue; on epoll a `MOD` down to what is
+        // left, or a `DEL` once nothing is)
         // then drops the interest and readEnabled = true is the only thing that
         // arms it again. A write-only client that receives
         // nothing keeps the arm for its whole lifetime and is fully covered —
@@ -550,8 +554,11 @@ class ReadinessIoTransport(
 
         // Back-pressure path: if data is ready but the user has disabled
         // read, do not consume the data and do not re-arm. dispatchReady's
-        // "no re-register" branch withdraws the interest (`EV_DELETE` /
-        // `EPOLL_CTL_MOD`) so the readiness loop does not
+        // "no re-register" branch withdraws the interest (`EV_DELETE` on
+        // kqueue; on epoll a `MOD` down to what is left, or a `DEL` once
+        // nothing is — an fd left registered with an empty mask still comes
+        // back from every wait, because `EPOLLERR` / `EPOLLHUP` are reported
+        // whether or not they were asked for) so the readiness loop does not
         // busy-loop — unless a suspend waiter is queued on the same key, which
         // still needs it armed. The kernel rcvbuf retains the data and applies
         // back-pressure to the peer (TCP window). The setter's armRead()
@@ -559,9 +566,12 @@ class ReadinessIoTransport(
         // true.
         //
         // Returning here also gives up peer-close detection until read is
-        // re-enabled. The filter carries EOF, so deleting it deletes the
-        // only path a close could arrive on; the registration is one-shot,
-        // so nothing re-delivers it either.
+        // re-enabled. On kqueue the filter carries EOF, so deleting it deletes
+        // the only path a close could arrive on. On epoll the hangup bits
+        // arrive unasked, so what closes that path is the `DEL` — leaving the
+        // fd registered with an empty mask would keep delivering them with no
+        // handler left. Either way the registration is one-shot, so nothing
+        // re-delivers it.
         //
         // A close arriving *with* this wake is a different matter.
         // dispatchReady pops the listener into a local before it calls
@@ -569,8 +579,8 @@ class ReadinessIoTransport(
         // follows on the same event —
         // it fires, and that is how a reads-disabled connection learns of a
         // FIN that arrived behind the data. What is lost is a close arriving
-        // *later*: the filter is gone by then, and only armRead() brings it
-        // back, with the pending FIN making the fd readable.
+        // *later*: the registration is gone by then, and only armRead() brings
+        // it back, with the pending FIN making the fd readable.
         if (!readEnabled) return
 
         if (!readPoolRegistered) {

@@ -475,8 +475,19 @@ abstract class AbstractReadinessEventLoop :
         writevCapacity = grown
     }
 
-    /** Releases the gather scratch. Called from each engine's teardown. */
+    private var writevScratchFreed = false
+
+    /**
+     * Releases the gather scratch. Called from each engine's teardown.
+     *
+     * Idempotent: the two teardown paths that reach it are mutually exclusive
+     * today, but `close()` is a public obligation on every loop — including the
+     * test doubles, which own the scratch without owning a thread — and a
+     * second `nativeHeap.free` of the same pointer is not a no-op.
+     */
     protected fun freeWritevScratch() {
+        if (writevScratchFreed) return
+        writevScratchFreed = true
         nativeHeap.free(writevBases)
         nativeHeap.free(writevLens)
     }

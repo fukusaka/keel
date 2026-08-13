@@ -19,7 +19,7 @@ everything above the primitive is the same code. It lives here:
 | `AbstractReadinessEngine` | `bind` / `connect`, and the loops' lifecycle |
 | `ReadinessStreamServer`, `ReadinessPipelinedStreamServer`, `ReadinessPipelinedChannel` | accepting and handing connections to workers |
 | `AbstractReadinessEventLoopGroup` | round-robin across loop threads |
-| `Interest`, `FdReadyListener`, `LoopParticipant`, `LoopHandoff`, `ReadinessSuspendRegister`, `ReadinessEventLoopLifecycle` | the vocabulary those pieces share |
+| `Interest`, `FdReadyListener`, `LoopParticipant`, `HandoffOutcome`, `ReadinessSuspendRegister`, `ReadinessEventLoopLifecycle` | the vocabulary those pieces share (`LoopHandoff` itself is internal to this module) |
 
 The engines supply the readiness primitive and its cinterop, and nothing else.
 
@@ -39,10 +39,16 @@ to measure, not before.
 
 ## Opt-in
 
-The loop, the transport, the servers, the engine base and the two seams they
-implement are behind `@InternalReadinessEngineApi`. It is not an API: it is
-`internal` that had to cross a Gradle module boundary, which Kotlin's
-`internal` does not do.
+Seven types are behind `@InternalReadinessEngineApi`: the loop, its group, the
+engine base, the transport, the two servers, and the lifecycle the loop
+implements. Twelve members are too — three reached by the engines' production
+code, two by the engine base within this module, and seven only by the engines'
+seam tests, which ask a torn-down connection whether its registrations went.
+
+The marker is not an API: it is `internal` that had to cross a Gradle module
+boundary, which Kotlin's `internal` does not do. It is also weaker than
+`internal` — a third party can opt in — and Kotlin offers nothing tighter that
+still crosses the boundary.
 
 Five types are public without it. `Interest`, `FdReadyListener`,
 `LoopParticipant` and `HandoffOutcome` are the vocabulary the marked types are

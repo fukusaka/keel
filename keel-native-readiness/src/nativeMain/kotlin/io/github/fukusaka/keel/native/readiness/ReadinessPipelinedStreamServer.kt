@@ -30,7 +30,7 @@ import kotlin.time.TimeSource
  * boss [AbstractReadinessEventLoop]; accepted connections are distributed to worker
  * EventLoops in round-robin regardless of the listener they arrived on.
  *
- * Same architecture as [EpollPipelinedStreamServer][io.github.fukusaka.keel.engine.epoll.EpollPipelinedStreamServer].
+ * One class for both readiness engines; the epoll and kqueue servers it replaced had the same architecture.
  */
 @OptIn(ExperimentalForeignApi::class)
 @InternalReadinessEngineApi

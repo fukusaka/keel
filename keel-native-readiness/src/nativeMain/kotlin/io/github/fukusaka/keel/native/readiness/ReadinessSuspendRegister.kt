@@ -41,7 +41,8 @@ import io.github.fukusaka.keel.logging.Logger
  * The middle obligation is the one that is easy to miss: the loop's
  * own user-space ledger for the fd. Left behind, it makes the next
  * socket handed that number look already-armed, and its arm is
- * skipped. This is what [AbstractReadinessEventLoop.cleanupFd] is for.
+ * skipped. The release path calls [AbstractReadinessEventLoop.forgetInterests]
+ * for this; epoll delegates that to its `cleanupFd`.
  *
  * No explicit kernel-side removal (`EV_DELETE` / `epoll_ctl(DEL)`) is
  * owed for the descriptors this path is given, but the two engines
