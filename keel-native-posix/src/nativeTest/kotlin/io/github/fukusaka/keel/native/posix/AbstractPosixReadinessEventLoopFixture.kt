@@ -219,7 +219,7 @@ internal abstract class AbstractPosixReadinessEventLoopFixture {
             withRegLock { hasWaiters(registrationKey(fd, interest)) }
 
         /** The callback ledger's accessors are protected; this is the subclass reaching them. */
-        fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean = hasCallbackFor(fd, interest)
+        override fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean = hasCallbackFor(fd, interest)
 
         fun contains(fd: Int, interest: Interest, reg: Registration): Boolean =
             withRegLock { isRegistered(registrationKey(fd, interest), reg) }

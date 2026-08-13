@@ -1,11 +1,14 @@
 package io.github.fukusaka.keel.native.posix
 
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.MpscQueue
 import io.github.fukusaka.keel.collections.LongObjectMap
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
+import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlin.time.TimeSource
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
@@ -370,6 +373,38 @@ abstract class AbstractPosixReadinessEventLoop : CoroutineDispatcher() {
      * declare a flush policy they never consult would be noise.
      */
     open val flushCoalescing: Boolean get() = true
+
+    /**
+     * This loop's own buffer allocator, a child of the engine's.
+     *
+     * Per loop so pooling needs no lock: only this thread allocates from it.
+     * Both engines took it as a constructor parameter; it is declared here so
+     * the servers that hand a connection to a loop can read it off the base.
+     * Defaulted rather than abstract, like the flush policy above and for the
+     * same reason: this base's test doubles never allocate.
+     */
+    open val allocator: BufferAllocator get() = DefaultAllocator
+
+    /**
+     * Effective per-connection read buffer size for connections on this loop
+     * ([io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]).
+     */
+    open val readBufferSize: Int get() = IoTransport.DEFAULT_READ_BUFFER_SIZE
+
+    /**
+     * Engine-wide idle (no-progress) timeout for connections on this loop
+     * ([io.github.fukusaka.keel.core.IoEngineConfig.idleTimeoutMillis]).
+     */
+    open val idleTimeoutMillis: Long get() = 0
+
+    /**
+     * Whether this loop still holds a callback for [fd] + [interest].
+     *
+     * A probe for the engines' tests, which ask it about a connection they have
+     * just torn down. Behind the opt-in marker like the rest of this surface.
+     */
+    @InternalPosixEventLoopApi
+    open fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean = hasCallbackFor(fd, interest)
 
     /** Monotonic origin for [nowMillis]; per loop, so the marks never cross loops. */
     private val timeOrigin = TimeSource.Monotonic.markNow()

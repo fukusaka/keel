@@ -108,7 +108,7 @@ internal class KqueueEventLoop(
      * [DefaultAllocator] for boss / test loops that do not perform reads
      * and therefore never invoke the allocator.
      */
-    val allocator: BufferAllocator = DefaultAllocator,
+    override val allocator: BufferAllocator = DefaultAllocator,
     /**
      * Engine-wide default read buffer size
      * ([io.github.fukusaka.keel.core.IoEngineConfig.readBufferSize]) for
@@ -117,7 +117,7 @@ internal class KqueueEventLoop(
      * [io.github.fukusaka.keel.core.ConnectConfig.readBufferSize] is `null`;
      * the effective size is captured per connection on the transport.
      */
-    val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
+    override val readBufferSize: Int = IoTransport.DEFAULT_READ_BUFFER_SIZE,
     /**
      * Engine-wide default idle (no-progress) timeout in milliseconds
      * ([io.github.fukusaka.keel.core.IoEngineConfig.idleTimeoutMillis]) for
@@ -125,7 +125,7 @@ internal class KqueueEventLoop(
      * [io.github.fukusaka.keel.core.BindConfig.idleTimeoutMillis] /
      * [io.github.fukusaka.keel.core.ConnectConfig.idleTimeoutMillis] is `null`.
      */
-    val idleTimeoutMillis: Long = 0,
+    override val idleTimeoutMillis: Long = 0,
     /**
      * Engine-wide [io.github.fukusaka.keel.core.IoEngineConfig.flushCoalescing]
      * value. When `true` (default), [KqueueIoTransport.flush] schedules the
@@ -330,9 +330,6 @@ internal class KqueueEventLoop(
         }
     }
 
-    /** `internal` wrapper for this module's `EventLoopGroup`; see [hasCallbackFor]. */
-    internal fun hasCallbackRegistration(fd: Int, interest: Interest): Boolean =
-        hasCallbackFor(fd, interest)
 
     /** `internal` wrapper for this module's probes; see [participantCount]. */
     internal fun participants(): Int = participantCount()
