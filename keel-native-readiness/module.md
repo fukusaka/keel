@@ -14,12 +14,12 @@ everything above the primitive is the same code. It lives here:
 
 | | |
 |---|---|
-| `AbstractPosixReadinessEventLoop` | the loop: interest ledger, dispatch, shutdown sweep |
-| `PosixIoTransport` | a connection: read, write, gather-flush, half-close, teardown |
-| `AbstractPosixEngine` | `bind` / `connect`, and the loops' lifecycle |
-| `PosixStreamServer`, `PosixPipelinedStreamServer`, `PosixPipelinedChannel` | accepting and handing connections to workers |
-| `AbstractPosixEventLoopGroup` | round-robin across loop threads |
-| `Interest`, `FdReadyListener`, `LoopParticipant`, `LoopHandoff`, `PosixSuspendRegister`, `PosixEventLoopLifecycle` | the vocabulary those pieces share |
+| `AbstractReadinessEventLoop` | the loop: interest ledger, dispatch, shutdown sweep |
+| `ReadinessIoTransport` | a connection: read, write, gather-flush, half-close, teardown |
+| `AbstractReadinessEngine` | `bind` / `connect`, and the loops' lifecycle |
+| `ReadinessStreamServer`, `ReadinessPipelinedStreamServer`, `ReadinessPipelinedChannel` | accepting and handing connections to workers |
+| `AbstractReadinessEventLoopGroup` | round-robin across loop threads |
+| `Interest`, `FdReadyListener`, `LoopParticipant`, `LoopHandoff`, `ReadinessSuspendRegister`, `ReadinessEventLoopLifecycle` | the vocabulary those pieces share |
 
 The engines supply the readiness primitive and its cinterop, and nothing else.
 
@@ -39,6 +39,13 @@ to measure, not before.
 
 ## Opt-in
 
-Everything the engines reach for is behind `@InternalReadinessEngineApi`. It is
-not an API: it is `internal` that had to cross a Gradle module boundary, which
-Kotlin's `internal` does not do.
+The loop, the transport, the servers, the engine base and the two seams they
+implement are behind `@InternalReadinessEngineApi`. It is not an API: it is
+`internal` that had to cross a Gradle module boundary, which Kotlin's
+`internal` does not do.
+
+Four types are public without it — `Interest`, `FdReadyListener`,
+`LoopParticipant` and `HandoffOutcome`. They are the vocabulary the marked
+types are declared in terms of, so a caller holding one of those signatures
+already needs to name them; putting them behind the marker would add an opt-in
+without adding a boundary.

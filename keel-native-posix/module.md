@@ -72,12 +72,6 @@ fails on some Kotlin/Native versions. `getsockopt` and `setsockopt` calls use
 | `errnoMessage(errno)` | Thread-safe errno-to-string helper (`strerror_r`-based) |
 | `closeFdSafely(fd, logger, context)` | Cleanup-path `close(2)` that logs failures instead of dropping them silently |
 | `applySocketOptions(fd, options)` | Applies a `SocketOptions` set through `NativeSocketOps.setSocketOption` |
-| `Interest` | Enum. The readiness a registration waits for (`READ` / `WRITE`). Callers above the engine describe what they wait for in these terms; the mapping onto kqueue filters or an epoll event mask is the engine's business |
-| `FdReadyListener` | Interface. Readiness callbacks on the pipeline (non-suspend) path: `onReady` plus a defaulted `onPeerClosed` for peer FIN / RST. Implemented by transports and servers so the receiver passes `this` — no per-call lambda on the read re-arm fast path |
-| `LoopParticipant` | Interface. The connection-lifetime half: `onLoopStopped`, told once per participant when its loop stops — keyed on the loop's participant registry, not the readiness ledger, so a paused connection holding no registration is still told |
-| `AbstractPosixReadinessEventLoop` | Base class for the epoll and kqueue loops. Requires `@InternalPosixEventLoopApi`. Owns the loop, its task queue, both registration ledgers, the participant registry (`addParticipant` / `removeParticipant`) and the readiness dispatch over them; a subclass supplies `logger`, `inEventLoop`, `loopBody`, `wakeup`, `submitArm`, `submitArmCallback` and `removeInterest` |
-| `LoopHandoff` | Off-loop to EventLoop hand-off for the readiness engines: runs work on the loop thread, or a fallback on the caller once the loop has stopped. Shared by `keel-engine-epoll` / `keel-engine-kqueue` so the shutdown-race handling has one implementation. Requires `@InternalPosixEventLoopApi` |
-| `InternalPosixEventLoopApi` | Opt-in marker at `ERROR` level on `AbstractPosixReadinessEventLoop` and `LoopHandoff`. Both are `public` only because the loops that use them are in other modules; the marker is what keeps that from reading as a supported API |
 
 Test doubles for these seams (`FakeNativeSocket`, `FakeNativeSocketOps`, and the
 blocking loopback client `PosixRawClient`) live in the `keel-testing-internal`
