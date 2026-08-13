@@ -44,8 +44,14 @@ implement are behind `@InternalReadinessEngineApi`. It is not an API: it is
 `internal` that had to cross a Gradle module boundary, which Kotlin's
 `internal` does not do.
 
-Four types are public without it — `Interest`, `FdReadyListener`,
-`LoopParticipant` and `HandoffOutcome`. They are the vocabulary the marked
-types are declared in terms of, so a caller holding one of those signatures
-already needs to name them; putting them behind the marker would add an opt-in
-without adding a boundary.
+Five types are public without it. `Interest`, `FdReadyListener`,
+`LoopParticipant` and `HandoffOutcome` are the vocabulary the marked types are
+declared in terms of, so a caller holding one of those signatures already needs
+to name them; putting them behind the marker would add an opt-in without adding
+a boundary.
+
+`ReadinessSuspendRegister` is different: it is the type of an engine
+constructor's last parameter, and a default parameter's type is part of the
+call. Marking it makes plain `KqueueEngine()` — from a benchmark, from a test
+helper, from anything — an opt-in site. The marker is for the surface the
+engines reach into, not for the signature they are called through.

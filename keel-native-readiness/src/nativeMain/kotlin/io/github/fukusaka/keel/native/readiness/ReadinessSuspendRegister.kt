@@ -60,7 +60,6 @@ import io.github.fukusaka.keel.logging.Logger
  * and an exceptional resume does not run a cancellation handler. The
  * connect socket was then open with no reference left to close it by.
  */
-@InternalReadinessEngineApi
 public fun interface ReadinessSuspendRegister {
 
     /**
