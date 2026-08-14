@@ -52,7 +52,10 @@ class KqueueEnginePipelineTest {
 
             val clientFd = connectRawClient(port)
             rawWrite(clientFd, "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            val result = PosixRawClient.rawReadUpTo(clientFd, 4096)
+            // Until the body, not until the timer: the server keeps the
+            // connection open, so a plain read-up-to would sit out the full
+            // SO_RCVTIMEO on every call with the response already in hand.
+            val result = PosixRawClient.rawReadUntil(clientFd, 4096) { it.endsWith("Pipeline!") }
 
             assertTrue(result.startsWith("HTTP/1.1 200 OK\r\n"), "status line: $result")
             assertTrue(result.endsWith("Pipeline!"), "body: $result")
@@ -87,7 +90,10 @@ class KqueueEnginePipelineTest {
 
             val clientFd = connectRawClient(port)
             rawWrite(clientFd, "GET /missing HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            val result = PosixRawClient.rawReadUpTo(clientFd, 4096)
+            // The status line is what this asserts, and the blank line ends
+            // the head that carries it -- waiting past that is waiting on the
+            // timer alone.
+            val result = PosixRawClient.rawReadUntil(clientFd, 4096) { it.contains("\r\n\r\n") }
 
             assertTrue(result.startsWith("HTTP/1.1 404 Not Found\r\n"), "status: $result")
 
@@ -126,7 +132,7 @@ class KqueueEnginePipelineTest {
 
             // First request
             rawWrite(clientFd, "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            val result1 = PosixRawClient.rawReadUpTo(clientFd, 4096)
+            val result1 = PosixRawClient.rawReadUntil(clientFd, 4096) { it.endsWith("Hi") }
             assertTrue(
                 result1.endsWith("Hi"),
                 "the first request on this connection must answer Hi, got: $result1",
@@ -134,7 +140,7 @@ class KqueueEnginePipelineTest {
 
             // Second request on same connection (keep-alive)
             rawWrite(clientFd, "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            val result2 = PosixRawClient.rawReadUpTo(clientFd, 4096)
+            val result2 = PosixRawClient.rawReadUntil(clientFd, 4096) { it.endsWith("Hi") }
             assertTrue(
                 result2.endsWith("Hi"),
                 "the second request on the same connection must answer Hi, got: $result2",
