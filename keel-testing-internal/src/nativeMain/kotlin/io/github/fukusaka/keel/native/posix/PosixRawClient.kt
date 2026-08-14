@@ -190,8 +190,10 @@ public object PosixRawClient {
         rawReadBytes(fd, size, timeout).decodeToString()
 
     /**
-     * Reads up to [maxSize] bytes, returning whatever arrived before
-     * the deadline, an EOF, or the `SO_RCVTIMEO` timer fires. A short
+     * Reads up to [maxSize] bytes, returning whatever arrived before an
+     * EOF or the `SO_RCVTIMEO` timer fires. There is no absolute
+     * deadline here -- that is [rawReadBytes]'s mechanism, not this
+     * one's. A short
      * payload terminated by `EAGAIN` / `EWOULDBLOCK` is a valid
      * outcome — suited for HTTP-response-style reads where the exact
      * response length isn't known up front.
@@ -240,7 +242,8 @@ public object PosixRawClient {
      * hold the call for longer than one [timeout].
      *
      * The predicate sees the whole payload so far, decoded, after every
-     * read. Segmentation is the kernel's to choose, so a character can
+     * read that delivered bytes -- not after an EOF or a timed-out one,
+     * which end the call regardless. Segmentation is the kernel's to choose, so a character can
      * arrive split across two reads -- and that is safe: the decode
      * substitutes U+FFFD rather than throwing, so a split defers the
      * predicate instead of firing it on a half-read payload, and the

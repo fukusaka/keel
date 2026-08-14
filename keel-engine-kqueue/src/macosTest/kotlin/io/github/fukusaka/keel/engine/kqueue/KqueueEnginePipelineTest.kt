@@ -9,6 +9,7 @@ import kotlinx.coroutines.withTimeout
 import platform.posix.close
 import platform.posix.usleep
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -59,6 +60,7 @@ class KqueueEnginePipelineTest {
 
             assertTrue(result.startsWith("HTTP/1.1 200 OK\r\n"), "status line: $result")
             assertTrue(result.endsWith("Pipeline!"), "body: $result")
+            assertEquals(1, result.responseCount(), "one response, not a leftover queue: $result")
 
             close(clientFd)
             server.close()
@@ -141,6 +143,12 @@ class KqueueEnginePipelineTest {
                 result1.startsWith("HTTP/1.1 200 OK\r\n"),
                 "the first response must carry a 200 status line, got: $result1",
             )
+            // Exactly one, because the read no longer establishes it. The drain
+            // this replaced emptied the socket, so the bytes read after request
+            // 2 were necessarily its answer; a predicate that stops at the
+            // first "Hi" cannot say that. Without this, a server answering
+            // request 1 twice and request 2 not at all passes -- measured.
+            assertEquals(1, result1.responseCount(), "one response, not a leftover queue: $result1")
             assertTrue(
                 result1.endsWith("Hi"),
                 "the first request on this connection must answer Hi, got: $result1",
@@ -153,6 +161,7 @@ class KqueueEnginePipelineTest {
                 result2.startsWith("HTTP/1.1 200 OK\r\n"),
                 "the second response must carry a 200 status line, got: $result2",
             )
+            assertEquals(1, result2.responseCount(), "one response, not a leftover queue: $result2")
             assertTrue(
                 result2.endsWith("Hi"),
                 "the second request on the same connection must answer Hi, got: $result2",
@@ -164,3 +173,6 @@ class KqueueEnginePipelineTest {
         }
     }
 }
+
+/** How many HTTP response heads the payload holds. One is the whole point. */
+private fun String.responseCount(): Int = split("HTTP/1.1").size - 1
