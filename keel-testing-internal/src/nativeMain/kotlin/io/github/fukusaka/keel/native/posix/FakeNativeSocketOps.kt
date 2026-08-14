@@ -86,7 +86,10 @@ public class FakeNativeSocketOps : NativeSocketOps {
     // --- Defaults / counters ---
 
     /** Seed for auto-incrementing fd allocation on unscripted `bindListener` / `openClientSocket` calls. */
-    public var nextCreatedFd: Int = 100
+    public var nextCreatedFd: Int
+        get() = lock.withLock { _nextCreatedFd }
+        set(value) = lock.withLock { _nextCreatedFd = value }
+    private var _nextCreatedFd: Int = 100
 
     /** Returned by [connectNonBlocking] / [connectUnixNonBlocking] when no queue entry is scripted for the fd. */
     public var defaultConnect: ConnectResult
@@ -168,7 +171,7 @@ public class FakeNativeSocketOps : NativeSocketOps {
     /** Caller must hold [lock] — the guarded regions call this, and it is not reentrant. */
     private fun allocateFd(queue: ArrayDeque<FdResponse>): Int {
         val fd = when (val r = queue.removeFirstOrNull()) {
-            null -> nextCreatedFd++
+            null -> _nextCreatedFd++
             is FdResponse.Fd -> r.fd
             is FdResponse.Throws -> throw r.exception
         }
@@ -392,27 +395,27 @@ public class FakeNativeSocketOps : NativeSocketOps {
 
     /** Appends scripted [ConnectResult] responses for `connectNonBlocking(fd, ...)`. */
     public fun enqueueConnect(fd: Int, vararg results: ConnectResult) {
-        connectQueue.getOrPut(fd) { ArrayDeque() }.addAll(results)
+        lock.withLock { connectQueue.getOrPut(fd) { ArrayDeque() }.addAll(results) }
     }
 
     /** Appends scripted [ConnectResult] responses for `connectUnixNonBlocking(fd, ...)`. */
     public fun enqueueConnectUnix(fd: Int, vararg results: ConnectResult) {
-        connectUnixQueue.getOrPut(fd) { ArrayDeque() }.addAll(results)
+        lock.withLock { connectUnixQueue.getOrPut(fd) { ArrayDeque() }.addAll(results) }
     }
 
     /** Appends scripted errno values for `getSocketError(fd)`. */
     public fun enqueueSocketError(fd: Int, vararg errors: Int) {
-        socketErrorQueue.getOrPut(fd) { ArrayDeque() }.addAll(errors.toList())
+        lock.withLock { socketErrorQueue.getOrPut(fd) { ArrayDeque() }.addAll(errors.toList()) }
     }
 
     /** Appends scripted addresses for `getLocalAddress(fd)`. */
     public fun enqueueLocalAddress(fd: Int, vararg addresses: SocketAddress) {
-        localAddressQueue.getOrPut(fd) { ArrayDeque() }.addAll(addresses)
+        lock.withLock { localAddressQueue.getOrPut(fd) { ArrayDeque() }.addAll(addresses) }
     }
 
     /** Appends scripted addresses for `getRemoteAddress(fd)`. */
     public fun enqueueRemoteAddress(fd: Int, vararg addresses: SocketAddress) {
-        remoteAddressQueue.getOrPut(fd) { ArrayDeque() }.addAll(addresses)
+        lock.withLock { remoteAddressQueue.getOrPut(fd) { ArrayDeque() }.addAll(addresses) }
     }
 
     // --- Assertion helper ---

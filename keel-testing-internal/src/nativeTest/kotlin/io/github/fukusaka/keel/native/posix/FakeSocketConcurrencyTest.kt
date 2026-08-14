@@ -28,14 +28,14 @@ import kotlin.test.assertEquals
  *
  * These drive the same shape deliberately, at a volume no seam test reaches, so
  * that removing the lock is a failure rather than a possibility. Measured with
- * [FakeSocketLock.withLock] reduced to calling its block, each run alone, three
- * runs each: the two counting tests fail their assertion every time, and the
- * one-shot and ops tests take the process down every time — an unguarded
- * `ArrayList.add` from two threads corrupts the list rather than losing an
- * entry. Both are detection; neither is waiting for an unlucky interleaving.
+ * [FakeSocketLock.withLock] reduced to calling its block, each test run alone,
+ * twenty runs on each host: all four are caught 20 of 20 on macosArm64 and on
+ * linuxX64. Three fail their assertion; the ops test mostly takes the process
+ * down instead, because an unguarded `MutableList.add` from two threads
+ * corrupts the list rather than losing an entry (macOS 18 crashes / 2 failures,
+ * Linux 14 / 6). Both are detection.
  *
- * Run alone, because the crashing pair ends the binary and the others' verdicts
- * with it.
+ * Run alone, because a crash ends the binary and the other verdicts with it.
  *
  * They do not check ordering, because the fakes do not provide it — see the
  * [FakeSocketLock] KDoc on the difference between a whole read and a meaningful
@@ -93,25 +93,31 @@ class FakeSocketConcurrencyTest {
     }
 
     /**
-     * Two readers hammering while this thread re-arms: the one-shot must be
-     * taken as many times as it is armed, never more.
+     * Readers hammering while this thread re-arms: the throw must be taken as
+     * many times as it is armed, never more.
      *
-     * Arming it once and having each side read once does not test anything —
-     * the window is a few instructions wide and both sides have left it before
-     * the other arrives. Measured: that shape passed every round of two hundred
-     * with the lock removed. Readers that never stop reading widen the window to
-     * the whole run; without the lock this one no longer reaches its assertion
-     * at all, because two readers racing the same field take the process with
-     * them.
+     * Two earlier shapes had no teeth, and both failures are worth keeping:
+     * arming once and reading once from each side leaves a window a few
+     * instructions wide, and passed 200 rounds of 200 under the mutation; then
+     * hammering readers still passed 132 runs of 133 on macOS, because each
+     * iteration paid for a `memScoped` and a `Result` around a critical section
+     * of three instructions. The readers now allocate once and catch directly,
+     * and there are [ONE_SHOT_READERS] of them rather than two, which is what
+     * finally made the collision likely rather than lucky.
+     *
+     * No name in this file may contain a hyphen. A gtest-style filter reads `-`
+     * as its negation separator, so `--ktest_filter='*one-shot*'` runs **zero**
+     * tests and exits 0 — which is how the earlier shape was recorded as
+     * catching something.
      */
     @Test
-    fun `a one-shot throw is taken as many times as it is armed`() {
+    fun `an armed throw is taken exactly as many times as it is armed`() {
         val fake = FakeNativeSocket().apply { defaultRead = ReadResult.WouldBlock }
         val shared = Contention(KIND_ONE_SHOT, socket = fake)
         var armed = 0
 
-        contendWith(shared, peers = 2) {
-            awaitPeer(shared.started, parties = 3)
+        contendWith(shared, peers = ONE_SHOT_READERS) {
+            awaitPeer(shared.started, parties = ONE_SHOT_READERS + 1)
             repeat(ONE_SHOT_ROUNDS) {
                 fake.readThrowsOnce = IllegalStateException("scripted")
                 armed++
@@ -169,6 +175,12 @@ private const val CALLS_PER_THREAD = 20_000
 private const val ONE_SHOT_ROUNDS = 200
 
 /**
+ * How many readers contend for each arming. Two was not enough on macOS — see
+ * the test's own KDoc for what that cost.
+ */
+private const val ONE_SHOT_READERS = 4
+
+/**
  * How long an arming waits to be taken before the test calls it stuck. Generous
  * — the readers are in a tight loop — and only there so a fake that stops
  * clearing the field fails instead of hanging.
@@ -212,22 +224,28 @@ private fun FakeNativeSocket.readRepeatedly(): Int {
     return delivered
 }
 
-@OptIn(ExperimentalForeignApi::class)
-private fun FakeNativeSocket.readOnceThrew(): Boolean = memScoped {
-    val byte = alloc<ByteVar>()
-    runCatching { read(FD, byte.ptr, 1) }.isFailure
-}
-
 /** The spawned thread's half, dispatched on [Contention.kind]. */
+@OptIn(ExperimentalForeignApi::class)
 private fun runPeerHalf(shared: Contention) {
-    awaitPeer(shared.started, if (shared.kind == KIND_ONE_SHOT) 3 else 2)
+    awaitPeer(shared.started, if (shared.kind == KIND_ONE_SHOT) ONE_SHOT_READERS + 1 else 2)
     when (shared.kind) {
         KIND_COUNT -> shared.socket!!.readRepeatedly()
         KIND_SCRIPT -> shared.tally.addAndGet(shared.socket!!.readRepeatedly())
-        KIND_ONE_SHOT ->
+        // Allocating once and catching directly, because the window this races
+        // is three instructions wide and a `memScoped` per iteration is orders
+        // of magnitude longer than that.
+        KIND_ONE_SHOT -> memScoped {
+            val byte = alloc<ByteVar>()
+            val socket = shared.socket!!
             while (shared.stopped.value == 0) {
-                if (shared.socket!!.readOnceThrew()) shared.tally.incrementAndGet()
+                try {
+                    socket.read(FD, byte.ptr, 1)
+                } catch (expected: IllegalStateException) {
+                    check(expected.message == "scripted") { "unexpected throw: $expected" }
+                    shared.tally.incrementAndGet()
+                }
             }
+        }
         KIND_OPS -> repeat(CALLS_PER_THREAD) { shared.ops!!.setNonBlocking(FD) }
         else -> error("unknown contention kind ${shared.kind}")
     }
