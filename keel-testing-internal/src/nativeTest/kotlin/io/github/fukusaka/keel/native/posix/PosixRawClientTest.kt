@@ -87,9 +87,9 @@ class PosixRawClientTest {
      * the predicate runs between reads, which is exactly where a peer's next
      * write would land.
      *
-     * Measured: with the loop removed — returning after the first read that
-     * delivered bytes — both this module and the kqueue suite stayed green, so
-     * nothing else pins it.
+     * Measured before this test existed: with the loop removed — returning
+     * after the first read that delivered bytes — both this module and the
+     * kqueue suite stayed green. Nothing else pinned it; this does.
      */
     @Test
     fun `a character completed by a later read decodes whole`() = runBlocking {
@@ -129,10 +129,10 @@ class PosixRawClientTest {
      * the match belong to whoever reads next, and consuming them would eat the
      * answer to the following request.
      *
-     * Measured: with the early return removed — the predicate still consulted,
-     * its answer ignored — every test in this module and all 205 in the kqueue
-     * suite stayed green, while the class this exists for went back to the cost
-     * this change removes, near enough all of it. Nothing else holds that.
+     * Measured before this test existed: with the early return removed — the
+     * predicate still consulted, its answer ignored — every test in this module
+     * and all 205 in the kqueue suite stayed green, while the class went back to
+     * the cost this change removes, near enough all of it. Nothing else held it.
      *
      * The figures live in the pull request rather than here. Two of them went
      * stale in this file already, both times because a later commit added time
@@ -146,7 +146,9 @@ class PosixRawClientTest {
                 writeBytes(writeFd, "HEAD\r\n\r\n".encodeToByteArray())
 
                 var wroteTrailer = false
+                var predicateCalls = 0
                 val result = PosixRawClient.rawReadUntil(readFd, 64, SHORT_TIMEOUT) { soFar ->
+                    predicateCalls++
                     val done = soFar.endsWith("\r\n\r\n")
                     if (done && !wroteTrailer) {
                         wroteTrailer = true
@@ -157,6 +159,54 @@ class PosixRawClientTest {
 
                 assertEquals("HEAD\r\n\r\n", result, "the call must stop at the match, leaving NEXT unread")
                 assertTrue(wroteTrailer, "the fixture must have written the trailer, or it proves nothing")
+                // Once: after the read that delivered, not before it. A predicate
+                // consulted before the first read returns the same string and
+                // reads the same number of times, so only the count distinguishes
+                // it from the order the KDoc describes.
+                assertEquals(1, predicateCalls, "the predicate runs after a read that delivered, not before one")
+            } finally {
+                close(writeFd)
+                close(readFd)
+            }
+        }
+    }
+
+    /**
+     * A read that follows a partial one asks for the room that is left, not for
+     * the whole buffer.
+     *
+     * The difference is invisible in the result — both spellings return the same
+     * bytes — until the peer has more to give than the remainder, and then asking
+     * for the whole buffer writes past its end. So the fixture gives it more:
+     * four bytes of room, two delivered, six then offered. Asking for what is
+     * left takes two and stops on a full buffer; asking for four takes four, and
+     * the count of bytes held runs past the array holding them.
+     *
+     * Nothing else in either suite distinguishes the two spellings, which is why
+     * this exists — not any doubt about the line.
+     */
+    @Test
+    fun `a read after a partial one asks only for the room that is left`() = runBlocking {
+        withTimeout(TEST_BUDGET) {
+            val (readFd, writeFd) = newSocketPair()
+            try {
+                writeBytes(writeFd, "AB".encodeToByteArray())
+
+                var offeredRest = false
+                val result = PosixRawClient.rawReadUntil(readFd, 4, SHORT_TIMEOUT) { soFar ->
+                    if (!offeredRest) {
+                        offeredRest = true
+                        writeBytes(writeFd, "CDEFGH".encodeToByteArray())
+                    }
+                    soFar.length > 4
+                }
+
+                assertEquals("ABCD", result, "the call must hold exactly the buffer it was given")
+                assertEquals(
+                    "EFGH",
+                    PosixRawClient.rawReadUpTo(readFd, 8, SHORT_TIMEOUT),
+                    "the bytes past the buffer must still be in the socket for the next reader",
+                )
             } finally {
                 close(writeFd)
                 close(readFd)
