@@ -17,36 +17,6 @@ class KqueueEnginePipelineTest {
     // --- Pipeline ---
 
     @Test
-    fun `bindPipeline responds to HTTP request`() = runBlocking {
-        withTimeout(15.seconds) {
-            val engine = KqueueEngine(IoEngineConfig(threads = 1))
-            val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok(
-                "Hello!",
-                contentType = "text/plain",
-            )
-            response.headers.size // warm flatEntries cache
-
-            val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
-                channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
-                channel.pipeline.addLast("decoder", io.github.fukusaka.keel.codec.http.HttpRequestDecoder())
-                channel.pipeline.addLast(
-                    "routing",
-                    io.github.fukusaka.keel.codec.http.RoutingHandler(
-                        mapOf("/hello" to { response }),
-                    ),
-                )
-            }
-
-            // Discover bound port from server fd (use SocketUtils).
-            // bindPipeline returns AutoCloseable (ReadinessPipelinedStreamServer).
-            // We need the port — extract from engine or use a fixed port.
-            // For simplicity, use a fixed port with retry.
-            server.close()
-            engine.close()
-        }
-    }
-
-    @Test
     fun `bindPipeline echo via raw HTTP client`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 1))
