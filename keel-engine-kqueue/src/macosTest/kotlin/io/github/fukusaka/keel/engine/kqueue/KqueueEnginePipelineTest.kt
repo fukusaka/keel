@@ -110,11 +110,14 @@ class KqueueEnginePipelineTest {
         withTimeout(15.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 1))
 
-            val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok(
-                "Hi",
-                contentType = "text/plain",
-            )
-            response.headers.size
+            // Distinguishable bodies, because that is what says which request a
+            // response answers. With both answers identical, a server that
+            // repeats the first one and never answers the second is
+            // indistinguishable from one that answered both -- measured: it
+            // passed in 419 ms, status line, response count and body all
+            // satisfied by the stale copy.
+            val first = io.github.fukusaka.keel.codec.http.HttpResponse.ok("Hi", contentType = "text/plain")
+            val second = io.github.fukusaka.keel.codec.http.HttpResponse.ok("Encore", contentType = "text/plain")
 
             val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
@@ -122,7 +125,7 @@ class KqueueEnginePipelineTest {
                 channel.pipeline.addLast(
                     "routing",
                     io.github.fukusaka.keel.codec.http.RoutingHandler(
-                        mapOf("/hello" to { response }),
+                        mapOf("/hello" to { first }, "/encore" to { second }),
                     ),
                 )
             }
@@ -143,28 +146,30 @@ class KqueueEnginePipelineTest {
                 result1.startsWith("HTTP/1.1 200 OK\r\n"),
                 "the first response must carry a 200 status line, got: $result1",
             )
-            // Exactly one, because the read no longer establishes it. The drain
-            // this replaced emptied the socket, so the bytes read after request
-            // 2 were necessarily its answer; a predicate that stops at the
-            // first "Hi" cannot say that. Without this, a server answering
-            // request 1 twice and request 2 not at all passes -- measured.
+            // Exactly one, because the read no longer establishes it: the drain
+            // this replaced emptied the socket, so nothing could be left over
+            // for the next read to find. This catches a duplicate that arrives
+            // together with its original; the differing bodies below catch one
+            // that arrives later.
             assertEquals(1, result1.responseCount(), "one response, not a leftover queue: $result1")
             assertTrue(
                 result1.endsWith("Hi"),
                 "the first request on this connection must answer Hi, got: $result1",
             )
 
-            // Second request on same connection (keep-alive)
-            rawWrite(clientFd, "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            val result2 = PosixRawClient.rawReadUntil(clientFd, 4096) { it.endsWith("Hi") }
+            // Second request on same connection (keep-alive), to the other path
+            rawWrite(clientFd, "GET /encore HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            val result2 = PosixRawClient.rawReadUntil(clientFd, 4096) { it.endsWith("Encore") }
             assertTrue(
                 result2.startsWith("HTTP/1.1 200 OK\r\n"),
                 "the second response must carry a 200 status line, got: $result2",
             )
             assertEquals(1, result2.responseCount(), "one response, not a leftover queue: $result2")
+            // "Encore", not "Hi": this is what a repeat of the first answer
+            // cannot satisfy, whenever it arrives.
             assertTrue(
-                result2.endsWith("Hi"),
-                "the second request on the same connection must answer Hi, got: $result2",
+                result2.endsWith("Encore"),
+                "the second request on the same connection must answer Encore, got: $result2",
             )
 
             close(clientFd)

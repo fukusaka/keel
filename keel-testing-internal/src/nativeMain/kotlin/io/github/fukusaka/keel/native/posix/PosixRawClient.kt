@@ -50,14 +50,19 @@ import kotlin.time.TimeSource
  *
  * ## Test strategy
  *
- * No standalone self-test. Unlike the scripted fakes ([FakeNativeSocket] /
+ * Mostly no standalone self-test. Unlike the scripted fakes ([FakeNativeSocket] /
  * [FakeNativeSocketOps], which are pinned by their own contract tests), this
  * is a real-syscall helper with no in-memory invariant to break silently: its
  * correctness is the actual connect / read / write behaviour, which the ~20
  * engine integration tests that drive a server against it exercise directly —
  * a regression (truncated write, mis-handled EOF / timeout / EINTR) fails those
- * tests as a wrong server observation. A standalone test would only re-run the
- * same syscalls against a throwaway listener, duplicating that coverage.
+ * tests as a wrong server observation.
+ *
+ * That argument reaches everything those tests can reach, which is less than it
+ * sounds: every payload they send is ASCII and short, so nothing they do can
+ * split a multi-byte character or need a second read to complete one. Both
+ * branches were measured to survive their removal with the whole suite green.
+ * `PosixRawClientTest` covers that gap and only that gap.
  */
 @OptIn(ExperimentalForeignApi::class)
 public object PosixRawClient {
@@ -193,8 +198,7 @@ public object PosixRawClient {
      * Reads up to [maxSize] bytes, returning whatever arrived before an
      * EOF or the `SO_RCVTIMEO` timer fires. There is no absolute
      * deadline here -- that is [rawReadBytes]'s mechanism, not this
-     * one's. A short
-     * payload terminated by `EAGAIN` / `EWOULDBLOCK` is a valid
+     * one's. A short payload terminated by `EAGAIN` / `EWOULDBLOCK` is a valid
      * outcome — suited for HTTP-response-style reads where the exact
      * response length isn't known up front.
      *
@@ -243,11 +247,12 @@ public object PosixRawClient {
      *
      * The predicate sees the whole payload so far, decoded, after every
      * read that delivered bytes -- not after an EOF or a timed-out one,
-     * which end the call regardless. Segmentation is the kernel's to choose, so a character can
-     * arrive split across two reads -- and that is safe: the decode
-     * substitutes U+FFFD rather than throwing, so a split defers the
-     * predicate instead of firing it on a half-read payload, and the
-     * next decode sees the character whole. Measured, not assumed.
+     * which end the call regardless. Segmentation is the kernel's to
+     * choose, so a character can arrive split across two reads -- and
+     * that is safe: the decode substitutes U+FFFD rather than throwing,
+     * so a split defers the predicate instead of firing it on a
+     * half-read payload, and the next decode sees the character whole.
+     * Both halves of that are measured, in `PosixRawClientTest`.
      */
     public fun rawReadUntil(
         fd: Int,
