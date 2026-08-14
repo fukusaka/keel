@@ -131,8 +131,12 @@ class PosixRawClientTest {
      *
      * Measured: with the early return removed — the predicate still consulted,
      * its answer ignored — every test in this module and all 205 in the kqueue
-     * suite stayed green, while the class this exists for went from 1 340 ms
-     * back to 21 362 ms. Nothing else holds it.
+     * suite stayed green, while the class this exists for went back to the cost
+     * this change removes, near enough all of it. Nothing else holds that.
+     *
+     * The figures live in the pull request rather than here. Two of them went
+     * stale in this file already, both times because a later commit added time
+     * to the class and left the numbers describing the class before it.
      */
     @Test
     fun `a satisfied predicate ends the read rather than consuming what follows`() = runBlocking {

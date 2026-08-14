@@ -249,9 +249,13 @@ private val QUIET_AFTER_RESPONSE = 500.milliseconds
  * A window on the same terms as [QUIET_AFTER_RESPONSE], and chosen the same way
  * — a cost ceiling, since nothing here says how long a server might wait before
  * dropping an idle connection. A server that drops or corrupts one later than
- * this is not seen. What the gap does buy is that "keep-alive" is exercised at
- * all: with the requests back to back the connection is never idle, and the
- * five seconds the old drain spent here were the only reason anything of the
- * sort was covered.
+ * this is not seen. What the gap buys is that "keep-alive" is exercised at all:
+ * with the requests back to back the connection is never idle, and the five
+ * seconds the old drain spent here were the only reason this test covered it.
+ *
+ * Idleness itself is covered elsewhere — `KqueueEngineIdleTimeoutTest` writes,
+ * waits, and writes again, with the engine's idle timeout switched on. What is
+ * only here is two full request/response cycles spanning an idle period, with
+ * that timeout at its default of off.
  */
 private val IDLE_BETWEEN_REQUESTS = 500.milliseconds
