@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.native.posix
 
+import io.github.fukusaka.keel.core.Host
+import io.github.fukusaka.keel.core.InetSocketAddress
+import io.github.fukusaka.keel.core.IpAddress
 import kotlinx.cinterop.Arena
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -138,6 +141,52 @@ class FakeSocketConcurrencyTest {
         )
     }
 
+    /**
+     * Scripting one fd while another thread walks the same maps.
+     *
+     * This is the shape the sweep missed. The map-based `enqueue*` on the ops
+     * fake insert into the very maps `assertAllConsumed` walks and the guarded
+     * syscalls dequeue from, and they were left outside the lock because the
+     * sweep matched on `deque.addAll(...)` and these read
+     * `map.getOrPut(fd) { … }.addAll(...)`. Nothing in this file exercised them,
+     * so nothing failed — measured: with those five restored to unguarded, all
+     * four other tests here pass 20 of 20 on both hosts.
+     *
+     * Measured with those five restored to unguarded: this fails 20 of 20 on
+     * both hosts, taking the process down with a `ConcurrentModificationException`
+     * out of the walk.
+     *
+     * What it does not do is make the class KDoc's "every member" true by test.
+     * Of roughly forty members the suite drives four — `read`, `setNonBlocking`,
+     * one map-based `enqueue*`, `assertAllConsumed` — and the rest still rest on
+     * review. A test per member is the only thing that would change that, and a
+     * table of them would go stale against a fake that grows.
+     */
+    @Test
+    fun `scripting one fd is safe while another thread walks the scripts`() {
+        val fake = FakeNativeSocketOps()
+        val shared = Contention(KIND_SCRIPT_WALK, ops = fake)
+
+        contendWith(shared) {
+            awaitPeer(shared.started)
+            // A new fd each time, because that is what makes the insert
+            // structural. Scripting the same fd repeatedly only appends to a
+            // deque the map already holds, so the map itself never changes and
+            // a walk over it sees nothing — measured: the same test against the
+            // unguarded insert passed 20 of 20 that way.
+            repeat(SCRIPT_WALK_INSERTS) { i ->
+                fake.enqueueLocalAddress(i, InetSocketAddress(Host.Ip(IpAddress.V4.LOOPBACK), 0))
+            }
+            shared.stopped.value = 1
+        }
+
+        // The walk cannot be asserted against a number — the peer is consuming
+        // while this thread inserts. What it must not do is see a map mid-insert,
+        // which is a `ConcurrentModificationException` out of `assertAllConsumed`
+        // and takes the process with it.
+        assertEquals(0, shared.tally.value, "the walk must never fail on a map being written")
+    }
+
     @Test
     fun `the ops fake counts every concurrent call`() {
         val fake = FakeNativeSocketOps()
@@ -162,6 +211,7 @@ private const val KIND_COUNT = 0
 private const val KIND_SCRIPT = 1
 private const val KIND_ONE_SHOT = 2
 private const val KIND_OPS = 3
+private const val KIND_SCRIPT_WALK = 4
 
 private const val FD = 3
 
@@ -179,6 +229,14 @@ private const val ONE_SHOT_ROUNDS = 200
  * the test's own KDoc for what that cost.
  */
 private const val ONE_SHOT_READERS = 4
+
+/**
+ * How many distinct fds the walk test scripts. Far fewer than the other tests
+ * drive, because each insert grows the map the peer is walking, so the work is
+ * quadratic — and the walker runs until told to stop rather than a fixed count,
+ * which is what bounds it.
+ */
+private const val SCRIPT_WALK_INSERTS = 2_000
 
 /**
  * How long an arming waits to be taken before the test calls it stuck. Generous
@@ -247,6 +305,18 @@ private fun runPeerHalf(shared: Contention) {
             }
         }
         KIND_OPS -> repeat(CALLS_PER_THREAD) { shared.ops!!.setNonBlocking(FD) }
+        KIND_SCRIPT_WALK -> while (shared.stopped.value == 0) {
+            // `assertAllConsumed` throws by design while queues are non-empty,
+            // which they are throughout. Only a walk that fails on the map's
+            // own structure counts here.
+            try {
+                shared.ops!!.assertAllConsumed()
+            } catch (expected: IllegalStateException) {
+                check(expected.message?.startsWith("unconsumed scripted responses") == true) {
+                    "unexpected failure from the walk: $expected"
+                }
+            }
+        }
         else -> error("unknown contention kind ${shared.kind}")
     }
 }
@@ -263,11 +333,12 @@ private fun runPeerHalf(shared: Contention) {
 private inline fun contendWith(shared: Contention, peers: Int = 1, hereSide: () -> Unit) {
     val arena = Arena()
     val ref = StableRef.create(shared)
+    val threads = List(peers) { arena.alloc<pthread_tVar>() }
+    var spawned = 0
     try {
-        val threads = List(peers) { arena.alloc<pthread_tVar>() }
-        repeat(peers) { i ->
+        while (spawned < peers) {
             val rc = pthread_create(
-                threads[i].ptr,
+                threads[spawned].ptr,
                 null,
                 staticCFunction { arg ->
                     runPeerHalf(arg!!.asStableRef<Contention>().get())
@@ -276,10 +347,19 @@ private inline fun contendWith(shared: Contention, peers: Int = 1, hereSide: () 
                 ref.asCPointer(),
             )
             check(rc == 0) { "pthread_create failed: rc=$rc" }
+            spawned++
         }
         hereSide()
-        repeat(peers) { i -> pthread_join(threads[i].ptr[0], null) }
     } finally {
+        // Whatever went wrong, the threads that exist must be told to stop and
+        // joined before the `StableRef` they hold is disposed. Only the
+        // one-shot readers loop on `stopped`; the others are bounded and end on
+        // their own. Without this, the bounded spin that turns a hang into a
+        // failure turns it into readers spinning on freed state instead, and a
+        // partial spawn leaves the same, since peers already running outlive
+        // the `check` that stopped the loop.
+        shared.stopped.value = 1
+        repeat(spawned) { i -> pthread_join(threads[i].ptr[0], null) }
         ref.dispose()
         arena.clear()
     }
