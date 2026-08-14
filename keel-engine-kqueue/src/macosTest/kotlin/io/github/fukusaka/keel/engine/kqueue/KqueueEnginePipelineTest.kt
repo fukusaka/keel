@@ -62,14 +62,15 @@ class KqueueEnginePipelineTest {
             assertTrue(result.startsWith("HTTP/1.1 200 OK\r\n"), "status line: $result")
             assertTrue(result.endsWith("Pipeline!"), "body: $result")
             assertEquals(1, result.responseCount(), "one response, not a leftover queue: $result")
-            // One request, one response, and nothing after it. Stopping at the
-            // body means anything the server sends next is simply unread, and
-            // this test has no later read to find it -- measured: a server
-            // emitting a second, different response 300 ms later passed.
+            // One request, one response, and nothing for QUIET_AFTER_RESPONSE
+            // after it. Stopping at the body means whatever the server sends
+            // next is simply unread, and this test has no later read to find it
+            // -- measured: a second, different response 300 ms on passed without
+            // this, and still passes if it arrives after the window.
             assertEquals(
                 "",
                 PosixRawClient.rawReadUpTo(clientFd, 256, QUIET_AFTER_RESPONSE),
-                "the server must send nothing after the response it was asked for",
+                "nothing may follow the response within $QUIET_AFTER_RESPONSE, got:",
             )
 
             close(clientFd)
@@ -190,12 +191,13 @@ class KqueueEnginePipelineTest {
                 result2.endsWith(expected2),
                 "the second request must be answered with its own nonce ($expected2), got: $result2",
             )
-            // Nothing after the last answer either -- read 2's nonce judges what
-            // arrives before it, and nothing judges what arrives after.
+            // Nothing for QUIET_AFTER_RESPONSE after the last answer either --
+            // read 2's nonce judges everything that arrives before it, and only
+            // this window judges anything after.
             assertEquals(
                 "",
                 PosixRawClient.rawReadUpTo(clientFd, 256, QUIET_AFTER_RESPONSE),
-                "the server must send nothing after the second response",
+                "nothing may follow the second response within $QUIET_AFTER_RESPONSE, got:",
             )
 
             close(clientFd)
@@ -212,12 +214,18 @@ class KqueueEnginePipelineTest {
 private fun String.responseCount(): Int = split("HTTP/1.1").size - 1
 
 /**
- * How long a test waits to be sure the server has stopped talking.
+ * How long a test waits at the end to see whether the server is still talking.
  *
- * A bound, not a proof — the same kind of thing the five-second drain was, an
- * order of magnitude cheaper. Anything the server emits after this is unread and
- * unjudged, so the number is chosen against the defect it is for: an extra
- * response written from off the event loop, which arrives late by however long
- * that path takes. 250 ms was measured to miss one at 300 ms.
+ * This is a cost ceiling, not a bound derived from any defect. Nothing here or
+ * anywhere in the tree establishes how late a stray response can arrive, so a
+ * larger number would catch strictly more and cost strictly more, without a
+ * principle to stop at. The drain this replaced sat here for five seconds and
+ * so judged ten times as long; the trade is deliberate, and this is the part of
+ * it that was given up.
+ *
+ * It buys the *end* of a connection only. Anything a server emits between two
+ * answers is caught for free, by the response count and by the nonce on the
+ * answer that follows it — no timer involved. It is the last answer that has
+ * nothing after it to notice, which is why this exists and why it is paid twice.
  */
 private val QUIET_AFTER_RESPONSE = 500.milliseconds

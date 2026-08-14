@@ -3,6 +3,8 @@ package io.github.fukusaka.keel.native.posix
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import platform.posix.AF_UNIX
 import platform.posix.SOCK_STREAM
 import platform.posix.close
@@ -13,6 +15,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * The parts of [PosixRawClient.rawReadUntil] that no caller of it exercises.
@@ -50,25 +53,30 @@ class PosixRawClientTest {
      * the first draft of this test hung for fifty minutes).
      */
     @Test
-    fun `a character split across reads defers the predicate instead of failing the call`() {
-        val (readFd, writeFd) = newSocketPair()
-        try {
-            val whole = "あ".encodeToByteArray()
-            assertEquals(3, whole.size, "the fixture needs a multi-byte character")
-            writeBytes(writeFd, whole.copyOfRange(0, 2))
+    fun `a character split across reads defers the predicate instead of failing the call`() = runBlocking {
+        withTimeout(TEST_BUDGET) {
+            val (readFd, writeFd) = newSocketPair()
+            try {
+                val whole = "あ".encodeToByteArray()
+                assertEquals(3, whole.size, "the fixture needs a multi-byte character")
+                writeBytes(writeFd, whole.copyOfRange(0, 2))
 
-            var predicateSawFffd = false
-            val result = PosixRawClient.rawReadUntil(readFd, 16, SHORT_TIMEOUT) { soFar ->
-                if (soFar.contains(REPLACEMENT)) predicateSawFffd = true
-                soFar.endsWith("あ")
+                var predicateSawFffd = false
+                val result = PosixRawClient.rawReadUntil(readFd, 16, SHORT_TIMEOUT) { soFar ->
+                    if (soFar.contains(REPLACEMENT)) predicateSawFffd = true
+                    soFar.endsWith("あ")
+                }
+
+                assertTrue(predicateSawFffd, "the predicate must have run on the partial character")
+                assertTrue(
+                    result.contains(REPLACEMENT),
+                    "the partial character decodes to U+FFFD, got: ${result.codes()}",
+                )
+                assertFalse(result.endsWith("あ"), "a partial character must not read as the whole one")
+            } finally {
+                close(writeFd)
+                close(readFd)
             }
-
-            assertTrue(predicateSawFffd, "the predicate must have run on the partial character")
-            assertTrue(result.contains(REPLACEMENT), "the partial character decodes to U+FFFD, got: ${result.codes()}")
-            assertFalse(result.endsWith("あ"), "a partial character must not read as the whole one")
-        } finally {
-            close(writeFd)
-            close(readFd)
         }
     }
 
@@ -84,25 +92,27 @@ class PosixRawClientTest {
      * nothing else pins it.
      */
     @Test
-    fun `a character completed by a later read decodes whole`() {
-        val (readFd, writeFd) = newSocketPair()
-        try {
-            val whole = "あ".encodeToByteArray()
-            writeBytes(writeFd, whole.copyOfRange(0, 2))
+    fun `a character completed by a later read decodes whole`() = runBlocking {
+        withTimeout(TEST_BUDGET) {
+            val (readFd, writeFd) = newSocketPair()
+            try {
+                val whole = "あ".encodeToByteArray()
+                writeBytes(writeFd, whole.copyOfRange(0, 2))
 
-            var sentLastByte = false
-            val result = PosixRawClient.rawReadUntil(readFd, 16, SHORT_TIMEOUT) { soFar ->
-                if (!sentLastByte) {
-                    sentLastByte = true
-                    writeBytes(writeFd, whole.copyOfRange(2, 3))
+                var sentLastByte = false
+                val result = PosixRawClient.rawReadUntil(readFd, 16, SHORT_TIMEOUT) { soFar ->
+                    if (!sentLastByte) {
+                        sentLastByte = true
+                        writeBytes(writeFd, whole.copyOfRange(2, 3))
+                    }
+                    soFar.endsWith("あ")
                 }
-                soFar.endsWith("あ")
-            }
 
-            assertEquals("あ", result, "the bytes of one character, read in two goes, are one character")
-        } finally {
-            close(writeFd)
-            close(readFd)
+                assertEquals("あ", result, "the bytes of one character, read in two goes, are one character")
+            } finally {
+                close(writeFd)
+                close(readFd)
+            }
         }
     }
 
@@ -121,30 +131,32 @@ class PosixRawClientTest {
      *
      * Measured: with the early return removed — the predicate still consulted,
      * its answer ignored — every test in this module and all 205 in the kqueue
-     * suite stayed green, while the class this exists for went back from 335 ms
-     * to 20 353 ms. Nothing else holds it.
+     * suite stayed green, while the class this exists for went from 1 340 ms
+     * back to 21 362 ms. Nothing else holds it.
      */
     @Test
-    fun `a satisfied predicate ends the read rather than consuming what follows`() {
-        val (readFd, writeFd) = newSocketPair()
-        try {
-            writeBytes(writeFd, "HEAD\r\n\r\n".encodeToByteArray())
+    fun `a satisfied predicate ends the read rather than consuming what follows`() = runBlocking {
+        withTimeout(TEST_BUDGET) {
+            val (readFd, writeFd) = newSocketPair()
+            try {
+                writeBytes(writeFd, "HEAD\r\n\r\n".encodeToByteArray())
 
-            var wroteTrailer = false
-            val result = PosixRawClient.rawReadUntil(readFd, 64, SHORT_TIMEOUT) { soFar ->
-                val done = soFar.endsWith("\r\n\r\n")
-                if (done && !wroteTrailer) {
-                    wroteTrailer = true
-                    writeBytes(writeFd, "NEXT".encodeToByteArray())
+                var wroteTrailer = false
+                val result = PosixRawClient.rawReadUntil(readFd, 64, SHORT_TIMEOUT) { soFar ->
+                    val done = soFar.endsWith("\r\n\r\n")
+                    if (done && !wroteTrailer) {
+                        wroteTrailer = true
+                        writeBytes(writeFd, "NEXT".encodeToByteArray())
+                    }
+                    done
                 }
-                done
-            }
 
-            assertEquals("HEAD\r\n\r\n", result, "the call must stop at the match, leaving NEXT unread")
-            assertTrue(wroteTrailer, "the fixture must have written the trailer, or it proves nothing")
-        } finally {
-            close(writeFd)
-            close(readFd)
+                assertEquals("HEAD\r\n\r\n", result, "the call must stop at the match, leaving NEXT unread")
+                assertTrue(wroteTrailer, "the fixture must have written the trailer, or it proves nothing")
+            } finally {
+                close(writeFd)
+                close(readFd)
+            }
         }
     }
 
@@ -169,5 +181,14 @@ class PosixRawClientTest {
         val SHORT_TIMEOUT = 200.milliseconds
 
         const val REPLACEMENT = '�'
+
+        /**
+         * Wall clock for the whole test, as the rules require of anything that
+         * reads a socket. [SHORT_TIMEOUT] bounds each read, and this bounds the
+         * test — it will not interrupt a blocked syscall, but it says out loud
+         * that these are meant to finish, which the first draft of this file did
+         * not for fifty minutes.
+         */
+        val TEST_BUDGET = 15.seconds
     }
 }
