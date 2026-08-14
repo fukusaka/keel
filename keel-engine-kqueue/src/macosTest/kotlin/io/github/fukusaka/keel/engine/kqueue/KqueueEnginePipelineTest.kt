@@ -70,7 +70,7 @@ class KqueueEnginePipelineTest {
             assertEquals(
                 "",
                 PosixRawClient.rawReadUpTo(clientFd, 256, QUIET_AFTER_RESPONSE),
-                "nothing may follow the response within $QUIET_AFTER_RESPONSE, got:",
+                "nothing may follow the response within $QUIET_AFTER_RESPONSE",
             )
 
             close(clientFd)
@@ -177,6 +177,17 @@ class KqueueEnginePipelineTest {
                 "the first request on this connection must answer Hi, got: $result1",
             )
 
+            // Leave the connection idle before asking again, because that is
+            // what "keep-alive" means and sending the next request immediately
+            // never tests it. The drain this replaced held the connection idle
+            // for five seconds without meaning to, and so noticed a server that
+            // dropped it in between; sending back-to-back noticed nothing.
+            //
+            // The gap pays for itself twice: anything the server emits while it
+            // is idle is still in the socket when read 2 runs, where the count
+            // and the status line catch it without a timer of their own.
+            usleep(IDLE_BETWEEN_REQUESTS.inWholeMicroseconds.toUInt())
+
             // Second request on same connection (keep-alive), to the other path
             rawWrite(clientFd, "GET /encore HTTP/1.1\r\nHost: localhost\r\nX-Nonce: $nonce\r\n\r\n")
             val result2 = PosixRawClient.rawReadUntil(clientFd, 4096) { it.endsWith(expected2) }
@@ -193,11 +204,12 @@ class KqueueEnginePipelineTest {
             )
             // Nothing for QUIET_AFTER_RESPONSE after the last answer either --
             // read 2's nonce judges everything that arrives before it, and only
-            // this window judges anything after.
+            // this window judges anything after. It judges arrival, not health:
+            // a closed connection reads empty here exactly as a quiet one does.
             assertEquals(
                 "",
                 PosixRawClient.rawReadUpTo(clientFd, 256, QUIET_AFTER_RESPONSE),
-                "nothing may follow the second response within $QUIET_AFTER_RESPONSE, got:",
+                "nothing may follow the second response within $QUIET_AFTER_RESPONSE",
             )
 
             close(clientFd)
@@ -224,8 +236,22 @@ private fun String.responseCount(): Int = split("HTTP/1.1").size - 1
  * it that was given up.
  *
  * It buys the *end* of a connection only. Anything a server emits between two
- * answers is caught for free, by the response count and by the nonce on the
- * answer that follows it — no timer involved. It is the last answer that has
- * nothing after it to notice, which is why this exists and why it is paid twice.
+ * answers is still in the socket when the next read runs, where the response
+ * count and the status line catch it with no timer of their own. It is the last
+ * answer that has nothing after it to notice, which is why this exists and why
+ * it is paid twice.
  */
 private val QUIET_AFTER_RESPONSE = 500.milliseconds
+
+/**
+ * How long the keep-alive test leaves its connection idle between requests.
+ *
+ * A window on the same terms as [QUIET_AFTER_RESPONSE], and chosen the same way
+ * — a cost ceiling, since nothing here says how long a server might wait before
+ * dropping an idle connection. A server that drops or corrupts one later than
+ * this is not seen. What the gap does buy is that "keep-alive" is exercised at
+ * all: with the requests back to back the connection is never idle, and the
+ * five seconds the old drain spent here were the only reason anything of the
+ * sort was covered.
+ */
+private val IDLE_BETWEEN_REQUESTS = 500.milliseconds
