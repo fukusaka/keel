@@ -132,7 +132,15 @@ class KqueueEnginePipelineTest {
 
             // First request
             rawWrite(clientFd, "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            // The predicate stops the read at "Hi", so asserting the same
+            // string back is a tautology on the success path. The status line
+            // is what the read did not already establish -- it is what fails
+            // when the response is wrong rather than absent.
             val result1 = PosixRawClient.rawReadUntil(clientFd, 4096) { it.endsWith("Hi") }
+            assertTrue(
+                result1.startsWith("HTTP/1.1 200 OK\r\n"),
+                "the first response must carry a 200 status line, got: $result1",
+            )
             assertTrue(
                 result1.endsWith("Hi"),
                 "the first request on this connection must answer Hi, got: $result1",
@@ -141,6 +149,10 @@ class KqueueEnginePipelineTest {
             // Second request on same connection (keep-alive)
             rawWrite(clientFd, "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
             val result2 = PosixRawClient.rawReadUntil(clientFd, 4096) { it.endsWith("Hi") }
+            assertTrue(
+                result2.startsWith("HTTP/1.1 200 OK\r\n"),
+                "the second response must carry a 200 status line, got: $result2",
+            )
             assertTrue(
                 result2.endsWith("Hi"),
                 "the second request on the same connection must answer Hi, got: $result2",

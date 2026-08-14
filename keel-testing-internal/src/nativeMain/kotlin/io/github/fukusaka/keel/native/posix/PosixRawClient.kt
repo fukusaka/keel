@@ -234,12 +234,17 @@ public object PosixRawClient {
      *
      * The predicate is what makes this cheap: a caller that knows how
      * its payload ends stops as soon as it does, instead of waiting out
-     * a timer that only tells it the peer went quiet. [timeout] is then
-     * what it reads as — a bound on failure, not a per-call cost.
+     * a timer that only tells it the peer went quiet. [timeout] stops
+     * being a cost paid on success and becomes what bounds a failure --
+     * per read, as `SO_RCVTIMEO` is, so a peer that dribbles can still
+     * hold the call for longer than one [timeout].
      *
      * The predicate sees the whole payload so far, decoded, after every
-     * read. It runs on partial UTF-8 only if the peer splits a
-     * character across reads, which the callers here do not do.
+     * read. Segmentation is the kernel's to choose, so a character can
+     * arrive split across two reads -- and that is safe: the decode
+     * substitutes U+FFFD rather than throwing, so a split defers the
+     * predicate instead of firing it on a half-read payload, and the
+     * next decode sees the character whole. Measured, not assumed.
      */
     public fun rawReadUntil(
         fd: Int,
