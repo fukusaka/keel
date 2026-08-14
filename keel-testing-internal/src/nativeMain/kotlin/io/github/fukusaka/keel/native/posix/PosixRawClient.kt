@@ -59,10 +59,13 @@ import kotlin.time.TimeSource
  * tests as a wrong server observation.
  *
  * That argument reaches everything those tests can reach, which is less than it
- * sounds: every payload they send is ASCII and short, so nothing they do can
- * split a multi-byte character or need a second read to complete one. Both
- * branches were measured to survive their removal with the whole suite green.
- * `PosixRawClientTest` covers that gap and only that gap.
+ * sounds. They observe the bytes a server sent, so anything that changes only
+ * *when* this stops reading is invisible to them, and their payloads are short
+ * ASCII, so nothing they send can split a multi-byte character. Three
+ * behaviours were measured to survive their own removal with the whole suite
+ * green: the U+FFFD substitution, the loop that completes a split character,
+ * and the early return on a satisfied predicate. `PosixRawClientTest` covers
+ * those and leaves the rest to the integration tests.
  */
 @OptIn(ExperimentalForeignApi::class)
 public object PosixRawClient {

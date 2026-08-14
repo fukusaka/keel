@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
- * What [PosixRawClient.rawReadUntil] does with a payload that is not yet whole.
+ * The parts of [PosixRawClient.rawReadUntil] that no caller of it exercises.
  *
  * The class KDoc argues this file needs no self-test because the engine
  * integration tests drive a real server through it, so a regression shows up as
@@ -24,9 +24,13 @@ import kotlin.time.Duration.Companion.milliseconds
  * not split a two-byte string, so the one branch that only a multi-byte
  * character can reach is never taken.
  *
- * Measured: replacing the decode with `throwOnInvalidSequence = true` — removing
- * the exact property the KDoc names — leaves the whole kqueue suite green at
- * 205 of 205. Hence this.
+ * The same holds for the predicate's own effect: removing the early return, so
+ * that a satisfied predicate no longer ends the call, changes nothing those
+ * tests assert — they still get the bytes they expect, just later.
+ *
+ * Measured: each of the three removals — the substitution, the loop that
+ * completes a split character, and the early return — leaves the whole kqueue
+ * suite green at 205 of 205. Hence this.
  */
 @OptIn(ExperimentalForeignApi::class)
 class PosixRawClientTest {
@@ -102,14 +106,42 @@ class PosixRawClientTest {
         }
     }
 
-    /** The predicate ends the call as soon as it holds, without waiting for the timer. */
+    /**
+     * A satisfied predicate ends the call — it does not merely get consulted.
+     *
+     * Asserting the payload alone cannot say that: `rawReadUpTo`, which has no
+     * predicate at all, returns the same string once the peer goes quiet. So the
+     * test makes the difference visible in bytes instead of in a clock. More
+     * data is written the moment the predicate holds; a call that stops there
+     * cannot have read it, and one that keeps going must.
+     *
+     * That is also the contract the keep-alive caller depends on: bytes after
+     * the match belong to whoever reads next, and consuming them would eat the
+     * answer to the following request.
+     *
+     * Measured: with the early return removed — the predicate still consulted,
+     * its answer ignored — every test in this module and all 205 in the kqueue
+     * suite stayed green, while the class this exists for went back from 335 ms
+     * to 20 353 ms. Nothing else holds it.
+     */
     @Test
-    fun `a satisfied predicate ends the read without waiting for the timeout`() {
+    fun `a satisfied predicate ends the read rather than consuming what follows`() {
         val (readFd, writeFd) = newSocketPair()
         try {
             writeBytes(writeFd, "HEAD\r\n\r\n".encodeToByteArray())
-            val result = PosixRawClient.rawReadUntil(readFd, 64, SHORT_TIMEOUT) { it.endsWith("\r\n\r\n") }
-            assertEquals("HEAD\r\n\r\n", result)
+
+            var wroteTrailer = false
+            val result = PosixRawClient.rawReadUntil(readFd, 64, SHORT_TIMEOUT) { soFar ->
+                val done = soFar.endsWith("\r\n\r\n")
+                if (done && !wroteTrailer) {
+                    wroteTrailer = true
+                    writeBytes(writeFd, "NEXT".encodeToByteArray())
+                }
+                done
+            }
+
+            assertEquals("HEAD\r\n\r\n", result, "the call must stop at the match, leaving NEXT unread")
+            assertTrue(wroteTrailer, "the fixture must have written the trailer, or it proves nothing")
         } finally {
             close(writeFd)
             close(readFd)

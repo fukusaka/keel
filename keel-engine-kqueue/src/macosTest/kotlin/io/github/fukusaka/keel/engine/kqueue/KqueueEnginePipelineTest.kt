@@ -8,9 +8,11 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
 import platform.posix.usleep
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalForeignApi::class)
@@ -27,7 +29,6 @@ class KqueueEnginePipelineTest {
                 "Pipeline!",
                 contentType = "text/plain",
             )
-            response.headers.size
 
             val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
@@ -61,6 +62,15 @@ class KqueueEnginePipelineTest {
             assertTrue(result.startsWith("HTTP/1.1 200 OK\r\n"), "status line: $result")
             assertTrue(result.endsWith("Pipeline!"), "body: $result")
             assertEquals(1, result.responseCount(), "one response, not a leftover queue: $result")
+            // One request, one response, and nothing after it. Stopping at the
+            // body means anything the server sends next is simply unread, and
+            // this test has no later read to find it -- measured: a server
+            // emitting a second, different response 300 ms later passed.
+            assertEquals(
+                "",
+                PosixRawClient.rawReadUpTo(clientFd, 256, QUIET_AFTER_RESPONSE),
+                "the server must send nothing after the response it was asked for",
+            )
 
             close(clientFd)
             server.close()
@@ -74,7 +84,6 @@ class KqueueEnginePipelineTest {
             val engine = KqueueEngine(IoEngineConfig(threads = 1))
 
             val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok("ok")
-            response.headers.size
 
             val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
@@ -110,14 +119,16 @@ class KqueueEnginePipelineTest {
         withTimeout(15.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 1))
 
-            // Distinguishable bodies, because that is what says which request a
-            // response answers. With both answers identical, a server that
-            // repeats the first one and never answers the second is
-            // indistinguishable from one that answered both -- measured: it
-            // passed in 419 ms, status line, response count and body all
-            // satisfied by the stale copy.
+            // Request 2 carries a nonce and its answer echoes it, because that
+            // is the only thing that says the answer was produced *by* request
+            // 2. Distinguishing the two bodies is not enough: it rules out a
+            // repeat of answer 1, and leaves a copy of answer 2 emitted before
+            // request 2 was ever written -- measured, that passed in 424 ms with
+            // status line, response count and body all satisfied. A server that
+            // has not read the nonce cannot put it in a response.
+            val nonce = Random.nextInt(1_000_000).toString()
+            val expected2 = "Encore:$nonce"
             val first = io.github.fukusaka.keel.codec.http.HttpResponse.ok("Hi", contentType = "text/plain")
-            val second = io.github.fukusaka.keel.codec.http.HttpResponse.ok("Encore", contentType = "text/plain")
 
             val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
@@ -125,7 +136,15 @@ class KqueueEnginePipelineTest {
                 channel.pipeline.addLast(
                     "routing",
                     io.github.fukusaka.keel.codec.http.RoutingHandler(
-                        mapOf("/hello" to { first }, "/encore" to { second }),
+                        mapOf(
+                            "/hello" to { _: io.github.fukusaka.keel.codec.http.HttpRequestHead -> first },
+                            "/encore" to { head: io.github.fukusaka.keel.codec.http.HttpRequestHead ->
+                                io.github.fukusaka.keel.codec.http.HttpResponse.ok(
+                                    "Encore:${head.headers["X-Nonce"] ?: "absent"}",
+                                    contentType = "text/plain",
+                                )
+                            },
+                        ),
                     ),
                 )
             }
@@ -158,18 +177,25 @@ class KqueueEnginePipelineTest {
             )
 
             // Second request on same connection (keep-alive), to the other path
-            rawWrite(clientFd, "GET /encore HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            val result2 = PosixRawClient.rawReadUntil(clientFd, 4096) { it.endsWith("Encore") }
+            rawWrite(clientFd, "GET /encore HTTP/1.1\r\nHost: localhost\r\nX-Nonce: $nonce\r\n\r\n")
+            val result2 = PosixRawClient.rawReadUntil(clientFd, 4096) { it.endsWith(expected2) }
             assertTrue(
                 result2.startsWith("HTTP/1.1 200 OK\r\n"),
                 "the second response must carry a 200 status line, got: $result2",
             )
             assertEquals(1, result2.responseCount(), "one response, not a leftover queue: $result2")
-            // "Encore", not "Hi": this is what a repeat of the first answer
-            // cannot satisfy, whenever it arrives.
+            // The nonce, not just a different body: this is what neither a
+            // repeat of answer 1 nor an early copy of answer 2 can satisfy.
             assertTrue(
-                result2.endsWith("Encore"),
-                "the second request on the same connection must answer Encore, got: $result2",
+                result2.endsWith(expected2),
+                "the second request must be answered with its own nonce ($expected2), got: $result2",
+            )
+            // Nothing after the last answer either -- read 2's nonce judges what
+            // arrives before it, and nothing judges what arrives after.
+            assertEquals(
+                "",
+                PosixRawClient.rawReadUpTo(clientFd, 256, QUIET_AFTER_RESPONSE),
+                "the server must send nothing after the second response",
             )
 
             close(clientFd)
@@ -179,5 +205,19 @@ class KqueueEnginePipelineTest {
     }
 }
 
-/** How many HTTP response heads the payload holds. One is the whole point. */
+/**
+ * How many times the payload carries the version token — the response heads,
+ * since none of the bodies these tests serve contain one. One is the point.
+ */
 private fun String.responseCount(): Int = split("HTTP/1.1").size - 1
+
+/**
+ * How long a test waits to be sure the server has stopped talking.
+ *
+ * A bound, not a proof — the same kind of thing the five-second drain was, an
+ * order of magnitude cheaper. Anything the server emits after this is unread and
+ * unjudged, so the number is chosen against the defect it is for: an extra
+ * response written from off the event loop, which arrives late by however long
+ * that path takes. 250 ms was measured to miss one at 300 ms.
+ */
+private val QUIET_AFTER_RESPONSE = 500.milliseconds
