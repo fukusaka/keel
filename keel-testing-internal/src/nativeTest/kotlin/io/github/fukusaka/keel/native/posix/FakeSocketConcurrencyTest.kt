@@ -32,11 +32,12 @@ import kotlin.test.assertEquals
  * These drive the same shape deliberately, at a volume no seam test reaches, so
  * that removing the lock is a failure rather than a possibility. Measured with
  * [FakeSocketLock.withLock] reduced to calling its block, each test run alone,
- * twenty runs on each host: all four are caught 20 of 20 on macosArm64 and on
- * linuxX64. Three fail their assertion; the ops test mostly takes the process
- * down instead, because an unguarded `MutableList.add` from two threads
- * corrupts the list rather than losing an entry (macOS 18 crashes / 2 failures,
- * Linux 14 / 6). Both are detection.
+ * twenty runs on each host: all five are caught 20 of 20 on macosArm64 and on
+ * linuxX64. Three fail their assertion; the ops and walk tests usually take the
+ * process down instead, because an unguarded container from two threads gives
+ * way rather than quietly losing an entry. Which of the two a given run gets
+ * varies by run and by host, so no proportion is quoted here. Both are
+ * detection.
  *
  * Run alone, because a crash ends the binary and the other verdicts with it.
  *
@@ -153,8 +154,9 @@ class FakeSocketConcurrencyTest {
      * four other tests here pass 20 of 20 on both hosts.
      *
      * Measured with those five restored to unguarded: this fails 20 of 20 on
-     * both hosts, taking the process down with a `ConcurrentModificationException`
-     * out of the walk.
+     * both hosts, taking the process down — usually a
+     * `ConcurrentModificationException` out of the walk, sometimes the inserting
+     * side's own `HashMap` giving way first.
      *
      * What it does not do is make the class KDoc's "every member" true by test.
      * The two fakes have 86 public members between them and this suite drives
@@ -168,8 +170,8 @@ class FakeSocketConcurrencyTest {
         val shared = Contention(KIND_SCRIPT_WALK, ops = fake)
 
         val scripted = InetSocketAddress(Host.Ip(IpAddress.V4.LOOPBACK), 0)
-        contendWith(shared, peers = 2) {
-            awaitPeer(shared, parties = 3)
+        contendWith(shared) {
+            awaitPeer(shared)
             // A new fd each time, because that is what makes the insert
             // structural. Scripting the same fd repeatedly only appends to a
             // deque the map already holds, so the map itself never changes and
@@ -179,26 +181,27 @@ class FakeSocketConcurrencyTest {
             // All five maps, not one: `assertAllConsumed` walks all of them, and
             // scripting one leaves the other four unexercised — which is how the
             // sweep that this test exists to catch got through in the first place.
-            //
-            // Two inserters, not one, or the count below cannot fail: a single
-            // writer racing a reader can have its walk corrupted but never loses
-            // an entry, so the crash would be the whole of the detection.
-            // Measured: with one inserter and the crash swallowed, this passed
-            // 20 of 20 against the unguarded insert.
-            scriptRange(fake, 0)
+
+            scriptRange(fake)
             shared.stopped.value = 1
         }
 
-        // Every script must still be there and still be the one written. A map
-        // torn between an insert and a walk loses entries silently, and losing
-        // one means the fake answers with its default instead — which is a
-        // different address and a different errno, so the count says so.
-        val intact = (0 until 2 * SCRIPT_WALK_INSERTS).count {
+        // Every script must still be there and still be the one written — the
+        // fake answers with its default otherwise, which is a different address
+        // and a different errno.
+        //
+        // This has never been seen to fire: measured over 240 runs with the
+        // walk's own throw swallowed so that only the count could speak, it did
+        // not once. Kotlin/Native's `HashMap` does not lose entries under a torn
+        // insert, it dies — so the detection here is the crash, and this states
+        // the property the crash is standing in for. It is wired, not inert:
+        // dropping a single fd's script makes it read `expected 2000, actual 1999`.
+        val intact = (0 until SCRIPT_WALK_INSERTS).count {
             fake.getLocalAddress(it) == scripted &&
                 fake.getRemoteAddress(it) == scripted &&
                 fake.getSocketError(it) == SCRIPT_WALK_ERRNO
         }
-        assertEquals(2 * SCRIPT_WALK_INSERTS, intact, "every script written during the walk must survive it")
+        assertEquals(SCRIPT_WALK_INSERTS, intact, "every script written during the walk must survive it")
     }
 
     @Test
@@ -231,7 +234,7 @@ private const val FD = 3
 
 /**
  * High enough that an unguarded counter loses increments every run, low enough
- * that all four tests together stay well inside a second.
+ * that all five tests together stay well inside a second.
  */
 private const val CALLS_PER_THREAD = 20_000
 
@@ -284,9 +287,6 @@ private class Contention(
 
     /** Raised when the peers should stop hammering and let the join complete. */
     val stopped: AtomicInt = AtomicInt(0)
-
-    /** Hands each peer an index, so one can take a different half than the rest. */
-    val peerSeq: AtomicInt = AtomicInt(0)
 }
 
 /**
@@ -309,11 +309,10 @@ private fun walkUntilStopped(shared: Contention) {
     }
 }
 
-/** Scripts every map this fake holds, for [SCRIPT_WALK_INSERTS] fds from [firstFd]. */
-private fun scriptRange(fake: FakeNativeSocketOps, firstFd: Int) {
+/** Scripts every map this fake holds, for [SCRIPT_WALK_INSERTS] fds. */
+private fun scriptRange(fake: FakeNativeSocketOps) {
     val scripted = InetSocketAddress(Host.Ip(IpAddress.V4.LOOPBACK), 0)
-    repeat(SCRIPT_WALK_INSERTS) { i ->
-        val fd = firstFd + i
+    repeat(SCRIPT_WALK_INSERTS) { fd ->
         fake.enqueueLocalAddress(fd, scripted)
         fake.enqueueRemoteAddress(fd, scripted)
         fake.enqueueConnect(fd, ConnectResult.Connected)
@@ -374,13 +373,7 @@ private fun runPeerHalf(shared: Contention) {
             }
         }
         KIND_OPS -> repeat(CALLS_PER_THREAD) { shared.ops!!.setNonBlocking(FD) }
-        // Peer 0 writes the upper half of the fd range; the rest walk.
-        KIND_SCRIPT_WALK ->
-            if (shared.peerSeq.incrementAndGet() == 1) {
-                scriptRange(shared.ops!!, SCRIPT_WALK_INSERTS)
-            } else {
-                walkUntilStopped(shared)
-            }
+        KIND_SCRIPT_WALK -> walkUntilStopped(shared)
         else -> error("unknown contention kind ${shared.kind}")
     }
 }
