@@ -59,7 +59,7 @@ class FakeSocketConcurrencyTest {
         val shared = Contention(KIND_COUNT, socket = fake)
 
         contendWith(shared) {
-            awaitPeer(shared.started)
+            awaitPeer(shared)
             fake.readRepeatedly()
         }
 
@@ -80,7 +80,7 @@ class FakeSocketConcurrencyTest {
 
         var here = 0
         contendWith(shared) {
-            awaitPeer(shared.started)
+            awaitPeer(shared)
             here = fake.readRepeatedly()
         }
 
@@ -120,7 +120,7 @@ class FakeSocketConcurrencyTest {
         var armed = 0
 
         contendWith(shared, peers = ONE_SHOT_READERS) {
-            awaitPeer(shared.started, parties = ONE_SHOT_READERS + 1)
+            awaitPeer(shared, parties = ONE_SHOT_READERS + 1)
             repeat(ONE_SHOT_ROUNDS) {
                 fake.readThrowsOnce = IllegalStateException("scripted")
                 armed++
@@ -157,34 +157,48 @@ class FakeSocketConcurrencyTest {
      * out of the walk.
      *
      * What it does not do is make the class KDoc's "every member" true by test.
-     * Of roughly forty members the suite drives four — `read`, `setNonBlocking`,
-     * one map-based `enqueue*`, `assertAllConsumed` — and the rest still rest on
-     * review. A test per member is the only thing that would change that, and a
-     * table of them would go stale against a fake that grows.
+     * The two fakes have 86 public members between them and this suite drives
+     * about fifteen; the rest still rest on review. A test per member is the
+     * only thing that would change that, and a table of them would go stale
+     * against a fake that grows.
      */
     @Test
     fun `scripting one fd is safe while another thread walks the scripts`() {
         val fake = FakeNativeSocketOps()
         val shared = Contention(KIND_SCRIPT_WALK, ops = fake)
 
-        contendWith(shared) {
-            awaitPeer(shared.started)
+        val scripted = InetSocketAddress(Host.Ip(IpAddress.V4.LOOPBACK), 0)
+        contendWith(shared, peers = 2) {
+            awaitPeer(shared, parties = 3)
             // A new fd each time, because that is what makes the insert
             // structural. Scripting the same fd repeatedly only appends to a
             // deque the map already holds, so the map itself never changes and
             // a walk over it sees nothing — measured: the same test against the
             // unguarded insert passed 20 of 20 that way.
-            repeat(SCRIPT_WALK_INSERTS) { i ->
-                fake.enqueueLocalAddress(i, InetSocketAddress(Host.Ip(IpAddress.V4.LOOPBACK), 0))
-            }
+            //
+            // All five maps, not one: `assertAllConsumed` walks all of them, and
+            // scripting one leaves the other four unexercised — which is how the
+            // sweep that this test exists to catch got through in the first place.
+            //
+            // Two inserters, not one, or the count below cannot fail: a single
+            // writer racing a reader can have its walk corrupted but never loses
+            // an entry, so the crash would be the whole of the detection.
+            // Measured: with one inserter and the crash swallowed, this passed
+            // 20 of 20 against the unguarded insert.
+            scriptRange(fake, 0)
             shared.stopped.value = 1
         }
 
-        // The walk cannot be asserted against a number — the peer is consuming
-        // while this thread inserts. What it must not do is see a map mid-insert,
-        // which is a `ConcurrentModificationException` out of `assertAllConsumed`
-        // and takes the process with it.
-        assertEquals(0, shared.tally.value, "the walk must never fail on a map being written")
+        // Every script must still be there and still be the one written. A map
+        // torn between an insert and a walk loses entries silently, and losing
+        // one means the fake answers with its default instead — which is a
+        // different address and a different errno, so the count says so.
+        val intact = (0 until 2 * SCRIPT_WALK_INSERTS).count {
+            fake.getLocalAddress(it) == scripted &&
+                fake.getRemoteAddress(it) == scripted &&
+                fake.getSocketError(it) == SCRIPT_WALK_ERRNO
+        }
+        assertEquals(2 * SCRIPT_WALK_INSERTS, intact, "every script written during the walk must survive it")
     }
 
     @Test
@@ -193,7 +207,7 @@ class FakeSocketConcurrencyTest {
         val shared = Contention(KIND_OPS, ops = fake)
 
         contendWith(shared) {
-            awaitPeer(shared.started)
+            awaitPeer(shared)
             repeat(CALLS_PER_THREAD) { fake.setNonBlocking(FD) }
         }
 
@@ -221,8 +235,15 @@ private const val FD = 3
  */
 private const val CALLS_PER_THREAD = 20_000
 
-/** How many times the one-shot test re-arms while the readers hammer. */
-private const val ONE_SHOT_ROUNDS = 200
+/**
+ * How many times the one-shot test re-arms while the readers hammer.
+ *
+ * Detection scales with this: each arming is one more chance for two readers to
+ * take the same one. 200 was 20 of 20 until a field read was added to the gate,
+ * after which it was 19 — the margin here is thin enough that anything added
+ * inside the guarded region should be followed by re-measuring this test.
+ */
+private const val ONE_SHOT_ROUNDS = 600
 
 /**
  * How many readers contend for each arming. Two was not enough on macOS — see
@@ -237,6 +258,9 @@ private const val ONE_SHOT_READERS = 4
  * which is what bounds it.
  */
 private const val SCRIPT_WALK_INSERTS = 2_000
+
+/** Distinguishable from the fake's `defaultSocketError` of 0. */
+private const val SCRIPT_WALK_ERRNO = 42
 
 /**
  * How long an arming waits to be taken before the test calls it stuck. Generous
@@ -260,13 +284,58 @@ private class Contention(
 
     /** Raised when the peers should stop hammering and let the join complete. */
     val stopped: AtomicInt = AtomicInt(0)
+
+    /** Hands each peer an index, so one can take a different half than the rest. */
+    val peerSeq: AtomicInt = AtomicInt(0)
 }
 
-/** All sides in their loop together, or one finishes before another starts. */
-private fun awaitPeer(started: AtomicInt, parties: Int = 2) {
-    started.incrementAndGet()
-    while (started.value < parties) {
-        // Spin until the others arrive.
+/**
+ * Walks every scripted map until the run ends.
+ *
+ * `assertAllConsumed` throws by design while queues are non-empty, which they
+ * are throughout — only a walk that fails on the map's own structure counts, and
+ * that arrives as a `ConcurrentModificationException`, which is not an
+ * [IllegalStateException] and so passes straight through.
+ */
+private fun walkUntilStopped(shared: Contention) {
+    while (shared.stopped.value == 0) {
+        try {
+            shared.ops!!.assertAllConsumed()
+        } catch (expected: IllegalStateException) {
+            check(expected.message?.startsWith("unconsumed scripted responses") == true) {
+                "unexpected failure from the walk: $expected"
+            }
+        }
+    }
+}
+
+/** Scripts every map this fake holds, for [SCRIPT_WALK_INSERTS] fds from [firstFd]. */
+private fun scriptRange(fake: FakeNativeSocketOps, firstFd: Int) {
+    val scripted = InetSocketAddress(Host.Ip(IpAddress.V4.LOOPBACK), 0)
+    repeat(SCRIPT_WALK_INSERTS) { i ->
+        val fd = firstFd + i
+        fake.enqueueLocalAddress(fd, scripted)
+        fake.enqueueRemoteAddress(fd, scripted)
+        fake.enqueueConnect(fd, ConnectResult.Connected)
+        fake.enqueueConnectUnix(fd, ConnectResult.Connected)
+        fake.enqueueSocketError(fd, SCRIPT_WALK_ERRNO)
+    }
+}
+
+/**
+ * All sides in their loop together, or one finishes before another starts.
+ *
+ * Yields to [Contention.stopped] as well as to the count, because a party that
+ * never arrives is otherwise a hang with no output: if `pthread_create` fails
+ * partway, the peers already running wait for a number that will never be
+ * reached, and the join in `contendWith` waits for them. Measured before this:
+ * a simulated failure on the third of four spawns ran to the harness timeout
+ * with both peers spinning here.
+ */
+private fun awaitPeer(shared: Contention, parties: Int = 2) {
+    shared.started.incrementAndGet()
+    while (shared.started.value < parties && shared.stopped.value == 0) {
+        // Spin until the others arrive, or until the run is abandoned.
     }
 }
 
@@ -285,7 +354,7 @@ private fun FakeNativeSocket.readRepeatedly(): Int {
 /** The spawned thread's half, dispatched on [Contention.kind]. */
 @OptIn(ExperimentalForeignApi::class)
 private fun runPeerHalf(shared: Contention) {
-    awaitPeer(shared.started, if (shared.kind == KIND_ONE_SHOT) ONE_SHOT_READERS + 1 else 2)
+    awaitPeer(shared, if (shared.kind == KIND_ONE_SHOT) ONE_SHOT_READERS + 1 else 2)
     when (shared.kind) {
         KIND_COUNT -> shared.socket!!.readRepeatedly()
         KIND_SCRIPT -> shared.tally.addAndGet(shared.socket!!.readRepeatedly())
@@ -305,18 +374,13 @@ private fun runPeerHalf(shared: Contention) {
             }
         }
         KIND_OPS -> repeat(CALLS_PER_THREAD) { shared.ops!!.setNonBlocking(FD) }
-        KIND_SCRIPT_WALK -> while (shared.stopped.value == 0) {
-            // `assertAllConsumed` throws by design while queues are non-empty,
-            // which they are throughout. Only a walk that fails on the map's
-            // own structure counts here.
-            try {
-                shared.ops!!.assertAllConsumed()
-            } catch (expected: IllegalStateException) {
-                check(expected.message?.startsWith("unconsumed scripted responses") == true) {
-                    "unexpected failure from the walk: $expected"
-                }
+        // Peer 0 writes the upper half of the fd range; the rest walk.
+        KIND_SCRIPT_WALK ->
+            if (shared.peerSeq.incrementAndGet() == 1) {
+                scriptRange(shared.ops!!, SCRIPT_WALK_INSERTS)
+            } else {
+                walkUntilStopped(shared)
             }
-        }
         else -> error("unknown contention kind ${shared.kind}")
     }
 }
@@ -332,10 +396,12 @@ private fun runPeerHalf(shared: Contention) {
 @OptIn(ExperimentalForeignApi::class)
 private inline fun contendWith(shared: Contention, peers: Int = 1, hereSide: () -> Unit) {
     val arena = Arena()
-    val ref = StableRef.create(shared)
-    val threads = List(peers) { arena.alloc<pthread_tVar>() }
+    var ref: StableRef<Contention>? = null
+    var threads: List<pthread_tVar>? = null
     var spawned = 0
     try {
+        ref = StableRef.create(shared)
+        threads = List(peers) { arena.alloc<pthread_tVar>() }
         while (spawned < peers) {
             val rc = pthread_create(
                 threads[spawned].ptr,
@@ -352,15 +418,16 @@ private inline fun contendWith(shared: Contention, peers: Int = 1, hereSide: () 
         hereSide()
     } finally {
         // Whatever went wrong, the threads that exist must be told to stop and
-        // joined before the `StableRef` they hold is disposed. Only the
-        // one-shot readers loop on `stopped`; the others are bounded and end on
-        // their own. Without this, the bounded spin that turns a hang into a
-        // failure turns it into readers spinning on freed state instead, and a
-        // partial spawn leaves the same, since peers already running outlive
-        // the `check` that stopped the loop.
+        // joined before the `StableRef` they hold is disposed. Raising `stopped`
+        // is what releases them: the one-shot readers and the walker loop on it,
+        // and `awaitPeer` yields to it so a partial spawn does not leave the
+        // arrivals waiting for a party that will never come. The bounded ones
+        // end on their own.
         shared.stopped.value = 1
-        repeat(spawned) { i -> pthread_join(threads[i].ptr[0], null) }
-        ref.dispose()
+        threads?.let { spawnedThreads ->
+            repeat(spawned) { i -> pthread_join(spawnedThreads[i].ptr[0], null) }
+        }
+        ref?.dispose()
         arena.clear()
     }
 }
