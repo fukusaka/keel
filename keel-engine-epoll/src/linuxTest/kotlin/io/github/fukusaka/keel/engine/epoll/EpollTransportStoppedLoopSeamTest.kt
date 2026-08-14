@@ -109,7 +109,12 @@ internal class EpollTransportStoppedLoopSeamTest : EpollTransportSeamFixture() {
         fd = -1 // the transport closed it; tearDown must not close the number again
         val probe = dup(closedFd)
         if (probe >= 0) close(probe)
-        assertEquals(EBADF, errno, "closing the refused transport must release its fd")
+        // The probe's own result first: a successful dup writes no errno, so
+        // asserting errno alone reads whatever the preceding calls left behind
+        // and passes for a descriptor that was never released. The sibling
+        // above does it in this order for the same reason.
+        assertEquals(-1, probe, "closing the refused transport must release its fd")
+        assertEquals(EBADF, errno, "closed, not fd-table exhaustion: the probe must fail with EBADF")
     }
 
     // --- entry points a stopped loop used to swallow ---

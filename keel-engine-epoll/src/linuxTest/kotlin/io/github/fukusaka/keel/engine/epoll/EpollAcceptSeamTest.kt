@@ -243,20 +243,27 @@ class EpollAcceptSeamTest {
 
     // --- ReadinessPipelinedStreamServer.onAcceptable: Failed / WouldBlock ---
     //
-    // bindPipeline returns an ReadinessPipelinedStreamServer; we cast and call
-    // the internal onAcceptable() directly to drive the accept loop branches
-    // deterministically (no real event delivery). The sentinel fd is needed
-    // so start() and the re-arm epoll_ctl(ADD) calls succeed — the fd is
-    // never actually listened on, so no real connections interfere.
+    // bindPipeline returns a ReadinessPipelinedStreamServer; we cast and drive
+    // the accept loop branches through it directly (no real event delivery).
+    //
+    // Which entry point depends on what the test reads back. A test that asks
+    // whether the branch re-armed must go through dispatchAcceptReadiness(),
+    // which pops the registration first -- onAcceptable() leaves the arm
+    // start() made in place, so the listener reads as armed either way. Tests
+    // that assert on something else call onAcceptable() directly.
+    //
+    // The sentinel fd is needed so start() and the re-arm epoll_ctl(ADD) calls
+    // succeed — the fd is never actually listened on, so no real connections
+    // interfere.
 
     @Test
-    fun `onAcceptable Failed logs and re-arms without dispatching`() = runBlocking {
+    fun `a Failed accept re-arms without dispatching`() = runBlocking {
         withTimeout(15.seconds) {
             val sentinelFd = newSentinelFd()
             val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18084)
             val fakeSocket = FakeNativeSocket().apply {
-                // First call on onAcceptable() returns Failed; after Failed the
-                // engine re-arms without calling accept again.
+                // The first accept returns Failed; after Failed the engine
+                // re-arms without calling accept again.
                 enqueueAccept(sentinelFd, AcceptResult.Failed(ECONNABORTED))
             }
             val fakeOps = FakeNativeSocketOps().apply {
@@ -270,11 +277,16 @@ class EpollAcceptSeamTest {
                     BindConfig(),
                 ) { /* no-op initializer */ }
                 val pipelined = server as ReadinessPipelinedStreamServer
-                pipelined.onAcceptable()
+                // dispatchAcceptReadiness, not onAcceptable: the latter leaves
+                // start()'s arm in the ledger, so a listener reads as armed
+                // whether or not this call put it back. The helper's own KDoc
+                // says so; onAcceptable's does not mention it.
+                pipelined.dispatchAcceptReadiness()
                 assertEquals(1, fakeSocket.acceptCalls)
                 // No Accepted → no setNonBlocking / address reads.
                 assertTrue(fakeOps.nonBlockingFds.isEmpty())
                 assertEquals(0, fakeOps.getRemoteAddressCalls)
+                assertTrue(pipelined.isFirstListenerArmed(), "a Failed accept must re-arm")
                 server.close()
             } catch (t: Throwable) {
                 close(sentinelFd)
@@ -395,7 +407,7 @@ class EpollAcceptSeamTest {
     }
 
     @Test
-    fun `onAcceptable WouldBlock re-arms without side effects`() = runBlocking {
+    fun `a WouldBlock accept re-arms without side effects`() = runBlocking {
         withTimeout(15.seconds) {
             val sentinelFd = newSentinelFd()
             val scriptedLocal = InetSocketAddress(Host.Ip(IpAddress.parse("0.0.0.0")), 18085)
@@ -413,9 +425,14 @@ class EpollAcceptSeamTest {
                     BindConfig(),
                 ) { /* no-op */ }
                 val pipelined = server as ReadinessPipelinedStreamServer
-                pipelined.onAcceptable()
+                // dispatchAcceptReadiness, not onAcceptable: the latter leaves
+                // start()'s arm in the ledger, so a listener reads as armed
+                // whether or not this call put it back. The helper's own KDoc
+                // says so; onAcceptable's does not mention it.
+                pipelined.dispatchAcceptReadiness()
                 assertEquals(1, fakeSocket.acceptCalls)
                 assertTrue(fakeOps.nonBlockingFds.isEmpty())
+                assertTrue(pipelined.isFirstListenerArmed(), "WouldBlock must re-arm")
                 server.close()
             } catch (t: Throwable) {
                 close(sentinelFd)
