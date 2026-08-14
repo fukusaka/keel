@@ -23,11 +23,14 @@ import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import platform.posix.ECONNRESET
+import platform.posix.EIO
 import platform.posix.F_GETFD
 import platform.posix.close
 import platform.posix.fcntl
 import platform.posix.pipe
+import platform.posix.usleep
 import platform.posix.write
 import kotlin.concurrent.AtomicInt
 import kotlin.coroutines.EmptyCoroutineContext
@@ -36,6 +39,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
@@ -138,15 +142,20 @@ class EpollOnReadableSeamTest {
 
     @AfterTest
     fun tearDown() {
+        // The loop first, as the transport fixture does and says why: closing a
+        // descriptor while the loop thread may still poll or arm it is the
+        // recycled-fd hazard. Several classes in this module start a loop; what
+        // is particular here is that a branch which wrongly re-arms reads until
+        // something stops it, so the window is as wide as the loop is alive.
+        eventLoop.close()
+
         close(writeFd)
         // Only if this fixture still owns it. A test that lets the transport
         // close the connection hands `readFd` over: the transport's teardown is
         // dispatched to the loop, so closing here as well is a second close(2)
-        // on the same number from another thread -- and if anything on the loop
-        // or in `eventLoop.close()` opens a descriptor in between, the loser
-        // closes a live one belonging to something else.
+        // on the same number -- and if anything opens a descriptor in between,
+        // the loser closes a live one belonging to something else.
         if (readFd >= 0) close(readFd)
-        eventLoop.close()
     }
 
     /**
@@ -181,47 +190,131 @@ class EpollOnReadableSeamTest {
     @Test
     fun `onReadable with Bytes invokes onRead and re-arms`() = runBlocking {
         val fake = FakeNativeSocket().apply {
-            enqueueRead(readFd, ReadResult.Bytes(3), ReadResult.WouldBlock)
+            enqueueRead(readFd, ReadResult.Bytes(3), ReadResult.Eof)
+            // Anything past the script fails, so a read that should not have
+            // happened reports the connection closed a second time -- a call
+            // this test counts, rather than a number the loop thread is still
+            // writing. Delivering instead would only catch the reads that reach
+            // a wired onRead; a branch that reads and discards would not.
+            defaultRead = ReadResult.Failed(EIO)
         }
         val transport = ReadinessIoTransport(readFd, eventLoop, DefaultAllocator, fake)
 
         val firstRead = CompletableDeferred<Int>()
+        val closedSignal = CompletableDeferred<Unit>()
+        val extraDeliveries = AtomicInt(0)
         transport.onRead = { buf ->
-            if (!firstRead.isCompleted) firstRead.complete(buf.readableBytes)
+            if (!firstRead.complete(buf.readableBytes)) extraDeliveries.incrementAndGet()
             buf.release()
+        }
+        val closedCalls = AtomicInt(0)
+        transport.onReadClosed = {
+            closedCalls.incrementAndGet()
+            closedSignal.complete(Unit)
         }
         transport.readEnabled = true
         triggerReadiness()
 
-        val bytes = withTimeout(2.seconds) { firstRead.await() }
+        // Named like the waits below it, and naming no cause: an arm pointed
+        // at the wrong descriptor, a read that never reaches onRead, and a
+        // readEnabled that arms nothing all end here, and this wait cannot
+        // tell them apart. Before the change it said nothing at all.
+        val bytes = withTimeoutOrNull(SIGNAL_BUDGET) { firstRead.await() }
+        assertNotNull(bytes, "the first read must reach onRead — nothing arrived")
         assertEquals(3, bytes)
-        // A second `read` fires after re-arm (WouldBlock). We don't
-        // wait for it explicitly — assert that read was invoked at
-        // least once and the fake accepted both scripted entries
-        // (second is the spurious-wake drain).
-        assertTrue(fake.readCalls >= 1)
+
+        // The second scripted result ends the connection, and waiting for that
+        // is what makes the rest of this deterministic. `>= 1` was satisfied by
+        // the arm the readEnabled setter makes, so it held whether or not the
+        // Bytes branch re-armed; the second read is reached only by a re-arm,
+        // and its Eof both proves the re-arm and stops the loop from touching
+        // the fake again.
+        //
+        // An earlier version scripted WouldBlock here and polled the call
+        // counter. That left the loop reading for the rest of the test -- so
+        // the queue could not be inspected -- and the poll unblocked before the
+        // dequeue, since the fake counts on entry. Timing out is reported
+        // rather than thrown so the failure still names the property.
+        val closed = withTimeoutOrNull(SIGNAL_BUDGET) { closedSignal.await() }
+        assertNotNull(
+            closed,
+            "no close arrived after the first read — the Bytes branch must re-arm, and the Eof must report",
+        )
+
+        // That one line is the whole check, and deliberately so. The only route
+        // to this notification is the Eof scripted on this fd, so reaching here
+        // means the second read happened and consumed it. A re-arm on the wrong
+        // descriptor never reaches the Eof and fails this wait -- which a call
+        // count could not catch, summing as it does across every fd.
+        //
+        // Nothing may be read after that Eof. An earlier version bounded this
+        // with the fake's own call count, which is a plain Int the loop thread
+        // writes -- so an Eof branch that wrongly re-armed, and then read
+        // forever, was raced for by the assertion meant to catch it. The
+        // deliveries are counted here instead, through a callback, in a counter
+        // this test owns.
+        usleep(LATE_ARRIVAL_SETTLE_MICROS)
+
+        // One close, and only one. Every read past the script fails, and a
+        // failed read reports the connection closed -- so a branch that
+        // re-arms and reads on after it has notified is counted here whether
+        // or not it delivers anything. Measured: such a branch reads tens of
+        // thousands of times, and nothing else in either suite reacts.
+        assertEquals(
+            1,
+            closedCalls.value,
+            "the connection may be reported closed once, and no read may follow",
+        )
+        assertEquals(0, extraDeliveries.value, "the scripted Bytes is the only delivery")
     }
 
     @Test
     fun `onReadable with Eof invokes onReadClosed exactly once`() = runBlocking {
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.Eof)
+            // Anything past the script fails, so a read that should not have
+            // happened reports the connection closed a second time -- a call
+            // this test counts, rather than a number the loop thread is still
+            // writing. Delivering instead would only catch the reads that reach
+            // a wired onRead; a branch that reads and discards would not.
+            defaultRead = ReadResult.Failed(EIO)
         }
         val transport = ReadinessIoTransport(readFd, eventLoop, DefaultAllocator, fake)
 
         val closedSignal = CompletableDeferred<Unit>()
-        var readFired = 0
+        // Counted, not signalled: `complete` returns false on a second call and
+        // throws nothing, so a deferred alone cannot tell one notification from
+        // many. The counter can, but only for duplicates that have already
+        // arrived when it is read -- see the settle below.
+        val closedCalls = AtomicInt(0)
+        val readFired = AtomicInt(0)
         transport.onRead = { buf ->
-            readFired++
+            readFired.incrementAndGet()
             buf.release()
         }
-        transport.onReadClosed = { closedSignal.complete(Unit) }
+        transport.onReadClosed = {
+            closedCalls.incrementAndGet()
+            closedSignal.complete(Unit)
+        }
         transport.readEnabled = true
         triggerReadiness()
 
-        withTimeout(2.seconds) { closedSignal.await() }
-        assertEquals(1, fake.readCalls)
-        assertEquals(0, readFired, "Eof must not deliver a buffer")
+        val closed = withTimeoutOrNull(SIGNAL_BUDGET) { closedSignal.await() }
+        assertNotNull(closed, "Eof must report the close, and it never arrived")
+
+        // Settle, then assert. "Exactly once" is an upper bound, and waiting
+        // for it to be exceeded is not a thing one can do -- read the counter
+        // the instant the first notification lands and a second one arriving a
+        // millisecond later is invisible, which was measured to pass every run.
+        // The window bounds how late a duplicate can be and still be caught; it
+        // does not make the bound total.
+        //
+        // Only counters this test owns are read after it. The fake's own are a
+        // plain Int the loop thread writes, and a window that exists to admit
+        // writes after the signal is the one place they must not be read.
+        usleep(LATE_ARRIVAL_SETTLE_MICROS)
+        assertEquals(1, closedCalls.value, "Eof must report the close exactly once")
+        assertEquals(0, readFired.value, "Eof must not deliver a buffer")
     }
 
     @Test
@@ -234,22 +327,70 @@ class EpollOnReadableSeamTest {
         // real EOF arrives.
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.WouldBlock, ReadResult.Eof)
+            // Anything past the script fails, so a read that should not have
+            // happened reports the connection closed a second time -- a call
+            // this test counts, rather than a number the loop thread is still
+            // writing. Delivering instead would only catch the reads that reach
+            // a wired onRead; a branch that reads and discards would not.
+            defaultRead = ReadResult.Failed(EIO)
         }
-        val transport = ReadinessIoTransport(readFd, eventLoop, DefaultAllocator, fake)
+        // Tracking, not Default: the buffer this test is named for is released
+        // by the engine, not by anything here, so an unreleased one leaves no
+        // trace a plain allocator could show.
+        //
+        // The allocator's own docs say same-thread, and here the loop thread
+        // allocates while this one asserts. It holds because every allocate and
+        // release precedes the Eof that completes the signal below -- an
+        // ordering this test relies on rather than a property of the type.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val transport = ReadinessIoTransport(readFd, eventLoop, tracker, fake)
 
         val closedSignal = CompletableDeferred<Unit>()
-        var readFired = 0
+        val readFired = AtomicInt(0)
         transport.onRead = { buf ->
-            readFired++
+            readFired.incrementAndGet()
             buf.release()
         }
-        transport.onReadClosed = { closedSignal.complete(Unit) }
+        val closedCalls = AtomicInt(0)
+        transport.onReadClosed = {
+            closedCalls.incrementAndGet()
+            closedSignal.complete(Unit)
+        }
         transport.readEnabled = true
         triggerReadiness()
 
-        withTimeout(2.seconds) { closedSignal.await() }
-        assertEquals(0, readFired, "WouldBlock must not deliver a buffer")
-        assertTrue(fake.readCalls >= 2, "WouldBlock must re-arm — next read was Eof")
+        // Same shape as the Bytes case: the scripted Eof is reachable only by a
+        // re-arm, so this wait is the check. It names no cause -- unlike the
+        // Bytes case there is no prior evidence that the first read happened at
+        // all, so expiry covers "never armed" as well as "armed, did not
+        // re-arm", and saying either would misdiagnose the other.
+        val closed = withTimeoutOrNull(SIGNAL_BUDGET) { closedSignal.await() }
+        assertNotNull(
+            closed,
+            "no close arrived — a read must happen, WouldBlock must re-arm, and the Eof must report",
+        )
+        usleep(LATE_ARRIVAL_SETTLE_MICROS)
+
+        // One close, and only one. Every read past the script fails, and a
+        // failed read reports the connection closed -- so a branch that
+        // re-arms and reads on after it has notified is counted here whether
+        // or not it delivers anything. Measured: such a branch reads tens of
+        // thousands of times, and nothing else in either suite reacts.
+        assertEquals(
+            1,
+            closedCalls.value,
+            "the connection may be reported closed once, and no read may follow",
+        )
+        assertEquals(0, readFired.value, "neither scripted result may deliver a buffer")
+
+        // After the settle, so the check spans the window rather than stopping
+        // at its edge. A buffer leaked one loop turn after the notification is
+        // caught forty times out of forty here; a leak a millisecond after it
+        // is missed from above. The tracker is documented single-thread and the
+        // loop can allocate
+        // during that window -- but only a branch that should have stopped does
+        // so, and every such branch fails the line above this one.
+        tracker.assertNoLeaks()
     }
 
     @Test
@@ -261,22 +402,48 @@ class EpollOnReadableSeamTest {
         // that the explicit Failed branch still reaches onReadClosed.
         val fake = FakeNativeSocket().apply {
             enqueueRead(readFd, ReadResult.Failed(platform.posix.ECONNRESET))
+            // Anything past the script fails, so a read that should not have
+            // happened reports the connection closed a second time -- a call
+            // this test counts, rather than a number the loop thread is still
+            // writing. Delivering instead would only catch the reads that reach
+            // a wired onRead; a branch that reads and discards would not.
+            defaultRead = ReadResult.Failed(EIO)
         }
         val transport = ReadinessIoTransport(readFd, eventLoop, DefaultAllocator, fake)
 
         val closedSignal = CompletableDeferred<Unit>()
-        var readFired = 0
+        val readFired = AtomicInt(0)
         transport.onRead = { buf ->
-            readFired++
+            readFired.incrementAndGet()
             buf.release()
         }
-        transport.onReadClosed = { closedSignal.complete(Unit) }
+        val closedCalls = AtomicInt(0)
+        transport.onReadClosed = {
+            closedCalls.incrementAndGet()
+            closedSignal.complete(Unit)
+        }
         transport.readEnabled = true
         triggerReadiness()
 
-        withTimeout(2.seconds) { closedSignal.await() }
-        assertEquals(1, fake.readCalls)
-        assertEquals(0, readFired, "Failed must not deliver a buffer")
+        // Named, and counted through this test's own callback. The call count
+        // that stood here was a plain Int the loop thread writes, read while
+        // the loop could still be running -- which is what a Failed branch that
+        // wrongly re-armed would be doing.
+        val closed = withTimeoutOrNull(SIGNAL_BUDGET) { closedSignal.await() }
+        assertNotNull(closed, "Failed must report the close, and it never arrived")
+        usleep(LATE_ARRIVAL_SETTLE_MICROS)
+
+        // One close, and only one. Every read past the script fails, and a
+        // failed read reports the connection closed -- so a branch that
+        // re-arms and reads on after it has notified is counted here whether
+        // or not it delivers anything. Measured: such a branch reads tens of
+        // thousands of times, and nothing else in either suite reacts.
+        assertEquals(
+            1,
+            closedCalls.value,
+            "the connection may be reported closed once, and no read may follow",
+        )
+        assertEquals(0, readFired.value, "Failed must not deliver a buffer")
     }
 
     @Test
@@ -693,5 +860,26 @@ class EpollOnReadableSeamTest {
             )
             assertFalse(transport.isOpen, "the connection is still ended")
         }
+    }
+
+    private companion object {
+        /**
+         * How long the loop thread gets to produce the signal a case waits on --
+         * the delivery of a first read, or the notification that ends the
+         * connection. Local work on a loaded runner, not network latency.
+         */
+        val SIGNAL_BUDGET = 2.seconds
+
+        /**
+         * How long anything arriving after the signal gets to show up before
+         * the counts are read -- a duplicate close notification, or a read the
+         * branch should not have made. Both are upper bounds, and an upper
+         * bound cannot be waited for: read the instant the signal lands and
+         * whatever comes a millisecond later is invisible.
+         *
+         * Long enough to catch what the event loop delivers on a later turn,
+         * short enough to pay on every run of all four cases.
+         */
+        const val LATE_ARRIVAL_SETTLE_MICROS: UInt = 200_000u
     }
 }

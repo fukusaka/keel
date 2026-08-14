@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -17,14 +18,15 @@ class KqueueEnginePipelineTest {
     // --- Pipeline ---
 
     @Test
-    fun `bindPipeline responds to HTTP request`() = runBlocking {
+    fun `bindPipeline echo via raw HTTP client`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 1))
+
             val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok(
-                "Hello!",
+                "Pipeline!",
                 contentType = "text/plain",
             )
-            response.headers.size // warm flatEntries cache
+            response.headers.size
 
             val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
@@ -37,37 +39,13 @@ class KqueueEnginePipelineTest {
                 )
             }
 
-            // Discover bound port from server fd (use SocketUtils).
-            // bindPipeline returns AutoCloseable (ReadinessPipelinedStreamServer).
-            // We need the port — extract from engine or use a fixed port.
-            // For simplicity, use a fixed port with retry.
-            server.close()
-            engine.close()
-        }
-    }
-
-    @Test
-    fun `bindPipeline echo via raw HTTP client`() = runBlocking {
-        withTimeout(15.seconds) {
-            val engine = KqueueEngine(IoEngineConfig(threads = 1))
-            val port = 19876 // Fixed port for test
-
-            val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok(
-                "Pipeline!",
-                contentType = "text/plain",
-            )
-            response.headers.size
-
-            val server = engine.bindPipeline("127.0.0.1", port) { channel ->
-                channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
-                channel.pipeline.addLast("decoder", io.github.fukusaka.keel.codec.http.HttpRequestDecoder())
-                channel.pipeline.addLast(
-                    "routing",
-                    io.github.fukusaka.keel.codec.http.RoutingHandler(
-                        mapOf("/hello" to { response }),
-                    ),
-                )
-            }
+            // The kernel picks the port; reading it back is what makes the
+            // test independent of what else holds a port on the host -- a
+            // second copy of this suite included. The three numbers it
+            // replaced were distinct, one per test, so they never collided
+            // with each other; what a fixed number cannot survive is anything
+            // outside the file already holding it.
+            val port = (server.localAddress as InetSocketAddress).port
 
             // Allow server to start accepting.
             usleep(100_000u) // 100ms
@@ -89,12 +67,11 @@ class KqueueEnginePipelineTest {
     fun `bindPipeline returns 404 for unknown path`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 1))
-            val port = 19877
 
             val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok("ok")
             response.headers.size
 
-            val server = engine.bindPipeline("127.0.0.1", port) { channel ->
+            val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
                 channel.pipeline.addLast("decoder", io.github.fukusaka.keel.codec.http.HttpRequestDecoder())
                 channel.pipeline.addLast(
@@ -105,6 +82,7 @@ class KqueueEnginePipelineTest {
                 )
             }
 
+            val port = (server.localAddress as InetSocketAddress).port
             usleep(100_000u) // 100ms
 
             val clientFd = connectRawClient(port)
@@ -123,7 +101,6 @@ class KqueueEnginePipelineTest {
     fun `bindPipeline handles multiple requests on same connection`() = runBlocking {
         withTimeout(15.seconds) {
             val engine = KqueueEngine(IoEngineConfig(threads = 1))
-            val port = 19878
 
             val response = io.github.fukusaka.keel.codec.http.HttpResponse.ok(
                 "Hi",
@@ -131,7 +108,7 @@ class KqueueEnginePipelineTest {
             )
             response.headers.size
 
-            val server = engine.bindPipeline("127.0.0.1", port) { channel ->
+            val server = engine.bindPipeline("127.0.0.1", 0) { channel ->
                 channel.pipeline.addLast("encoder", io.github.fukusaka.keel.codec.http.HttpResponseEncoder())
                 channel.pipeline.addLast("decoder", io.github.fukusaka.keel.codec.http.HttpRequestDecoder())
                 channel.pipeline.addLast(
@@ -142,6 +119,7 @@ class KqueueEnginePipelineTest {
                 )
             }
 
+            val port = (server.localAddress as InetSocketAddress).port
             usleep(100_000u) // 100ms
 
             val clientFd = connectRawClient(port)
@@ -149,12 +127,18 @@ class KqueueEnginePipelineTest {
             // First request
             rawWrite(clientFd, "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
             val result1 = PosixRawClient.rawReadUpTo(clientFd, 4096)
-            assertTrue(result1.endsWith("Hi"), "first: $result1")
+            assertTrue(
+                result1.endsWith("Hi"),
+                "the first request on this connection must answer Hi, got: $result1",
+            )
 
             // Second request on same connection (keep-alive)
             rawWrite(clientFd, "GET /hello HTTP/1.1\r\nHost: localhost\r\n\r\n")
             val result2 = PosixRawClient.rawReadUpTo(clientFd, 4096)
-            assertTrue(result2.endsWith("Hi"), "second: $result2")
+            assertTrue(
+                result2.endsWith("Hi"),
+                "the second request on the same connection must answer Hi, got: $result2",
+            )
 
             close(clientFd)
             server.close()
