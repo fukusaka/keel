@@ -195,6 +195,13 @@ public object PosixRawClient {
      * payload terminated by `EAGAIN` / `EWOULDBLOCK` is a valid
      * outcome — suited for HTTP-response-style reads where the exact
      * response length isn't known up front.
+     *
+     * **Costs the full [timeout] whenever the peer sends less than
+     * [maxSize] and does not close.** There is no other way for this to
+     * know the peer is done, so a caller that asks for 4 KiB of a
+     * hundred-byte response waits out the timer on every call. When the
+     * caller can recognise the end of what it wants, [rawReadUntil]
+     * returns as soon as it arrives.
      */
     public fun rawReadUpTo(fd: Int, maxSize: Int, timeout: Duration = DEFAULT_TIMEOUT): String {
         val (sec, usec) = timeout.toTimevalComponents()
@@ -208,6 +215,51 @@ public object PosixRawClient {
                 val result = socket.read(fd, ptr, maxSize - total)
                 when (result) {
                     is ReadResult.Bytes -> total += result.bytes
+                    ReadResult.Eof -> return@usePinned
+                    ReadResult.WouldBlock -> return@usePinned // SO_RCVTIMEO fired — return what we have
+                    is ReadResult.Failed -> {
+                        val err = result.errno
+                        if (err == EINTR) continue
+                        error("read failed after $total/$maxSize bytes: ${errnoMessage(err)}")
+                    }
+                }
+            }
+        }
+        return buf.decodeToString(0, total)
+    }
+
+    /**
+     * Reads until [isComplete] accepts what has arrived, or until EOF,
+     * the `SO_RCVTIMEO` timer, or [maxSize].
+     *
+     * The predicate is what makes this cheap: a caller that knows how
+     * its payload ends stops as soon as it does, instead of waiting out
+     * a timer that only tells it the peer went quiet. [timeout] is then
+     * what it reads as — a bound on failure, not a per-call cost.
+     *
+     * The predicate sees the whole payload so far, decoded, after every
+     * read. It runs on partial UTF-8 only if the peer splits a
+     * character across reads, which the callers here do not do.
+     */
+    public fun rawReadUntil(
+        fd: Int,
+        maxSize: Int,
+        timeout: Duration = DEFAULT_TIMEOUT,
+        isComplete: (String) -> Boolean,
+    ): String {
+        val (sec, usec) = timeout.toTimevalComponents()
+        keel_set_rcvtimeo(fd, sec, usec)
+
+        val buf = ByteArray(maxSize)
+        var total = 0
+        buf.usePinned { pinned ->
+            while (total < maxSize) {
+                val ptr = pinned.addressOf(total)
+                when (val result = socket.read(fd, ptr, maxSize - total)) {
+                    is ReadResult.Bytes -> {
+                        total += result.bytes
+                        if (isComplete(buf.decodeToString(0, total))) return@usePinned
+                    }
                     ReadResult.Eof -> return@usePinned
                     ReadResult.WouldBlock -> return@usePinned // SO_RCVTIMEO fired — return what we have
                     is ReadResult.Failed -> {
