@@ -2,10 +2,12 @@ package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -295,6 +297,23 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * another level is invisible and an assertion on an empty list keeps passing
      * when a line's severity changes.
      */
+    /**
+     * Refuses to take a resumed continuation back, the way a dispatcher backed
+     * by a shut-down executor does — the reachable shape of a resume that
+     * throws in the loop's frame. Shared by the loop's guard tests and the
+     * transport's waiter-answer tests, which exercise the same refusal one
+     * layer apart.
+     */
+    protected class RefusingDispatcher : CoroutineDispatcher() {
+        var attempts: Int = 0
+            private set
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            attempts++
+            throw InjectedFault("dispatcher refused the resumed continuation")
+        }
+    }
+
     protected class RecordingLogger : Logger {
         val logged = mutableListOf<Pair<LogLevel, String>>()
 

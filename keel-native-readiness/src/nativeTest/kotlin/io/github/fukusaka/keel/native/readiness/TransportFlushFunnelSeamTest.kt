@@ -8,8 +8,10 @@ import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import io.github.fukusaka.keel.testing.buf.PointerlessIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
@@ -18,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -402,6 +405,109 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             assertIs<InjectedFault>(waiter.await().exceptionOrNull(), "the deferred answer carries the failure")
 
             failing.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused resume of the drained waiter does not end the healthy connection`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
+            val transport = transport()
+            var completions = 0
+            transport.onFlushComplete = { completions++ }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            // A scope of its own, not this test's: the waiter's dispatcher
+            // refuses the resumption, so that coroutine can never complete.
+            val refusing = RefusingDispatcher()
+            var outcome: Result<Unit>? = null
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                outcome = runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the retry")
+            assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
+
+            // Write readiness delivers the retry and the drain SUCCEEDS; only
+            // the waiter's dispatcher refuses the news. The drain frame's
+            // containment ends connections over drain failures -- a refusal
+            // to hear of a success is not one, and must not reach it.
+            transport.onReady(Interest.WRITE)
+
+            assertEquals(1, refusing.attempts, "the seam must have reached the resume")
+            assertFalse(transport.hasFlushWaiter(), "the answer was taken even though its delivery was refused")
+            assertTrue(transport.isOpen, "a refused notification must not end a healthy connection")
+            assertEquals(1, completions, "onFlushComplete must still run after the refused resume")
+            assertNull(outcome, "nothing can reach the refused waiter")
+            assertTrue(
+                eventLoop.errors.any { it.contains("resuming the drained flush waiter for") },
+                "the refusal must be reported as the loop's own, got: ${eventLoop.errors}",
+            )
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `the stop sweep's refused cancel is reported and the read side is still told`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            fake.enqueueWrite(fd, WriteResult.WouldBlock)
+            val transport = transport()
+            var readClosed = false
+            transport.onReadClosed = { readClosed = true }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            val refusing = RefusingDispatcher()
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the sweep")
+
+            // The loop stops under a parked waiter whose dispatcher refuses
+            // the cancellation's resume-back. What arrives here is that
+            // refusal -- a cancellation handler that throws is taken by the
+            // coroutine machinery before this frame -- and it must not take
+            // the read-side notification with it.
+            transport.onLoopStopped()
+
+            assertEquals(1, refusing.attempts, "the seam must have reached the cancel's resumption")
+            assertFalse(transport.hasFlushWaiter(), "the sweep must take the answer even when refused")
+            assertTrue(readClosed, "the read-side notification must survive the refusal")
+            assertTrue(
+                eventLoop.errors.any { it.contains("cancelling the flush waiter for") },
+                "the refusal must be reported as the loop's own, got: ${eventLoop.errors}",
+            )
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused delivery of the drain failure is reported rather than lost in the deferred task`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            val refusing = RefusingDispatcher()
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the flush")
+
+            // The drain fails; the funnel defers the waiter's answer to a loop
+            // task, and that task's resume meets the refusing dispatcher.
+            assertFailsWith<InjectedFault> { transport.flush() }
+
+            assertEquals(1, refusing.attempts, "the deferred task must have reached the resume")
+            assertFalse(transport.hasFlushWaiter(), "the failure must take the answer even when refused")
+            assertTrue(
+                eventLoop.errors.any { it.contains("resuming the flush waiter with the drain failure for") },
+                "the refusal must be reported as the loop's own, got: ${eventLoop.errors}",
+            )
+            failing.releaseUnderlying()
+            transport.close()
             tracker.assertNoLeaks()
         }
     }
