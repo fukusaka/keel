@@ -813,25 +813,25 @@ class ReadinessIoTransport(
         var failure: Throwable? = null
         // Same-tick send→close: drain deferred writes before releasing.
         //
-        // Ahead of the write-idle cancel, because it can arm one. A drain that
-        // stalls re-registers for write readiness, and that starts the
-        // write-idle clock; cancelling first left the new timer holding this
-        // transport -- and the channel and pipeline graph behind it -- on the
-        // loop's scheduler until it fired, which is the retention the withdraw
-        // stages below exist to prevent, and it fired `onReadClosed` on a
-        // connection already torn down. A stage that undoes an earlier one is
-        // the one thing this shape cannot express, so the order has to say it
-        // instead. The NIO transport has always drained first.
+        // Ahead of the write-idle cancel — the order that stays right even if
+        // an arm slips through. The write arm now declines on `opened`, false
+        // by the time a teardown runs, the same guard every read-side arm in
+        // the tree has always had — so a drain that stalls in here no longer
+        // starts the write-idle clock at all. When it did, cancelling first
+        // left the new timer holding this transport -- and the channel and
+        // pipeline graph behind it -- on the loop's scheduler until it fired,
+        // which is the retention the withdraw stages below exist to prevent,
+        // and it fired `onReadClosed` on a connection already torn down. A
+        // stage that undoes an earlier one is the one thing this shape cannot
+        // express, so the order still says it, as defence in depth for a
+        // future arm that misses the guard. The NIO transport has always
+        // drained first.
         //
         // Both cancels, not just the write one. The drain reaches the read
         // side's arm too: draining moves the byte count, a low-water crossing
         // notifies the pipeline synchronously, and a handler that answers by
-        // resuming reads lands in the `readEnabled` setter. What declines the
-        // arm there is `opened`, already false by the time a teardown runs --
-        // a guard, not an absence of a path, and one the write side's arm does
-        // not have -- nor does any other engine's write-side arm, while every
-        // read-side arm in the tree is guarded. Cancelling after the drain is
-        // what keeps the order right whichever side a future arm lands on.
+        // resuming reads lands in the `readEnabled` setter -- declined by the
+        // same `opened` guard.
         failure = runStage(failure) {
             if (flushScheduled) {
                 flushScheduled = false
@@ -1111,6 +1111,15 @@ class ReadinessIoTransport(
     private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
 
     private fun registerWriteCallback() {
+        // Declined once the transport is closing, like armRead: the ledger
+        // update this follows runs user code (onWritabilityChanged), and a
+        // callback that closes the transport tears it down synchronously on
+        // this thread — re-arming after that would start a write-idle timer
+        // the teardown just cancelled and register interest for an fd number
+        // that is already released. The teardown's own deferred drain is
+        // declined by the same read: markClosing has flipped the flag before
+        // any stage runs.
+        if (!opened) return
         // A stalled write (write readiness re-arm) means the peer is not draining its
         // receive window — start the write-idle (slow-read) clock. Drain progress
         // refreshes it and a full drain cancels it, both via updatePendingBytes.

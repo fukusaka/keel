@@ -259,10 +259,9 @@ abstract class AbstractIoTransport(
      *
      * [write] appends to the tail; [flush] implementations drain it
      * via platform-specific syscalls and release each buffer after
-     * successful transmission. Subclasses use [ArrayDeque.addFirst]
-     * to re-enqueue the partial-write remainder at the head — that
-     * is the operation [ArrayDeque] makes O(1) and `MutableList`
-     * makes O(n).
+     * successful transmission, re-offsetting a partial-write
+     * remainder in place at the head rather than removing and
+     * re-enqueuing it.
      *
      * Owning-thread-confined while the loop lives. Once the loop has
      * published quiescence, the closing caller may drain it instead —
