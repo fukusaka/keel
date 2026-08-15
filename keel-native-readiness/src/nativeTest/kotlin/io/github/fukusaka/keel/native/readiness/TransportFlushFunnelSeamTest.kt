@@ -582,7 +582,79 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
         }
     }
 
+    @Test
+    fun `a queue refilled by the water-mark callback leaves a scheduled continuation behind`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            val transport = transport()
+            // Cross the high-water mark with one entry so draining it crosses
+            // back below low water inside the drain -- the writability
+            // callback fires mid-drain and writes again, refilling the queue
+            // the drain just emptied.
+            val big = tracker.allocate(HIGH_WATER).apply { writerIndex = HIGH_WATER }
+            val refill = tracker.allocate(16).apply { writerIndex = 5 }
+            var refilled = false
+            transport.onWritabilityChanged = { writable ->
+                if (writable && !refilled) {
+                    refilled = true
+                    transport.write(refill)
+                }
+            }
+            transport.write(big)
+            fake.enqueueWrite(fd, WriteResult.Written(HIGH_WATER))
+
+            // The drain completes its pass, but the queue it reports on is no
+            // longer empty. Completion must not be reported (pinned by the
+            // sibling funnel tests) -- and the refill must not be stranded
+            // either: nothing but the app's next flush would ever drain it.
+            assertFalse(transport.flush(), "a refilled queue is not a completed flush")
+
+            assertTrue(refilled, "the water-mark callback must have written during the drain")
+            assertTrue(
+                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+                "the refill must leave WRITE armed -- a queue with no scheduled continuation waits " +
+                    "for an app flush that may never come, got: ${eventLoop.armedCallbacks}",
+            )
+
+            // Readiness then drains the refill and completes.
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            transport.onReady(Interest.WRITE)
+            assertFalse(transport.hasFlushWaiter())
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a direct flush that drains everything answers the parked waiter`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            // A waiter parks first; a producer then flushes directly (the
+            // coalescing opt-out path). The drain succeeds -- the waiter must
+            // hear about it from this entry too, not stay parked until the
+            // next readiness or the close.
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the flush")
+
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            assertTrue(transport.flush(), "the direct flush drained everything")
+
+            assertFalse(transport.hasFlushWaiter(), "the completed drain must answer the parked waiter")
+            yield()
+            assertTrue(waiter.isCompleted, "the waiter must have been resumed")
+            assertTrue(waiter.await().isSuccess, "the waiter must see the completion, not a failure")
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
     private companion object {
+        /** The transport's default high-water mark; named here for the refill test's intent. */
+        const val HIGH_WATER = 65536
+
         /** Wall-clock bound for the parked-waiter tests; sibling seam budget. */
         const val FUNNEL_TIMEOUT_MS = 5_000L
     }
