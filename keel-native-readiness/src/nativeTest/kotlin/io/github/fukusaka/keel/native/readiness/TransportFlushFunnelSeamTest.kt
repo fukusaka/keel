@@ -6,11 +6,13 @@ import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -27,8 +29,9 @@ import kotlin.test.assertTrue
  * the loop's own termination hand-off, which no double can reach — that
  * window belongs to the engines' real-loop stop tests.
  *
- * All three tests park a real waiter, so each is bounded by [withTimeout]
- * (wall-clock: `runBlocking` builder, per the project's timeout rule).
+ * Every test here drives loop-dispatched work or parks a real waiter, so each
+ * is bounded by [withTimeout] (wall-clock: `runBlocking` builder, per the
+ * project's timeout rule).
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
@@ -80,9 +83,9 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the tick")
 
             assertFalse(transport.flush(), "coalescing defers the drain to the tick")
-            // Today the tick's throw escapes into the loop's task guard; the
-            // contained version completes normally. Either way the assertions
-            // below are what discriminate.
+            // Under the pre-fix code the tick's throw escaped into the loop's
+            // task guard; the contained version completes normally. Either way
+            // the assertions below are what discriminate.
             runCatching { eventLoop.drainDispatched() }
 
             assertFalse(transport.hasFlushWaiter(), "the tick's drain failure must answer the parked waiter")
@@ -124,6 +127,129 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
 
             failing.releaseUnderlying()
             transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a drain failure in the dispatched half-close ends the connection`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            eventLoop.close()
+            eventLoop = FakeLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            var inactive = false
+            transport.onReadClosed = { inactive = true }
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            // Off-loop shutdownOutput dispatches the half-close; under the
+            // coalescing opt-out its flush() drains synchronously, so the
+            // refusal surfaces inside loop-driven work with only the task
+            // guard above it — the fourth loop-driven entry.
+            transport.shutdownOutput()
+            runCatching { eventLoop.drainDispatched() }
+
+            assertTrue(inactive, "the half-close's drain failure must report the connection inactive")
+            assertFalse(transport.isOpen, "and close it, like every other loop-driven failure")
+            // The entry left the queue when its bytes were definitively lost,
+            // so the deferred FIN was sendable from the half-close's own
+            // finally — pinned so the containment is not mistaken for the
+            // thing that sent it.
+            assertEquals(1, fake.shutdownCalls, "the deferred FIN still went out")
+
+            failing.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a drain failure in the write-readiness retry answers the waiter and ends the connection`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
+            val transport = transport()
+            var inactive = false
+            transport.onReadClosed = { inactive = true }
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the retry")
+            assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
+
+            // Write readiness delivers the retry; its drain failure goes
+            // through the same funnel and the readiness containment.
+            transport.onReady(Interest.WRITE)
+
+            assertFalse(transport.hasFlushWaiter(), "the retry's drain failure must answer the parked waiter")
+            assertIs<InjectedFault>(waiter.await().exceptionOrNull(), "the waiter must see the drain failure")
+            assertTrue(inactive, "a loop-driven drain failure must report the connection inactive")
+            assertFalse(transport.isOpen)
+
+            failing.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a drained short-circuit sends the deferred FIN before running the completion callbacks`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            eventLoop.close()
+            eventLoop = FakeLoop(runDispatchedInline = false)
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            var completions = 0
+            transport.onFlushComplete = {
+                completions++
+                // The KDoc's stated reason for FIN-first: a completion
+                // callback may close the transport, after which the FIN is
+                // deliberately not sent — so it must already be out.
+                transport.close()
+            }
+
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.shutdownOutput()
+
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+
+            assertEquals(1, fake.shutdownCalls, "the FIN must be sent before the callbacks can close the transport")
+            assertEquals(1, completions, "the short-circuit owes the completion callback too")
+            assertTrue(waiter.await().isSuccess, "the drained wait completes normally")
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a drain failure during close still answers the waiter with the close's cancellation`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            eventLoop.close()
+            eventLoop = FakeLoop(runDispatchedInline = false)
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertFalse(transport.flush(), "coalescing defers the drain")
+
+            // close() runs the deferred drain as its first stage; the refusal
+            // is carried by the stages and rethrown at the end. The waiter's
+            // answer must stay the close path's promise — a cancellation, not
+            // the drain's own failure: the wait ends because of the close.
+            assertFailsWith<InjectedFault> { transport.close() }
+            val outcome = waiter.await().exceptionOrNull()
+            assertIs<CancellationException>(
+                outcome,
+                "a close-time drain failure must not replace the close's cancellation, got: $outcome",
+            )
+
+            failing.releaseUnderlying()
             tracker.assertNoLeaks()
         }
     }

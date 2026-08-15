@@ -19,15 +19,16 @@ import kotlin.test.BeforeTest
  *
  * The engines' transport seam fixtures drive the same class through a real
  * `KqueueEventLoop` / `EpollEventLoop`; this one drives it through the
- * [FakeLoop] it shares with the loop tests — coalescing off, so `flush()`
- * drains synchronously through `performFlush`, and with
- * [FakeLoop.armedCallbacks] recording what `registerWriteCallback` would have
- * armed. The flush paths under test never need readiness delivered, so no
- * thread and no kernel; tests that need a concrete loop's cinterop stay
+ * [FakeLoop] it shares with the loop tests, with [FakeLoop.armedCallbacks]
+ * recording what `registerWriteCallback` would have armed. [setUp] builds it
+ * coalescing-off so `flush()` drains synchronously through `performFlush`;
+ * tests that need the coalesced tick or a deferred dispatch close it and
+ * build their own. The flush paths under test never need readiness delivered,
+ * so no thread and no kernel; tests that need a concrete loop's cinterop stay
  * engine-side, per the project's seam / integration split.
  *
  * The syscall fake, the tracking allocator and the disposable fd are fixture
- * state so the twelve tests do not repeat the same construction preamble;
+ * state so the tests do not repeat the same construction preamble;
  * [transport] wires the three together.
  */
 @OptIn(ExperimentalForeignApi::class)
