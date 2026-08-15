@@ -27,8 +27,9 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
  * the common case) settles at zero allocation after the first flush cycle.
  *
  * **Not needed by synchronous-completion engines**: epoll, kqueue, NIO, and
- * Node.js transports mutate `pendingWrites` in place (`removeFirst` /
- * `addFirst` for partial-write remainders) and never call [borrow] — their
+ * Node.js transports mutate `pendingWrites` directly (the readiness
+ * transport re-offsets a partial-write remainder in place at the head,
+ * NIO removes and re-enqueues it) and never call [borrow] — their
  * write completion is synchronous relative to the syscall, so there is
  * only ever one write-readiness registration outstanding, nothing to
  * snapshot.

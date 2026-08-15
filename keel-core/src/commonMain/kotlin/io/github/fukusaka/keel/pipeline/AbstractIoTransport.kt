@@ -259,9 +259,10 @@ abstract class AbstractIoTransport(
      *
      * [write] appends to the tail; [flush] implementations drain it
      * via platform-specific syscalls and release each buffer after
-     * successful transmission, re-offsetting a partial-write
-     * remainder in place at the head rather than removing and
-     * re-enqueuing it.
+     * successful transmission. A partial-write remainder stays at
+     * the head — re-offset in place by the readiness transport,
+     * removed and re-enqueued (`add(0, …)`) by the NIO transport,
+     * which has not adopted the queue-ownership model yet.
      *
      * Owning-thread-confined while the loop lives. Once the loop has
      * published quiescence, the closing caller may drain it instead —
