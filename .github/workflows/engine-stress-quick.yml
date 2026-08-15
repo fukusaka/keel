@@ -88,8 +88,10 @@ jobs:
       # when a single Test task is on the command line — a multi-task
       # invocation leaves some suites unfiltered and runs the full module
       # suite, pulling in unrelated (and sometimes flaky) tests. Each one
-      # therefore runs its stress class alone. The runner's default
-      # `bash -eo pipefail` fails the step on the first one that stalls.
+      # therefore runs its stress class alone. The runner's default shell for
+      # `run:` is `bash -e`, so the step stops at the first one that fails.
+      # (Not `-o pipefail` — that is only added when `shell: bash` is set
+      # explicitly, which this workflow does not do. Nothing here pipes.)
       #
       # Through `run-filtered-test.sh` rather than `./gradlew` directly, because
       # a `--tests` pattern that matches nothing exits 0 on a Kotlin/Native test

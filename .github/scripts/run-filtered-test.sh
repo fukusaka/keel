@@ -16,11 +16,13 @@
 # Without it, renaming a stress class turns every one of these invocations into a
 # silent no-op that reports success.
 #
-# Run from the repository root: both `./gradlew` and the results path below are
-# relative to it. GitHub Actions runs `run:` steps there.
-#
 # Usage: run-filtered-test.sh <:module:task> <--tests pattern>
 set -euo pipefail
+
+# Both `./gradlew` and the results path are relative to the repository root, and
+# the script is two levels below it. Resolving from its own location rather than
+# requiring a working directory means a caller outside CI gets the same result.
+cd "$(dirname "$0")/../.."
 
 spec="${1:?usage: run-filtered-test.sh <:module:task> <pattern>}"
 pattern="${2:?usage: run-filtered-test.sh <:module:task> <pattern>}"
@@ -51,8 +53,21 @@ rm -rf "$results"
 # first stage finds nothing aborts the script before the check below, which is
 # the failure this guard exists to report — it would exit non-zero with no
 # message saying why.
-ran=$(awk 'match($0, /tests="[0-9]+"/) { s += substr($0, RSTART + 7, RLENGTH - 8) } END { print s + 0 }' \
-    "$results"/*.xml 2>/dev/null || echo 0)
+#
+# Only `<testsuite` lines, and every occurrence on each: a bare `match()` reads
+# one per line, which undercounts a document written on a single line, and an
+# unanchored one would also count a `tests="…"` appearing inside the CDATA of
+# `<system-out>`. A document with no line starting at `<testsuite` counts zero
+# and fires the guard, which is the safe direction to be wrong in.
+ran=$(awk '
+    /^[[:space:]]*<testsuite[[:space:]]/ {
+        rest = $0
+        while (match(rest, /tests="[0-9]+"/)) {
+            s += substr(rest, RSTART + 7, RLENGTH - 8)
+            rest = substr(rest, RSTART + RLENGTH)
+        }
+    }
+    END { print s + 0 }' "$results"/*.xml 2>/dev/null || echo 0)
 
 if [ "$ran" -eq 0 ]; then
     # stdout, not stderr: GitHub reads workflow commands such as `::error::` from
