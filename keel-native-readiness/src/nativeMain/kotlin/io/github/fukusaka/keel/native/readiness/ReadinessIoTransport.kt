@@ -733,7 +733,11 @@ class ReadinessIoTransport(
      * parked flush waiter and reported an unkeepable FIN deferral, so a direct
      * caller's `catch` cannot strand either obligation.
      *
-     * @return `true` if the queue is empty when this returns. `false` otherwise
+     * @return `true` when this flush's own drain completed and emptied the
+     *   queue. A remainder a reentrant flush finished is reported but
+     *   answered `false` here — the caller asked about its own flush — and
+     *   bytes the completion callbacks write after the check are a new
+     *   episode, not folded into this answer. `false` otherwise
      *         — which under the default coalescing means only that the drain was
      *         deferred to the loop, not that anything hit `EAGAIN`.
      */
@@ -785,7 +789,9 @@ class ReadinessIoTransport(
      * True while [drainAndNotifyIfComplete] is on this stack. A reentrant
      * `flush()` from one of the exit's own callbacks drains without
      * reporting or arming — the outer frame decides both over the queue as
-     * every contributor left it. Loop-confined, like every field here.
+     * every contributor left it. (Opt-out only by construction: a coalesced
+     * reentrant `flush()` defers to its tick and never reaches this exit.)
+     * Loop-confined, like every field here.
      */
     private var draining = false
 
@@ -1431,10 +1437,12 @@ class ReadinessIoTransport(
      * is already scheduled to take them: arming then would race the tick, and
      * the loser would fire on the queue the winner emptied, reporting a
      * completion nothing awaited and eagerly draining bytes a producer had
-     * written but not yet flushed. A pass that did not complete armed on its
-     * own before returning false — unless a reentrant flush already emptied
-     * what it would have retried, in which case the empty queue was reported,
-     * and there is nothing to arm for.
+     * written but not yet flushed. The arm is not gated on this frame's own
+     * pass: a blocked pass armed on its own before returning false, but a
+     * reentrant flush may have emptied what it would have retried and a
+     * report-side callback may have written since — the queue at this line
+     * is what needs a continuation, whatever this frame's pass did, and
+     * re-arming over the blocked path's own arm is an idempotent overwrite.
      *
      * @return true when this frame's own pass completed and emptied the
      *   queue — the answer a direct `flush()` caller reports onward. A
@@ -1453,7 +1461,7 @@ class ReadinessIoTransport(
             if (pendingWrites.isEmpty()) {
                 notifyFlushDrained()
             }
-            if (completedPass && pendingWrites.isNotEmpty() && !flushScheduled) {
+            if (pendingWrites.isNotEmpty() && !flushScheduled) {
                 registerWriteCallback()
             }
             return emptied

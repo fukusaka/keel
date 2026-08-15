@@ -169,14 +169,12 @@ interface IoTransport {
      * Callback invoked when a pending flush completes.
      *
      * May fire later, from the transport's write-readiness retry or its
-     * coalesced drain — or synchronously, from inside a [flush] call whose
-     * drain completed on the spot. A completion-driven pump (write the next
-     * chunk and flush from here) is bounded on both engine configurations,
-     * by different means: a synchronous drain's reentrant flush drains
-     * inline without reporting a completion of its own, and a coalesced
-     * flush defers to a fresh loop tick instead of recursing. Used
-     * internally by [awaitPendingFlush]. Pipeline [HeadHandler] does not set
-     * this (fire-and-forget).
+     * coalesced drain — and an implementation whose [flush] drains in place
+     * may fire it synchronously, from inside that call. Implementations that
+     * allow the synchronous firing must bound a completion-driven pump
+     * (write the next chunk and flush from here) rather than recurse
+     * through it. Used internally by [awaitPendingFlush]. Pipeline
+     * [HeadHandler] does not set this (fire-and-forget).
      */
     var onFlushComplete: (() -> Unit)?
 
