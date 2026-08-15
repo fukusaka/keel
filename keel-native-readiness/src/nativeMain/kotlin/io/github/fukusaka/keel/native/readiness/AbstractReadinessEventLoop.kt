@@ -1536,11 +1536,16 @@ abstract class AbstractReadinessEventLoop :
         }
         // Outside the lock, as in cancelAll: a handler may re-enter this class.
         // The lists above are the cost of that, and this runs once per loop.
-        // Each call is guarded for the reason drainQueue guards its tasks: these
-        // run user code -- cancellation handlers, and through onLoopStopped a
-        // transport teardown and the pipeline behind it -- and one that throws
-        // must not strand the rest, nor escape a pthread entry point that has
-        // nothing above it to catch.
+        //
+        // Both loops are guarded, for two different reasons. The participant
+        // one runs user code directly -- through onLoopStopped, a transport
+        // teardown and the pipeline behind it -- and one that throws must not
+        // strand the rest. The waiter one does not: a cancellation handler that
+        // throws is contained by the coroutine machinery and never arrives
+        // here. What arrives is the same thing every hand-off in this class can
+        // meet -- a dispatcher refusing to take the cancellation back -- and it
+        // must not escape a pthread entry point that has nothing above it to
+        // catch.
         for (reg in stranded) {
             deliverOrRelease(reg, "cancelling the stranded waiter for, while the loop stops,") {
                 reg.continuation.cancel(
