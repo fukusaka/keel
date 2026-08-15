@@ -224,6 +224,18 @@ internal abstract class AbstractReadinessEventLoopFixture {
         fun registerWaiter(fd: Int, interest: Interest, cont: CancellableContinuation<Unit>) =
             register(fd, interest, cont)
 
+        /** The same, for a waiter that owns something for the duration of its wait. */
+        fun registerOwningWaiter(
+            fd: Int,
+            interest: Interest,
+            cont: CancellableContinuation<Unit>,
+            onUndeliverable: () -> Unit,
+        ) = register(fd, interest, cont, onUndeliverable)
+
+        /** `registerCallback` is public on the base; named here for symmetry with the waiter helpers. */
+        fun registerCallbackFor(fd: Int, interest: Interest, listener: FdReadyListener) =
+            registerCallback(fd, interest, listener)
+
         /** Pops one waiter the way a subclass's dispatch path does. */
         fun popOne(fd: Int, interest: Interest): Pair<Registration?, Boolean> {
             val key = registrationKey(fd, interest)

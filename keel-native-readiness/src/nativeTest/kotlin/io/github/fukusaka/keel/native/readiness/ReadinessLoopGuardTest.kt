@@ -278,6 +278,51 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
             loop.errors.any { it.contains("resuming") },
             "the refusal must be reported at ERROR, got: ${loop.errors}",
         )
+        // The waiter stays out of the ledger. Putting it back -- the plausible
+        // "it was never resumed, so let the next event retry" repair -- makes a
+        // level-triggered interest re-fire into `Already resumed` every turn,
+        // and the continuation may well hold the answer already.
+        assertFalse(loop.waiters(WAITER_FD, Interest.READ), "the waiter must not be re-registered")
+        assertEquals(
+            listOf(WAITER_FD to Interest.READ),
+            loop.disarmed,
+            "and the interest it was the last claimant of is taken back",
+        )
+        // What the guard is for: the loop is still serving. A listener armed
+        // after the refusal receives its readiness.
+        val served = mutableListOf<Interest>()
+        loop.registerCallbackFor(WAITER_FD, Interest.READ, RecordingListener(served))
+        loop.dispatchReadyFor(WAITER_FD, Interest.READ, eofFlag = false)
+        assertEquals(listOf(Interest.READ), served, "the loop goes on serving the rest")
+    }
+
+    @Test
+    fun `a waiter that owns a descriptor releases it when the loop cannot deliver`() {
+        val loop = FakeLoop()
+        val refusing = RefusingDispatcher()
+        var released = 0
+        CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                loop.registerOwningWaiter(WAITER_FD, Interest.WRITE, cont) { released++ }
+            }
+        }
+
+        // Neither of the waiter's own endings can run: it is not resumed into
+        // its own frame and not cancelled, and it has already left the ledger,
+        // so no later sweep finds it. The hook is the only thing that knows the
+        // descriptor is owned — without it the connect path leaks one fd per
+        // occurrence, with no handle left to close it by.
+        loop.dispatchReadyFor(WAITER_FD, Interest.WRITE, eofFlag = false)
+
+        assertEquals(1, refusing.attempts, "the seam must have reached the resume")
+        assertEquals(1, released, "the undeliverable waiter's owned descriptor must be released")
+    }
+
+    /** Records the interests it is handed, for the served-after-failure assertion. */
+    private class RecordingListener(private val into: MutableList<Interest>) : FdReadyListener {
+        override fun onReady(interest: Interest) {
+            into.add(interest)
+        }
     }
 
     /**
