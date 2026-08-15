@@ -22,25 +22,38 @@ set -euo pipefail
 # Both `./gradlew` and the results path are relative to the repository root, and
 # the script is two levels below it. Resolving from its own location rather than
 # requiring a working directory means a caller outside CI gets the same result.
-cd "$(dirname "$0")/../.."
-if [ ! -x ./gradlew ]; then
-    # `dirname` does not resolve symlinks, so an entry point reached through one
-    # lands somewhere without a wrapper. Saying so beats `./gradlew: not found`.
-    echo "expected the repository root two levels above $0, found $PWD" >&2
+# Arguments before the directory, so that calling it wrong reports the call
+# rather than wherever the caller happened to be. Exit 2 for every rejection —
+# 1 is what the guard itself uses, and a caller distinguishing "the filter
+# selected nothing" from "you invoked this wrong" needs them apart.
+if [ $# -ne 2 ]; then
+    echo "usage: run-filtered-test.sh <:module:task> <pattern>" >&2
     exit 2
 fi
+spec="$1"
+pattern="$2"
 
-spec="${1:?usage: run-filtered-test.sh <:module:task> <pattern>}"
-pattern="${2:?usage: run-filtered-test.sh <:module:task> <pattern>}"
+cd "$(dirname "$0")/../.."
+if [ ! -x ./gradlew ]; then
+    # Either this is not the repository root — `dirname` does not resolve
+    # symlinks, so an entry point reached through one lands elsewhere — or it is
+    # and the wrapper is not executable. The message carries both, since where
+    # it landed is what tells them apart.
+    echo "no executable ./gradlew in $PWD, resolved as the repository root from $0" >&2
+    exit 2
+fi
 
 # The results path is derived by string surgery and then handed to `rm -rf`, so
 # the shape is checked first. `:jvmTest` alone would derive an empty module and
 # delete `/build/test-results/jvmTest` — an absolute path — before `./gradlew`
 # ever sees that the spec is wrong. A nested path like `:a:b:task` would derive
-# `a:b/…`, which exists nowhere and fails the count for the wrong reason.
+# `a:b/…`, which exists nowhere and fails the count for the wrong reason. And a
+# slash is what path traversal needs, so `:../../etc:jvmTest` is rejected there
+# rather than by a rule about dots — single dots are legal in a project name and
+# nothing in this tree uses one.
 case "$spec" in
     :*:*:*) echo "nested project paths are not supported: $spec" >&2; exit 2 ;;
-    */*|*..*) echo "a project path has no slashes or dots: $spec" >&2; exit 2 ;;
+    */*) echo "a project path has no slashes: $spec" >&2; exit 2 ;;
     :?*:?*) ;;
     *) echo "expected :module:task, got: $spec" >&2; exit 2 ;;
 esac
@@ -62,14 +75,18 @@ rm -rf "$results"
 # message saying why.
 #
 # The count is anchored on the `<testsuite ` element rather than on the start of
-# a line: splitting there and taking the first `tests="…"` of each piece reads
-# every element wherever it sits, and cannot pick up a `tests="…"` that appears
-# in the CDATA of `<system-out>` — that text follows the tag's own attribute, and
-# only the first is taken. Anchoring on the line start instead looked equivalent
-# and was not: a document written on one line begins with the `<?xml …?>` prolog,
-# so the line never starts at `<testsuite ` and the whole report counts zero.
-# Every report Gradle writes today is one element on its own line, so all of this
-# is about staying correct if that changes.
+# a line: splitting there and taking the first `tests="…"` of each piece reads an
+# element that shares its line with others, which a line anchor does not — a
+# document written on one line begins with the `<?xml …?>` prolog, so the line
+# never starts at `<testsuite ` and the whole report counts zero.
+#
+# Two things it still does not do, both measured, neither reachable from a report
+# Gradle writes today (823 checked, every one a single element on its own line):
+# a start tag split across lines counts zero, because the split piece holds no
+# `tests="…"` — that undercounts, so the guard fires; and CDATA that contains a
+# literal `<testsuite ` opens a piece of its own, so a `tests="…"` written inside
+# it is added — that overcounts, but only on top of an element that already
+# declared a non-zero count, so it cannot turn a genuine zero into a pass.
 ran=$(awk '
     {
         n = split($0, parts, /<testsuite[ \t]/)
