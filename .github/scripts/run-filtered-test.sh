@@ -23,6 +23,12 @@ set -euo pipefail
 # the script is two levels below it. Resolving from its own location rather than
 # requiring a working directory means a caller outside CI gets the same result.
 cd "$(dirname "$0")/../.."
+if [ ! -x ./gradlew ]; then
+    # `dirname` does not resolve symlinks, so an entry point reached through one
+    # lands somewhere without a wrapper. Saying so beats `./gradlew: not found`.
+    echo "expected the repository root two levels above $0, found $PWD" >&2
+    exit 2
+fi
 
 spec="${1:?usage: run-filtered-test.sh <:module:task> <pattern>}"
 pattern="${2:?usage: run-filtered-test.sh <:module:task> <pattern>}"
@@ -34,6 +40,7 @@ pattern="${2:?usage: run-filtered-test.sh <:module:task> <pattern>}"
 # `a:b/…`, which exists nowhere and fails the count for the wrong reason.
 case "$spec" in
     :*:*:*) echo "nested project paths are not supported: $spec" >&2; exit 2 ;;
+    */*|*..*) echo "a project path has no slashes or dots: $spec" >&2; exit 2 ;;
     :?*:?*) ;;
     *) echo "expected :module:task, got: $spec" >&2; exit 2 ;;
 esac
@@ -54,25 +61,30 @@ rm -rf "$results"
 # the failure this guard exists to report — it would exit non-zero with no
 # message saying why.
 #
-# Only `<testsuite` lines, and every occurrence on each: a bare `match()` reads
-# one per line, which undercounts a document written on a single line, and an
-# unanchored one would also count a `tests="…"` appearing inside the CDATA of
-# `<system-out>`. A document with no line starting at `<testsuite` counts zero
-# and fires the guard, which is the safe direction to be wrong in.
+# The count is anchored on the `<testsuite ` element rather than on the start of
+# a line: splitting there and taking the first `tests="…"` of each piece reads
+# every element wherever it sits, and cannot pick up a `tests="…"` that appears
+# in the CDATA of `<system-out>` — that text follows the tag's own attribute, and
+# only the first is taken. Anchoring on the line start instead looked equivalent
+# and was not: a document written on one line begins with the `<?xml …?>` prolog,
+# so the line never starts at `<testsuite ` and the whole report counts zero.
+# Every report Gradle writes today is one element on its own line, so all of this
+# is about staying correct if that changes.
 ran=$(awk '
-    /^[[:space:]]*<testsuite[[:space:]]/ {
-        rest = $0
-        while (match(rest, /tests="[0-9]+"/)) {
-            s += substr(rest, RSTART + 7, RLENGTH - 8)
-            rest = substr(rest, RSTART + RLENGTH)
+    {
+        n = split($0, parts, /<testsuite[ \t]/)
+        for (i = 2; i <= n; i++) {
+            if (match(parts[i], /tests="[0-9]+"/)) {
+                s += substr(parts[i], RSTART + 7, RLENGTH - 8)
+            }
         }
     }
     END { print s + 0 }' "$results"/*.xml 2>/dev/null || echo 0)
 
 if [ "$ran" -eq 0 ]; then
-    # stdout, not stderr: GitHub reads workflow commands such as `::error::` from
-    # a step's stdout, and the explanation follows it so the annotation and its
-    # reason stay together in the log.
+    # Both on stdout so the annotation and its explanation stay adjacent in the
+    # log. Not because stderr would be ignored — the runner feeds both streams
+    # through the same command parser, so the annotation rendered either way.
     echo "::error::${spec} --tests '${pattern}' selected no tests."
     echo "A filter matching nothing exits 0 on a Kotlin/Native test task, so this would have passed silently."
     echo "Check the pattern against the class names that exist, or drop the invocation if the suite is gone."
