@@ -761,9 +761,52 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
         }
     }
 
+    @Test
+    fun `a remainder finished by a reentrant flush still answers the waiter`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The outer pass writes partially and blocks; crossing back below
+            // low water resumes the producer, whose reentrant flush drains
+            // the remainder to completion. The outer frame's own pass did not
+            // complete -- but the queue is empty, every byte is out, and the
+            // report is owed to whoever is listening: the parked waiter, the
+            // completion callback, a deferred FIN. The sibling ownership test
+            // pins the other halves of this shape (the false return, the
+            // absent re-arm); this one pins the report.
+            val total = HIGH_WATER + LOW_WATER
+            val written = HIGH_WATER + LOW_WATER / 2
+            fake.enqueueWrite(fd, WriteResult.Written(written), WriteResult.WouldBlock)
+            val transport = transport()
+            var completions = 0
+            transport.onFlushComplete = { completions++ }
+            transport.onWritabilityChanged = { writable ->
+                if (writable) {
+                    fake.enqueueWrite(fd, WriteResult.Written(LOW_WATER / 2))
+                    transport.flush()
+                }
+            }
+            transport.write(tracker.allocate(total).apply { writerIndex = total })
+
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the flush")
+
+            assertFalse(transport.flush(), "the outer flush still reports its own WouldBlock")
+
+            assertFalse(transport.hasFlushWaiter(), "the emptied queue must answer the waiter, whoever emptied it")
+            assertEquals(1, completions, "one emptied queue, one report")
+            yield()
+            assertTrue(waiter.isCompleted, "the waiter must have been resumed")
+            assertTrue(checkNotNull(waiter.await().isSuccess), "the waiter must see the completion")
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
     private companion object {
-        /** The transport's high-water mark; the import ties the tests to the real threshold. */
+        /** The transport's water marks; the imports tie the tests to the real thresholds. */
         const val HIGH_WATER = IoTransport.DEFAULT_HIGH_WATER_MARK
+        const val LOW_WATER = IoTransport.DEFAULT_LOW_WATER_MARK
 
         /** Wall-clock bound for the parked-waiter tests; sibling seam budget. */
         const val FUNNEL_TIMEOUT_MS = 5_000L
