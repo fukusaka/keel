@@ -88,16 +88,30 @@ jobs:
       # when a single Test task is on the command line — a multi-task
       # invocation leaves some suites unfiltered and runs the full module
       # suite, pulling in unrelated (and sometimes flaky) tests. Each one
-      # therefore runs its stress class alone. The runner's default
-      # `bash -eo pipefail` fails the step on the first one that stalls.
+      # therefore runs its stress class alone. The runner's default shell for
+      # `run:` is `bash -e`, so the step stops at the first one that fails.
+      # (Not `-o pipefail` — that is only added when `shell: bash` is set
+      # explicitly, which this workflow does not do. Nothing here pipes.)
+      #
+      # Through `run-filtered-test.sh` rather than `./gradlew` directly, because
+      # a `--tests` pattern that matches nothing exits 0 on a Kotlin/Native test
+      # task — renaming a stress class would otherwise turn these into silent
+      # no-ops that report success. The script asserts the XML report shows a
+      # non-zero test count.
+      #
+      # That covers the two `linuxX64Test` invocations here as well as the two
+      # macosArm64 ones: linuxX64 is Kotlin/Native. The four `jvmTest` ones are
+      # already failed by Gradle itself, and go through the script only so a
+      # caller does not have to know which half it is on.
       - name: Stress (linuxX64 + JVM engines + keel-io allocator, quick)
         run: |
-          ./gradlew :keel-engine-epoll:linuxX64Test --tests '*PipelineEchoStress'
-          ./gradlew :keel-engine-io-uring:linuxX64Test --tests '*PipelineEchoStress'
-          ./gradlew :keel-engine-nio:jvmTest --tests '*PipelineEchoStress'
-          ./gradlew :keel-engine-netty:jvmTest --tests '*PipelineEchoStress'
-          ./gradlew :keel-io:jvmTest --tests '*ArenaSaturationStress'
-          ./gradlew :keel-core:jvmTest --tests '*TeardownClaimStress'
+          S=.github/scripts/run-filtered-test.sh
+          "$S" :keel-engine-epoll:linuxX64Test '*PipelineEchoStress'
+          "$S" :keel-engine-io-uring:linuxX64Test '*PipelineEchoStress'
+          "$S" :keel-engine-nio:jvmTest '*PipelineEchoStress'
+          "$S" :keel-engine-netty:jvmTest '*PipelineEchoStress'
+          "$S" :keel-io:jvmTest '*ArenaSaturationStress'
+          "$S" :keel-core:jvmTest '*TeardownClaimStress'
 
       - name: Upload stress reports (linux)
         if: always()
@@ -139,11 +153,13 @@ jobs:
 
       # kqueue / NWConnection run on macosArm64 (Darwin cinterop).
       # One gradle invocation per engine — see the linux job for why a
-      # multi-task invocation does not narrow with --tests.
+      # multi-task invocation does not narrow with --tests, and for why these go
+      # through `run-filtered-test.sh`.
       - name: Stress (macosArm64 engines, quick)
         run: |
-          ./gradlew :keel-engine-kqueue:macosArm64Test --tests '*PipelineEchoStress'
-          ./gradlew :keel-engine-nwconnection:macosArm64Test --tests '*PipelineEchoStress'
+          S=.github/scripts/run-filtered-test.sh
+          "$S" :keel-engine-kqueue:macosArm64Test '*PipelineEchoStress'
+          "$S" :keel-engine-nwconnection:macosArm64Test '*PipelineEchoStress'
 
       - name: Upload stress reports (macos)
         if: always()
