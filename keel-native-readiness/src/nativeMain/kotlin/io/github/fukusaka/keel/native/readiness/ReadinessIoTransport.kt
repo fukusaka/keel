@@ -812,7 +812,13 @@ class ReadinessIoTransport(
             }
             return flushGather()
         } catch (drainFailure: Throwable) {
-            drainPoisoned = true
+            // Only when the failed entries are still queued: a drain that
+            // emptied the queue on its way to throwing (a refused release
+            // after the bytes were sent or dropped) leaves nothing poisoned
+            // behind, and a mark that outlived those entries would make the
+            // register eagerly drain a later, unrelated write its producer
+            // has not flushed yet.
+            drainPoisoned = pendingWrites.isNotEmpty()
             failFlushWaiter(drainFailure)
             runStage(drainFailure) { reportAbandonedFin() }
             throw drainFailure
