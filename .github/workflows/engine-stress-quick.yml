@@ -96,6 +96,11 @@ jobs:
       # task — renaming a stress class would otherwise turn these into silent
       # no-ops that report success. The script asserts the XML report shows a
       # non-zero test count.
+      #
+      # That covers the two `linuxX64Test` invocations here as well as the two
+      # macosArm64 ones: linuxX64 is Kotlin/Native. The four `jvmTest` ones are
+      # already failed by Gradle itself, and go through the script only so a
+      # caller does not have to know which half it is on.
       - name: Stress (linuxX64 + JVM engines + keel-io allocator, quick)
         run: |
           S=.github/scripts/run-filtered-test.sh
