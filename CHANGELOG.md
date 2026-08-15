@@ -88,6 +88,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: a flush failure can no longer strand a pending write outside the
+  queue — an entry leaves it only once its bytes are sent or definitively lost, so a refused release
+  loses at most the buffer that refused, and cannot leak the entries behind it, wedge write
+  backpressure, or re-send bytes past a partial `writev` (#1057)
 - `engine-kqueue`, `engine-epoll`: release the loops an engine or group has already built when a
   later one cannot be built or started, and close the rest even if one's `close()` throws — within a
   group and between the engine's boss loop and its group (#1049)

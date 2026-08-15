@@ -40,6 +40,9 @@ import kotlin.coroutines.resume
  *
  * **Write path**: buffers outbound [IoBuf] writes and flushes via POSIX
  * `write()` / `writev()`. On EAGAIN, registers write readiness and retries.
+ * A queued buffer stays in [pendingWrites] until its bytes are written or
+ * definitively lost, so whatever a failed flush abandons is still reachable
+ * by [close].
  *
  * **Thread safety**: methods run on the [eventLoop] thread. [close] and
  * [shutdownOutput] may be called from any thread — they dispatch when the
@@ -121,9 +124,10 @@ class ReadinessIoTransport(
         //
         // What no end can do for us is release a buffer that is only a local
         // of the frame that threw. `onReadable` therefore owns what it
-        // allocates until it has handed it on; `flushSingle` has the same
-        // exposure on the write half and does not yet, which is filed rather
-        // than widened into here.
+        // allocates until it has handed it on; the write half has no such
+        // local — a flush peeks the queue and removes an entry only as its
+        // bytes are accounted for, so what a throw abandons is still queued
+        // for the close to release.
         containReadinessFailure(interest) {
             when (interest) {
                 Interest.READ -> onReadable()
@@ -233,15 +237,12 @@ class ReadinessIoTransport(
      * `closeFdSafely`. In practice the stages that can fail are the deferred
      * flush, the release of the queue (a syscall wrapper, an allocator, a
      * pointer) and the waiter's cancel, which resumes user code — the reason
-     * `onLoopStopped` guards the identical call. What the flush leaves behind for that release is not all of what
-     * it took. Every flush path takes an entry out of the deque before releasing
-     * it — deliberately, since releasing first would leave a released buffer
-     * queued for the next walker to release again — so a refusal loses whatever
-     * had already left: one buffer on the single-write path, which empties the
-     * deque, and one for each refusal on the gather path, whose walk empties it
-     * too. Only the partial-write drain leaves the rest — it releases inline as
-     * it consumes, so a refusal there still stops where it failed. Not
-     * something a stage boundary can reach, and out of scope here. The ledger and
+     * `onLoopStopped` guards the identical call. What the flush leaves behind for that release is everything a
+     * refusal did not consume. An entry leaves the deque only as its bytes are
+     * accounted for — removed first, then released, since releasing first would
+     * leave a released buffer queued for the next walker to release again — so
+     * a refusal loses exactly the buffer that refused, and every entry still
+     * queued stays reachable for the release stage. The ledger and
      * registry stages do not throw: they are removals from a map or a set under
      * the registration lock, no-ops on a miss (the lock itself reports a failure
      * and stops the loop rather than raising). So the
@@ -755,7 +756,7 @@ class ReadinessIoTransport(
         if (pendingWrites.isEmpty()) return true
         flushCount++
         if (pendingWrites.size == 1) {
-            return flushSingle(pendingWrites.removeFirst())
+            return flushSingle()
         }
         return flushGather()
     }
@@ -812,36 +813,36 @@ class ReadinessIoTransport(
         var failure: Throwable? = null
         // Same-tick send→close: drain deferred writes before releasing.
         //
-        // Ahead of the write-idle cancel, because it can arm one. A drain that
-        // stalls re-registers for write readiness, and that starts the
-        // write-idle clock; cancelling first left the new timer holding this
-        // transport -- and the channel and pipeline graph behind it -- on the
-        // loop's scheduler until it fired, which is the retention the withdraw
-        // stages below exist to prevent, and it fired `onReadClosed` on a
-        // connection already torn down. A stage that undoes an earlier one is
-        // the one thing this shape cannot express, so the order has to say it
-        // instead. The NIO transport has always drained first.
+        // Ahead of the write-idle cancel — the order that stays right even if
+        // an arm slips through. The write arm now declines on `opened`, false
+        // by the time a teardown runs, the same guard every read-side arm in
+        // the tree has always had — so a drain that stalls in here no longer
+        // starts the write-idle clock at all. When it did, cancelling first
+        // left the new timer holding this transport -- and the channel and
+        // pipeline graph behind it -- on the loop's scheduler until it fired,
+        // which is the retention the withdraw stages below exist to prevent,
+        // and it fired `onReadClosed` on a connection already torn down. A
+        // stage that undoes an earlier one is the one thing this shape cannot
+        // express, so the order still says it, as defence in depth for a
+        // future arm that misses the guard. The NIO transport has always
+        // drained first.
         //
         // Both cancels, not just the write one. The drain reaches the read
         // side's arm too: draining moves the byte count, a low-water crossing
         // notifies the pipeline synchronously, and a handler that answers by
-        // resuming reads lands in the `readEnabled` setter. What declines the
-        // arm there is `opened`, already false by the time a teardown runs --
-        // a guard, not an absence of a path, and one the write side's arm does
-        // not have -- nor does any other engine's write-side arm, while every
-        // read-side arm in the tree is guarded. Cancelling after the drain is
-        // what keeps the order right whichever side a future arm lands on.
-        failure = runTeardownStage(failure) {
+        // resuming reads lands in the `readEnabled` setter -- declined by the
+        // same `opened` guard.
+        failure = runStage(failure) {
             if (flushScheduled) {
                 flushScheduled = false
                 performFlush()
             }
         }
-        failure = runTeardownStage(failure) { cancelIdleTimeout() }
-        failure = runTeardownStage(failure) { cancelWriteIdleTimeout() }
-        failure = runTeardownStage(failure) { releaseAllPendingWrites() }
+        failure = runStage(failure) { cancelIdleTimeout() }
+        failure = runStage(failure) { cancelWriteIdleTimeout() }
+        failure = runStage(failure) { releaseAllPendingWrites() }
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
-        failure = runTeardownStage(failure) {
+        failure = runStage(failure) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
                 cont.cancel(stoppedLoopFlushCause())
@@ -852,10 +853,10 @@ class ReadinessIoTransport(
         // and pipeline graph it references — reachable until that number comes
         // back. The server side has always done this on close; the transport
         // did not.
-        failure = runTeardownStage(failure) { eventLoop.unregisterCallback(fd, Interest.READ) }
-        failure = runTeardownStage(failure) { eventLoop.unregisterCallback(fd, Interest.WRITE) }
-        failure = runTeardownStage(failure) { eventLoop.removeParticipant(this) }
-        failure = runTeardownStage(failure) { eventLoop.cleanupFd(fd) }
+        failure = runStage(failure) { eventLoop.unregisterCallback(fd, Interest.READ) }
+        failure = runStage(failure) { eventLoop.unregisterCallback(fd, Interest.WRITE) }
+        failure = runStage(failure) { eventLoop.removeParticipant(this) }
+        failure = runStage(failure) { eventLoop.cleanupFd(fd) }
         // Reached whatever the stages above did: `closeFdSafely` reports rather
         // than throws, so the descriptor is released on every path out of here.
         closeFdSafely(fd, eventLoop.logger, "transport teardown")
@@ -863,23 +864,29 @@ class ReadinessIoTransport(
         // configured factory so a `Logger` cannot escape a guard -- but because
         // the line above says the close reports rather than throws, and the
         // difference between the two should not rest on which logger call it is.
-        failure = runTeardownStage(failure) { logTransportStatsOnClose(eventLoop.logger, "fd=$fd") }
+        failure = runStage(failure) { logTransportStatsOnClose(eventLoop.logger, "fd=$fd") }
         failure?.let { throw it }
     }
 
     /**
-     * Runs [stage] and returns the teardown's failure so far.
+     * Runs [stage] and returns the failure carried so far.
      *
      * [carried] if [stage] succeeds; [carried] with [stage]'s failure attached
      * if it does not; [stage]'s failure if there was nothing carried yet. The
      * point is that the *first* failure is the one that reaches the log, since
      * it is the one that explains the rest.
      *
+     * Two families of caller, one contract. The teardowns run one stage per
+     * obligation so an abandoned one cannot take the rest with it; the flush
+     * paths run an entry's release, the ledger update and the WRITE re-arm as
+     * one obligation group for the same reason. Neither may lose a stage to
+     * the stage before it.
+     *
      * `crossinline` so a `return` written inside a future stage cannot skip the
      * stages after it and the rethrow at the end — which is the whole contract.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun runTeardownStage(carried: Throwable?, crossinline stage: () -> Unit): Throwable? =
+    private inline fun runStage(carried: Throwable?, crossinline stage: () -> Unit): Throwable? =
         try {
             stage()
             carried
@@ -928,51 +935,97 @@ class ReadinessIoTransport(
         // release was inside the `try` and went with it -- parked for the
         // process lifetime, on a path that exists to end exactly those waits.
         var failure: Throwable? = null
-        failure = runTeardownStage(failure) { releaseAllPendingWrites() }
-        failure = runTeardownStage(failure) {
+        failure = runStage(failure) { releaseAllPendingWrites() }
+        failure = runStage(failure) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
                 cont.cancel(stoppedLoopFlushCause())
             }
         }
         closeFdSafely(fd, eventLoop.logger, "transport teardown (loop stopped)")
-        failure = runTeardownStage(failure) { logTransportStatsOnClose(eventLoop.logger, "fd=$fd") }
+        failure = runStage(failure) { logTransportStatsOnClose(eventLoop.logger, "fd=$fd") }
         failure?.let { throw it }
     }
 
     // --- Single-buffer flush ---
 
     /**
-     * Writes a single buffer. On EAGAIN, registers write readiness callback
+     * Writes the head entry. On EAGAIN, registers write readiness callback
      * to retry with the remaining bytes.
+     *
+     * The entry is peeked, not removed: it leaves [pendingWrites] only inside
+     * [completeHead], at the moment its bytes are fully written or definitively
+     * lost. A throw before that point — the pointer cast on an allocator whose
+     * [IoBuf] is not native, a syscall wrapper — leaves the entry queued, where
+     * the teardown's release stage can reach it. Nothing in a flush holds a
+     * buffer that the queue does not.
      */
-    private fun flushSingle(pw: PendingWrite): Boolean {
+    private fun flushSingle(): Boolean {
+        val pw = pendingWrites.first()
         var written = 0
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
             when (val result = nativeSocket.write(fd, ptr, pw.length - written)) {
                 is WriteResult.Written -> written += result.bytes
                 WriteResult.WouldBlock -> {
-                    if (written > 0) partialWriteCount++
-                    // Defer remainder: re-enqueue partial PendingWrite and register WRITE interest.
-                    val remainder = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
-                    pendingWrites.addFirst(remainder)
-                    updatePendingBytes(-written)
-                    registerWriteCallback()
+                    deferRemainder(written)
                     return false
                 }
                 is WriteResult.Failed -> {
-                    // Other error (EPIPE, ECONNRESET) — log, release and drop.
+                    // Other error (EPIPE, ECONNRESET) — log and drop the entry.
                     eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                    pw.buf.release()
-                    updatePendingBytes(-pw.length)
+                    completeHead()
                     return true
                 }
             }
         }
-        pw.buf.release()
-        updatePendingBytes(-pw.length)
+        completeHead()
         return true
+    }
+
+    /**
+     * Ends the head entry's life: its bytes were fully written, or the write
+     * definitively failed. Removal, release and the ledger update are one
+     * obligation group — each runs whatever the others did, and the first
+     * failure is raised afterwards with the rest attached. A refused release
+     * used to skip the ledger update, leaving [pendingBytes] naming bytes that
+     * were gone; at 64 KiB and up that latched `isWritable` false for the life
+     * of the connection.
+     *
+     * Reads the head itself rather than taking it as a parameter, so "operates
+     * on the head" is structural: a caller cannot hand it a stale or non-head
+     * entry and have the removal dequeue something else.
+     */
+    private fun completeHead() {
+        val pw = pendingWrites.removeFirst()
+        var failure: Throwable? = null
+        failure = runStage(failure) { pw.buf.release() }
+        failure = runStage(failure) { updatePendingBytes(-pw.length) }
+        failure?.let { throw it }
+    }
+
+    /**
+     * Defers the head entry's unsent remainder to the write-readiness retry:
+     * re-offsets it in place — the entry never leaves the queue — then settles
+     * the ledger and arms WRITE, each owed whatever the other did. Reads the
+     * head itself, for the same reason [completeHead] does.
+     */
+    private fun deferRemainder(written: Int) {
+        if (written == 0) {
+            // Nothing sent: no ledger move, no re-offset, and not a partial
+            // write — only the re-arm. Folding this into the path below would
+            // inflate partialWriteCount (a bench-read stat) and allocate an
+            // identical PendingWrite for nothing.
+            registerWriteCallback()
+            return
+        }
+        partialWriteCount++
+        val pw = pendingWrites.first()
+        pendingWrites[0] = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
+        var failure: Throwable? = null
+        failure = runStage(failure) { updatePendingBytes(-written) }
+        failure = runStage(failure) { registerWriteCallback() }
+        failure?.let { throw it }
     }
 
     // --- Gather-write flush ---
@@ -980,6 +1033,13 @@ class ReadinessIoTransport(
     /**
      * Writes multiple pending buffers via `writev()`. Falls back to
      * single-buffer retry on partial write or EAGAIN.
+     *
+     * Same ownership rule as [flushSingle] — a throw anywhere leaves whatever
+     * is unfinished queued for the teardown. The partial walk carries a
+     * refused release to the end: the entries behind the refusal are still
+     * walked, the split entry is still re-offset — losing that re-offset
+     * meant re-sending bytes the peer already had — and the ledger and the
+     * WRITE re-arm are still settled before the refusal is raised.
      */
     private fun flushGather(): Boolean {
         val count = pendingWrites.size
@@ -1000,18 +1060,16 @@ class ReadinessIoTransport(
                 return false
             }
             is WriteResult.Failed -> {
-                // Other error — log, release all and return.
+                // Other error — log and drop the whole queue.
                 eventLoop.logger.warn { "writev() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                releaseQueuedWrites()
-                updatePendingBytes(-totalBytes)
+                completeAll(totalBytes)
                 return true
             }
             is WriteResult.Written -> result.bytes
         }
 
         if (writtenBytes >= totalBytes) {
-            releaseQueuedWrites()
-            updatePendingBytes(-totalBytes)
+            completeAll(totalBytes)
             return true
         }
 
@@ -1023,22 +1081,39 @@ class ReadinessIoTransport(
         // required, and reduces the `PendingWrite` allocations to one
         // (only the partial entry — trailing untouched entries stay as-is).
         partialWriteCount++
+        var failure: Throwable? = null
         var consumed = 0
         while (pendingWrites.isNotEmpty()) {
             val pw = pendingWrites.first()
             if (consumed + pw.length <= writtenBytes) {
                 consumed += pw.length
                 pendingWrites.removeFirst()
-                pw.buf.release()
+                failure = runStage(failure) { pw.buf.release() }
             } else {
-                val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
+                // Non-negative by the walk's own bound: consumed only advances
+                // while consumed + pw.length <= writtenBytes.
+                val alreadyWritten = writtenBytes - consumed
                 pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
                 break
             }
         }
-        updatePendingBytes(-writtenBytes)
-        registerWriteCallback()
+        failure = runStage(failure) { updatePendingBytes(-writtenBytes) }
+        failure = runStage(failure) { registerWriteCallback() }
+        failure?.let { throw it }
         return false
+    }
+
+    /**
+     * Ends every queued entry's life at once — the whole queue was written, or
+     * the whole `writev()` definitively failed. [releaseQueuedWrites] already
+     * carries refusals to the end of its walk; this owes the ledger update on
+     * top, whatever that walk raised.
+     */
+    private fun completeAll(totalBytes: Int) {
+        var failure: Throwable? = null
+        failure = runStage(failure) { releaseQueuedWrites() }
+        failure = runStage(failure) { updatePendingBytes(-totalBytes) }
+        failure?.let { throw it }
     }
 
     // --- Async write readiness ---
@@ -1046,6 +1121,25 @@ class ReadinessIoTransport(
     private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
 
     private fun registerWriteCallback() {
+        // Declined once the transport is closing, like armRead: the ledger
+        // update this follows runs user code (onWritabilityChanged), and a
+        // callback that closes the transport tears it down synchronously on
+        // this thread — re-arming after that would start a write-idle timer
+        // the teardown just cancelled and register interest for an fd number
+        // that is already released. The teardown's own deferred drain is
+        // declined by the same read: markClosing has flipped the flag before
+        // any stage runs. Best-effort against an off-loop close — the flag
+        // can flip right after this read — where the teardown's cancel and
+        // withdraw stages, which run after this loop task, remain the
+        // backstop.
+        //
+        // Declined for an empty queue too: the same callback can instead
+        // drain the remainder reentrantly, and arming then would start a
+        // write-idle clock nothing cancels — updatePendingBytes only cancels
+        // it on drain progress, and an empty queue has none left to make —
+        // so a healthy idle connection would be reclaimed as stalled when
+        // the timer fires.
+        if (!opened || pendingWrites.isEmpty()) return
         // A stalled write (write readiness re-arm) means the peer is not draining its
         // receive window — start the write-idle (slow-read) clock. Drain progress
         // refreshes it and a full drain cancels it, both via updatePendingBytes.
@@ -1081,7 +1175,10 @@ class ReadinessIoTransport(
         // Retry drain immediately when fd becomes writable — do NOT go through
         // flush() which would re-defer to the next tick.
         val done = performFlush()
-        if (done) {
+        // Both conditions, like the coalesced tick: a callback inside the
+        // drain can write new data, and "the flush completed" must not be
+        // reported over a refilled queue.
+        if (done && pendingWrites.isEmpty()) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
                 cont.resume(Unit)

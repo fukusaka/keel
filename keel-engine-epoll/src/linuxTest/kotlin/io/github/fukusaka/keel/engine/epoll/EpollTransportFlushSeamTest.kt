@@ -72,7 +72,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
     }
 
     @Test
-    fun `flushSingle with WouldBlock re-enqueues remainder`() {
+    fun `flushSingle with WouldBlock defers the remainder at the head`() {
         // Kernel-side send buffer full. Engine must:
         // - write what it could (3 bytes)
         // - re-enqueue the remaining 2 bytes with updated offset

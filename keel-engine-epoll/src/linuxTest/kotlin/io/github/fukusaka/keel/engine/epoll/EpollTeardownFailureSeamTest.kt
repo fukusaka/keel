@@ -319,11 +319,14 @@ class EpollTeardownFailureSeamTest {
     @Test
     fun `a stalled drain leaves neither idle timer behind the teardown`() = runBlocking {
         withTimeout(IO_BUDGET) {
-            // The drain can arm a timer: a flush that stalls re-registers for
-            // write readiness, and that starts the write-idle clock. With the
-            // cancels ahead of the drain, the timer armed here outlived the
-            // teardown -- holding this transport, and the channel and pipeline
-            // graph behind it, on the loop's scheduler until it fired. Not a
+            // The drain used to arm a timer: a flush that stalls re-registers
+            // for write readiness, and that starts the write-idle clock. With
+            // the cancels ahead of the drain, the timer armed here outlived
+            // the teardown -- holding this transport, and the channel and
+            // pipeline graph behind it, on the loop's scheduler until it
+            // fired. The arm now declines outright during a teardown (opened
+            // is already false), so these assertions pin that decline on the
+            // teardown route; the stage order stays as defence in depth. Not a
             // second inactive notification: the pipeline's is idempotent, so a
             // stray one is either swallowed or, after a local close, the first.
             val fake = FakeNativeSocket().apply { enqueueWrite(readFd, WriteResult.WouldBlock) }
@@ -354,8 +357,8 @@ class EpollTeardownFailureSeamTest {
             }
 
             // The seam reached the stall: the drain wrote and got WouldBlock,
-            // which is what arms the timer. Without this the wait below passes
-            // against a teardown that never drained at all.
+            // the point where a live flush would arm. Without this the wait
+            // below passes against a teardown that never drained at all.
             assertEquals(
                 1,
                 fake.writeCalls + fake.writevCalls,
@@ -363,7 +366,7 @@ class EpollTeardownFailureSeamTest {
             )
             assertTrue(
                 !eventLoop.hasCallbackRegistration(readFdBeforeSurrender, Interest.WRITE),
-                "and the registration the stall made must have been withdrawn again",
+                "and the stall must not have left a WRITE registration behind",
             )
 
             // Long enough that a surviving timer has fired: it is scheduled for
@@ -453,11 +456,12 @@ class EpollTeardownFailureSeamTest {
             val failing = FailingReleaseIoBuf(
                 tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD },
             )
-            // Two queued, so the drain gathers rather than taking the single
-            // write path -- which removes its entry before writing it, leaving
-            // the release stage nothing to fail on. The second is also what the
+            // Two queued, so the drain gathers. The second entry is what the
             // refusal used to abandon, and the count below is what says it no
-            // longer does.
+            // longer does. (The single path used to remove its entry before
+            // writing, leaving the release stage nothing to fail on -- it
+            // peeks now, so one buffer would reach that stage too, but the
+            // gather walk is the shape under test here.)
             val trailing = tracker.allocate(PAYLOAD).also { it.writerIndex = PAYLOAD }
             readFd = -1
             var raised: Throwable? = null

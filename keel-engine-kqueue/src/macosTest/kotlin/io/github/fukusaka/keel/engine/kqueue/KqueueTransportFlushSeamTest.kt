@@ -65,7 +65,7 @@ internal class KqueueTransportFlushSeamTest : KqueueTransportSeamFixture() {
     }
 
     @Test
-    fun `flushSingle with WouldBlock re-enqueues remainder`() {
+    fun `flushSingle with WouldBlock defers the remainder at the head`() {
         val fake = FakeNativeSocket().apply {
             enqueueWrite(
                 fd,
