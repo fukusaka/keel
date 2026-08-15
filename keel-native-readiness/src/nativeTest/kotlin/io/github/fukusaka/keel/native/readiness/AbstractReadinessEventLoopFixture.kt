@@ -31,7 +31,8 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Holds what the split would otherwise have duplicated five times: the seven
  * test doubles, the `loopTest` / `suspendOn` / `chainOf` helpers, and the
- * constants.
+ * constants. The transport seam fixture extends this too, for [FakeLoop] —
+ * one loop double serving both families rather than a near-copy per family.
  *
  * All `protected` and nested rather than hoisted to package scope, which is
  * what the sibling engine fixtures do. Two names here would not survive that:
@@ -61,6 +62,8 @@ internal abstract class AbstractReadinessEventLoopFixture {
     protected class FakeLoop(
         var onLoopThread: Boolean = true,
         val runDispatchedInline: Boolean = true,
+        /** Off for the transport seam tests, whose `flush()` must drain inline. */
+        override val flushCoalescing: Boolean = true,
     ) : AbstractReadinessEventLoop() {
 
         /** No thread of its own; the fixture drives the ledger and the sweep directly. */
