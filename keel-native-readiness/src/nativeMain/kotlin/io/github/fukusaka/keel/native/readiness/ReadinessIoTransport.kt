@@ -843,16 +843,19 @@ class ReadinessIoTransport(
      * for the same reasons: the refusal is not a drain failure (whatever was
      * being delivered already happened), the waiter owns nothing this
      * transport must take back, and nothing can reach it afterwards — its
-     * slot was cleared when the answer was taken. What must not happen is
-     * the refusal escaping into the frame that delivered: the drain frames
-     * end the *connection* over what escapes them, and the stop notification
-     * would lose its read-side half.
+     * slot was cleared when the answer was taken — or, at the register's
+     * immediate answers, never stored. What must not happen is the refusal
+     * escaping into the frame that delivered: the drain frames end the
+     * *connection* over what escapes them, the stop notification would lose
+     * its read-side half, and the dispatched frames — the deferred failure
+     * answer and an off-loop caller's register — would hand the loop's
+     * generic per-task guard an unnamed throw.
      *
      * [what] names the delivery and what carries on without it, the same
      * contract as the loop's hand-off reports.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun answerFlushWaiter(what: String, delivery: () -> Unit) {
+    private inline fun answerFlushWaiter(what: String, crossinline delivery: () -> Unit) {
         try {
             delivery()
         } catch (refusal: Throwable) {
@@ -1084,7 +1087,9 @@ class ReadinessIoTransport(
      *   waiter whose dispatcher still runs; one parked under a stopped
      *   loop's dispatcher — this one's or a quiescent sibling's — is beyond
      *   anyone's reach, its resume landing on a dead queue (which no longer
-     *   takes a wakeup write), and ending those waits is tracked work.
+     *   takes a wakeup write) or refused outright — the same ending the
+     *   guarded answers name, carried here to `close()`'s caller by the
+     *   stage instead of reported — and ending those waits is tracked work.
      *
      * Releasing the buffers from this thread is allocator-audited: the native
      * pooled allocator routes an off-owner release through its MPSC return
@@ -1399,9 +1404,25 @@ class ReadinessIoTransport(
     override suspend fun awaitPendingFlush() {
         suspendCancellableCoroutine { cont ->
             val register = Runnable {
+                // Each immediate answer below goes through the guard: when
+                // this Runnable was dispatched, the caller has already
+                // suspended, so the answer rides its dispatcher like any
+                // other hand-off -- and a refusal here would otherwise leave
+                // the register frame as an unnamed throw for the loop's
+                // generic per-task guard. Run inline by an on-loop caller,
+                // the answer resolves before any dispatcher is consulted --
+                // measured -- and the guard is a free no-op.
                 when {
-                    !opened -> cont.cancel(closedTransportFlushCause())
-                    pendingWrites.isEmpty() -> cont.resume(Unit)
+                    !opened -> answerFlushWaiter(
+                        "cancelling the flush waiter of a closed transport for, while the loop goes on,",
+                    ) {
+                        cont.cancel(closedTransportFlushCause())
+                    }
+                    pendingWrites.isEmpty() -> answerFlushWaiter(
+                        "resuming the already-drained flush waiter for, while the loop goes on,",
+                    ) {
+                        cont.resume(Unit)
+                    }
                     else -> {
                         // About to park on a flush only a future event can
                         // complete. If the loop has stopped polling, there is
@@ -1416,7 +1437,11 @@ class ReadinessIoTransport(
                         // honest answer for a wait racing the wind-down, even
                         // when those bytes go out moments later.
                         if (eventLoop.isFinishing()) {
-                            cont.cancel(stoppedLoopFlushCause())
+                            answerFlushWaiter(
+                                "cancelling the flush waiter of a finishing loop for, while the wind-down goes on,",
+                            ) {
+                                cont.cancel(stoppedLoopFlushCause())
+                            }
                             return@Runnable
                         }
                         // Stored *before* the short-circuit drain below, so a
