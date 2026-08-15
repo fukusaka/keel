@@ -108,6 +108,13 @@ import kotlin.time.TimeSource
  */
 @OptIn(ExperimentalForeignApi::class)
 @InternalReadinessEngineApi
+// The consolidation is the design: both engines' loop state and its dispatch,
+// ledger and teardown paths live here so a bug in any of them is fixed once
+// (the file header carries the account). The class sits at the rule's default
+// threshold, so any addition trips it; carving it up is design work with its
+// own tracked task, not something to do as a lint reaction — Registration
+// already moved out as the first cut.
+@Suppress("LargeClass")
 abstract class AbstractReadinessEventLoop :
     CoroutineDispatcher(),
     ReadinessEventLoopLifecycle,
@@ -760,53 +767,6 @@ abstract class AbstractReadinessEventLoop :
     }
 
     /**
-     * A pending I/O interest for a file descriptor.
-     *
-     * Multiple [Registration]s with the same `(fd, interest)` key form a
-     * singly-linked FIFO chain via [next]. The chain head doubles as the map
-     * entry; the head's [tail] field tracks the chain tail so append is O(1)
-     * without per-key allocation. Non-head nodes ignore [tail].
-     *
-     * **Mutability**: [next] / [tail] are mutated only under the registration
-     * mutex. No `@Volatile` because all access is lock-guarded.
-     *
-     * @param fd The file descriptor to watch.
-     * @param interest What the waiter is waiting for.
-     * @param continuation Resumed when the fd becomes ready.
-     */
-    class Registration internal constructor(
-        val fd: Int,
-        val interest: Interest,
-        val continuation: CancellableContinuation<Unit>,
-        /**
-         * Runs when the loop had an answer for this waiter and could not
-         * deliver it — the resumption goes through the waiter's own
-         * dispatcher, which may refuse the work.
-         *
-         * The waiter is unreachable by then: it left the ledger when the
-         * answer was taken, so nothing later can find it, and the answer that
-         * failed is the only one this loop had. A waiter that owns something
-         * for the duration of its wait — the connect path owns its descriptor
-         * — releases it here. On most routes that is the only release that
-         * runs; on the stop sweep the waiter's own cancellation handler runs
-         * first, because a cancelled continuation runs its handlers before the
-         * resumption the dispatcher then refuses. Both call the same release,
-         * whose one-shot claim admits one of them. `null` for a waiter that
-         * owns nothing: an `accept()` caller's server fd belongs to the
-         * server.
-         *
-         * Called at most once, and guarded by its callers. On the loop thread
-         * for every route but one: a loop closed without ever running does its
-         * terminal sequence on the closing thread, and the sweep there reaches
-         * this too.
-         */
-        internal val onUndeliverable: (() -> Unit)? = null,
-    ) {
-        internal var next: Registration? = null
-        internal var tail: Registration? = null
-    }
-
-    /**
      * Encodes fd + interest into one key: fd in the low 32 bits, interest above.
      *
      * The fd is masked rather than widened. A negative one sign-extends through
@@ -960,15 +920,22 @@ abstract class AbstractReadinessEventLoop :
      *   its ledgers. A caller cannot tell those apart and must not describe the
      *   result as one of them: the server that answers `null` with a
      *   `CancellationException` names both causes in its message for that reason.
+     * @param onUndeliverable As [register]'s: a waiter that owns something for
+     *   the duration of its wait releases it here when the loop cannot deliver
+     *   its answer. Today's one production caller — the accept path — owns
+     *   nothing and passes nothing, but the parameter exists so an owning
+     *   waiter arriving through this entry does not silently re-inherit the
+     *   leak the other entry closed.
      */
     fun registerIf(
         fd: Int,
         interest: Interest,
         cont: CancellableContinuation<Unit>,
+        onUndeliverable: (() -> Unit)? = null,
         stillWanted: () -> Boolean,
     ): Registration? {
         val key = registrationKey(fd, interest)
-        val newReg = Registration(fd, interest, cont)
+        val newReg = Registration(fd, interest, cont, onUndeliverable)
         val appended = withRegLock {
             // A closed ledger declines the same way a caller that stopped
             // wanting it does. This path already reports "not appended" as
@@ -1037,22 +1004,20 @@ abstract class AbstractReadinessEventLoop :
             // produced. The returned [Registration] was never appended, so the
             // caller's `invokeOnCancellation { unregister(reg) }` is a no-op and
             // the rest of its handler -- closing the fd it owns -- still runs.
-            // Unguarded, unlike the sweep's identical call, because no
-            // caller can make this throw: the one production caller registers
-            // inside its `suspendCancellableCoroutine` block, before
-            // suspension, so no dispatcher is consulted (a continuation
-            // already suspended could meet a refusal here -- no caller can
-            // reach this line with one) -- and no handler is installed yet,
-            // the caller's `invokeOnCancellation` coming only after this
-            // returns. That handler then runs inline at its own install site,
-            // in the caller's frame; if it throws there, the coroutine
-            // machinery takes it before this frame could have -- measured, a
-            // catch here never sees it. And this frame sits in the caller's
-            // coroutine -- under the per-task guard when that caller is on
-            // the loop -- not bare above the pthread entry.
-            cont.cancel(
-                CancellationException("EventLoop stopped before fd=$fd could register for $interest"),
-            )
+            // Through the hand-off helper like every other way this class
+            // ends a waiter, though for the one in-tree caller the guard is
+            // inert: it registers inside its `suspendCancellableCoroutine`
+            // block, before suspension, so this cancel consults no dispatcher
+            // and no handler is installed yet -- measured, nothing here can
+            // throw for that caller. The contract is for the caller shape
+            // prose cannot forbid: a continuation that has already suspended
+            // meets its own dispatcher here, a refusal must not escape into
+            // the registering frame, and the hook -- which no other code will
+            // ever consult for a waiter refused entry -- must run.
+            deliverOrRelease(newReg, "cancelling the refused waiter for, while its caller carries on,") {
+                val cause = CancellationException("EventLoop stopped before fd=$fd could register for $interest")
+                it.continuation.cancel(cause)
+            }
             return newReg
         }
 
@@ -1150,8 +1115,9 @@ abstract class AbstractReadinessEventLoop :
                     // does; and the registration is already gone -- so without
                     // this the descriptor can stay open with no handle left to
                     // close it by, which is the leak this whole function
-                    // exists to prevent. The one-shot claim admits one of
-                    // this and the handler, whichever came first.
+                    // exists to prevent. The one-shot claim admits exactly one
+                    // of this, the handler, and the normal return below,
+                    // whichever comes first.
                     releaseOwnedFd(fd, logger, released, "connect answer undeliverable")
                 }
                 reg = own
@@ -1159,6 +1125,19 @@ abstract class AbstractReadinessEventLoop :
                     unregister(own)
                     releaseOwnedFd(fd, logger, released, "connect cancellation")
                 }
+            }
+            // The fourth claimant: a delivery the loop judged refused can
+            // still have taken effect -- a dispatcher may enqueue the
+            // resumption and then throw, and nothing in its contract forbids
+            // it. Then the hook releases while this frame resumes normally,
+            // and without a claim here the caller would build a transport
+            // over a descriptor the loop has closed and the kernel may have
+            // re-handed. So the normal return claims the same one-shot: if
+            // the hook won, the descriptor is gone and this wait must say so
+            // rather than hand back a number that is no longer this
+            // connect's.
+            if (!released.compareAndSet(0, 1)) {
+                error("connect wait for fd=$fd was answered, but the loop had released it as undeliverable")
             }
         } catch (t: Throwable) {
             reg?.let { unregister(it) }
@@ -1171,10 +1150,12 @@ abstract class AbstractReadinessEventLoop :
      * Claims [fd] for release once, then hands the release to the loop.
      *
      * The claim is a compare-and-set rather than an argument about which of
-     * [awaitWritableOwningFd]'s three endings can follow the other: they are
+     * [awaitWritableOwningFd]'s endings can follow the other: they are
      * reached by different means — a cancellation, a thrown value (whether the
      * wait's own or an arm that failed), an answer the loop could not hand
-     * over — and nothing orders them. Closing a descriptor twice stops being a harmless repeat the
+     * over, and the normal return, which claims without releasing so a
+     * delivery the loop wrongly judged refused cannot leave its caller
+     * holding a closed descriptor — and nothing orders them. Closing a descriptor twice stops being a harmless repeat the
      * moment the kernel has handed the number to somebody else.
      *
      * On the loop because of what may still be queued for this fd; see
@@ -1286,8 +1267,31 @@ abstract class AbstractReadinessEventLoop :
         // to release.
         for (reg in toResume) {
             deliverOrRelease(reg, "failing the waiter for, while the server closes,") {
-                reg.continuation.resumeWithException(cause)
+                it.continuation.resumeWithException(cause)
             }
+        }
+    }
+
+    /**
+     * Removes [reg] from the chain at [key] and fails its waiter with
+     * [failure], through [deliverOrRelease].
+     *
+     * Here rather than in each engine's `submitArm` because it is the half of
+     * that override that does not differ — and the callback twin,
+     * [withdrawFailedCallbackArm], is here for exactly that reason: its two
+     * engine copies drifted apart once before it was hoisted. One copy also
+     * means one report string — it lives only here — which the guard test
+     * pins for every engine at once instead of pinning a fixture's imitation.
+     *
+     * The resume goes through the waiter's own dispatcher and a refusal must
+     * not escape the loop; on the connect path the waiter owns its descriptor,
+     * whose own release paths cannot run on that ending — the hand-off
+     * helper's KDoc carries the full account.
+     */
+    protected fun failUnarmedWaiter(key: Long, reg: Registration, failure: IllegalStateException) {
+        withRegLock { removeRegistration(key, reg) }
+        deliverOrRelease(reg, "failing the waiter for, while the loop goes on arming others,") {
+            it.continuation.resumeWithException(failure)
         }
     }
 
@@ -1325,16 +1329,19 @@ abstract class AbstractReadinessEventLoop :
      * differ there, and an operator reading "the loop continues" from the stop
      * sweep would be reading the one thing that is not true of it.
      *
-     * `protected` because the fourth site is a subclass's: the engines resume a
-     * waiter with its own arming failure, and that hand-off can be refused like
-     * any other. Not `inline` — a public-API inline body cannot reach the
-     * non-public state this needs, and every call here is a hand-off, never a
-     * per-event step.
+     * `protected` because the engines' arm-failure hand-off reaches it through
+     * [failUnarmedWaiter], and that hand-off can be refused like any other.
+     * Not `inline` — a public-API inline body cannot reach the non-public
+     * state this needs. The readiness dispatch calls this once per ready fd,
+     * so [delivery] takes the [Registration] as its argument: the hot site's
+     * lambda captures nothing and compiles to a singleton, and the per-event
+     * cost of the guard is one call, not one allocation. The cold sites
+     * (close, sweep, arm failure) may capture freely.
      */
     @Suppress("TooGenericExceptionCaught")
-    protected fun deliverOrRelease(reg: Registration, what: String, delivery: () -> Unit) {
+    protected fun deliverOrRelease(reg: Registration, what: String, delivery: (Registration) -> Unit) {
         try {
-            delivery()
+            delivery(reg)
         } catch (deliveryFailure: Throwable) {
             logger.error(deliveryFailure) {
                 "$what fd=${reg.fd} ${reg.interest} threw; it is no longer registered"
@@ -1528,12 +1535,17 @@ abstract class AbstractReadinessEventLoop :
      * ledger, which is its own decision and is tracked.
      */
     protected fun failWaitersOnStoppedLoop() {
-        // A *release* failure leaves the mutex held by this very thread, so
-        // taking it again here would deadlock the loop inside its own teardown
-        // — and with it the quiescence publish and the closer's join. That one
-        // case has to skip the sweep. An acquire failure does not: this thread
-        // holds nothing, so the sweep runs, unguarded like everything else on
-        // a loop whose exclusion is already gone, and still ends its waiters.
+        // A *release* failure leaves the mutex held by the thread that issued
+        // it, so taking it again here would deadlock the loop inside its own
+        // teardown — and with it the quiescence publish and the closer's join.
+        // That case has to skip the sweep, owning waiters' releases included:
+        // draining without the lock is not available even on the holding
+        // thread, because failing a waiter cascades into [unregister] and
+        // [forgetInterests], which re-take this same lock. Ending that skip
+        // takes a lock-level bypass, and is tracked as its own design task.
+        // An acquire failure does not skip: this thread holds nothing, so the
+        // sweep runs, unguarded like everything else on a loop whose
+        // exclusion is already gone, and still ends its waiters.
         if (regLockStuck.value != 0) {
             // Closed even though the write is unguarded here. Exclusion is
             // already lost, so the write is no less safe than the reads around
@@ -1587,9 +1599,8 @@ abstract class AbstractReadinessEventLoop :
         // would fail the `close()` mid-teardown.
         for (reg in stranded) {
             deliverOrRelease(reg, "cancelling the stranded waiter for, while the loop stops,") {
-                reg.continuation.cancel(
-                    CancellationException("EventLoop stopped before arming fd=${reg.fd} for ${reg.interest}"),
-                )
+                val cause = CancellationException("EventLoop stopped before arming fd=${it.fd} for ${it.interest}")
+                it.continuation.cancel(cause)
             }
         }
         for (participant in told) {
@@ -2180,8 +2191,12 @@ abstract class AbstractReadinessEventLoop :
                 // waiter back whatever it owned for the duration, which is the
                 // hook `deliverOrRelease` runs -- without it a connect socket
                 // outlives every path that could close it.
+                // Non-capturing on purpose: this is the per-event site, and a
+                // lambda that captured `popped` would be one allocation per
+                // ready fd. Taking the registration as the parameter keeps it
+                // a singleton.
                 deliverOrRelease(popped, "resuming the readiness waiter for, and the loop goes on serving,") {
-                    popped.continuation.resume(Unit)
+                    it.continuation.resume(Unit)
                 }
             } else {
                 // No handler at all: armed without one, or not taken back when the

@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.native.readiness.ReadinessEventLoopLifecycle
 import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
+import io.github.fukusaka.keel.native.readiness.Registration
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena
@@ -42,7 +43,6 @@ import platform.posix.pthread_join
 import platform.posix.pthread_self
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
-import kotlin.coroutines.resumeWithException
 
 /**
  * Single-threaded epoll event loop for Linux, also serving as a [CoroutineDispatcher].
@@ -323,12 +323,12 @@ internal class EpollEventLoop(
     }
 
     /**
-     * EventLoop-thread submission for the suspend path. On failure the
-     * [Registration] is removed and [cont] is failed with the error, so a
-     * waiter never suspends forever on an fd the loop failed to watch. That
-     * failure goes through the base's hand-off helper, because the resume runs
-     * on the waiter's own dispatcher and a refusal must not escape this loop —
-     * the same contract as `KqueueEventLoop.submitArm`.
+     * EventLoop-thread submission for the suspend path. A failure is handed to
+     * the base's `failUnarmedWaiter` — the half of this override that does not
+     * differ between engines — which removes the [Registration] from the chain
+     * and fails [cont] through the guarded hand-off. On a dispatcher that
+     * refuses that resume, the waiter stays suspended and what it owned is
+     * released — the same contract as `KqueueEventLoop.submitArm`.
      */
     override fun submitArm(
         fd: Int,
@@ -353,17 +353,7 @@ internal class EpollEventLoop(
 
         val err = addOrModifyEpoll(fd, events)
         if (err != 0) {
-            withRegLock { removeRegistration(key, reg) }
-            // Through the base's hand-off helper, like every other place a
-            // waiter leaves the ledger: this resume goes through the waiter's
-            // own dispatcher too, and a refusal here would leave a waiter
-            // nothing can reach -- on the connect path, holding a descriptor
-            // whose own release paths cannot run either.
-            deliverOrRelease(reg, "failing the waiter for, while the loop goes on arming others,") {
-                cont.resumeWithException(
-                    IllegalStateException("epoll_ctl(ADD, fd=$fd) failed: ${errnoMessage(err)}"),
-                )
-            }
+            failUnarmedWaiter(key, reg, IllegalStateException("epoll_ctl(ADD, fd=$fd) failed: ${errnoMessage(err)}"))
         }
     }
 

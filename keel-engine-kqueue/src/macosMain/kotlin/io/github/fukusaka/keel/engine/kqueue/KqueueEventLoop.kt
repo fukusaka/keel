@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.native.readiness.ReadinessEventLoopLifecycle
 import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
+import io.github.fukusaka.keel.native.readiness.Registration
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena
@@ -39,7 +40,6 @@ import platform.posix.pthread_join
 import platform.posix.pthread_self
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
-import kotlin.coroutines.resumeWithException
 
 /**
  * Single-threaded kqueue event loop for macOS, also serving as a [CoroutineDispatcher].
@@ -289,10 +289,10 @@ internal class KqueueEventLoop(
     }
 
     /**
-     * EventLoop-thread submission of EV_ADD for [fd]. On failure it removes
-     * [reg] from the chain at [key] and fails [cont] with the error — through
-     * the base's hand-off helper, because that resume goes through the waiter's
-     * own dispatcher and a refusal must not escape this loop.
+     * EventLoop-thread submission of EV_ADD for [fd]. A failure is handed to
+     * the base's `failUnarmedWaiter` — the half of this override that does not
+     * differ between engines — which removes [reg] from the chain at [key] and
+     * fails [cont] through the guarded hand-off.
      *
      * [key] is computed by the caller (`register()`) so the error path
      * does not recompute `registrationKey(fd, interest)`.
@@ -321,17 +321,7 @@ internal class KqueueEventLoop(
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
-            withRegLock { removeRegistration(key, reg) }
-            // Through the base's hand-off helper, like every other place a
-            // waiter leaves the ledger: this resume goes through the waiter's
-            // own dispatcher too, and a refusal here would leave a waiter
-            // nothing can reach -- on the connect path, holding a descriptor
-            // whose own release paths cannot run either.
-            deliverOrRelease(reg, "failing the waiter for, while the loop goes on arming others,") {
-                cont.resumeWithException(
-                    IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"),
-                )
-            }
+            failUnarmedWaiter(key, reg, IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"))
         }
     }
 
