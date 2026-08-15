@@ -25,8 +25,11 @@ set -euo pipefail
 # Arguments before the directory, so that calling it wrong reports the call
 # rather than wherever the caller happened to be. Exit 2 for every rejection —
 # 1 is what the guard itself uses, and a caller distinguishing "the filter
-# selected nothing" from "you invoked this wrong" needs them apart.
-if [ $# -ne 2 ]; then
+# selected nothing" from "you invoked this wrong" needs them apart. Empty
+# arguments are rejected here rather than reaching Gradle and coming back as
+# "selected no tests", which would answer an invocation error in the guard's
+# voice.
+if [ $# -ne 2 ] || [ -z "${1:-}" ] || [ -z "${2:-}" ]; then
     echo "usage: run-filtered-test.sh <:module:task> <pattern>" >&2
     exit 2
 fi
@@ -44,16 +47,12 @@ if [ ! -x ./gradlew ]; then
 fi
 
 # The results path is derived by string surgery and then handed to `rm -rf`, so
-# the shape is checked first. `:jvmTest` alone would derive an empty module and
-# delete `/build/test-results/jvmTest` — an absolute path — before `./gradlew`
-# ever sees that the spec is wrong. A nested path like `:a:b:task` would derive
-# `a:b/…`, which exists nowhere and fails the count for the wrong reason. And a
-# slash is what path traversal needs, so `:../../etc:jvmTest` is rejected there
-# rather than by a rule about dots — single dots are legal in a project name and
-# nothing in this tree uses one.
+# both the shape and the pieces are checked first. `:jvmTest` alone would derive
+# an empty module and delete `/build/test-results/jvmTest` — an absolute path —
+# before `./gradlew` ever sees that the spec is wrong, and `:a:b:task` would
+# derive `a:b/…`, which exists nowhere and fails the count for the wrong reason.
 case "$spec" in
     :*:*:*) echo "nested project paths are not supported: $spec" >&2; exit 2 ;;
-    */*) echo "a project path has no slashes: $spec" >&2; exit 2 ;;
     :?*:?*) ;;
     *) echo "expected :module:task, got: $spec" >&2; exit 2 ;;
 esac
@@ -61,6 +60,22 @@ esac
 module="${spec%:*}"
 module="${module#:}"
 task="${spec##*:}"
+
+# Then the pieces, because the shape does not constrain what is in them. A
+# module of `..` carries no slash and is no deeper than one segment, so it looks
+# like an ordinary name to the shape check — and derives `../build/test-results/…`,
+# which `rm -rf` will happily delete outside the repository. Checking the two
+# components for what a path component must not be closes that, and every other
+# spelling of it, rather than the one that was noticed.
+for part in "$module" "$task"; do
+    case "$part" in
+        .|..|*/*|*..*)
+            echo "a project or task name is not a path component: $spec" >&2
+            exit 2
+            ;;
+    esac
+done
+
 results="${module}/build/test-results/${task}"
 
 # A previous invocation's XML would satisfy the count below, so the directory
@@ -85,8 +100,10 @@ rm -rf "$results"
 # a start tag split across lines counts zero, because the split piece holds no
 # `tests="…"` — that undercounts, so the guard fires; and CDATA that contains a
 # literal `<testsuite ` opens a piece of its own, so a `tests="…"` written inside
-# it is added — that overcounts, but only on top of an element that already
-# declared a non-zero count, so it cannot turn a genuine zero into a pass.
+# it is added to whatever the element declared, including a zero. What keeps that
+# harmless is not arithmetic — a `tests="0"` element with such CDATA does read
+# non-zero and does pass — but that no report carries `<testsuite ` inside CDATA
+# at all, in any of the 1659 checked across both hosts.
 ran=$(awk '
     {
         n = split($0, parts, /<testsuite[ \t]/)
