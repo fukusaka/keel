@@ -329,12 +329,11 @@ abstract class AbstractIoTransport(
      * does.
      *
      * **It does not touch [pendingBytes].** A caller on a path that continues
-     * afterwards owes the matching [updatePendingBytes]. The two engine flush
-     * sites make that call on the next statement, which is to say **not when
-     * this throws** — on that path the count is left high and only the teardown
-     * that follows puts it right by zeroing it. A caller that means to carry on
-     * needs the update somewhere this cannot skip. Without it the count only
-     * ever grows, and `writable` latches `false` for the life of the
+     * afterwards owes the matching [updatePendingBytes] — and owes it whatever
+     * this walk raised. The readiness transport's flush sites run the two as
+     * one obligation group for that reason: a refused release that skipped the
+     * update left the count naming bytes that were gone, and the count only
+     * ever grows from there, so `writable` latched `false` for the life of the
      * connection.
      *
      * **It finishes.** A refused release no longer abandons the buffers behind
@@ -344,9 +343,9 @@ abstract class AbstractIoTransport(
      * has a queue to walk. Stopping cost every buffer behind the refusal for
      * the process lifetime — and where that is: a teardown stage carries on
      * past the failure, so nothing came back for what the stage abandoned,
-     * while a flush does not (see the paragraph above), so its entries stayed
-     * queued for the next walk. Not for the same buffer to refuse again — that
-     * one had already left the deque — but for whatever made it refuse.
+     * while a flush that aborted here left its entries queued for the next
+     * walk. Not for the same buffer to refuse again — that one had already
+     * left the deque — but for whatever made it refuse.
      */
     protected fun releaseQueuedWrites() {
         var failure: Throwable? = null
