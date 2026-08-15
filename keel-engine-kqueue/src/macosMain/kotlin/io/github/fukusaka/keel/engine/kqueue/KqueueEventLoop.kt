@@ -291,7 +291,7 @@ internal class KqueueEventLoop(
      * EventLoop-thread submission of EV_ADD for [fd]. A failure is handed to
      * the base's `failUnarmedWaiter` — the half of this override that does not
      * differ between engines — which removes [reg] from the chain at [key] and
-     * fails [cont] through the guarded hand-off.
+     * fails its waiter through the guarded hand-off.
      *
      * [key] is computed by the caller (`register()`) so the error path
      * does not recompute `registrationKey(fd, interest)`.

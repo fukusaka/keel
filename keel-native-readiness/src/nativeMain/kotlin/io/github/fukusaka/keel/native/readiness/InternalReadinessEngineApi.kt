@@ -10,7 +10,7 @@ package io.github.fukusaka.keel.native.readiness
  * does not cross that boundary. The marker is what `internal` cannot say here,
  * and it says it less well: `internal` is checked, an opt-in is declared.
  *
- * **Most of the members it marks are there for tests.** Seven types are behind
+ * **Most of the members it marks are there for tests.** Eight types are behind
  * it, and twelve members. Of those members the engines' production code reaches
  * exactly two — the loop's `cleanupFd` and the engine's thread resolution. The
  * other ten are used inside this module, or are probes the engines' seam tests

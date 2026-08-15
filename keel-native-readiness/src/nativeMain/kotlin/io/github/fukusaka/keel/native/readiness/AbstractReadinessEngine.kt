@@ -364,10 +364,11 @@ abstract class AbstractReadinessEngine(
                 (suspendRegisterOverride ?: workerLoop).awaitWriteReady(fd, logger)
                 // Verify connection succeeded via SO_ERROR.
                 // Guarded from here on. Until the await returns the
-                // descriptor belongs to it -- it releases on cancellation and
-                // on failure, under a claim CAS -- so closing it here as well
-                // would be closing a number the kernel may already have
-                // handed on. Ownership comes back with the return.
+                // descriptor belongs to it -- it releases on every ending that
+                // does not return it, under a claim CAS -- so closing it here
+                // as well would be closing a number the kernel may already
+                // have handed on. Ownership comes back with the return, which
+                // takes that same claim: a return that lost it throws instead.
                 val error = releaseOnFailure(fd) { nativeSocketOps.getSocketError(fd) }
                 if (error != 0) {
                     closeFdSafely(fd, logger, "connect cleanup")
@@ -444,9 +445,10 @@ abstract class AbstractReadinessEngine(
      *
      * **Not the stretch spent waiting for write-readiness** (connect only).
      * That await owns the descriptor while it holds it and releases it on
-     * cancellation and on failure, under a claim so the two endings cannot
-     * both close. Closing here as well would be closing a number the kernel
-     * may have handed on.
+     * every ending that does not return it — cancellation, a thrown value,
+     * and an answer the loop could not hand over — under one claim so no two
+     * of them close. Closing here as well would be closing a number the
+     * kernel may have handed on.
      *
      * [context] names the stage in the close's own report, and defaults to the
      * connect window because that is where most of these are.

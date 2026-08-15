@@ -108,13 +108,12 @@ import kotlin.time.TimeSource
  */
 @OptIn(ExperimentalForeignApi::class)
 @InternalReadinessEngineApi
-// The consolidation is the design: both engines' loop state and its dispatch,
-// ledger and teardown paths live here so a bug in any of them is fixed once
-// (the file header carries the account). The class sits at the rule's default
-// threshold, so any addition trips it; carving it up is design work with its
-// own tracked task, not something to do as a lint reaction — Registration
-// already moved out as the first cut.
-@Suppress("LargeClass")
+// The class sits just under detekt's LargeClass threshold: moving Registration
+// out bought the room back, so no suppression is carried. The consolidation
+// itself is the design -- both engines' loop state and its dispatch, ledger and
+// teardown paths live here so a bug in any of them is fixed once, and the file
+// header carries that account. The next addition will trip the rule; the answer
+// then is the next extraction, which is tracked design work, not a suppression.
 abstract class AbstractReadinessEventLoop :
     CoroutineDispatcher(),
     ReadinessEventLoopLifecycle,
@@ -1341,10 +1340,10 @@ abstract class AbstractReadinessEventLoop :
      * so [delivery] takes the [Registration] as its argument: the readiness
      * lambda captures nothing and compiles to a singleton, and the per-event
      * cost of the guard is one call, not one allocation. The sweep's lambda
-     * came out capture-free too; the ones that do capture — the server close
-     * and the two entry-side sites — are reached once per close, per failed
-     * arm and per refused registration, where an allocation is not worth
-     * shaping the code around.
+     * came out capture-free too; the three that do capture — the server
+     * close, the failed arm, and the refused registration — are reached once
+     * per close, per failed arm and per refused registration, where an
+     * allocation is not worth shaping the code around.
      */
     @Suppress("TooGenericExceptionCaught")
     protected fun deliverOrRelease(reg: Registration, what: String, delivery: (Registration) -> Unit) {
