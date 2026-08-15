@@ -1264,7 +1264,9 @@ abstract class AbstractReadinessEventLoop :
         // escape into the caller, a server close that still has a descriptor
         // to release.
         for (reg in toResume) {
-            deliverOrRelease(reg, "failing the waiter for") { reg.continuation.resumeWithException(cause) }
+            deliverOrRelease(reg, "failing the waiter for, while the server closes,") {
+                reg.continuation.resumeWithException(cause)
+            }
         }
     }
 
@@ -1285,6 +1287,10 @@ abstract class AbstractReadinessEventLoop :
      *
      * Both calls are guarded: an escape from this frame ends the loop body and
      * the `pthread` entry above it, which catches nothing.
+     *
+     * [what] names the delivery *and* what carries on without it — the three
+     * sites differ there, and an operator reading "the loop continues" from the
+     * stop sweep would be reading the one thing that is not true of it.
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun deliverOrRelease(reg: Registration, what: String, delivery: () -> Unit) {
@@ -1292,7 +1298,7 @@ abstract class AbstractReadinessEventLoop :
             delivery()
         } catch (deliveryFailure: Throwable) {
             logger.error(deliveryFailure) {
-                "$what fd=${reg.fd} ${reg.interest} threw; it is no longer registered and the loop continues"
+                "$what fd=${reg.fd} ${reg.interest} threw; it is no longer registered"
             }
             try {
                 reg.onUndeliverable?.invoke()
@@ -1531,7 +1537,7 @@ abstract class AbstractReadinessEventLoop :
         // must not strand the rest, nor escape a pthread entry point that has
         // nothing above it to catch.
         for (reg in stranded) {
-            deliverOrRelease(reg, "cancelling the stranded waiter for") {
+            deliverOrRelease(reg, "cancelling the stranded waiter for, while the loop stops,") {
                 reg.continuation.cancel(
                     CancellationException("EventLoop stopped before arming fd=${reg.fd} for ${reg.interest}"),
                 )
@@ -2123,7 +2129,7 @@ abstract class AbstractReadinessEventLoop :
                 // waiter back whatever it owned for the duration, which is the
                 // hook `deliverOrRelease` runs -- without it a connect socket
                 // outlives every path that could close it.
-                deliverOrRelease(popped, "resuming the readiness waiter for") {
+                deliverOrRelease(popped, "resuming the readiness waiter for, and the loop goes on serving,") {
                     popped.continuation.resume(Unit)
                 }
             } else {
