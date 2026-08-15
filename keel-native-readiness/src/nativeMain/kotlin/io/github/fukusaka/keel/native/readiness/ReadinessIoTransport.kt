@@ -968,18 +968,18 @@ class ReadinessIoTransport(
             when (val result = nativeSocket.write(fd, ptr, pw.length - written)) {
                 is WriteResult.Written -> written += result.bytes
                 WriteResult.WouldBlock -> {
-                    deferRemainder(pw, written)
+                    deferRemainder(written)
                     return false
                 }
                 is WriteResult.Failed -> {
                     // Other error (EPIPE, ECONNRESET) — log and drop the entry.
                     eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                    completeHead(pw)
+                    completeHead()
                     return true
                 }
             }
         }
-        completeHead(pw)
+        completeHead()
         return true
     }
 
@@ -991,9 +991,13 @@ class ReadinessIoTransport(
      * used to skip the ledger update, leaving [pendingBytes] naming bytes that
      * were gone; at 64 KiB and up that latched `isWritable` false for the life
      * of the connection.
+     *
+     * Reads the head itself rather than taking it as a parameter, so "operates
+     * on the head" is structural: a caller cannot hand it a stale or non-head
+     * entry and have the removal dequeue something else.
      */
-    private fun completeHead(pw: PendingWrite) {
-        pendingWrites.removeFirst()
+    private fun completeHead() {
+        val pw = pendingWrites.removeFirst()
         var failure: Throwable? = null
         failure = runStage(failure) { pw.buf.release() }
         failure = runStage(failure) { updatePendingBytes(-pw.length) }
@@ -1003,14 +1007,20 @@ class ReadinessIoTransport(
     /**
      * Defers the head entry's unsent remainder to the write-readiness retry:
      * re-offsets it in place — the entry never leaves the queue — then settles
-     * the ledger and arms WRITE, each owed whatever the other did.
+     * the ledger and arms WRITE, each owed whatever the other did. Reads the
+     * head itself, for the same reason [completeHead] does.
      */
-    private fun deferRemainder(pw: PendingWrite, written: Int) {
+    private fun deferRemainder(written: Int) {
         if (written == 0) {
+            // Nothing sent: no ledger move, no re-offset, and not a partial
+            // write — only the re-arm. Folding this into the path below would
+            // inflate partialWriteCount (a bench-read stat) and allocate an
+            // identical PendingWrite for nothing.
             registerWriteCallback()
             return
         }
         partialWriteCount++
+        val pw = pendingWrites.first()
         pendingWrites[0] = PendingWrite(pw.buf, pw.offset + written, pw.length - written)
         var failure: Throwable? = null
         failure = runStage(failure) { updatePendingBytes(-written) }
@@ -1024,12 +1034,10 @@ class ReadinessIoTransport(
      * Writes multiple pending buffers via `writev()`. Falls back to
      * single-buffer retry on partial write or EAGAIN.
      *
-     * Same ownership rule as [flushSingle]: entries leave [pendingWrites] only
-     * as their bytes are accounted for — fully-written entries during the
-     * partial walk, the whole queue in [completeAll] — so a throw anywhere
-     * leaves whatever is unfinished queued for the teardown. The partial walk
-     * carries a refused release to the end: the entries behind the refusal are
-     * still walked, the split entry is still re-offset — losing that re-offset
+     * Same ownership rule as [flushSingle] — a throw anywhere leaves whatever
+     * is unfinished queued for the teardown. The partial walk carries a
+     * refused release to the end: the entries behind the refusal are still
+     * walked, the split entry is still re-offset — losing that re-offset
      * meant re-sending bytes the peer already had — and the ledger and the
      * WRITE re-arm are still settled before the refusal is raised.
      */
@@ -1082,7 +1090,9 @@ class ReadinessIoTransport(
                 pendingWrites.removeFirst()
                 failure = runStage(failure) { pw.buf.release() }
             } else {
-                val alreadyWritten = (writtenBytes - consumed).coerceAtLeast(0)
+                // Non-negative by the walk's own bound: consumed only advances
+                // while consumed + pw.length <= writtenBytes.
+                val alreadyWritten = writtenBytes - consumed
                 pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
                 break
             }
@@ -1118,8 +1128,18 @@ class ReadinessIoTransport(
         // the teardown just cancelled and register interest for an fd number
         // that is already released. The teardown's own deferred drain is
         // declined by the same read: markClosing has flipped the flag before
-        // any stage runs.
-        if (!opened) return
+        // any stage runs. Best-effort against an off-loop close — the flag
+        // can flip right after this read — where the teardown's cancel and
+        // withdraw stages, which run after this loop task, remain the
+        // backstop.
+        //
+        // Declined for an empty queue too: the same callback can instead
+        // drain the remainder reentrantly, and arming then would start a
+        // write-idle clock nothing cancels — updatePendingBytes only cancels
+        // it on drain progress, and an empty queue has none left to make —
+        // so a healthy idle connection would be reclaimed as stalled when
+        // the timer fires.
+        if (!opened || pendingWrites.isEmpty()) return
         // A stalled write (write readiness re-arm) means the peer is not draining its
         // receive window — start the write-idle (slow-read) clock. Drain progress
         // refreshes it and a full drain cancels it, both via updatePendingBytes.
@@ -1155,7 +1175,10 @@ class ReadinessIoTransport(
         // Retry drain immediately when fd becomes writable — do NOT go through
         // flush() which would re-defer to the next tick.
         val done = performFlush()
-        if (done) {
+        // Both conditions, like the coalesced tick: a callback inside the
+        // drain can write new data, and "the flush completed" must not be
+        // reported over a refilled queue.
+        if (done && pendingWrites.isEmpty()) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
                 cont.resume(Unit)
