@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -13,6 +14,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -291,7 +293,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         // What the guard is for: the loop is still serving. A listener armed
         // after the refusal receives its readiness.
         val served = mutableListOf<Interest>()
-        loop.registerCallbackFor(WAITER_FD, Interest.READ, RecordingListener(served))
+        loop.registerCallbackFor(WAITER_FD, Interest.READ, ReadyRecorder(served))
         loop.dispatchReadyFor(WAITER_FD, Interest.READ, eofFlag = false)
         assertEquals(listOf(Interest.READ), served, "the loop goes on serving the rest")
     }
@@ -318,8 +320,42 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         assertEquals(1, released, "the undeliverable waiter's owned descriptor must be released")
     }
 
+    @Test
+    fun `a refusing waiter does not strand the ones queued behind it when a server closes`() {
+        val loop = FakeLoop()
+        val refusing = RefusingDispatcher()
+        // Head of the FIFO chain: registered first, so cancelAll reaches it
+        // first and its dispatcher refuses.
+        CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                loop.registerWaiter(WAITER_FD, Interest.READ, cont)
+            }
+        }
+        // Behind it, a sibling accept() caller whose dispatcher is fine. Both
+        // leave the ledger together in cancelAll's drain, into a local list
+        // nothing else can reach — so if the refusal aborts the loop, this one
+        // waits forever on a server that is already closing.
+        var sibling: Throwable? = null
+        CoroutineScope(Dispatchers.Unconfined).launch(start = CoroutineStart.UNDISPATCHED) {
+            runCatching {
+                suspendCancellableCoroutine { cont ->
+                    loop.registerWaiter(WAITER_FD, Interest.READ, cont)
+                }
+            }.onFailure { sibling = it }
+        }
+
+        loop.cancelAll(WAITER_FD, Interest.READ, InjectedFault("server closing"))
+
+        assertEquals(1, refusing.attempts, "the seam must have reached the refusing waiter")
+        assertIs<InjectedFault>(sibling, "the sibling behind the refusal must still be failed")
+        assertTrue(
+            loop.errors.any { it.contains("failing the waiter") },
+            "the refusal must be reported at ERROR, got: ${loop.errors}",
+        )
+    }
+
     /** Records the interests it is handed, for the served-after-failure assertion. */
-    private class RecordingListener(private val into: MutableList<Interest>) : FdReadyListener {
+    private class ReadyRecorder(private val into: MutableList<Interest>) : FdReadyListener {
         override fun onReady(interest: Interest) {
             into.add(interest)
         }
