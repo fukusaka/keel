@@ -803,6 +803,47 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
         }
     }
 
+    @Test
+    fun `a report-side write after a reentrant-completed pass still gets a continuation`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The composition of the two shapes above: the outer pass blocks,
+            // a reentrant flush finishes the remainder, the report fires --
+            // and a completion callback writes without flushing. The arm must
+            // answer to the queue at the exit, not to this frame's own pass:
+            // gated on the pass, these bytes had no continuation at all.
+            val total = HIGH_WATER + LOW_WATER
+            val written = HIGH_WATER + LOW_WATER / 2
+            fake.enqueueWrite(fd, WriteResult.Written(written), WriteResult.WouldBlock)
+            val transport = transport()
+            val late = tracker.allocate(16).apply { writerIndex = 5 }
+            var wrote = false
+            transport.onFlushComplete = {
+                if (!wrote) {
+                    wrote = true
+                    transport.write(late)
+                }
+            }
+            transport.onWritabilityChanged = { writable ->
+                if (writable) {
+                    fake.enqueueWrite(fd, WriteResult.Written(LOW_WATER / 2))
+                    transport.flush()
+                }
+            }
+            transport.write(tracker.allocate(total).apply { writerIndex = total })
+
+            assertFalse(transport.flush(), "the outer flush still reports its own WouldBlock")
+
+            assertTrue(wrote, "the completion callback must have written during the report")
+            assertTrue(
+                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+                "the report-side write must leave WRITE armed whatever this frame's pass did, " +
+                    "got: ${eventLoop.armedCallbacks}",
+            )
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
     private companion object {
         /** The transport's water marks; the imports tie the tests to the real thresholds. */
         const val HIGH_WATER = IoTransport.DEFAULT_HIGH_WATER_MARK
