@@ -791,7 +791,10 @@ abstract class AbstractReadinessEventLoop :
          * will run. `null` for a waiter that owns nothing: an `accept()`
          * caller's server fd belongs to the server.
          *
-         * Called on the loop thread, at most once, and guarded by its callers.
+         * Called at most once, and guarded by its callers. On the loop thread
+         * for every route but one: a loop closed without ever running does its
+         * terminal sequence on the closing thread, and the sweep there reaches
+         * this too.
          */
         internal val onUndeliverable: (() -> Unit)? = null,
     ) {
@@ -1151,9 +1154,9 @@ abstract class AbstractReadinessEventLoop :
      * Claims [fd] for release once, then hands the release to the loop.
      *
      * The claim is a compare-and-set rather than an argument about which of
-     * [awaitWritableOwningFd]'s two endings can follow the other: they are
-     * reached by different means — a cancellation, a thrown value — and nothing
-     * orders them. Closing a descriptor twice stops being a harmless repeat the
+     * [awaitWritableOwningFd]'s three endings can follow the other: they are
+     * reached by different means — a cancellation, a thrown value, a readiness
+     * the loop could not hand over — and nothing orders them. Closing a descriptor twice stops being a harmless repeat the
      * moment the kernel has handed the number to somebody else.
      *
      * On the loop because of what may still be queued for this fd; see
@@ -1277,8 +1280,10 @@ abstract class AbstractReadinessEventLoop :
      * The three places this loop parts with a waiter — readiness, a server
      * closing, the stop sweep — all deliver through the waiter's *own*
      * dispatcher, which this loop does not control: one backed by a pool shut
-     * down under it refuses the work, and an `Unconfined` waiter runs its
-     * continuation inline right here. The loop cannot retry (the same call
+     * down under it refuses the work. (An `Unconfined` waiter runs its
+     * continuation inline in this frame, which is why the delivery is made
+     * outside every lock — but a throw from that body belongs to the
+     * coroutine's own handler and never arrives here.) The loop cannot retry (the same call
      * meets the same refusal) and must not put the waiter back (the
      * continuation may already hold the answer, and a level-triggered interest
      * would then re-fire into `Already resumed` every turn). What is left is to
@@ -2114,8 +2119,10 @@ abstract class AbstractReadinessEventLoop :
                 // reachable source is not the waiting code but the hand-off to
                 // it: `resume` goes through the waiter's own dispatcher, which
                 // is the caller's to choose and may refuse the work (a pool
-                // shut down under it), and an Unconfined waiter runs its own
-                // continuation inline right here.
+                // shut down under it). Not the waiting code itself, even when
+                // an Unconfined waiter runs inline in this frame -- a throw
+                // from the resumed body is caught by the coroutine machinery
+                // and routed to its own handler, so it never reaches here.
                 //
                 // Nothing is taken back on the way out. The registration left
                 // the ledger at the pop above, so the fd cannot re-fire into
