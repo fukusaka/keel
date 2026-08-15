@@ -1076,11 +1076,12 @@ abstract class AbstractReadinessEventLoop :
      * descriptor twice is not a harmless repeat once the kernel has handed the
      * number to somebody else.
      *
-     * **The third is the loop's, not this frame's.** A readiness the loop cannot
-     * hand over — a dispatcher that refuses the resumption — ends this wait
-     * without resuming it and without cancelling it, so neither handler below
-     * runs and the waiter is already out of the ledger. The hook passed to
-     * [register] is the only thing left that knows this descriptor is owned.
+     * **The third is the loop's, not this frame's.** An answer the loop cannot
+     * hand over — a dispatcher that refuses the resumption, whether the answer
+     * is a readiness or the failure of the arm itself — ends this wait without
+     * resuming it and without cancelling it, so neither handler below runs and
+     * the waiter is already out of the ledger. The hook passed to [register] is
+     * the only thing left that knows this descriptor is owned.
      *
      * [unregister] runs on both paths too, and is documented as a no-op when the
      * node is already gone — which it is on the [submitArm] path, which removes
@@ -1128,14 +1129,15 @@ abstract class AbstractReadinessEventLoop :
             suspendCancellableCoroutine<Unit> { cont ->
                 val own = register(fd, Interest.WRITE, cont) {
                     // The third ending, and the one neither handler below can
-                    // reach: the loop had this waiter's readiness and its
-                    // dispatcher refused to take it. Nothing resumes into the
+                    // reach: the loop had this waiter's answer -- its readiness,
+                    // or the failure of the arm that was supposed to deliver it
+                    // -- and its dispatcher refused to take it. Nothing resumes into the
                     // `catch`, nothing cancels into the handler, and the
                     // registration is already gone -- so without this the
                     // descriptor stays open with no handle left to close it by,
                     // which is the leak this whole function exists to prevent.
                     // The one-shot claim makes it safe beside the other two.
-                    releaseOwnedFd(fd, logger, released, "connect readiness undeliverable")
+                    releaseOwnedFd(fd, logger, released, "connect answer undeliverable")
                 }
                 reg = own
                 cont.invokeOnCancellation {
