@@ -88,6 +88,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: a dispatcher refusal while answering a flush waiter no longer
+  ends the healthy connection nor skips its completion callback (#1060)
 - `engine-kqueue`, `engine-epoll`: a dispatcher that refuses a waiter's resumption no longer
   ends the event loop while it dispatches readiness or runs its stop sweep; every hand-off now
   reports the refusal and continues (#1059)

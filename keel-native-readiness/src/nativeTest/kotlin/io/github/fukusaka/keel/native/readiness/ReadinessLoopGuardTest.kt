@@ -546,21 +546,6 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
     }
 
     /**
-     * Refuses to take a resumed continuation back, the way a dispatcher backed
-     * by a shut-down executor does — the reachable shape of a resume that
-     * throws in the loop's frame.
-     */
-    private class RefusingDispatcher : CoroutineDispatcher() {
-        var attempts: Int = 0
-            private set
-
-        override fun dispatch(context: CoroutineContext, block: Runnable) {
-            attempts++
-            throw InjectedFault("dispatcher refused the resumed continuation")
-        }
-    }
-
-    /**
      * Runs the resumption inline and then throws -- the delivery lands, and
      * the refusal is bookkeeping after the fact. Nothing in a dispatcher's
      * contract forbids the shape.

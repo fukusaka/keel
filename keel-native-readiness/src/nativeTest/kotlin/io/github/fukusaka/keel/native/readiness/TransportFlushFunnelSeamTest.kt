@@ -8,8 +8,10 @@ import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import io.github.fukusaka.keel.testing.buf.PointerlessIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
@@ -18,18 +20,30 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Pins the flush funnel: whatever entry point runs the drain, a throw out of
- * it answers the caller parked in `awaitPendingFlush` — through `performFlush`
- * itself, so no entry point can forget the obligation — and the loop-driven
- * entries end the connection the same way readiness dispatch does.
+ * Pins the flush funnel and the waiter's answers. The funnel half: whatever
+ * entry point runs the drain, a throw out of it answers the caller parked in
+ * `awaitPendingFlush` — through `performFlush` itself, so no entry point can
+ * forget the obligation — and the loop-driven entries end the connection the
+ * same way readiness dispatch does. The answer half: the deliveries this
+ * file pins — drained success, deferred failure, loop-stop cancel, and the
+ * register's two reachable immediate arms, dispatched so the answer rides
+ * the waiter's own dispatcher — have a refusal reported as the transport's
+ * own rather than escaping into the frame that delivered; two of those
+ * refusal tests involve no drain at all. Outside that contract on purpose:
+ * the teardown's two staged cancels (carried to `close()`'s caller), and
+ * the answers no dispatcher can refuse because the caller has not suspended
+ * — the register's arms run inline on-loop, and the quiescent-loop cancel
+ * that answers before the register is ever dispatched.
  *
- * One failure route the seam cannot reach: a deferred FIN abandoned because
- * the drain failed while the loop was finishing. `isFinishing` answers from
- * the loop's own termination hand-off, which no double can reach — that
- * window belongs to the engines' real-loop stop tests.
+ * Two routes the seam cannot reach: a deferred FIN abandoned because the
+ * drain failed while the loop was finishing, and the register's
+ * finishing-loop arm. Both hang on `isFinishing`, which answers from the
+ * loop's own termination hand-off — no double can reach it; those windows
+ * belong to the engines' real-loop stop tests.
  *
  * Every test here drives loop-dispatched work or parks a real waiter, so each
  * is bounded by [withTimeout] (wall-clock: `runBlocking` builder, per the
@@ -402,6 +416,168 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             assertIs<InjectedFault>(waiter.await().exceptionOrNull(), "the deferred answer carries the failure")
 
             failing.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused resume of the drained waiter does not end the healthy connection`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
+            val transport = transport()
+            var completions = 0
+            transport.onFlushComplete = { completions++ }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            // A scope of its own, not this test's: the waiter's dispatcher
+            // refuses the resumption, so that coroutine can never complete.
+            val refusing = RefusingDispatcher()
+            var outcome: Result<Unit>? = null
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                outcome = runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the retry")
+            assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
+
+            // Write readiness delivers the retry and the drain SUCCEEDS; only
+            // the waiter's dispatcher refuses the news. The drain frame's
+            // containment ends connections over drain failures -- a refusal
+            // to hear of a success is not one, and must not reach it.
+            transport.onReady(Interest.WRITE)
+
+            assertEquals(1, refusing.attempts, "the seam must have reached the resume")
+            assertFalse(transport.hasFlushWaiter(), "the answer was taken even though its delivery was refused")
+            assertTrue(transport.isOpen, "a refused notification must not end a healthy connection")
+            assertEquals(1, completions, "onFlushComplete must still run after the refused resume")
+            assertNull(outcome, "nothing can reach the refused waiter")
+            assertTrue(
+                eventLoop.errors.any { it.contains("resuming the drained flush waiter for") },
+                "the refusal must be reported as the loop's own, got: ${eventLoop.errors}",
+            )
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `the stop sweep's refused cancel is reported and the read side is still told`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            fake.enqueueWrite(fd, WriteResult.WouldBlock)
+            val transport = transport()
+            var readClosed = false
+            transport.onReadClosed = { readClosed = true }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            val refusing = RefusingDispatcher()
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the sweep")
+
+            // The loop stops under a parked waiter whose dispatcher refuses
+            // the cancellation's resume-back. What arrives here is that
+            // refusal -- a cancellation handler that throws is taken by the
+            // coroutine machinery before this frame -- and it must not take
+            // the read-side notification with it.
+            transport.onLoopStopped()
+
+            assertEquals(1, refusing.attempts, "the seam must have reached the cancel's resumption")
+            assertFalse(transport.hasFlushWaiter(), "the sweep must take the answer even when refused")
+            assertTrue(readClosed, "the read-side notification must survive the refusal")
+            assertTrue(
+                eventLoop.errors.any { it.contains("cancelling the flush waiter for") },
+                "the refusal must be reported as the loop's own, got: ${eventLoop.errors}",
+            )
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused delivery of the drain failure is reported rather than lost in the deferred task`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            val refusing = RefusingDispatcher()
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the flush")
+
+            // The drain fails; the funnel defers the waiter's answer to a loop
+            // task, and that task's resume meets the refusing dispatcher.
+            assertFailsWith<InjectedFault> { transport.flush() }
+
+            assertEquals(1, refusing.attempts, "the deferred task must have reached the resume")
+            assertFalse(transport.hasFlushWaiter(), "the failure must take the answer even when refused")
+            assertTrue(
+                eventLoop.errors.any { it.contains("resuming the flush waiter with the drain failure for") },
+                "the refusal must be reported as the loop's own, got: ${eventLoop.errors}",
+            )
+            failing.releaseUnderlying()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused answer at the register's already-drained arm is reported rather than thrown at the loop`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Off-loop caller: the register Runnable is dispatched, so by the
+            // time it runs the caller has suspended and the immediate answer
+            // rides the waiter's own dispatcher, like any other hand-off.
+            eventLoop.close()
+            eventLoop = FakeLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
+            val transport = transport()
+
+            val refusing = RefusingDispatcher()
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+
+            // Nothing is pending, so the register answers with an immediate
+            // resume -- refused. The refusal must be reported as the
+            // transport's own, not left for the loop's generic task guard.
+            eventLoop.drainDispatched()
+
+            assertEquals(1, refusing.attempts, "the dispatched register must have reached the resume")
+            assertTrue(
+                eventLoop.errors.any { it.contains("resuming the already-drained flush waiter for") },
+                "the refusal must be reported as the transport's own, got: ${eventLoop.errors}",
+            )
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused answer at the register's closed-transport arm is reported rather than thrown at the loop`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            eventLoop.close()
+            eventLoop = FakeLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
+            val transport = transport()
+            transport.close()
+
+            // A caller that raced the close: its register is dispatched, and by
+            // the time it runs the transport is gone -- the cancel it is owed
+            // rides its dispatcher, which refuses. The third arm (a finishing
+            // loop) has the same guard but no seam to it: `isFinishing` answers
+            // from the loop's real termination hand-off, which no double
+            // reaches -- that window belongs to the engines' stop tests.
+            val refusing = RefusingDispatcher()
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            eventLoop.drainDispatched()
+
+            assertEquals(1, refusing.attempts, "the dispatched register must have reached the cancel")
+            assertTrue(
+                eventLoop.errors.any { it.contains("cancelling the flush waiter of a closed transport for") },
+                "the refusal must be reported as the transport's own, got: ${eventLoop.errors}",
+            )
             tracker.assertNoLeaks()
         }
     }
