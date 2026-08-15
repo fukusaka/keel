@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.testing.InjectedFault
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -9,6 +10,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.posix.AF_INET
+import platform.posix.F_GETFD
+import platform.posix.SOCK_STREAM
+import platform.posix.close
+import platform.posix.fcntl
+import platform.posix.socket
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
@@ -439,6 +446,102 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         }
     }
 
+    @Test
+    fun `an owning waiter registered through registerIf releases what it owns on a refused delivery`() {
+        val loop = FakeLoop()
+        val refusing = RefusingDispatcher()
+        var released = 0
+        CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                loop.registerOwningWaiterIf(WAITER_FD, Interest.WRITE, cont) { released++ }
+            }
+        }
+
+        // The other public registration entry: a waiter arriving here must not
+        // re-inherit the leak the register() entry closed.
+        loop.dispatchReadyFor(WAITER_FD, Interest.WRITE, eofFlag = false)
+
+        assertEquals(1, refusing.attempts, "the seam must have reached the resume")
+        assertEquals(1, released, "the undeliverable waiter's owned resource must be released")
+    }
+
+    @Test
+    fun `a waiter refused entry by closed ledgers is ended without the refusal escaping register`() {
+        val loop = FakeLoop()
+        loop.failRemainingWaiters() // sweeps nothing; closes the ledgers
+        val refusing = RefusingDispatcher()
+        var released = 0
+        var handle: CancellableContinuation<Unit>? = null
+        CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont -> handle = cont }
+        }
+
+        // A continuation that has ALREADY suspended: the shape the one in-tree
+        // caller never produces, and the reason the refused-entry cancel goes
+        // through the hand-off helper anyway -- this cancel consults the
+        // waiter's dispatcher, and the refusal must neither escape into this
+        // frame nor drop the hook.
+        loop.registerOwningWaiter(WAITER_FD, Interest.WRITE, checkNotNull(handle)) { released++ }
+
+        assertEquals(1, refusing.attempts, "the seam must have reached the cancel's resumption")
+        assertEquals(1, released, "the refused waiter's owned resource must be released")
+        assertTrue(
+            loop.errors.any { it.contains("while its caller carries on") },
+            "the report must name what carries on here, got: ${loop.errors}",
+        )
+    }
+
+    @Test
+    fun `a delivery that lands before its dispatcher throws leaves the descriptor with the winner`() {
+        val loop = FakeLoop()
+        // A real descriptor: the losing claimant would close it, and whether
+        // anybody did is the assertion.
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        assertTrue(fd >= 0, "could not open a socket to wait on")
+        val delivering = DeliverThenRefuseDispatcher()
+        var outcome: Result<Unit>? = null
+        CoroutineScope(delivering).launch(start = CoroutineStart.UNDISPATCHED) {
+            outcome = runCatching { loop.awaitOwnedWrite(fd, RecordingLogger()) }
+        }
+
+        // dispatch runs the resumption inline -- the wait returns and claims
+        // the one-shot -- and then throws. The loop judges the delivery
+        // refused and runs the release hook, which must lose the claim: the
+        // caller believed the wait succeeded and owns the descriptor.
+        loop.dispatchReadyFor(fd, Interest.WRITE, eofFlag = false)
+
+        assertEquals(1, delivering.attempts, "the seam must have reached the dispatcher")
+        assertTrue(outcome?.isSuccess == true, "the delivered wait must report success, got: $outcome")
+        assertTrue(fcntl(fd, F_GETFD) != -1, "the winner's descriptor must not be closed under it")
+        close(fd)
+    }
+
+    @Test
+    fun `a delivery enqueued after its dispatcher threw finds its descriptor released and says so`() {
+        val loop = FakeLoop()
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        assertTrue(fd >= 0, "could not open a socket to wait on")
+        val enqueueing = EnqueueThenRefuseDispatcher()
+        var outcome: Result<Unit>? = null
+        CoroutineScope(enqueueing).launch(start = CoroutineStart.UNDISPATCHED) {
+            outcome = runCatching { loop.awaitOwnedWrite(fd, RecordingLogger()) }
+        }
+
+        // dispatch keeps the resumption and throws: the loop judges the
+        // delivery refused, and the hook wins the claim and releases. When the
+        // kept resumption finally runs, the wait must not hand back a number
+        // that is no longer this connect's -- it lost the claim, and says so.
+        loop.dispatchReadyFor(fd, Interest.WRITE, eofFlag = false)
+        assertEquals(-1, fcntl(fd, F_GETFD), "the hook must have released the descriptor")
+        enqueueing.deliverKept()
+
+        assertTrue(outcome?.isFailure == true, "the losing wait must not report success, got: $outcome")
+        assertTrue(
+            outcome?.exceptionOrNull()?.message?.contains("released it as undeliverable") == true,
+            "the failure must say the loop had released the descriptor, got: ${outcome?.exceptionOrNull()}",
+        )
+    }
+
     /**
      * Refuses to take a resumed continuation back, the way a dispatcher backed
      * by a shut-down executor does — the reachable shape of a resume that
@@ -451,6 +554,42 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         override fun dispatch(context: CoroutineContext, block: Runnable) {
             attempts++
             throw InjectedFault("dispatcher refused the resumed continuation")
+        }
+    }
+
+    /**
+     * Runs the resumption inline and then throws -- the delivery lands, and
+     * the refusal is bookkeeping after the fact. Nothing in a dispatcher's
+     * contract forbids the shape.
+     */
+    private class DeliverThenRefuseDispatcher : CoroutineDispatcher() {
+        var attempts: Int = 0
+            private set
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            attempts++
+            block.run()
+            throw InjectedFault("dispatcher threw after delivering")
+        }
+    }
+
+    /**
+     * Keeps the resumption and throws -- the delivery is pending, not lost,
+     * when the loop's frame sees the refusal. [deliverKept] runs it the way a
+     * half-shut-down executor's surviving worker would.
+     */
+    private class EnqueueThenRefuseDispatcher : CoroutineDispatcher() {
+        private val kept = mutableListOf<Runnable>()
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            kept.add(block)
+            throw InjectedFault("dispatcher threw after enqueueing")
+        }
+
+        fun deliverKept() {
+            val batch = kept.toList()
+            kept.clear()
+            for (block in batch) block.run()
         }
     }
 

@@ -210,13 +210,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
 
             val err = failArm
             if (err != 0) {
-                withRegLock { removeRegistration(key, reg) }
-                // Through the helper, as both engines do: the arm failure is a
-                // hand-off like any other, and a test asserting on it must see
-                // the shape production has.
-                deliverOrRelease(reg, "failing the waiter for, while the loop goes on arming others,") {
-                    cont.resumeWith(Result.failure(IllegalStateException("arm(fd=$fd) failed: errno=$err")))
-                }
+                // The very method both engines call: the arm-failure half of
+                // submitArm lives on the base now, so this drives production
+                // code rather than imitating its shape.
+                failUnarmedWaiter(key, reg, IllegalStateException("arm(fd=$fd) failed: errno=$err"))
                 return
             }
             armed.add(fd to interest)
@@ -236,6 +233,18 @@ internal abstract class AbstractReadinessEventLoopFixture {
             cont: CancellableContinuation<Unit>,
             onUndeliverable: () -> Unit,
         ) = register(fd, interest, cont, onUndeliverable)
+
+        /** [registerIf] with an owning waiter's hook, the shape the accept-path entry now permits. */
+        fun registerOwningWaiterIf(
+            fd: Int,
+            interest: Interest,
+            cont: CancellableContinuation<Unit>,
+            onUndeliverable: () -> Unit,
+        ) = registerIf(fd, interest, cont, onUndeliverable = onUndeliverable, stillWanted = { true })
+
+        /** [awaitWritableOwningFd] is protected on the base; this is the subclass reaching it. */
+        suspend fun awaitOwnedWrite(fd: Int, logger: Logger) =
+            awaitWritableOwningFd(fd, logger)
 
         /** `registerCallback` is public on the base; named here for symmetry with the waiter helpers. */
         fun registerCallbackFor(fd: Int, interest: Interest, listener: FdReadyListener) =
@@ -476,7 +485,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * its continuation is resumed — normally, or with the failure it was given.
      */
     protected class Waiter(
-        val reg: AbstractReadinessEventLoop.Registration,
+        val reg: Registration,
         val resumed: CompletableDeferred<Unit>,
     )
 

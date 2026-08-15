@@ -168,7 +168,7 @@ internal class ReadinessLoopLedgerTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `registerIf appends and arms when wanted`() = loopTest { loop ->
-        val accepted = CompletableDeferred<AbstractReadinessEventLoop.Registration?>()
+        val accepted = CompletableDeferred<Registration?>()
         launch {
             suspendCancellableCoroutine { cont ->
                 accepted.complete(loop.registerIf(FD, Interest.READ, cont) { true })
@@ -182,7 +182,7 @@ internal class ReadinessLoopLedgerTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `registerIf declines without appending or arming`() = loopTest { loop ->
-        val declined = CompletableDeferred<AbstractReadinessEventLoop.Registration?>()
+        val declined = CompletableDeferred<Registration?>()
         launch {
             suspendCancellableCoroutine { cont ->
                 declined.complete(loop.registerIf(FD, Interest.READ, cont) { false })
