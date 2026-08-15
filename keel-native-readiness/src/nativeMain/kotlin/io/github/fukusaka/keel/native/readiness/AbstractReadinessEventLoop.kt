@@ -610,17 +610,16 @@ abstract class AbstractReadinessEventLoop :
     protected abstract fun wakeup()
 
     /**
-     * Issues the arming syscall for [fd] + [interest] on the loop thread, and on
-     * failure removes [reg] from the chain at [key] and resumes [cont] with the
-     * error. Called only from the loop thread.
+     * Issues the arming syscall for [fd] + [interest] on the loop thread, and
+     * hands a failure to [failUnarmedWaiter]. Called only from the loop thread.
+     *
+     * An override does not resume [reg]'s waiter itself: the failure half is
+     * the part that does not differ, so it lives on the base, and what a
+     * refused resumption then costs is decided in one place. That also means
+     * an override never resumes the waiter *unconditionally* — a dispatcher
+     * that refuses leaves it suspended, with whatever it owned released.
      */
-    protected abstract fun submitArm(
-        fd: Int,
-        interest: Interest,
-        key: Long,
-        reg: Registration,
-        cont: CancellableContinuation<Unit>,
-    )
+    protected abstract fun submitArm(fd: Int, interest: Interest, key: Long, reg: Registration)
 
     /**
      * Takes [fd]'s [interest] back from the kernel.
@@ -949,7 +948,7 @@ abstract class AbstractReadinessEventLoop :
             }
         }
         if (!appended) return null
-        submitOnLoop { submitArm(fd, interest, key, newReg, cont) }
+        submitOnLoop { submitArm(fd, interest, key, newReg) }
         return newReg
     }
 
@@ -1021,7 +1020,7 @@ abstract class AbstractReadinessEventLoop :
             return newReg
         }
 
-        submitOnLoop { submitArm(fd, interest, key, newReg, cont) }
+        submitOnLoop { submitArm(fd, interest, key, newReg) }
         return newReg
     }
 
@@ -1043,14 +1042,17 @@ abstract class AbstractReadinessEventLoop :
      * runs inline inside [register] and fails *before* the handler is even
      * installed.
      *
-     * **The one-shot is the mechanism, not a belief about ordering.** The three
-     * release paths are reached by different means — one by cancellation, one by
-     * a thrown value, one by the loop finding this waiter undeliverable — and
-     * nothing here orders them against each other. Rather
-     * than argue that a run of one excludes the others, the compare-and-set makes
-     * that true: whichever arrives first closes, the rest return. Closing a
-     * descriptor twice is not a harmless repeat once the kernel has handed the
-     * number to somebody else.
+     * **The one-shot is the mechanism, not a belief about ordering.** The four
+     * claimants are reached by different means — one by cancellation, one by a
+     * thrown value, one by the loop finding this waiter undeliverable, and the
+     * normal return — and nothing here orders them against each other. Rather
+     * than argue that a run of one excludes the others, the compare-and-set
+     * makes that true: whichever arrives first takes the descriptor, and the
+     * rest return without touching it. The first three release what they take;
+     * the normal return keeps it, which is the point of claiming — a caller
+     * that resumed cannot be handed a number the loop has already closed.
+     * Closing a descriptor twice is not a harmless repeat once the kernel has
+     * handed the number to somebody else.
      *
      * **The third is the loop's, not this frame's.** An answer the loop cannot
      * hand over — a dispatcher that refuses the resumption, whether the answer
@@ -1059,8 +1061,8 @@ abstract class AbstractReadinessEventLoop :
      * sweep the cancellation handler below has run first, a cancelled
      * continuation running its handlers before the resumption its dispatcher
      * then refuses; on the other routes neither handler runs. Either way the
-     * hook passed to [register] completes the release — it and the handler
-     * share the one claim below, which admits one of them.
+     * hook passed to [register] completes the release — it, the handler and
+     * the normal return share the one claim below, which admits exactly one.
      *
      * [unregister] runs on the two that end in this frame, and is a no-op when the
      * node is already gone — which it is on the [submitArm] path, which removes
@@ -1299,9 +1301,9 @@ abstract class AbstractReadinessEventLoop :
      * Hands [delivery] to a waiter that has already left the ledger, and
      * releases whatever it owned if that fails.
      *
-     * The four places this loop answers a waiter it holds registered —
-     * readiness, a server closing, the stop sweep, and an arm that failed —
-     * all deliver through the waiter's *own*
+     * The five places this loop answers a waiter — readiness, a server
+     * closing, the stop sweep, an arm that failed, and a registration the
+     * closed ledgers refuse — all deliver through the waiter's *own*
      * dispatcher, which this loop does not control: one backed by a pool shut
      * down under it refuses the work. (An `Unconfined` waiter runs its
      * continuation inline in this frame, which is why the delivery is made
@@ -1322,8 +1324,11 @@ abstract class AbstractReadinessEventLoop :
      * failed arm reach here inside a guarded frame — a dispatched task, or
      * whatever loop frame ran the close inline — whose guard swallows the
      * throw: no death, but the waiter is lost and what it owns leaks, with
-     * nothing naming either. Every one of those endings is why each hand-off
-     * routes here rather than only the fatal ones.
+     * nothing naming either. The fifth caller is not a loop frame at all: a
+     * registration refused by closed ledgers is answered in the registering
+     * caller's own `suspendCancellableCoroutine` block, where an escape would
+     * surface as that caller's failure. Every one of those endings is why each
+     * hand-off routes here rather than only the fatal ones.
      *
      * [what] names the delivery *and* what carries on without it — the sites
      * differ there, and an operator reading "the loop continues" from the stop
@@ -1333,10 +1338,13 @@ abstract class AbstractReadinessEventLoop :
      * [failUnarmedWaiter], and that hand-off can be refused like any other.
      * Not `inline` — a public-API inline body cannot reach the non-public
      * state this needs. The readiness dispatch calls this once per ready fd,
-     * so [delivery] takes the [Registration] as its argument: the hot site's
+     * so [delivery] takes the [Registration] as its argument: the readiness
      * lambda captures nothing and compiles to a singleton, and the per-event
-     * cost of the guard is one call, not one allocation. The cold sites
-     * (close, sweep, arm failure) may capture freely.
+     * cost of the guard is one call, not one allocation. The sweep's lambda
+     * came out capture-free too; the ones that do capture — the server close
+     * and the two entry-side sites — are reached once per close, per failed
+     * arm and per refused registration, where an allocation is not worth
+     * shaping the code around.
      */
     @Suppress("TooGenericExceptionCaught")
     protected fun deliverOrRelease(reg: Registration, what: String, delivery: (Registration) -> Unit) {

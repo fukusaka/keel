@@ -26,7 +26,6 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import platform.linux.EPOLLERR
 import platform.linux.EPOLLHUP
@@ -326,17 +325,11 @@ internal class EpollEventLoop(
      * EventLoop-thread submission for the suspend path. A failure is handed to
      * the base's `failUnarmedWaiter` — the half of this override that does not
      * differ between engines — which removes the [Registration] from the chain
-     * and fails [cont] through the guarded hand-off. On a dispatcher that
-     * refuses that resume, the waiter stays suspended and what it owned is
-     * released — the same contract as `KqueueEventLoop.submitArm`.
+     * and fails its waiter through the guarded hand-off — the same base call
+     * `KqueueEventLoop.submitArm` makes, so both engines answer a failed arm
+     * the same way, refusal ending included.
      */
-    override fun submitArm(
-        fd: Int,
-        interest: Interest,
-        key: Long,
-        reg: Registration,
-        cont: CancellableContinuation<Unit>,
-    ) {
+    override fun submitArm(fd: Int, interest: Interest, key: Long, reg: Registration) {
         assertInEventLoop("submitArm")
         val events = when (interest) {
             Interest.READ -> EPOLLIN

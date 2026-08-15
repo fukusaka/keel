@@ -26,7 +26,6 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
@@ -297,15 +296,9 @@ internal class KqueueEventLoop(
      * [key] is computed by the caller (`register()`) so the error path
      * does not recompute `registrationKey(fd, interest)`.
      *
-     * @param reg The Registration to remove on submit failure.
+     * @param reg The Registration handed to the base's failure path.
      */
-    override fun submitArm(
-        fd: Int,
-        interest: Interest,
-        key: Long,
-        reg: Registration,
-        cont: CancellableContinuation<Unit>,
-    ) {
+    override fun submitArm(fd: Int, interest: Interest, key: Long, reg: Registration) {
         assertInEventLoop("submitArm")
         // The arm is dispatched after the chain append releases the lock, so a
         // close() can queue its teardown in between: cancelAll then resumes

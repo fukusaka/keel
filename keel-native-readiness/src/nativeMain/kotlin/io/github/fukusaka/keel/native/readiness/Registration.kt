@@ -13,10 +13,17 @@ import kotlinx.coroutines.CancellableContinuation
  * **Mutability**: [next] / [tail] are mutated only under the registration
  * mutex. No `@Volatile` because all access is lock-guarded.
  *
+ * The opt-in marker is on this declaration, not inherited from a container.
+ * It was a nested class of [AbstractReadinessEventLoop] until the file split,
+ * where the class-level marker gated naming it; a top-level class keeps that
+ * gate only by carrying its own — the same reasoning
+ * [AbstractReadinessEventLoop.reportRegLockFailure] records for its member.
+ *
  * @param fd The file descriptor to watch.
  * @param interest What the waiter is waiting for.
  * @param continuation Resumed when the fd becomes ready.
  */
+@InternalReadinessEngineApi
 class Registration internal constructor(
     val fd: Int,
     val interest: Interest,
