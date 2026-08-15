@@ -108,12 +108,15 @@ import kotlin.time.TimeSource
  */
 @OptIn(ExperimentalForeignApi::class)
 @InternalReadinessEngineApi
-// The class sits just under detekt's LargeClass threshold: moving Registration
-// out bought the room back, so no suppression is carried. The consolidation
-// itself is the design -- both engines' loop state and its dispatch, ledger and
-// teardown paths live here so a bug in any of them is fixed once, and the file
-// header carries that account. The next addition will trip the rule; the answer
-// then is the next extraction, which is tracked design work, not a suppression.
+// The class sits just under detekt's LargeClass threshold -- measured, three
+// logical lines of headroom -- so no suppression is carried. It did trip the
+// rule mid-branch and was suppressed; what bought the room back was dropping
+// submitArm's dead parameter, not the Registration extraction, which recovered
+// less than the work here had spent. The consolidation itself is the design --
+// both engines' loop state and its dispatch, ledger and teardown paths live
+// here so a bug in any of them is fixed once, and the file header carries that
+// account. When an addition does trip the rule, the answer is the next
+// extraction, which is tracked design work, not a suppression.
 abstract class AbstractReadinessEventLoop :
     CoroutineDispatcher(),
     ReadinessEventLoopLifecycle,

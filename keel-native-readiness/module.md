@@ -41,9 +41,9 @@ to measure, not before.
 
 ## Opt-in
 
-Seven types are behind `@InternalReadinessEngineApi`: the loop, its group, the
-engine base, the transport, the two servers, and the lifecycle the loop
-implements. Twelve members are too. The engines' production code
+Eight types are behind `@InternalReadinessEngineApi`: the loop, its group, the
+engine base, the transport, the two servers, the lifecycle the loop implements,
+and the registration a waiter holds. Twelve members are too. The engines' production code
 reaches exactly two of them — the loop's `cleanupFd` and the engine's thread
 resolution. The other ten are used inside this module, or are probes the
 engines' seam tests ask about a connection they have just torn down, or both.

@@ -1359,8 +1359,9 @@ class ReadinessIoTransport(
      * Returns immediately if no async flush is pending (`pendingWrites` is empty
      * on the EventLoop thread when the lambda executes). Dispatches the check
      * and registration to the EventLoop so they are atomic with [onWritable]:
-     * if the flush already completed before the lambda runs, [cont] is resumed
-     * immediately rather than stored, avoiding a TOCTOU deadlock.
+     * if the flush already completed before the lambda runs, the caller's
+     * continuation is resumed immediately rather than stored, avoiding a TOCTOU
+     * deadlock.
      */
     override suspend fun awaitPendingFlush() {
         suspendCancellableCoroutine { cont ->
