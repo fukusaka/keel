@@ -88,6 +88,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: a queue refilled mid-drain by the water-mark callback now
+  re-arms write readiness rather than waiting for the next app flush (#1061)
+- `engine-kqueue`, `engine-epoll`: a direct flush that drains everything now answers a waiter
+  parked in `awaitFlushComplete` (#1061)
 - `engine-kqueue`, `engine-epoll`: a dispatcher refusal while answering a flush waiter no longer
   ends the healthy connection nor skips its completion callback (#1060)
 - `engine-kqueue`, `engine-epoll`: a dispatcher that refuses a waiter's resumption no longer
