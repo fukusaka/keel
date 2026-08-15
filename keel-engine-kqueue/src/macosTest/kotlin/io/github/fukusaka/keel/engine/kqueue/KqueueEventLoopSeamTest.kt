@@ -492,6 +492,17 @@ class KqueueEventLoopSeamTest {
      * the wait throws. A deadline rather than a bare spin: a fix that stopped
      * releasing must fail this test, not hang it.
      */
+    private fun awaitFdClosed(fd: Int) {
+        val deadline = TimeSource.Monotonic.markNow() + FD_CLOSE_BUDGET
+        while (fcntl(fd, F_GETFD) != -1) {
+            assertTrue(
+                deadline.hasNotPassedNow(),
+                "the fd the waiter owned was still open $FD_CLOSE_BUDGET after the wait ended",
+            )
+            usleep(FD_CLOSE_POLL_US)
+        }
+    }
+
     /**
      * Refuses every resumption handed to it, the way a dispatcher backed by a
      * pool shut down under the waiter does. [attempts] is atomic because the
@@ -504,17 +515,6 @@ class KqueueEventLoopSeamTest {
         override fun dispatch(context: CoroutineContext, block: Runnable) {
             attempts.incrementAndGet()
             throw IllegalStateException("dispatcher refused the resumed continuation")
-        }
-    }
-
-    private fun awaitFdClosed(fd: Int) {
-        val deadline = TimeSource.Monotonic.markNow() + FD_CLOSE_BUDGET
-        while (fcntl(fd, F_GETFD) != -1) {
-            assertTrue(
-                deadline.hasNotPassedNow(),
-                "the fd the waiter owned was still open $FD_CLOSE_BUDGET after the wait ended",
-            )
-            usleep(FD_CLOSE_POLL_US)
         }
     }
 
