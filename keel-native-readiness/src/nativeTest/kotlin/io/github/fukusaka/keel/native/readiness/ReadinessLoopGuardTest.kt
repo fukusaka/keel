@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.testing.InjectedFault
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -14,6 +15,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -346,9 +348,11 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         loop.cancelAll(WAITER_FD, Interest.READ, InjectedFault("server closing"))
 
         assertEquals(1, refusing.attempts, "the seam must have reached the refusing waiter")
-        // By message, not just by type: the injected cause and the refusal the
-        // dispatcher throws are both InjectedFault, so a type-only assertion
-        // would accept the sibling being failed with the wrong one.
+        // By message: the type alone says less than it looks like it does.
+        // The refusal the dispatcher throws is a DispatchException wrapping an
+        // InjectedFault, so a type-only assertion does reject it -- but it
+        // equally accepts any other InjectedFault, and the cause this close
+        // hands out is the one thing worth naming.
         assertEquals(
             "server closing",
             (sibling as? InjectedFault)?.message,
@@ -356,6 +360,36 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         )
         assertTrue(
             loop.errors.any { it.contains("while the server closes") },
+            "the report must name what carries on here, got: ${loop.errors}",
+        )
+    }
+
+    @Test
+    fun `a refusing waiter does not strand the ones the stop sweep still has to end`() {
+        val loop = FakeLoop()
+        val refusing = RefusingDispatcher()
+        // Registered but never armed, so the sweep is what ends them. Head of
+        // the chain refuses; the sibling behind it must still be cancelled.
+        CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                loop.registerWaiter(WAITER_FD, Interest.READ, cont)
+            }
+        }
+        var sibling: Throwable? = null
+        CoroutineScope(Dispatchers.Unconfined).launch(start = CoroutineStart.UNDISPATCHED) {
+            runCatching {
+                suspendCancellableCoroutine { cont ->
+                    loop.registerWaiter(WAITER_FD, Interest.READ, cont)
+                }
+            }.onFailure { sibling = it }
+        }
+
+        loop.failRemainingWaiters()
+
+        assertEquals(1, refusing.attempts, "the seam must have reached the refusing waiter")
+        assertIs<CancellationException>(sibling, "the sibling behind the refusal must still be ended")
+        assertTrue(
+            loop.errors.any { it.contains("while the loop stops") },
             "the report must name what carries on here, got: ${loop.errors}",
         )
     }
