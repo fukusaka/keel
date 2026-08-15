@@ -1037,18 +1037,19 @@ abstract class AbstractReadinessEventLoop :
             // produced. The returned [Registration] was never appended, so the
             // caller's `invokeOnCancellation { unregister(reg) }` is a no-op and
             // the rest of its handler -- closing the fd it owns -- still runs.
-            // Guarded on its own reason, not the sweep's: the continuation has
-            // not suspended yet, so the dispatcher the sweep guards against is
-            // never consulted -- `invokeOnCancellation`, installed a line later
-            // on an already-cancelled continuation, runs inline instead. What
-            // is left to guard is that handler, which is the caller's code.
-            try {
-                cont.cancel(
-                    CancellationException("EventLoop stopped before fd=$fd could register for $interest"),
-                )
-            } catch (t: Throwable) {
-                logger.warn(t) { "waiter's cancellation threw while the EventLoop was stopped" }
-            }
+            // Unguarded, unlike the sweep's identical call, because nothing
+            // here can throw: the continuation has not suspended, so no
+            // dispatcher is consulted -- and no handler is installed yet, the
+            // caller's `invokeOnCancellation` coming only after this returns.
+            // That handler then runs inline at its own install site, in the
+            // caller's frame; if it throws there, the coroutine machinery
+            // takes it before this frame could have -- measured, a catch here
+            // never sees it. This also runs on the registering caller's
+            // thread, not the loop's, so there is no pthread entry below to
+            // protect.
+            cont.cancel(
+                CancellationException("EventLoop stopped before fd=$fd could register for $interest"),
+            )
             return newReg
         }
 
@@ -1085,10 +1086,13 @@ abstract class AbstractReadinessEventLoop :
      *
      * **The third is the loop's, not this frame's.** An answer the loop cannot
      * hand over — a dispatcher that refuses the resumption, whether the answer
-     * is a readiness or the failure of the arm itself — ends this wait without
-     * resuming it and without cancelling it, so neither handler below runs and
-     * the waiter is already out of the ledger. The hook passed to [register] is
-     * the only thing left that knows this descriptor is owned.
+     * is a readiness, a failed arm, or the stop sweep's cancellation — never
+     * reaches this frame, and the waiter is already out of the ledger. On the
+     * sweep the cancellation handler below has run first, a cancelled
+     * continuation running its handlers before the resumption its dispatcher
+     * then refuses; on the other routes neither handler runs. Either way the
+     * hook passed to [register] completes the release — it and the handler
+     * share the one claim below, which admits one of them.
      *
      * [unregister] runs on the two that end in this frame, and is a no-op when the
      * node is already gone — which it is on the [submitArm] path, which removes
@@ -1301,8 +1305,14 @@ abstract class AbstractReadinessEventLoop :
      * report it and to run whatever the waiter registered for exactly this
      * ending — see [Registration.onUndeliverable].
      *
-     * Both calls are guarded: an escape from this frame ends the loop body and
-     * the `pthread` entry above it, which catches nothing.
+     * Both calls are guarded. What an escape would cost differs by site: the
+     * readiness dispatch and the stop sweep run directly under the loop body
+     * and the `pthread` entry, which catches nothing, so there an escape ends
+     * the process. The server close and the failed arm arrive as dispatched
+     * tasks, whose per-task guard would swallow the throw — no death, but the
+     * waiter is lost and what it owns leaks, with nothing naming either. Both
+     * endings are why every hand-off routes here rather than only the fatal
+     * ones.
      *
      * [what] names the delivery *and* what carries on without it — the sites
      * differ there, and an operator reading "the loop continues" from the stop
