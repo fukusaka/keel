@@ -695,7 +695,17 @@ class ReadinessIoTransport(
             // may make per connection, so blocking it would expose every such
             // caller to a wait that runs application teardown. The mid-shutdown
             // window keeps the dispatch, and the final drain still runs it.
-            else -> eventLoop.dispatch(EmptyCoroutineContext, Runnable { halfCloseAndReport() })
+            // Contained like the tick: this Runnable is loop-driven work on the
+            // connection with only the task guard above it, and under the
+            // coalescing opt-out the half-close drains synchronously — a drain
+            // failure here used to be swallowed with the connection left open
+            // and its queue poisoned. The inline arm above is different on
+            // purpose: its caller is on the loop, and the pipeline's error
+            // path owns the throw there, like a direct flush().
+            else -> eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable { containReadinessFailure(WHAT_HALF_CLOSE) { halfCloseAndReport() } },
+            )
         }
     }
 
@@ -772,9 +782,12 @@ class ReadinessIoTransport(
      *
      * What the funnel deliberately does **not** do is end the connection: the
      * loop-driven entries (the coalesced tick, [onWritable], the register's
-     * short-circuit) wrap it in [containReadinessFailure] and decide that; a
-     * direct `flush()` caller gets the throw and the pipeline's error path
-     * decides instead.
+     * short-circuit, the dispatched half-close) wrap it in
+     * [containReadinessFailure] and decide that; a direct `flush()` caller —
+     * including an on-loop `shutdownOutput()` — gets the throw and the
+     * pipeline's error path decides instead. The teardown's deferred drain is
+     * the remaining entry: there the stages carry the failure, and the waiter
+     * is answered by the close's own cancellation (see [failFlushWaiter]).
      */
     @Suppress("TooGenericExceptionCaught")
     private fun performFlush(): Boolean {
@@ -806,9 +819,16 @@ class ReadinessIoTransport(
      * of `awaitFlushComplete` should see that failure, not a cancellation. A
      * throw from the resume is attached to [drainFailure] rather than allowed
      * to displace it.
+     *
+     * **Declines once the transport is closing**: the one drain that runs with
+     * [opened] false is the teardown's deferred flush, and there the wait ends
+     * because of the close, not because of the drain — the teardown's own
+     * waiter stage delivers the cancellation the close path has always
+     * promised, and answering here first would replace it with a raw failure.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun failFlushWaiter(drainFailure: Throwable) {
+        if (!opened) return
         val cont = flushContinuation ?: return
         flushContinuation = null
         try {
@@ -1279,7 +1299,11 @@ class ReadinessIoTransport(
                         // participants, in which case onLoopStopped has already
                         // been and gone and nothing is left to end the wait.
                         // Storing here would reproduce the exact hang this
-                        // change exists to remove.
+                        // change exists to remove. Checked ahead of the
+                        // short-circuit too, which a still-queued tick may yet
+                        // drain in the sweep's final pass: cancellation is the
+                        // honest answer for a wait racing the wind-down, even
+                        // when those bytes go out moments later.
                         if (eventLoop.isFinishing()) {
                             cont.cancel(stoppedLoopFlushCause())
                             return@Runnable
@@ -1431,5 +1455,6 @@ class ReadinessIoTransport(
         const val WHAT_WRITE_READINESS = "readiness for WRITE"
         const val WHAT_PEER_CLOSE = "the peer close"
         const val WHAT_DEFERRED_FLUSH = "the deferred flush"
+        const val WHAT_HALF_CLOSE = "the dispatched half-close"
     }
 }
