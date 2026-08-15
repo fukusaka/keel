@@ -1155,8 +1155,9 @@ abstract class AbstractReadinessEventLoop :
      *
      * The claim is a compare-and-set rather than an argument about which of
      * [awaitWritableOwningFd]'s three endings can follow the other: they are
-     * reached by different means — a cancellation, a thrown value, a readiness
-     * the loop could not hand over — and nothing orders them. Closing a descriptor twice stops being a harmless repeat the
+     * reached by different means — a cancellation, a thrown value (whether the
+     * wait's own or an arm that failed), an answer the loop could not hand
+     * over — and nothing orders them. Closing a descriptor twice stops being a harmless repeat the
      * moment the kernel has handed the number to somebody else.
      *
      * On the loop because of what may still be queued for this fd; see
@@ -1277,8 +1278,9 @@ abstract class AbstractReadinessEventLoop :
      * Hands [delivery] to a waiter that has already left the ledger, and
      * releases whatever it owned if that fails.
      *
-     * The three places this loop parts with a waiter — readiness, a server
-     * closing, the stop sweep — all deliver through the waiter's *own*
+     * The four places this loop parts with a waiter — readiness, a server
+     * closing, the stop sweep, and an arm that failed — all deliver through the
+     * waiter's *own*
      * dispatcher, which this loop does not control: one backed by a pool shut
      * down under it refuses the work. (An `Unconfined` waiter runs its
      * continuation inline in this frame, which is why the delivery is made
@@ -1293,12 +1295,18 @@ abstract class AbstractReadinessEventLoop :
      * Both calls are guarded: an escape from this frame ends the loop body and
      * the `pthread` entry above it, which catches nothing.
      *
-     * [what] names the delivery *and* what carries on without it — the three
-     * sites differ there, and an operator reading "the loop continues" from the
-     * stop sweep would be reading the one thing that is not true of it.
+     * [what] names the delivery *and* what carries on without it — the sites
+     * differ there, and an operator reading "the loop continues" from the stop
+     * sweep would be reading the one thing that is not true of it.
+     *
+     * `protected` because the fourth site is a subclass's: the engines resume a
+     * waiter with its own arming failure, and that hand-off can be refused like
+     * any other. Not `inline` — a public-API inline body cannot reach the
+     * non-public state this needs, and every call here is a hand-off, never a
+     * per-event step.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun deliverOrRelease(reg: Registration, what: String, delivery: () -> Unit) {
+    protected fun deliverOrRelease(reg: Registration, what: String, delivery: () -> Unit) {
         try {
             delivery()
         } catch (deliveryFailure: Throwable) {
@@ -1541,11 +1549,13 @@ abstract class AbstractReadinessEventLoop :
         // one runs user code directly -- through onLoopStopped, a transport
         // teardown and the pipeline behind it -- and one that throws must not
         // strand the rest. The waiter one does not: a cancellation handler that
-        // throws is contained by the coroutine machinery and never arrives
-        // here. What arrives is the same thing every hand-off in this class can
-        // meet -- a dispatcher refusing to take the cancellation back -- and it
-        // must not escape a pthread entry point that has nothing above it to
-        // catch.
+        // throws is taken by the coroutine machinery before this frame ever
+        // sees it (where it goes from there is that coroutine's business, and
+        // on this platform an unhandled one ends the process -- not something
+        // a guard here could have caught either way). What does arrive is the
+        // same thing every hand-off in this class can meet -- a dispatcher
+        // refusing to take the cancellation back -- and it must not escape a
+        // pthread entry point that has nothing above it to catch.
         for (reg in stranded) {
             deliverOrRelease(reg, "cancelling the stranded waiter for, while the loop stops,") {
                 reg.continuation.cancel(

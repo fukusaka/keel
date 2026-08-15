@@ -320,9 +320,16 @@ internal class KqueueEventLoop(
         }
         if (kevErr != 0) {
             withRegLock { removeRegistration(key, reg) }
-            cont.resumeWithException(
-                IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"),
-            )
+            // Through the base's hand-off helper, like every other place a
+            // waiter leaves the ledger: this resume goes through the waiter's
+            // own dispatcher too, and a refusal here would leave a waiter
+            // nothing can reach -- on the connect path, holding a descriptor
+            // whose own release paths cannot run either.
+            deliverOrRelease(reg, "failing the waiter for, after its arm could not be made,") {
+                cont.resumeWithException(
+                    IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"),
+                )
+            }
         }
     }
 
