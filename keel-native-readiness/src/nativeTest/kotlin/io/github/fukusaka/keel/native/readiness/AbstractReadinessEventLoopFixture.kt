@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellableContinuation
@@ -191,15 +192,27 @@ internal abstract class AbstractReadinessEventLoopFixture {
         /**
          * Stands in for the engines' `drainTasks`, including its shape: it
          * loops until the queue is empty, because a task that runs here can
-         * dispatch another one.
+         * dispatch another one, and it guards each task the way the
+         * production drain does — a throw is recorded at WARN and the batch
+         * continues. Without that guard a task's escape rides into the
+         * test's own `runBlocking` machinery and aborts the harness, which
+         * turns "the fake reported nothing" into an unreadable crash instead
+         * of a failed assertion.
          */
         override fun drainTasks() = drainDispatched()
 
+        @Suppress("TooGenericExceptionCaught")
         fun drainDispatched() {
             while (pending.isNotEmpty()) {
                 val batch = pending.toList()
                 pending.clear()
-                for (block in batch) block.run()
+                for (block in batch) {
+                    try {
+                        block.run()
+                    } catch (t: Throwable) {
+                        logger.warn(t) { "dispatched task threw on the EventLoop" }
+                    }
+                }
             }
         }
 
@@ -297,23 +310,6 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * another level is invisible and an assertion on an empty list keeps passing
      * when a line's severity changes.
      */
-    /**
-     * Refuses to take a resumed continuation back, the way a dispatcher backed
-     * by a shut-down executor does — the reachable shape of a resume that
-     * throws in the loop's frame. Shared by the loop's guard tests and the
-     * transport's waiter-answer tests, which exercise the same refusal one
-     * layer apart.
-     */
-    protected class RefusingDispatcher : CoroutineDispatcher() {
-        var attempts: Int = 0
-            private set
-
-        override fun dispatch(context: CoroutineContext, block: Runnable) {
-            attempts++
-            throw InjectedFault("dispatcher refused the resumed continuation")
-        }
-    }
-
     protected class RecordingLogger : Logger {
         val logged = mutableListOf<Pair<LogLevel, String>>()
 
@@ -323,6 +319,29 @@ internal abstract class AbstractReadinessEventLoopFixture {
 
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
             logged.add(level to message.toString())
+        }
+    }
+
+    /**
+     * Refuses to take a resumed continuation back, the way a dispatcher backed
+     * by a shut-down executor does — the reachable shape of a resume that
+     * throws in the loop's frame. Shared by the loop's guard tests and the
+     * transport's waiter-answer tests, which exercise the same refusal one
+     * layer apart.
+     *
+     * [attempts] is a plain `var`, safe only because every consumer here
+     * drives a [FakeLoop] on the test thread. The engines' private copies
+     * make it atomic — their dispatch runs on a real EventLoop thread while
+     * the assertion reads from the test thread — and a consumer that starts
+     * a real thread must do the same, not adopt this one.
+     */
+    protected class RefusingDispatcher : CoroutineDispatcher() {
+        var attempts: Int = 0
+            private set
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            attempts++
+            throw InjectedFault("dispatcher refused the resumed continuation")
         }
     }
 
