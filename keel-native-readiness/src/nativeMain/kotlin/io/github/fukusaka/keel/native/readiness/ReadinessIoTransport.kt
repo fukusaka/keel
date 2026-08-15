@@ -784,8 +784,8 @@ class ReadinessIoTransport(
     /**
      * True while [drainAndNotifyIfComplete] is on this stack. A reentrant
      * `flush()` from one of the exit's own callbacks drains without
-     * reporting or arming — the outer frame owns both. Loop-confined, like
-     * every field here.
+     * reporting or arming — the outer frame decides both over the queue as
+     * every contributor left it. Loop-confined, like every field here.
      */
     private var draining = false
 
@@ -1410,17 +1410,20 @@ class ReadinessIoTransport(
      * either: the pass completed, so no blocked-write path armed WRITE, and
      * without the arm here the refill would wait for an app flush that may
      * never come — the water-mark callback that wrote it was told the
-     * transport is writable again, not that it must flush. A pass that did
-     * not complete already armed on its own (the blocked and partial paths
-     * register before returning false).
+     * transport is writable again, not that it must flush.
      *
-     * **One report per episode.** The callbacks this exit runs — the
-     * water-mark's writability signal inside the drain, the waiter's resumed
-     * frame and [onFlushComplete] inside the report — may `flush()` again,
-     * synchronously. A reentrant arrival drains without reporting or arming:
-     * the outer frame owns both, decides them over the queue as the callbacks
-     * left it, and reports once. That is also what bounds a completion-driven
-     * pump: its inner flush drains inline and comes straight back, instead of
+     * **One report per episode, made by the outer frame over the queue.**
+     * The callbacks this exit runs — the water-mark's writability signal
+     * inside the drain, the waiter's resumed frame and [onFlushComplete]
+     * inside the report — may `flush()` again, synchronously. A reentrant
+     * arrival drains without reporting or arming; the outer frame decides
+     * both over the queue as every contributor left it. The report's
+     * predicate is therefore the **queue**, not this frame's own pass: a
+     * remainder this pass blocked on may have been finished by a reentrant
+     * flush — the canonical backpressure resume does exactly that — and its
+     * frame reported nothing, so an empty queue here is reported here,
+     * whoever emptied it. This is also what bounds a completion-driven pump:
+     * its inner flush drains inline and comes straight back, instead of
      * reporting a completion that would pump again.
      *
      * The arm is decided *after* the report, so bytes a report-side callback
@@ -1428,13 +1431,18 @@ class ReadinessIoTransport(
      * is already scheduled to take them: arming then would race the tick, and
      * the loser would fire on the queue the winner emptied, reporting a
      * completion nothing awaited and eagerly draining bytes a producer had
-     * written but not yet flushed.
+     * written but not yet flushed. A pass that did not complete armed on its
+     * own before returning false — unless a reentrant flush already emptied
+     * what it would have retried, in which case the empty queue was reported,
+     * and there is nothing to arm for.
      *
-     * @return true when the drain completed and emptied the queue, as of the
-     *   drain — the answer a direct `flush()` caller reports onward; a
-     *   refilled queue is not a completed flush. Bytes written by the
-     *   report's own callbacks are a new episode, left armed or
-     *   tick-scheduled rather than folded into this one's answer.
+     * @return true when this frame's own pass completed and emptied the
+     *   queue — the answer a direct `flush()` caller reports onward. A
+     *   remainder a reentrant flush finished is *reported* but still answered
+     *   false here: the outer pass's own block is what the caller asked
+     *   about. Bytes written by the report's own callbacks are a new episode,
+     *   left armed or tick-scheduled rather than folded into this one's
+     *   answer.
      */
     private fun drainAndNotifyIfComplete(): Boolean {
         if (draining) return performFlush() && pendingWrites.isEmpty()
@@ -1442,7 +1450,7 @@ class ReadinessIoTransport(
         try {
             val completedPass = performFlush()
             val emptied = completedPass && pendingWrites.isEmpty()
-            if (emptied) {
+            if (pendingWrites.isEmpty()) {
                 notifyFlushDrained()
             }
             if (completedPass && pendingWrites.isNotEmpty() && !flushScheduled) {
