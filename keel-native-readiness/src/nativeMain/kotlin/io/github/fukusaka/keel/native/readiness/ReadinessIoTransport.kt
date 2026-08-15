@@ -781,6 +781,14 @@ class ReadinessIoTransport(
 
     private var flushScheduled = false
 
+    /**
+     * True while [drainAndNotifyIfComplete] is on this stack. A reentrant
+     * `flush()` from one of the exit's own callbacks drains without
+     * reporting or arming — the outer frame owns both. Loop-confined, like
+     * every field here.
+     */
+    private var draining = false
+
     // Set when a drain attempt threw, cleared when the next attempt starts:
     // distinguishes "queued bytes whose drain failed with its throw contained
     // upstream" from every legitimate park (a waiter arriving before the
@@ -1406,19 +1414,44 @@ class ReadinessIoTransport(
      * not complete already armed on its own (the blocked and partial paths
      * register before returning false).
      *
-     * @return true when the drain completed and emptied the queue — the
-     *   answer a direct `flush()` caller reports onward; a refilled queue is
-     *   not a completed flush.
+     * **One report per episode.** The callbacks this exit runs — the
+     * water-mark's writability signal inside the drain, the waiter's resumed
+     * frame and [onFlushComplete] inside the report — may `flush()` again,
+     * synchronously. A reentrant arrival drains without reporting or arming:
+     * the outer frame owns both, decides them over the queue as the callbacks
+     * left it, and reports once. That is also what bounds a completion-driven
+     * pump: its inner flush drains inline and comes straight back, instead of
+     * reporting a completion that would pump again.
+     *
+     * The arm is decided *after* the report, so bytes a report-side callback
+     * wrote without flushing are not stranded — and it is skipped when a tick
+     * is already scheduled to take them: arming then would race the tick, and
+     * the loser would fire on the queue the winner emptied, reporting a
+     * completion nothing awaited and eagerly draining bytes a producer had
+     * written but not yet flushed.
+     *
+     * @return true when the drain completed and emptied the queue, as of the
+     *   drain — the answer a direct `flush()` caller reports onward; a
+     *   refilled queue is not a completed flush. Bytes written by the
+     *   report's own callbacks are a new episode, left armed or
+     *   tick-scheduled rather than folded into this one's answer.
      */
     private fun drainAndNotifyIfComplete(): Boolean {
-        val completedPass = performFlush()
-        val emptied = completedPass && pendingWrites.isEmpty()
-        if (emptied) {
-            notifyFlushDrained()
-        } else if (completedPass) {
-            registerWriteCallback()
+        if (draining) return performFlush() && pendingWrites.isEmpty()
+        draining = true
+        try {
+            val completedPass = performFlush()
+            val emptied = completedPass && pendingWrites.isEmpty()
+            if (emptied) {
+                notifyFlushDrained()
+            }
+            if (completedPass && pendingWrites.isNotEmpty() && !flushScheduled) {
+                registerWriteCallback()
+            }
+            return emptied
+        } finally {
+            draining = false
         }
-        return emptied
     }
 
     /**
