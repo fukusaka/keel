@@ -211,7 +211,12 @@ internal abstract class AbstractReadinessEventLoopFixture {
             val err = failArm
             if (err != 0) {
                 withRegLock { removeRegistration(key, reg) }
-                cont.resumeWith(Result.failure(IllegalStateException("arm(fd=$fd) failed: errno=$err")))
+                // Through the helper, as both engines do: the arm failure is a
+                // hand-off like any other, and a test asserting on it must see
+                // the shape production has.
+                deliverOrRelease(reg, "failing the waiter for, after its arm could not be made,") {
+                    cont.resumeWith(Result.failure(IllegalStateException("arm(fd=$fd) failed: errno=$err")))
+                }
                 return
             }
             armed.add(fd to interest)

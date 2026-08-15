@@ -2,7 +2,6 @@ package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.testing.InjectedFault
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -15,7 +14,6 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -368,8 +366,9 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
     fun `a refusing waiter does not strand the ones the stop sweep still has to end`() {
         val loop = FakeLoop()
         val refusing = RefusingDispatcher()
-        // Registered but never armed, so the sweep is what ends them. Head of
-        // the chain refuses; the sibling behind it must still be cancelled.
+        // Armed, but no readiness is ever dispatched for them, so the sweep is
+        // what ends them. Head of the chain refuses; the sibling behind it must
+        // still be cancelled.
         CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
             suspendCancellableCoroutine { cont ->
                 loop.registerWaiter(WAITER_FD, Interest.READ, cont)
@@ -387,11 +386,43 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         loop.failRemainingWaiters()
 
         assertEquals(1, refusing.attempts, "the seam must have reached the refusing waiter")
-        assertIs<CancellationException>(sibling, "the sibling behind the refusal must still be ended")
+        // By message: on this target `CancellationException` is an
+        // `IllegalStateException`, so the type proves nothing — the fixture's
+        // own helper documents that from measurement. The sweep's own wording
+        // is what says this came from the sweep.
+        assertTrue(
+            sibling?.message?.contains(SWEEP_FAILURE) == true,
+            "the sibling behind the refusal must still be ended by the sweep, got: $sibling",
+        )
         assertTrue(
             loop.errors.any { it.contains("while the loop stops") },
             "the report must name what carries on here, got: ${loop.errors}",
         )
+    }
+
+    @Test
+    fun `a waiter that owns a descriptor releases it when its arm could not be made`() {
+        val loop = FakeLoop(onLoopThread = false, runDispatchedInline = false)
+        loop.failArm = ENOMEM
+        val refusing = RefusingDispatcher()
+        var released = 0
+        CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                loop.registerOwningWaiter(WAITER_FD, Interest.WRITE, cont) { released++ }
+            }
+        }
+
+        // Off-loop caller, so the arm is queued rather than run inline — the
+        // shape connect() has. When the loop runs it and the arm fails, the
+        // waiter is resumed with that failure, through its own dispatcher,
+        // which refuses. Neither of the wait's own endings can run then: the
+        // continuation is completed exceptionally in state, so the
+        // cancellation handler will not fire, and the coroutine never resumes,
+        // so its catch does not either.
+        loop.drainDispatched()
+
+        assertEquals(1, refusing.attempts, "the seam must have reached the resume")
+        assertEquals(1, released, "the arm failure must release what the waiter owned")
     }
 
     /** Records the interests it is handed, for the served-after-failure assertion. */
