@@ -93,6 +93,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   continues (#1059)
 - `engine-kqueue`, `engine-epoll`: a waiter that owns a descriptor for the duration of its wait
   now gets it released instead of leaked when the loop cannot deliver its answer (#1059)
+- `engine-kqueue`, `engine-epoll`: `connect()` no longer hands back a channel over a descriptor
+  the loop had already closed, when a dispatcher accepts the connect wait's resumption and then
+  throws; the wait fails instead (#1059)
 - `engine-kqueue`, `engine-epoll`: closing a server no longer strands the `accept()` callers
   queued behind one whose resumption throws, nor skips the listening socket's own close (#1059)
 - `engine-kqueue`, `engine-epoll`: a flush that fails no longer strands a caller suspended in
