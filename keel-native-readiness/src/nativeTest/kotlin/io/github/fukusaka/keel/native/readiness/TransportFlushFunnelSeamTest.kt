@@ -3,6 +3,7 @@
 package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import io.github.fukusaka.keel.testing.buf.PointerlessIoBuf
@@ -33,7 +34,11 @@ import kotlin.test.assertTrue
  * register's two reachable immediate arms, dispatched so the answer rides
  * the waiter's own dispatcher — have a refusal reported as the transport's
  * own rather than escaping into the frame that delivered; two of those
- * refusal tests involve no drain at all. Outside that contract on purpose:
+ * refusal tests involve no drain at all. The exit half: every path through
+ * the shared exit leaves a completion report or a scheduled continuation —
+ * a mid-drain refill re-arms WRITE, a completed direct flush answers the
+ * waiter, and one report covers one episode however many callbacks flush
+ * reentrantly inside it. Outside the dispatcher contract on purpose:
  * the teardown's two staged cancels (carried to `close()`'s caller), and
  * the answers no dispatcher can refuse because the caller has not suspended
  * — the register's arms run inline on-loop, and the quiescent-loop cancel
@@ -651,9 +656,114 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
         }
     }
 
+    @Test
+    fun `one drain reports one completion however the callbacks flush inside it`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            val transport = transport()
+            var completions = 0
+            transport.onFlushComplete = { completions++ }
+            val refill = tracker.allocate(16).apply { writerIndex = 5 }
+            var reentered = false
+            // The canonical backpressure-resume shape: the writability signal
+            // resumes a producer that writes and flushes -- synchronously,
+            // inside the outer drain's own frame.
+            transport.onWritabilityChanged = { writable ->
+                if (writable && !reentered) {
+                    reentered = true
+                    transport.write(refill)
+                    transport.flush()
+                }
+            }
+            transport.write(tracker.allocate(HIGH_WATER).apply { writerIndex = HIGH_WATER })
+            fake.enqueueWrite(fd, WriteResult.Written(HIGH_WATER), WriteResult.Written(5))
+
+            // The inner flush drains its refill inline and comes straight
+            // back; the outer frame owns the report and makes it once.
+            assertTrue(transport.flush(), "the episode drained everything")
+
+            assertTrue(reentered, "the callback must have flushed reentrantly")
+            assertEquals(1, completions, "one drain episode must report exactly one completion")
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refill that also flushed leaves its tick to drain it instead of racing an arm`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Coalescing on, ticks sequenced by hand: the water-mark callback
+            // writes a refill and flushes, which schedules the refill's own
+            // tick. Arming WRITE as well would race that tick -- the loser
+            // fires on the queue the winner emptied, reporting a completion
+            // nothing awaited and draining bytes a producer had not flushed.
+            eventLoop.close()
+            eventLoop = FakeLoop(runDispatchedInline = false, flushCoalescing = true)
+            val transport = transport()
+            var completions = 0
+            transport.onFlushComplete = { completions++ }
+            val refill = tracker.allocate(16).apply { writerIndex = 5 }
+            var reentered = false
+            transport.onWritabilityChanged = { writable ->
+                if (writable && !reentered) {
+                    reentered = true
+                    transport.write(refill)
+                    transport.flush()
+                }
+            }
+            transport.write(tracker.allocate(HIGH_WATER).apply { writerIndex = HIGH_WATER })
+            fake.enqueueWrite(fd, WriteResult.Written(HIGH_WATER), WriteResult.Written(5))
+
+            assertFalse(transport.flush(), "the coalesced flush defers to its tick")
+            eventLoop.drainDispatched()
+
+            assertTrue(reentered, "the callback must have flushed during the first tick")
+            assertEquals(1, completions, "the refill's tick reports its completion; nothing else may")
+            assertFalse(
+                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+                "a tick already scheduled owns the refill -- an arm would race it, got: ${eventLoop.armedCallbacks}",
+            )
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `bytes written by the completion callbacks are not stranded behind the report`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            val transport = transport()
+            var completions = 0
+            val late = tracker.allocate(16).apply { writerIndex = 5 }
+            var wrote = false
+            transport.onFlushComplete = {
+                completions++
+                if (!wrote) {
+                    wrote = true
+                    // Writes on hearing of the completion -- and deliberately
+                    // does not flush. The report already happened; these bytes
+                    // are a new episode and must still get a continuation.
+                    transport.write(late)
+                }
+            }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            fake.enqueueWrite(fd, WriteResult.Written(5), WriteResult.Written(5))
+
+            assertTrue(transport.flush(), "the drain completed and was reported, as of the drain")
+            assertTrue(
+                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+                "the report-side write must leave WRITE armed, got: ${eventLoop.armedCallbacks}",
+            )
+
+            // Readiness then drains the new episode and reports it.
+            transport.onReady(Interest.WRITE)
+            assertEquals(2, completions, "two episodes, two reports")
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
     private companion object {
-        /** The transport's default high-water mark; named here for the refill test's intent. */
-        const val HIGH_WATER = 65536
+        /** The transport's high-water mark; the import ties the tests to the real threshold. */
+        const val HIGH_WATER = IoTransport.DEFAULT_HIGH_WATER_MARK
 
         /** Wall-clock bound for the parked-waiter tests; sibling seam budget. */
         const val FUNNEL_TIMEOUT_MS = 5_000L
