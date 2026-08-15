@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -73,7 +74,7 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
         assertFailsWith<InjectedFault> { transport.flush() }
         assertEquals(1, failing.refusedReleases, "the seam must have reached the release")
         assertEquals(0, transport.pendingByteCount(), "the ledger must not name bytes that were sent")
-        assertTrue(transport.flush(), "the completed entry must have left the queue")
+        assertTrue(transport.flush(), "nothing remains to flush afterwards")
         assertEquals(1, fake.writeCalls)
 
         failing.releaseUnderlying()
@@ -97,7 +98,7 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
         assertFailsWith<InjectedFault> { transport.flush() }
         assertEquals(1, failing.refusedReleases, "the seam must have reached the release")
         assertEquals(0, transport.pendingByteCount(), "the ledger must not name bytes that were dropped")
-        assertTrue(transport.flush(), "the dropped entry must have left the queue")
+        assertTrue(transport.flush(), "nothing remains to flush afterwards")
 
         failing.releaseUnderlying()
         transport.close()
@@ -159,13 +160,15 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
         assertFailsWith<InjectedFault> { transport.flush() }
         assertEquals(1, failing.refusedReleases, "the seam must have reached the release")
         assertEquals(0, transport.pendingByteCount(), "the ledger must not name bytes that were dropped")
-        assertTrue(transport.flush(), "the dropped entries must have left the queue")
+        assertTrue(transport.flush(), "nothing remains to flush afterwards")
 
         failing.releaseUnderlying()
         transport.close()
         tracker.assertNoLeaks()
     }
 
+    // Pins bookkeeping the old shape also had — the discriminating test for the
+    // new deferRemainder is the throwing-callback one below.
     @Test
     fun `a partial write leaves the ledger naming exactly the unsent remainder`() {
         val fake = FakeNativeSocket().apply {
@@ -188,6 +191,143 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
         assertTrue(transport.flush(), "the remainder must flush from the re-offset head")
         assertEquals(0, transport.pendingByteCount())
         fake.assertAllConsumed()
+
+        transport.close()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a fully written gather with a refused release still empties the ledger`() {
+        val fake = FakeNativeSocket().apply {
+            enqueueWritev(fd, WriteResult.Written(20))
+        }
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val transport = ReadinessIoTransport(fd, eventLoop, tracker, fake)
+
+        val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 10 })
+        transport.write(failing)
+        val second = tracker.allocate(16).apply { writerIndex = 10 }
+        transport.write(second)
+
+        // The common completion of a gather — everything written — must settle
+        // the ledger past the refusal the same way the failed writev does.
+        assertFailsWith<InjectedFault> { transport.flush() }
+        assertEquals(1, failing.refusedReleases, "the seam must have reached the release")
+        assertEquals(0, transport.pendingByteCount(), "the ledger must not name bytes that were sent")
+        assertTrue(transport.flush(), "nothing remains to flush afterwards")
+
+        failing.releaseUnderlying()
+        transport.close()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a writability callback that throws does not cost the write re-arm`() {
+        val high = IoTransport.DEFAULT_HIGH_WATER_MARK
+        val low = IoTransport.DEFAULT_LOW_WATER_MARK
+        val total = high + low
+        val written = high + low / 2
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(fd, WriteResult.Written(written), WriteResult.WouldBlock)
+        }
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val transport = ReadinessIoTransport(fd, eventLoop, tracker, fake)
+        transport.onWritabilityChanged = { writable ->
+            if (writable) throw InjectedFault("writability callback refused")
+        }
+
+        val buf = tracker.allocate(total).apply { writerIndex = total }
+        transport.write(buf)
+
+        // The deferred remainder crosses the low-water mark, the callback
+        // throws out of the ledger update — and the WRITE re-arm is still owed:
+        // without it the remainder waits for a readiness event never armed.
+        assertFailsWith<InjectedFault> { transport.flush() }
+        assertEquals(low / 2, transport.pendingByteCount(), "the ledger update itself must have run")
+        assertTrue(
+            eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+            "the callback's throw must not cost the write-readiness re-arm",
+        )
+
+        transport.onWritabilityChanged = null
+        transport.close()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a close from the writability callback is not followed by a write re-arm`() {
+        val high = IoTransport.DEFAULT_HIGH_WATER_MARK
+        val low = IoTransport.DEFAULT_LOW_WATER_MARK
+        val total = high + low
+        val written = high + low / 2
+        val fake = FakeNativeSocket().apply {
+            enqueueWrite(fd, WriteResult.Written(written), WriteResult.WouldBlock)
+        }
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val transport = ReadinessIoTransport(fd, eventLoop, tracker, fake)
+        transport.onWritabilityChanged = { writable ->
+            if (writable) transport.close()
+        }
+
+        val buf = tracker.allocate(total).apply { writerIndex = total }
+        transport.write(buf)
+
+        // The low-water crossing closes the transport, and the on-loop teardown
+        // runs to completion inside the callback — releasing the still-queued
+        // remainder and withdrawing the registrations. Re-arming after that
+        // would schedule interest for an fd number that is already released.
+        assertFalse(transport.flush(), "the remainder was deferred, then discarded by the close")
+        assertFalse(
+            eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+            "a torn-down transport must not re-arm write readiness",
+        )
+        assertEquals(0, transport.pendingByteCount(), "the teardown zeroed the ledger")
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a close from the writability callback of a gather walk is not followed by a re-arm`() {
+        val high = IoTransport.DEFAULT_HIGH_WATER_MARK
+        val low = IoTransport.DEFAULT_LOW_WATER_MARK
+        val half = (high + low) / 2
+        val written = high + low / 2
+        val fake = FakeNativeSocket().apply {
+            enqueueWritev(fd, WriteResult.Written(written))
+        }
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val transport = ReadinessIoTransport(fd, eventLoop, tracker, fake)
+        transport.onWritabilityChanged = { writable ->
+            if (writable) transport.close()
+        }
+
+        transport.write(tracker.allocate(half).apply { writerIndex = half })
+        transport.write(tracker.allocate(half).apply { writerIndex = half })
+
+        // Same crossing, gather shape: the walk has already re-offset the split
+        // entry when the ledger update runs the callback, so the teardown finds
+        // a consistent queue — and the re-arm after it must decline.
+        assertFalse(transport.flush(), "the remainder was deferred, then discarded by the close")
+        assertFalse(
+            eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+            "a torn-down transport must not re-arm write readiness",
+        )
+        assertEquals(0, transport.pendingByteCount(), "the teardown zeroed the ledger")
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a gather whose pointer access fails leaves every entry queued for close`() {
+        val fake = FakeNativeSocket()
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val transport = ReadinessIoTransport(fd, eventLoop, tracker, fake)
+
+        transport.write(tracker.allocate(16).apply { writerIndex = 10 })
+        transport.write(PointerlessIoBuf(tracker.allocate(16).apply { writerIndex = 10 }))
+
+        // The cast fires while the iovec array is being built — before the
+        // syscall, with both entries still queued.
+        assertFailsWith<ClassCastException> { transport.flush() }
+        assertEquals(0, fake.writevCalls, "the pointer access fails before any writev")
 
         transport.close()
         tracker.assertNoLeaks()
