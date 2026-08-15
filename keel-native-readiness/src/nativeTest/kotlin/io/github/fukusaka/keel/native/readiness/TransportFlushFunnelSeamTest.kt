@@ -342,6 +342,37 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
         }
     }
 
+    @Test
+    fun `a poisoned mark does not outlive the entries whose drain failed`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+            // This drain empties the queue (the entry completed) and throws
+            // (its release refused): nothing poisoned remains queued.
+            assertFailsWith<InjectedFault> { transport.flush() }
+
+            // A later write awaited before the producer's flush is the
+            // legitimate park the poisoned-queue retry must leave parked:
+            // nothing about this entry has failed.
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(
+                transport.hasFlushWaiter(),
+                "the waiter parks; the mark must not outlive the entries whose drain failed",
+            )
+            assertEquals(1, fake.writeCalls, "no eager drain of a write the producer has not flushed")
+
+            waiter.cancel()
+            failing.releaseUnderlying()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
     private companion object {
         /** Wall-clock bound for the parked-waiter tests; sibling seam budget. */
         const val FUNNEL_TIMEOUT_MS = 5_000L
