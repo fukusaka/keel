@@ -506,7 +506,7 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
     fun `a listener that throws does not strand the rest of the sweep`() {
         // Same backstop drainQueue puts around a dispatched task, for the same
         // reason: this runs user code, and one bad listener must not take the
-        // others -- nor escape a pthread entry point with nothing above it.
+        // others -- nor escape the sweep's frame.
         // Fails either way when unguarded: the throw either reaches this caller
         // or the healthy listener never hears, depending on iteration order.
         val loop = FakeLoop()

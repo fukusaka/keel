@@ -1037,16 +1037,19 @@ abstract class AbstractReadinessEventLoop :
             // produced. The returned [Registration] was never appended, so the
             // caller's `invokeOnCancellation { unregister(reg) }` is a no-op and
             // the rest of its handler -- closing the fd it owns -- still runs.
-            // Unguarded, unlike the sweep's identical call, because nothing
-            // here can throw: the continuation has not suspended, so no
-            // dispatcher is consulted -- and no handler is installed yet, the
-            // caller's `invokeOnCancellation` coming only after this returns.
-            // That handler then runs inline at its own install site, in the
-            // caller's frame; if it throws there, the coroutine machinery
-            // takes it before this frame could have -- measured, a catch here
-            // never sees it. This also runs on the registering caller's
-            // thread, not the loop's, so there is no pthread entry below to
-            // protect.
+            // Unguarded, unlike the sweep's identical call, because no
+            // caller can make this throw: the one production caller registers
+            // inside its `suspendCancellableCoroutine` block, before
+            // suspension, so no dispatcher is consulted (a continuation
+            // already suspended could meet a refusal here -- no caller can
+            // reach this line with one) -- and no handler is installed yet,
+            // the caller's `invokeOnCancellation` coming only after this
+            // returns. That handler then runs inline at its own install site,
+            // in the caller's frame; if it throws there, the coroutine
+            // machinery takes it before this frame could have -- measured, a
+            // catch here never sees it. And this frame sits in the caller's
+            // coroutine -- under the per-task guard when that caller is on
+            // the loop -- not bare above the pthread entry.
             cont.cancel(
                 CancellationException("EventLoop stopped before fd=$fd could register for $interest"),
             )
@@ -1139,15 +1142,16 @@ abstract class AbstractReadinessEventLoop :
         try {
             suspendCancellableCoroutine<Unit> { cont ->
                 val own = register(fd, Interest.WRITE, cont) {
-                    // The third ending, and the one neither handler below can
-                    // reach: the loop had this waiter's answer -- its readiness,
-                    // or the failure of the arm that was supposed to deliver it
-                    // -- and its dispatcher refused to take it. Nothing resumes into the
-                    // `catch`, nothing cancels into the handler, and the
-                    // registration is already gone -- so without this the
-                    // descriptor stays open with no handle left to close it by,
-                    // which is the leak this whole function exists to prevent.
-                    // The one-shot claim makes it safe beside the other two.
+                    // The third ending: the loop had this waiter's answer --
+                    // a readiness, a failed arm, or the stop sweep's
+                    // cancellation -- and its dispatcher refused to take it.
+                    // Nothing resumes into the `catch`; on the sweep the
+                    // handler below has already run, everywhere else it never
+                    // does; and the registration is already gone -- so without
+                    // this the descriptor can stay open with no handle left to
+                    // close it by, which is the leak this whole function
+                    // exists to prevent. The one-shot claim admits one of
+                    // this and the handler, whichever came first.
                     releaseOwnedFd(fd, logger, released, "connect answer undeliverable")
                 }
                 reg = own
@@ -1291,9 +1295,9 @@ abstract class AbstractReadinessEventLoop :
      * Hands [delivery] to a waiter that has already left the ledger, and
      * releases whatever it owned if that fails.
      *
-     * The four places this loop parts with a waiter — readiness, a server
-     * closing, the stop sweep, and an arm that failed — all deliver through the
-     * waiter's *own*
+     * The four places this loop answers a waiter it holds registered —
+     * readiness, a server closing, the stop sweep, and an arm that failed —
+     * all deliver through the waiter's *own*
      * dispatcher, which this loop does not control: one backed by a pool shut
      * down under it refuses the work. (An `Unconfined` waiter runs its
      * continuation inline in this frame, which is why the delivery is made
@@ -1305,14 +1309,17 @@ abstract class AbstractReadinessEventLoop :
      * report it and to run whatever the waiter registered for exactly this
      * ending — see [Registration.onUndeliverable].
      *
-     * Both calls are guarded. What an escape would cost differs by site: the
-     * readiness dispatch and the stop sweep run directly under the loop body
-     * and the `pthread` entry, which catches nothing, so there an escape ends
-     * the process. The server close and the failed arm arrive as dispatched
-     * tasks, whose per-task guard would swallow the throw — no death, but the
-     * waiter is lost and what it owns leaks, with nothing naming either. Both
-     * endings are why every hand-off routes here rather than only the fatal
-     * ones.
+     * Both calls are guarded. What an escape would cost differs by site. The
+     * readiness dispatch runs directly under the loop body and the `pthread`
+     * entry, which catches nothing: an escape ends the process. So does the
+     * stop sweep when it runs in `loop()`'s `finally` — though a loop closed
+     * without ever running sweeps on the closing thread instead, where an
+     * escape would fail the `close()` mid-teardown. The server close and the
+     * failed arm reach here inside a guarded frame — a dispatched task, or
+     * whatever loop frame ran the close inline — whose guard swallows the
+     * throw: no death, but the waiter is lost and what it owns leaks, with
+     * nothing naming either. Every one of those endings is why each hand-off
+     * routes here rather than only the fatal ones.
      *
      * [what] names the delivery *and* what carries on without it — the sites
      * differ there, and an operator reading "the loop continues" from the stop
@@ -1574,8 +1581,10 @@ abstract class AbstractReadinessEventLoop :
         // on this platform an unhandled one ends the process -- not something
         // a guard here could have caught either way). What does arrive is the
         // same thing every hand-off in this class can meet -- a dispatcher
-        // refusing to take the cancellation back -- and it must not escape a
-        // pthread entry point that has nothing above it to catch.
+        // refusing to take the cancellation back -- and it must not escape
+        // this frame: under `loop()`'s `finally` that ends the process at the
+        // pthread entry, and on the closing thread (a loop that never ran) it
+        // would fail the `close()` mid-teardown.
         for (reg in stranded) {
             deliverOrRelease(reg, "cancelling the stranded waiter for, while the loop stops,") {
                 reg.continuation.cancel(
