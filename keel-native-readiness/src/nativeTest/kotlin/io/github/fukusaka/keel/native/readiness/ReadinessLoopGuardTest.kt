@@ -1,7 +1,14 @@
 package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.testing.InjectedFault
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -238,5 +245,58 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
         assertFalse(ran.finishWithoutRunning(), "a closer arriving after the loop is told to join instead")
         assertEquals(2, ran.drainCalls, "and runs nothing")
+    }
+
+    // --- the loop's own hand-off to a waiter ---
+
+    @Test
+    fun `a waiter whose resume throws does not take the loop with it`() {
+        val loop = FakeLoop()
+        val refusing = RefusingDispatcher()
+        // A scope of its own, not this test's: the waiter's dispatcher refuses
+        // the resumption, so that coroutine can never complete, and a child of
+        // the test would hold the test open forever. UNDISPATCHED so the launch
+        // itself needs no dispatcher — the body runs inline to its suspension
+        // point, and only the resume below asks the dispatcher to take it back.
+        CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine { cont ->
+                loop.registerWaiter(WAITER_FD, Interest.READ, cont)
+            }
+        }
+        assertTrue(loop.waiters(WAITER_FD, Interest.READ), "the waiter must be registered")
+
+        // The dispatcher refuses to take the resumed continuation back, so the
+        // resume throws in the loop's own frame. Readiness dispatch is per-event
+        // work of the loop body, and the pthread entry above it catches nothing:
+        // an escape here ends the process, taking every other connection on this
+        // engine with the one that failed. Its sibling — a listener that throws
+        // — has been guarded since it was written.
+        loop.dispatchReadyFor(WAITER_FD, Interest.READ, eofFlag = false)
+
+        assertEquals(1, refusing.attempts, "the seam must have reached the resume")
+        assertTrue(
+            loop.errors.any { it.contains("resuming") },
+            "the refusal must be reported at ERROR, got: ${loop.errors}",
+        )
+    }
+
+    /**
+     * Refuses to take a resumed continuation back, the way a dispatcher backed
+     * by a shut-down executor does — the reachable shape of a resume that
+     * throws in the loop's frame.
+     */
+    private class RefusingDispatcher : CoroutineDispatcher() {
+        var attempts: Int = 0
+            private set
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            attempts++
+            throw InjectedFault("dispatcher refused the resumed continuation")
+        }
+    }
+
+    private companion object {
+        /** Arbitrary fd for the waiter registration; no syscall reaches it. */
+        const val WAITER_FD = 41
     }
 }
