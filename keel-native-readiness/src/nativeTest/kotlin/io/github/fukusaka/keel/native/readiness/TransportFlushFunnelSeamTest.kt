@@ -5,6 +5,7 @@ package io.github.fukusaka.keel.native.readiness
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
+import io.github.fukusaka.keel.testing.buf.PointerlessIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -248,8 +249,95 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
                 outcome,
                 "a close-time drain failure must not replace the close's cancellation, got: $outcome",
             )
+            assertTrue(
+                outcome.message.orEmpty().startsWith("transport closed"),
+                "the cause must name the transport close, not a stopped loop: ${outcome.message}",
+            )
 
             failing.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a cancelled waiter leaves no stored continuation behind`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked")
+
+            // External cancellation must clear the slot through the parked
+            // waiter's cancel hook — the one registration the drained-inline
+            // path skips — or every later drain answers a dead continuation
+            // while a live probe reads a waiter that is not there.
+            waiter.cancel()
+            assertFalse(transport.hasFlushWaiter(), "the cancel hook must clear the stored continuation")
+
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a tick consumed by the awaited short-circuit does not report the flush again`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            eventLoop.close()
+            eventLoop = FakeLoop(runDispatchedInline = false)
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            var completions = 0
+            transport.onFlushComplete = { completions++ }
+
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "coalescing defers the drain to the tick")
+
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(waiter.await().isSuccess, "the short-circuit drained the wait inline")
+            assertEquals(1, completions, "the drained flush reports once")
+
+            // The consumed tick still sits in the dispatch queue. Running it
+            // must not drain again or report a second completion for the same
+            // flush.
+            eventLoop.drainDispatched()
+            assertEquals(1, completions, "a consumed tick must not report the same flush again")
+
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a waiter arriving after a contained drain failure is not parked on a dead queue`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The pipeline's flush route contains a drain throw before any
+            // waiter exists: simulated by a bare flush whose failure the
+            // caller swallows, leaving the queue populated with no tick
+            // scheduled and no WRITE armed.
+            val transport = transport()
+            var inactive = false
+            transport.onReadClosed = { inactive = true }
+            transport.write(PointerlessIoBuf(tracker.allocate(16).apply { writerIndex = 5 }))
+            runCatching { transport.flush() }
+
+            // Parking would wait for an event that cannot come. The register
+            // retries the drain with the waiter stored, so the repeat failure
+            // reaches this caller through the funnel and the containment ends
+            // the connection.
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertIs<ClassCastException>(
+                waiter.await().exceptionOrNull(),
+                "the waiter must not be parked on a queue nothing will drain",
+            )
+            assertTrue(inactive, "the retried drain's failure must report the connection inactive")
+            assertFalse(transport.isOpen)
             tracker.assertNoLeaks()
         }
     }
