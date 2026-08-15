@@ -47,12 +47,14 @@ internal abstract class AbstractReadinessEventLoopFixture {
     /**
      * Records what would have been armed instead of issuing a syscall.
      *
-     * [submitArm] mirrors both engines statement for statement, including the
-     * stale-registration guard they run *before* the syscall: a waiter that
-     * left the chain between the append and this dispatch has already been
-     * resumed, so arming it would leave a ledger entry for an fd that may be
-     * gone. Diverging from that here would mean asserting a contract the
-     * engines do not implement.
+     * [submitArm] mirrors both engines' failure handling statement for
+     * statement — the stale-registration guard they run *before* the syscall,
+     * and the base's `failUnarmedWaiter` after it. The guard matters because a
+     * waiter that left the chain between the append and this dispatch has
+     * already been resumed, so arming it would leave a ledger entry for an fd
+     * that may be gone. Diverging from that here would mean asserting a
+     * contract the engines do not implement. What it does not mirror is their
+     * opening `assertInEventLoop`, which the off-loop doubles here would trip.
      *
      * [onLoopThread] is what the real subclasses answer from a pthread
      * comparison. [runDispatchedInline] decides whether dispatched work runs

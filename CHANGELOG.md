@@ -89,7 +89,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `engine-kqueue`, `engine-epoll`: a dispatcher that refuses a waiter's resumption no longer
-  ends the event loop; every hand-off reports the refusal and continues (#1059)
+  ends the event loop while it dispatches readiness or runs its stop sweep; every hand-off now
+  reports the refusal and continues (#1059)
 - `engine-kqueue`, `engine-epoll`: a waiter that owns a descriptor for its wait now has it
   released rather than leaked when the loop cannot deliver its answer (#1059)
 - `engine-kqueue`, `engine-epoll`: `connect()` no longer hands back a channel over a descriptor

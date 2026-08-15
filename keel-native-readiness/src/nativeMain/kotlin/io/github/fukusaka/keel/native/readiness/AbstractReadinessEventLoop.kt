@@ -108,7 +108,7 @@ import kotlin.time.TimeSource
  */
 @OptIn(ExperimentalForeignApi::class)
 @InternalReadinessEngineApi
-// The class sits just under detekt's LargeClass threshold -- measured, three
+// The class sits just under detekt's LargeClass threshold -- measured, two
 // logical lines of headroom -- so no suppression is carried. It did trip the
 // rule mid-branch and was suppressed; what bought the room back was dropping
 // submitArm's dead parameter, not the Registration extraction, which recovered
@@ -1058,13 +1058,15 @@ abstract class AbstractReadinessEventLoop :
      *
      * **The third is the loop's, not this frame's.** An answer the loop cannot
      * hand over — a dispatcher that refuses the resumption, whether the answer
-     * is a readiness, a failed arm, or the stop sweep's cancellation — never
+     * is a readiness, a failed arm, the stop sweep's cancellation, or the
+     * refusal of a registration the closed ledgers would not take — never
      * reaches this frame, and the waiter is already out of the ledger. On the
      * sweep the cancellation handler below has run first, a cancelled
      * continuation running its handlers before the resumption its dispatcher
      * then refuses; on the other routes neither handler runs. Either way the
-     * hook passed to [register] completes the release — it, the handler and
-     * the normal return share the one claim below, which admits exactly one.
+     * hook passed to [register] completes the release — it shares the one
+     * claim below with the handler, the `catch` and the normal return, and
+     * that claim admits exactly one.
      *
      * [unregister] runs on the two that end in this frame, and is a no-op when the
      * node is already gone — which it is on the [submitArm] path, which removes
@@ -1075,9 +1077,10 @@ abstract class AbstractReadinessEventLoop :
      * land where nothing pops it, and the check costs a lock on a path taken
      * once per failed connect.
      *
-     * **The release runs on the loop, and that ordering is the point.** Both
-     * endings can be reached from a thread that is not the loop's, while the
-     * loop still has this fd's arm queued or in flight — [submitArm] checks
+     * **The release runs on the loop, and that ordering is the point.** All
+     * three releasing endings can be reached from a thread that is not the
+     * loop's, while the loop still has this fd's arm queued or in flight —
+     * [submitArm] checks
      * that the waiter is registered before arming, so a release landing between
      * the check and the arm closes the descriptor and then lets the arm run.
      * What follows is the recycled-fd hazard: an arm against a number the kernel
@@ -1100,8 +1103,8 @@ abstract class AbstractReadinessEventLoop :
      * skipped when the loop has stopped, for the reason its own teardown gives:
      * that bookkeeping belongs to a loop that will never read it again.
      *
-     * The counter and the captured handle are two allocations per in-progress
-     * connect — not a hot path (at most once per outbound connection, and only
+     * The counter, the captured handle and the release hook are three
+     * allocations per in-progress connect — not a hot path (at most once per outbound connection, and only
      * when the connect did not complete immediately), and nothing here runs per
      * readiness event.
      */
@@ -1112,15 +1115,17 @@ abstract class AbstractReadinessEventLoop :
             suspendCancellableCoroutine<Unit> { cont ->
                 val own = register(fd, Interest.WRITE, cont) {
                     // The third ending: the loop had this waiter's answer --
-                    // a readiness, a failed arm, or the stop sweep's
-                    // cancellation -- and its dispatcher refused to take it.
-                    // Nothing resumes into the `catch`; on the sweep the
-                    // handler below has already run, everywhere else it never
-                    // does; and the registration is already gone -- so without
-                    // this the descriptor can stay open with no handle left to
-                    // close it by, which is the leak this whole function
-                    // exists to prevent. The one-shot claim admits exactly one
-                    // of this, the handler, and the normal return below,
+                    // a readiness, a failed arm, the stop sweep's
+                    // cancellation, or the refusal of a registration the
+                    // closed ledgers would not take -- and its dispatcher
+                    // refused to take it. Nothing resumes into the `catch`; on
+                    // the sweep and on that refusal the handler below has
+                    // already run, on the other routes it never does; and the
+                    // registration is already gone -- so without this the
+                    // descriptor can stay open with no handle left to close it
+                    // by, which is the leak this whole function exists to
+                    // prevent. The one-shot claim admits exactly one of this,
+                    // the handler, the `catch` and the normal return below,
                     // whichever comes first.
                     releaseOwnedFd(fd, logger, released, "connect answer undeliverable")
                 }
@@ -1317,16 +1322,19 @@ abstract class AbstractReadinessEventLoop :
      * report it and to run whatever the waiter registered for exactly this
      * ending — see [Registration.onUndeliverable].
      *
-     * Both calls are guarded. What an escape would cost differs by site. The
+     * The delivery and the release are each guarded, and what an escape would
+     * have cost differs by the site that called in. The
      * readiness dispatch runs directly under the loop body and the `pthread`
      * entry, which catches nothing: an escape ends the process. So does the
      * stop sweep when it runs in `loop()`'s `finally` — though a loop closed
      * without ever running sweeps on the closing thread instead, where an
      * escape would fail the `close()` mid-teardown. The server close and the
-     * failed arm reach here inside a guarded frame — a dispatched task, or
-     * whatever loop frame ran the close inline — whose guard swallows the
-     * throw: no death, but the waiter is lost and what it owns leaks, with
-     * nothing naming either. The fifth caller is not a loop frame at all: a
+     * failed arm that was *dispatched* reach here inside a guarded frame — a
+     * task, or whatever loop frame ran the close inline — whose guard swallows
+     * the throw: no death, but the waiter is lost and what it owns leaks, with
+     * nothing naming either. An arm a loop-thread [register] issued inline
+     * instead surfaces in that caller's frame, which is the shape of the fifth.
+     * The fifth caller is not a loop frame at all: a
      * registration refused by closed ledgers is answered in the registering
      * caller's own `suspendCancellableCoroutine` block, where an escape would
      * surface as that caller's failure. Every one of those endings is why each
@@ -1336,9 +1344,9 @@ abstract class AbstractReadinessEventLoop :
      * differ there, and an operator reading "the loop continues" from the stop
      * sweep would be reading the one thing that is not true of it.
      *
-     * `protected` because the engines' arm-failure hand-off reaches it through
-     * [failUnarmedWaiter], and that hand-off can be refused like any other.
-     * Not `inline` — a public-API inline body cannot reach the non-public
+     * `protected` rather than `private` so an engine-side hand-off can reach
+     * it directly; nothing outside this class does today — the engines' arm
+     * failure goes through [failUnarmedWaiter], which is here. Not `inline` — a public-API inline body cannot reach the non-public
      * state this needs. The readiness dispatch calls this once per ready fd,
      * so [delivery] takes the [Registration] as its argument: the readiness
      * lambda captures nothing and compiles to a singleton, and the per-event

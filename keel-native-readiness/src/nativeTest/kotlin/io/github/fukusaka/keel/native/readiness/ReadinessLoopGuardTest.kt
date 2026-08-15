@@ -25,7 +25,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Tests for the two guards the base keeps on its own queue and loop.
+ * Tests for the guards the base keeps on its own queue and loop, for the
+ * readiness backstop when a listener throws, and for every place the loop
+ * hands a waiter an answer its dispatcher can refuse — including which of
+ * the connect wait's claimants ends up owning the descriptor.
  */
 @OptIn(InternalReadinessEngineApi::class)
 internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
@@ -430,7 +433,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
         assertEquals(1, refusing.attempts, "the seam must have reached the resume")
         assertEquals(1, released, "the arm failure must release what the waiter owned")
-        // Like its three siblings: the report names the delivery and what
+        // Like its four siblings: the report names the delivery and what
         // carries on without it, which is the contract the helper's KDoc states
         // and the only part of the report a reader acts on.
         assertTrue(

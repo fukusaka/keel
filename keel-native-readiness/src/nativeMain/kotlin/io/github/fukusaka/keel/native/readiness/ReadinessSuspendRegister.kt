@@ -6,8 +6,9 @@ import io.github.fukusaka.keel.logging.Logger
  * Narrow seam over the "suspend until fd is write-ready" pattern
  * used by [AbstractReadinessEngine]'s `connect()` path. Both readiness engines use it.
  *
- * Abstracts only the `workerLoop.register(fd, WRITE, cont)` +
- * `suspendCancellableCoroutine` combo, not the full
+ * Abstracts only the owning write-wait — the loop's
+ * `register(fd, WRITE, cont, onUndeliverable)` plus
+ * `suspendCancellableCoroutine` and the release claim around it — not the full
  * [AbstractReadinessEventLoop] API. Hot paths remain direct; this seam only
  * covers the per-connection `connect()` suspend/resume.
  *
@@ -83,10 +84,14 @@ public fun interface ReadinessSuspendRegister {
      * by returning normally. Every other end MUST unregister WRITE
      * interest and close [fd] (see the class KDoc's Ownership contract).
      *
-     * Readiness is not by itself a normal return: a readiness the loop
+     * Readiness is not by itself a normal return. A readiness the loop
      * cannot hand to this waiter — its dispatcher refuses the resumption
-     * — ends the wait exceptionally, with [fd] already released. A caller
-     * takes the descriptor back on the return, not on the readiness.
+     * — releases [fd] through the hook the registration carries and
+     * leaves this wait suspended, because nothing resumed it. Only if the
+     * dispatcher kept the resumption before throwing does the wait resume
+     * at all, and then it ends exceptionally: it lost the claim on a
+     * descriptor another ending has taken. Either way a caller takes the
+     * descriptor back on the return, never on the readiness.
      */
     public suspend fun awaitWriteReady(fd: Int, logger: Logger)
 }

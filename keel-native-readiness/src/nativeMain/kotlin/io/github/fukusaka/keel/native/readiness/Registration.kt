@@ -38,17 +38,19 @@ class Registration internal constructor(
      * failed is the only one this loop had. A waiter that owns something
      * for the duration of its wait — the connect path owns its descriptor
      * — releases it here. On most routes that is the only release that
-     * runs; on the stop sweep the waiter's own cancellation handler runs
-     * first, because a cancelled continuation runs its handlers before the
-     * resumption the dispatcher then refuses. Both call the same release,
-     * whose one-shot claim admits one of them. `null` for a waiter that
+     * runs; on the stop sweep and on a registration the closed ledgers
+     * refuse, the waiter's own cancellation handler runs first, because a
+     * cancelled continuation runs its handlers before the resumption the
+     * dispatcher then refuses. Both call the same release, whose one-shot
+     * claim admits one of them. `null` for a waiter that
      * owns nothing: an `accept()` caller's server fd belongs to the
      * server.
      *
      * Called at most once, and guarded by its callers. On the loop thread
-     * for every route but one: a loop closed without ever running does its
+     * for every route but two: a loop closed without ever running does its
      * terminal sequence on the closing thread, and the sweep there reaches
-     * this too. One route reaches nothing, this hook included: a stop
+     * this too; and a registration the closed ledgers refuse is answered in
+     * the registering caller's own frame, on whatever thread that is. One route reaches nothing, this hook included: a stop
      * sweep skipped because a failed mutex release left the registration
      * lock stuck (its ERROR log says so; ending that skip is tracked as
      * its own design task).

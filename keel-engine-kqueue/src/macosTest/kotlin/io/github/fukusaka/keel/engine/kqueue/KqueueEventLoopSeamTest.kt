@@ -210,11 +210,13 @@ class KqueueEventLoopSeamTest {
                 el.awaitWriteReady(fd, logger)
             }
             // The failure this loop hands back never reaches the waiter's own
-            // frame, so neither of its release paths runs -- the hand-off guard
-            // in `submitArm` is the only thing left that knows the descriptor is
-            // owned. The sibling above this one drives the same arm failure with
-            // a dispatcher that accepts, and so passes either way; this is the
-            // one that fails if that guard is taken out of *this* engine.
+            // frame, so neither of the two endings that live there runs -- the
+            // release hook the wait registered is what is left, and the base's
+            // guarded hand-off is what invokes it. This engine reaches that
+            // hand-off through `failUnarmedWaiter`; the sibling above drives
+            // the same arm failure with a dispatcher that accepts, and so
+            // passes either way. This is the one that fails if *this* engine
+            // stops routing its failure through the base.
             awaitFdClosed(fd)
             assertEquals(1, refusing.attempts.value, "the seam must have reached the resume")
         } finally {
