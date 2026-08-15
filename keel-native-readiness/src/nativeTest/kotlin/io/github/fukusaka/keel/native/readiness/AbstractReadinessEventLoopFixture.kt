@@ -199,13 +199,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
             }
         }
 
-        override fun submitArm(
-            fd: Int,
-            interest: Interest,
-            key: Long,
-            reg: Registration,
-            cont: CancellableContinuation<Unit>,
-        ) {
+        override fun submitArm(fd: Int, interest: Interest, key: Long, reg: Registration) {
             if (!withRegLock { isRegistered(key, reg) }) return
 
             val err = failArm
@@ -445,13 +439,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
             armedCallbacks.add(fd to interest)
         }
 
-        override fun submitArm(
-            fd: Int,
-            interest: Interest,
-            key: Long,
-            reg: Registration,
-            cont: CancellableContinuation<Unit>,
-        ) = Unit
+        override fun submitArm(fd: Int, interest: Interest, key: Long, reg: Registration) = Unit
 
         override val logger = RecordingLogger()
 

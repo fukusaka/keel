@@ -511,7 +511,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         loop.dispatchReadyFor(fd, Interest.WRITE, eofFlag = false)
 
         assertEquals(1, delivering.attempts, "the seam must have reached the dispatcher")
-        assertTrue(outcome?.isSuccess == true, "the delivered wait must report success, got: $outcome")
+        assertTrue(checkNotNull(outcome).isSuccess, "the delivered wait must report success, got: $outcome")
         assertTrue(fcntl(fd, F_GETFD) != -1, "the winner's descriptor must not be closed under it")
         close(fd)
     }
@@ -535,10 +535,10 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         assertEquals(-1, fcntl(fd, F_GETFD), "the hook must have released the descriptor")
         enqueueing.deliverKept()
 
-        assertTrue(outcome?.isFailure == true, "the losing wait must not report success, got: $outcome")
+        assertTrue(checkNotNull(outcome).isFailure, "the losing wait must not report success, got: $outcome")
         assertTrue(
-            outcome?.exceptionOrNull()?.message?.contains("released it as undeliverable") == true,
-            "the failure must say the loop had released the descriptor, got: ${outcome?.exceptionOrNull()}",
+            checkNotNull(outcome).exceptionOrNull()?.message?.contains("released it as undeliverable") == true,
+            "the failure must say the loop had released the descriptor, got: $outcome",
         )
     }
 
