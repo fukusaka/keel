@@ -109,7 +109,7 @@ internal class ReadinessLoopSweepTest : AbstractReadinessEventLoopFixture() {
     fun `registerIf after the sweep declines like a caller that stopped wanting it`() = loopTest { loop ->
         loop.failRemainingWaiters()
 
-        val declined = CompletableDeferred<AbstractReadinessEventLoop.Registration?>()
+        val declined = CompletableDeferred<Registration?>()
         launch {
             suspendCancellableCoroutine { cont ->
                 declined.complete(loop.registerIf(FD, Interest.READ, cont) { true })
@@ -316,7 +316,7 @@ internal class ReadinessLoopSweepTest : AbstractReadinessEventLoopFixture() {
         // registerIf is the accept() arming path; register's off-loop route is
         // covered separately, and a regression in this one would not show there.
         loop.onLoopThread = false
-        val accepted = CompletableDeferred<AbstractReadinessEventLoop.Registration?>()
+        val accepted = CompletableDeferred<Registration?>()
         launch {
             suspendCancellableCoroutine { cont ->
                 accepted.complete(loop.registerIf(FD, Interest.READ, cont) { true })

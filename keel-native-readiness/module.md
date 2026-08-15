@@ -19,7 +19,7 @@ everything above the primitive is the same code. It lives here:
 | `AbstractReadinessEngine` | `bind` / `connect`, and the loops' lifecycle |
 | `ReadinessStreamServer`, `ReadinessPipelinedStreamServer`, `ReadinessPipelinedChannel` (internal) | accepting and handing connections to workers |
 | `AbstractReadinessEventLoopGroup` | round-robin across loop threads |
-| `Interest`, `FdReadyListener`, `LoopParticipant`, `HandoffOutcome`, `ReadinessSuspendRegister`, `ReadinessEventLoopLifecycle` | the vocabulary those pieces share (`LoopHandoff` itself is internal to this module) |
+| `Interest`, `FdReadyListener`, `LoopParticipant`, `HandoffOutcome`, `Registration`, `ReadinessSuspendRegister`, `ReadinessEventLoopLifecycle` | the vocabulary those pieces share (`LoopHandoff` itself is internal to this module) |
 
 The engines supply the readiness primitive and its cinterop, their `StreamEngine`
 entry point, and the loop group that names their loop type.
@@ -41,11 +41,11 @@ to measure, not before.
 
 ## Opt-in
 
-Seven types are behind `@InternalReadinessEngineApi`: the loop, its group, the
-engine base, the transport, the two servers, and the lifecycle the loop
-implements. Twelve members are too. The engines' production code
-reaches exactly two of them — the loop's `cleanupFd` and the engine's thread
-resolution. The other ten are used inside this module, or are probes the
+Eight types are behind `@InternalReadinessEngineApi`: the loop, its group, the
+engine base, the transport, the two servers, the lifecycle the loop implements,
+and the registration a waiter holds. Twelve members are too. The engines'
+production code reaches exactly two of them — the loop's `cleanupFd` and the
+engine's thread resolution. The other ten are used inside this module, or are probes the
 engines' seam tests ask about a connection they have just torn down, or both.
 
 The marker is not an API: it is `internal` that had to cross a Gradle module

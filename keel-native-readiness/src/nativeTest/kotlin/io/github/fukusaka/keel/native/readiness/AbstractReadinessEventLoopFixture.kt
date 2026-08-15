@@ -47,12 +47,14 @@ internal abstract class AbstractReadinessEventLoopFixture {
     /**
      * Records what would have been armed instead of issuing a syscall.
      *
-     * [submitArm] mirrors both engines statement for statement, including the
-     * stale-registration guard they run *before* the syscall: a waiter that
-     * left the chain between the append and this dispatch has already been
-     * resumed, so arming it would leave a ledger entry for an fd that may be
-     * gone. Diverging from that here would mean asserting a contract the
-     * engines do not implement.
+     * [submitArm] mirrors both engines' failure handling statement for
+     * statement — the stale-registration guard they run *before* the syscall,
+     * and the base's `failUnarmedWaiter` after it. The guard matters because a
+     * waiter that left the chain between the append and this dispatch has
+     * already been resumed, so arming it would leave a ledger entry for an fd
+     * that may be gone. Diverging from that here would mean asserting a
+     * contract the engines do not implement. What it does not mirror is their
+     * opening `assertInEventLoop`, which the off-loop doubles here would trip.
      *
      * [onLoopThread] is what the real subclasses answer from a pthread
      * comparison. [runDispatchedInline] decides whether dispatched work runs
@@ -199,19 +201,15 @@ internal abstract class AbstractReadinessEventLoopFixture {
             }
         }
 
-        override fun submitArm(
-            fd: Int,
-            interest: Interest,
-            key: Long,
-            reg: Registration,
-            cont: CancellableContinuation<Unit>,
-        ) {
+        override fun submitArm(fd: Int, interest: Interest, key: Long, reg: Registration) {
             if (!withRegLock { isRegistered(key, reg) }) return
 
             val err = failArm
             if (err != 0) {
-                withRegLock { removeRegistration(key, reg) }
-                cont.resumeWith(Result.failure(IllegalStateException("arm(fd=$fd) failed: errno=$err")))
+                // The very method both engines call: the arm-failure half of
+                // submitArm lives on the base now, so this drives production
+                // code rather than imitating its shape.
+                failUnarmedWaiter(key, reg, IllegalStateException("arm(fd=$fd) failed: errno=$err"))
                 return
             }
             armed.add(fd to interest)
@@ -223,6 +221,30 @@ internal abstract class AbstractReadinessEventLoopFixture {
         /** [register] is protected on the base; this is the subclass reaching it. */
         fun registerWaiter(fd: Int, interest: Interest, cont: CancellableContinuation<Unit>) =
             register(fd, interest, cont)
+
+        /** The same, for a waiter that owns something for the duration of its wait. */
+        fun registerOwningWaiter(
+            fd: Int,
+            interest: Interest,
+            cont: CancellableContinuation<Unit>,
+            onUndeliverable: () -> Unit,
+        ) = register(fd, interest, cont, onUndeliverable)
+
+        /** [registerIf] with an owning waiter's hook, the shape the accept-path entry now permits. */
+        fun registerOwningWaiterIf(
+            fd: Int,
+            interest: Interest,
+            cont: CancellableContinuation<Unit>,
+            onUndeliverable: () -> Unit,
+        ) = registerIf(fd, interest, cont, onUndeliverable = onUndeliverable, stillWanted = { true })
+
+        /** [awaitWritableOwningFd] is protected on the base; this is the subclass reaching it. */
+        suspend fun awaitOwnedWrite(fd: Int, logger: Logger) =
+            awaitWritableOwningFd(fd, logger)
+
+        /** `registerCallback` is public on the base; named here for symmetry with the waiter helpers. */
+        fun registerCallbackFor(fd: Int, interest: Interest, listener: FdReadyListener) =
+            registerCallback(fd, interest, listener)
 
         /** Pops one waiter the way a subclass's dispatch path does. */
         fun popOne(fd: Int, interest: Interest): Pair<Registration?, Boolean> {
@@ -419,13 +441,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
             armedCallbacks.add(fd to interest)
         }
 
-        override fun submitArm(
-            fd: Int,
-            interest: Interest,
-            key: Long,
-            reg: Registration,
-            cont: CancellableContinuation<Unit>,
-        ) = Unit
+        override fun submitArm(fd: Int, interest: Interest, key: Long, reg: Registration) = Unit
 
         override val logger = RecordingLogger()
 
@@ -459,7 +475,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * its continuation is resumed — normally, or with the failure it was given.
      */
     protected class Waiter(
-        val reg: AbstractReadinessEventLoop.Registration,
+        val reg: Registration,
         val resumed: CompletableDeferred<Unit>,
     )
 

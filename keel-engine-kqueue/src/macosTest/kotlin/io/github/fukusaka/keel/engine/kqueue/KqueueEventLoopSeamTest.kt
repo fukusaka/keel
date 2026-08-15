@@ -11,6 +11,9 @@ import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -29,6 +32,8 @@ import platform.posix.SOCK_STREAM
 import platform.posix.fcntl
 import platform.posix.socket
 import platform.posix.usleep
+import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -177,6 +182,45 @@ class KqueueEventLoopSeamTest {
             // to report a failure. Closing it would mean re-testing the number
             // first, and acting on that answer is the recycling hazard this
             // whole change is about.
+            el.close()
+        }
+    }
+
+    @Test
+    fun `a failed arm releases the socket even when the waiter's dispatcher refuses`() {
+        val fake = FakeKqueueSyscallOps().apply {
+            scriptKqueueCreateFd(fd = 1000)
+            scriptMakePipeFds(readFd = 1001, writeFd = 1002)
+            scriptAddFilterResult(0) // init succeeds
+            scriptAddFilterResult(ENFILE) // the arm driven below fails
+        }
+        fake.liveMode = true
+        val el = KqueueEventLoop(logger, syscallOps = fake)
+        el.start()
+        val fd = socket(AF_INET, SOCK_STREAM, 0)
+        assertTrue(fd >= 0, "could not open a socket to wait on")
+        val refusing = RefusingDispatcher()
+        try {
+            // A scope of its own, not this test's: the dispatcher refuses the
+            // resumption, so this coroutine can never complete and a child of
+            // the test would hold the test open. UNDISPATCHED so the wait
+            // registers inline on this thread -- only the resume below asks the
+            // dispatcher to take it back.
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                el.awaitWriteReady(fd, logger)
+            }
+            // The failure this loop hands back never reaches the waiter's own
+            // frame, so neither of the two endings that live there runs -- the
+            // release hook the wait registered is what is left, and the base's
+            // guarded hand-off is what invokes it. This engine reaches that
+            // hand-off through `failUnarmedWaiter`; the sibling above drives
+            // the same arm failure with a dispatcher that accepts, and so
+            // passes either way. This is the one that fails if *this* engine
+            // stops routing its failure through the base.
+            awaitFdClosed(fd)
+            assertEquals(1, refusing.attempts.value, "the seam must have reached the resume")
+        } finally {
+            // No close here on purpose, for the reason the sibling above states.
             el.close()
         }
     }
@@ -458,6 +502,21 @@ class KqueueEventLoopSeamTest {
                 "the fd the waiter owned was still open $FD_CLOSE_BUDGET after the wait ended",
             )
             usleep(FD_CLOSE_POLL_US)
+        }
+    }
+
+    /**
+     * Refuses every resumption handed to it, the way a dispatcher backed by a
+     * pool shut down under the waiter does. [attempts] is atomic because the
+     * dispatch happens on the EventLoop thread and the assertion reads it on
+     * the test thread.
+     */
+    private class RefusingDispatcher : CoroutineDispatcher() {
+        val attempts: AtomicInt = AtomicInt(0)
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            attempts.incrementAndGet()
+            throw IllegalStateException("dispatcher refused the resumed continuation")
         }
     }
 

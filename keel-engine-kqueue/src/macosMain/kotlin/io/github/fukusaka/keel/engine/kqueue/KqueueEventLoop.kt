@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.native.readiness.ReadinessEventLoopLifecycle
 import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
+import io.github.fukusaka.keel.native.readiness.Registration
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena
@@ -25,7 +26,6 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
@@ -39,7 +39,6 @@ import platform.posix.pthread_join
 import platform.posix.pthread_self
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
-import kotlin.coroutines.resumeWithException
 
 /**
  * Single-threaded kqueue event loop for macOS, also serving as a [CoroutineDispatcher].
@@ -289,21 +288,17 @@ internal class KqueueEventLoop(
     }
 
     /**
-     * EventLoop-thread submission of EV_ADD for [fd]. Resumes [cont] with
-     * an exception on failure (after removing [reg] from the chain at [key]).
+     * EventLoop-thread submission of EV_ADD for [fd]. A failure is handed to
+     * the base's `failUnarmedWaiter` — the half of this override that does not
+     * differ between engines — which removes [reg] from the chain at [key] and
+     * fails its waiter through the guarded hand-off.
      *
      * [key] is computed by the caller (`register()`) so the error path
      * does not recompute `registrationKey(fd, interest)`.
      *
-     * @param reg The Registration to remove on submit failure.
+     * @param reg The Registration handed to the base's failure path.
      */
-    override fun submitArm(
-        fd: Int,
-        interest: Interest,
-        key: Long,
-        reg: Registration,
-        cont: CancellableContinuation<Unit>,
-    ) {
+    override fun submitArm(fd: Int, interest: Interest, key: Long, reg: Registration) {
         assertInEventLoop("submitArm")
         // The arm is dispatched after the chain append releases the lock, so a
         // close() can queue its teardown in between: cancelAll then resumes
@@ -319,10 +314,7 @@ internal class KqueueEventLoop(
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
-            withRegLock { removeRegistration(key, reg) }
-            cont.resumeWithException(
-                IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"),
-            )
+            failUnarmedWaiter(key, reg, IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"))
         }
     }
 

@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import io.github.fukusaka.keel.native.readiness.ReadinessEventLoopLifecycle
 import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
+import io.github.fukusaka.keel.native.readiness.Registration
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import kotlinx.cinterop.Arena
@@ -25,7 +26,6 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.get
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.staticCFunction
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import platform.linux.EPOLLERR
 import platform.linux.EPOLLHUP
@@ -42,7 +42,6 @@ import platform.posix.pthread_join
 import platform.posix.pthread_self
 import platform.posix.pthread_tVar
 import kotlin.concurrent.AtomicInt
-import kotlin.coroutines.resumeWithException
 
 /**
  * Single-threaded epoll event loop for Linux, also serving as a [CoroutineDispatcher].
@@ -323,18 +322,14 @@ internal class EpollEventLoop(
     }
 
     /**
-     * EventLoop-thread submission for the suspend path. On failure the
-     * [Registration] is removed and [cont] is resumed with the error, so a
-     * waiter never suspends forever on an fd the loop failed to watch — the
-     * same contract as `KqueueEventLoop.submitArm`.
+     * EventLoop-thread submission for the suspend path. A failure is handed to
+     * the base's `failUnarmedWaiter` — the half of this override that does not
+     * differ between engines — which removes the [Registration] from the chain
+     * and fails its waiter through the guarded hand-off — the same base call
+     * `KqueueEventLoop.submitArm` makes, so both engines answer a failed arm
+     * the same way, refusal ending included.
      */
-    override fun submitArm(
-        fd: Int,
-        interest: Interest,
-        key: Long,
-        reg: Registration,
-        cont: CancellableContinuation<Unit>,
-    ) {
+    override fun submitArm(fd: Int, interest: Interest, key: Long, reg: Registration) {
         assertInEventLoop("submitArm")
         val events = when (interest) {
             Interest.READ -> EPOLLIN
@@ -351,10 +346,7 @@ internal class EpollEventLoop(
 
         val err = addOrModifyEpoll(fd, events)
         if (err != 0) {
-            withRegLock { removeRegistration(key, reg) }
-            cont.resumeWithException(
-                IllegalStateException("epoll_ctl(ADD, fd=$fd) failed: ${errnoMessage(err)}"),
-            )
+            failUnarmedWaiter(key, reg, IllegalStateException("epoll_ctl(ADD, fd=$fd) failed: ${errnoMessage(err)}"))
         }
     }
 
