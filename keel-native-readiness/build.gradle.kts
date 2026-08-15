@@ -33,5 +33,13 @@ kotlin {
                 implementation(kotlin("test"))
             }
         }
+        nativeTest {
+            dependencies {
+                // FakeNativeSocket / FailingReleaseIoBuf / InjectedFault — the
+                // scripted POSIX seam the transport tests drive their errno and
+                // failure branches through, same as the engines' seam tests.
+                implementation(project(":keel-testing-internal"))
+            }
+        }
     }
 }
