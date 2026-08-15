@@ -242,7 +242,7 @@ class ReadinessIoTransport(
      * flush, the release of the queue (a syscall wrapper, an allocator, a
      * pointer) and the waiter's cancel, whose resume goes back through the
      * waiter's own dispatcher — the refusal `onLoopStopped` contains for the
-     * identical call. What the flush leaves behind for that release is everything a
+     * same call shape, with the close's own cause. What the flush leaves behind for that release is everything a
      * refusal did not consume. An entry leaves the deque only as its bytes are
      * accounted for — removed first, then released, since releasing first would
      * leave a released buffer queued for the next walker to release again — so
