@@ -740,10 +740,14 @@ class ReadinessIoTransport(
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
         // Opt-out: bypass coalescing when the engine config disables it.
-        // Each flush() drains synchronously through performFlush, matching
-        // the pre-#899 immediate-send behaviour for latency-sensitive
-        // workloads (mirrors NIO #897 opt-out).
-        if (!eventLoop.flushCoalescing) return performFlush()
+        // Each flush() drains synchronously, matching the pre-#899
+        // immediate-send behaviour for latency-sensitive workloads (mirrors
+        // NIO #897 opt-out) — through the funnel's shared exit, so a parked
+        // waiter hears of a completion from this entry like any other, and a
+        // refill leaves a scheduled continuation. Before the exit was shared,
+        // a waiter parked ahead of a direct flush stayed parked until the
+        // next readiness or the close, however completely that flush drained.
+        if (!eventLoop.flushCoalescing) return drainAndNotifyIfComplete()
         // Defer to next EL tick so same-tick per-emit requestFlush calls
         // coalesce into one writev (mirrors NIO #897).
         if (flushScheduled) return false
@@ -893,6 +897,14 @@ class ReadinessIoTransport(
      * exposure that predates the deferral. A throw from the
      * deferred resume is only reported — attaching it would be the very
      * post-publication append this defers to avoid.
+     *
+     * **The deferral cannot strand the waiter.** `flush()` is loop-confined
+     * (the transport's non-suspend API contract), so this frame is proof the
+     * loop is alive, and a task queued by a live loop frame is drained — by
+     * the loop's next pass, or by the stop sweep's final drain, which runs
+     * after the participants are told for exactly this. A dispatch onto a
+     * queue nothing reads again would need this frame to run after the
+     * loop's terminal sequence, which the confinement rules out.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun failFlushWaiter(drainFailure: Throwable) {
@@ -1380,15 +1392,33 @@ class ReadinessIoTransport(
     }
 
     /**
-     * Runs the drain and reports completion only when it drained everything.
-     * Both conditions, at every site that shares this: a callback inside the
-     * drain can write new data, and "the flush completed" must not be reported
-     * over a refilled queue.
+     * The funnel's shared exit: runs the drain and leaves behind either a
+     * completion report or a scheduled continuation — never a stranded queue.
+     *
+     * Completion is reported only when the drain emptied everything. Both
+     * conditions, at every entry that shares this: a callback inside the
+     * drain can write new data, and "the flush completed" must not be
+     * reported over a refilled queue. But a refill must not be *stranded*
+     * either: the pass completed, so no blocked-write path armed WRITE, and
+     * without the arm here the refill would wait for an app flush that may
+     * never come — the water-mark callback that wrote it was told the
+     * transport is writable again, not that it must flush. A pass that did
+     * not complete already armed on its own (the blocked and partial paths
+     * register before returning false).
+     *
+     * @return true when the drain completed and emptied the queue — the
+     *   answer a direct `flush()` caller reports onward; a refilled queue is
+     *   not a completed flush.
      */
-    private fun drainAndNotifyIfComplete() {
-        if (performFlush() && pendingWrites.isEmpty()) {
+    private fun drainAndNotifyIfComplete(): Boolean {
+        val completedPass = performFlush()
+        val emptied = completedPass && pendingWrites.isEmpty()
+        if (emptied) {
             notifyFlushDrained()
+        } else if (completedPass) {
+            registerWriteCallback()
         }
+        return emptied
     }
 
     /**
