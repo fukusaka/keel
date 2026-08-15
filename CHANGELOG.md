@@ -88,12 +88,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-kqueue`, `engine-epoll`: a waiter whose resumption throws — a dispatcher that refuses
-  the work, such as one backed by a pool shut down under it — no longer ends the event loop and
-  with it every connection it serves, on any of the four paths that answer a waiter: a readiness,
-  a server close, the stop sweep, and an arm that could not be made (#1059)
+- `engine-kqueue`, `engine-epoll`: a waiter whose resumption throws — a dispatcher refusing the
+  work — no longer ends the event loop (readiness dispatch, stop sweep) nor goes silently
+  unreported (server close, failed arm); every path that answers a waiter reports and continues (#1059)
 - `engine-kqueue`, `engine-epoll`: a waiter that owns a descriptor for the duration of its wait
-  now gets it released instead of leaked when the loop cannot deliver that answer (#1059)
+  now gets it released instead of leaked when the loop cannot deliver its answer (#1059)
 - `engine-kqueue`, `engine-epoll`: closing a server no longer strands the `accept()` callers
   queued behind one whose resumption throws, nor skips the listening socket's own close (#1059)
 - `engine-kqueue`, `engine-epoll`: a flush that fails no longer strands a caller suspended in
