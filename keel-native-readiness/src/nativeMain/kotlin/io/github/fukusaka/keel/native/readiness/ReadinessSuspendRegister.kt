@@ -33,11 +33,17 @@ import io.github.fukusaka.keel.logging.Logger
  *
  * ## Ownership contract
  *
- * The implementation owns [fd] while it waits. Any end other than
- * readiness — cancellation *or* failure — MUST drop the waiter, drop
- * whatever the loop records about the fd, and close it via
- * [io.github.fukusaka.keel.native.posix.closeFdSafely]. Both
- * production and fake impls are required to honour this.
+ * The implementation owns [fd] while it waits. Any end other than a
+ * normal return — cancellation, a thrown value, or an answer the loop
+ * could not hand over — MUST drop the waiter, drop whatever the loop
+ * records about the fd, and close it via
+ * [io.github.fukusaka.keel.native.posix.closeFdSafely]. Exactly one of
+ * them may do so: they are reached by different means and nothing
+ * orders them, so the production implementation arbitrates with a
+ * single claim, which the normal return takes as well — without
+ * releasing, so a caller that resumed is never handed a descriptor
+ * another ending has closed. Both production and fake impls are
+ * required to honour this.
  *
  * The middle obligation is the one that is easy to miss: the loop's
  * own user-space ledger for the fd. Left behind, it makes the next
@@ -61,13 +67,26 @@ import io.github.fukusaka.keel.logging.Logger
  * `epoll_ctl(EPOLL_CTL_ADD)`) resumes the waiter with an exception,
  * and an exceptional resume does not run a cancellation handler. The
  * connect socket was then open with no reference left to close it by.
+ *
+ * It happened again, one ending further out. Naming cancellation and
+ * failure still left out the answer the loop cannot hand over at all:
+ * a dispatcher that refuses the resumption runs neither handler, and
+ * the waiter is out of the ledger by then, so nothing later finds it.
+ * The loop releases through a hook the registration carries. Both
+ * times the missing ending was the one no local reading reaches — the
+ * reason this list is written out rather than left to the reader.
  */
 public fun interface ReadinessSuspendRegister {
 
     /**
-     * Suspends until [fd] is write-ready. Returns normally on
-     * readiness; on any other outcome MUST unregister WRITE interest
-     * and close [fd] (see the class KDoc's Ownership contract).
+     * Suspends until [fd] is write-ready, and returns [fd] to the caller
+     * by returning normally. Every other end MUST unregister WRITE
+     * interest and close [fd] (see the class KDoc's Ownership contract).
+     *
+     * Readiness is not by itself a normal return: a readiness the loop
+     * cannot hand to this waiter — its dispatcher refuses the resumption
+     * — ends the wait exceptionally, with [fd] already released. A caller
+     * takes the descriptor back on the return, not on the readiness.
      */
     public suspend fun awaitWriteReady(fd: Int, logger: Logger)
 }

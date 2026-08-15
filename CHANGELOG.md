@@ -88,16 +88,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-kqueue`, `engine-epoll`: a dispatcher refusal during a waiter's resumption no longer
-  ends the event loop nor goes unnamed; every path that answers a waiter reports it and
-  continues (#1059)
-- `engine-kqueue`, `engine-epoll`: a waiter that owns a descriptor for the duration of its wait
-  now gets it released instead of leaked when the loop cannot deliver its answer (#1059)
+- `engine-kqueue`, `engine-epoll`: a dispatcher that refuses a waiter's resumption no longer
+  ends the event loop; every hand-off reports the refusal and continues (#1059)
+- `engine-kqueue`, `engine-epoll`: a waiter that owns a descriptor for its wait now has it
+  released rather than leaked when the loop cannot deliver its answer (#1059)
 - `engine-kqueue`, `engine-epoll`: `connect()` no longer hands back a channel over a descriptor
-  the loop had already closed, when the connect wait's dispatcher takes the resumption and then
-  throws (#1059)
+  the loop had already closed (#1059)
 - `engine-kqueue`, `engine-epoll`: closing a server no longer strands the `accept()` callers
-  queued behind one whose resumption throws, nor skips the listening socket's own close (#1059)
+  behind a refused resumption, nor skips the listening socket's close (#1059)
 - `engine-kqueue`, `engine-epoll`: a flush that fails no longer strands a caller suspended in
   `awaitFlushComplete` — the drain itself resumes the wait with the failure, whichever path ran it,
   and a loop-driven drain failure now closes the connection instead of leaving it open. A flush

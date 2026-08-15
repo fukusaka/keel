@@ -1036,8 +1036,8 @@ abstract class AbstractReadinessEventLoop :
      * of the process, with no handle left to close it by.
      *
      * Cancellation was already covered by the handler below. **Failure was not**,
-     * and it is the reachable one: [submitArm] resumes this continuation with an
-     * exception when the arming syscall fails, and `invokeOnCancellation` does
+     * and it is the reachable one: the [submitArm] path fails this continuation
+     * when the arming syscall fails, and `invokeOnCancellation` does
      * not run for an exceptional resume — so before this function existed, an
      * `epoll_ctl` / `kevent` that failed with `ENFILE` left the connect socket
      * open and unreferenced. When the loop's own thread is the caller, the arm
