@@ -14,7 +14,6 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -277,8 +276,8 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
         assertEquals(1, refusing.attempts, "the seam must have reached the resume")
         assertTrue(
-            loop.errors.any { it.contains("resuming") },
-            "the refusal must be reported at ERROR, got: ${loop.errors}",
+            loop.errors.any { it.contains("the loop goes on serving") },
+            "the report must name what carries on here, got: ${loop.errors}",
         )
         // The waiter stays out of the ledger. Putting it back -- the plausible
         // "it was never resumed, so let the next event retry" repair -- makes a
@@ -347,10 +346,17 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         loop.cancelAll(WAITER_FD, Interest.READ, InjectedFault("server closing"))
 
         assertEquals(1, refusing.attempts, "the seam must have reached the refusing waiter")
-        assertIs<InjectedFault>(sibling, "the sibling behind the refusal must still be failed")
+        // By message, not just by type: the injected cause and the refusal the
+        // dispatcher throws are both InjectedFault, so a type-only assertion
+        // would accept the sibling being failed with the wrong one.
+        assertEquals(
+            "server closing",
+            (sibling as? InjectedFault)?.message,
+            "the sibling must be failed with the close's own cause, got: $sibling",
+        )
         assertTrue(
-            loop.errors.any { it.contains("failing the waiter") },
-            "the refusal must be reported at ERROR, got: ${loop.errors}",
+            loop.errors.any { it.contains("while the server closes") },
+            "the report must name what carries on here, got: ${loop.errors}",
         )
     }
 
