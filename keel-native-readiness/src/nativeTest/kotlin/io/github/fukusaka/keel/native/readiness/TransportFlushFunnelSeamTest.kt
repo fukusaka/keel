@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -369,6 +370,38 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             waiter.cancel()
             failing.releaseUnderlying()
             transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `the deferred answer reaches the waiter only after the failing task finishes`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            eventLoop.close()
+            eventLoop = FakeLoop(runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
+            val transport = transport()
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
+
+            // The retry's drain failure answers the waiter through the funnel —
+            // but the answer is a queued loop task, so it must not outrun the
+            // failing task's own wind-down (which may still be attaching
+            // suppressed failures to the instance the waiter will receive).
+            transport.onReady(Interest.WRITE)
+            assertFalse(transport.hasFlushWaiter(), "the answer is taken inline")
+            yield()
+            assertFalse(waiter.isCompleted, "but delivered only after the failing task finishes")
+
+            eventLoop.drainDispatched()
+            assertIs<InjectedFault>(waiter.await().exceptionOrNull(), "the deferred answer carries the failure")
+
+            failing.releaseUnderlying()
             tracker.assertNoLeaks()
         }
     }

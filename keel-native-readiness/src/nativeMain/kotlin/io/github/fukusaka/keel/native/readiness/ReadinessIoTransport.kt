@@ -819,8 +819,12 @@ class ReadinessIoTransport(
             // register eagerly drain a later, unrelated write its producer
             // has not flushed yet.
             drainPoisoned = pendingWrites.isNotEmpty()
-            failFlushWaiter(drainFailure)
+            // The FIN report's own failure is attached before the waiter is
+            // answered, for the same reason the answer below is deferred: the
+            // instance handed to the waiter must not be appended to after it
+            // is published.
             runStage(drainFailure) { reportAbandonedFin() }
+            failFlushWaiter(drainFailure)
             throw drainFailure
         }
     }
@@ -832,9 +836,7 @@ class ReadinessIoTransport(
      * `resumeWithException` rather than a cancellation: the two lifecycle ends
      * ([stoppedLoopFlushCause] / the teardown's cancel) say "the world went
      * away"; this says "the flush you are waiting for failed", and the caller
-     * of `awaitFlushComplete` should see that failure, not a cancellation. A
-     * throw from the resume is attached to [drainFailure] rather than allowed
-     * to displace it.
+     * of `awaitFlushComplete` should see that failure, not a cancellation.
      *
      * **Declines once the transport is closing.** Not an enumeration of who
      * drains in that state — a direct `flush()` can also race an off-loop
@@ -842,12 +844,39 @@ class ReadinessIoTransport(
      * flight, and every close runs a teardown whose own waiter stage delivers
      * the cancellation the close path has always promised. Answering here
      * first would replace it with a raw failure.
+     *
+     * **The resume is dispatched, not inline.** The slot is cleared here — so
+     * the teardown's cancel stage and the register's identity check see the
+     * answer as taken — but the waiter receives [drainFailure] from a later
+     * loop task. The entry point above this funnel may still attach
+     * suppressed failures to the same instance during its wind-down, and this
+     * platform's `Throwable` keeps that list unsynchronized: an off-loop
+     * waiter resumed inline could observe it mid-append the moment its own
+     * thread prints the failure. Every attach this transport makes happens
+     * in the current task, and the queued resume runs strictly after all of
+     * them — per drain passage: a caller-cached singleton exception thrown
+     * across two passages shares the instance by the caller's own hand, an
+     * exposure that predates the deferral. A throw from the
+     * deferred resume is only reported — attaching it would be the very
+     * post-publication append this defers to avoid.
      */
+    @Suppress("TooGenericExceptionCaught")
     private fun failFlushWaiter(drainFailure: Throwable) {
         if (!opened) return
         val cont = flushContinuation ?: return
         flushContinuation = null
-        runStage(drainFailure) { cont.resumeWithException(drainFailure) }
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                try {
+                    cont.resumeWithException(drainFailure)
+                } catch (resumeFailure: Throwable) {
+                    eventLoop.logger.warn(resumeFailure) {
+                        "resuming the flush waiter with the drain failure threw: fd=$fd"
+                    }
+                }
+            },
+        )
     }
 
     /**
