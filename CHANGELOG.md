@@ -89,8 +89,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `engine-kqueue`, `engine-epoll`: a waiter whose resumption throws — a dispatcher refusing the
-  work — no longer ends the event loop (readiness dispatch, stop sweep) nor goes silently
-  unreported (server close, failed arm); every path that answers a waiter reports and continues (#1059)
+  work — no longer ends the event loop (readiness dispatch, stop sweep) nor vanishes into a
+  generic task-guard warning (server close, failed arm); every path now names the waiter it
+  failed and continues (#1059)
 - `engine-kqueue`, `engine-epoll`: a waiter that owns a descriptor for the duration of its wait
   now gets it released instead of leaked when the loop cannot deliver its answer (#1059)
 - `engine-kqueue`, `engine-epoll`: closing a server no longer strands the `accept()` callers
