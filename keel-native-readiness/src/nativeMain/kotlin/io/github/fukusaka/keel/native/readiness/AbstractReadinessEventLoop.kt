@@ -1901,6 +1901,13 @@ abstract class AbstractReadinessEventLoop :
      * **Stale-interest safety net**: when neither a callback nor a suspend waiter
      * is found, a WARN is logged and the interest is taken back. Without that, the
      * registration re-fires until the fd is closed.
+     *
+     * **Neither hand-off may end the loop.** Both parties run code this loop does
+     * not own — a listener's `onReady`, a waiter's dispatcher — and this frame sits
+     * under the loop body and the `pthread` entry, which catches nothing. Each is
+     * guarded where it is called, reported at ERROR, and the loop goes on serving
+     * the rest; what differs is only what is taken back afterwards, which the two
+     * sites explain in place.
      */
     protected fun dispatchReady(fd: Int, interest: Interest, eofFlag: Boolean) {
         assertInEventLoop("dispatchReady")
@@ -2009,7 +2016,33 @@ abstract class AbstractReadinessEventLoop :
                 if (!keepInterest) {
                     removeInterest(fd, interest)
                 }
-                popped.continuation.resume(Unit)
+                // Guarded like the listener path above, and for the same
+                // reason: this is the loop's own frame, the loop body has
+                // nothing above it but the pthread entry, and an escape there
+                // ends the process -- taking every other connection on this
+                // engine with the one waiter that could not be resumed. The
+                // reachable source is not the waiting code but the hand-off to
+                // it: `resume` goes through the waiter's own dispatcher, which
+                // is the caller's to choose and may refuse the work (a pool
+                // shut down under it), and an Unconfined waiter runs its own
+                // continuation inline right here.
+                //
+                // Nothing is taken back on the way out. The registration left
+                // the ledger at the pop above, so the fd cannot re-fire into
+                // the same failure; the interest was already decided by the
+                // siblings still waiting. What the loop cannot do is complete
+                // the wait -- whether the resume took effect before the throw
+                // belongs to the continuation's own state machine, and either
+                // way this waiter's fate is its dispatcher's, not ours. So the
+                // report names it and the loop goes on serving the rest.
+                try {
+                    popped.continuation.resume(Unit)
+                } catch (resumeFailure: Throwable) {
+                    logger.error(resumeFailure) {
+                        "resuming the readiness waiter for fd=$fd $interest threw; " +
+                            "its registration is already gone and the loop continues"
+                    }
+                }
             } else {
                 // No handler at all: armed without one, or not taken back when the
                 // last handler deregistered. Either way the registration re-fires
