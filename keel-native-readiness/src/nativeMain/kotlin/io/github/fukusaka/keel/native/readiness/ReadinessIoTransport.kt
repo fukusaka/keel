@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
@@ -239,8 +240,9 @@ class ReadinessIoTransport(
      * for — the teardown runs its remaining stages and reaches its own
      * `closeFdSafely`. In practice the stages that can fail are the deferred
      * flush, the release of the queue (a syscall wrapper, an allocator, a
-     * pointer) and the waiter's cancel, which resumes user code — the reason
-     * `onLoopStopped` guards the identical call. What the flush leaves behind for that release is everything a
+     * pointer) and the waiter's cancel, whose resume goes back through the
+     * waiter's own dispatcher — the refusal `onLoopStopped` contains for the
+     * identical call. What the flush leaves behind for that release is everything a
      * refusal did not consume. An entry leaves the deque only as its bytes are
      * accounted for — removed first, then released, since releasing first would
      * leave a released buffer queued for the next walker to release again — so
@@ -371,15 +373,16 @@ class ReadinessIoTransport(
         // cannot -- it runs after quiescence, where nothing drains again.
         flushContinuation?.let { cont ->
             flushContinuation = null
-            // Guarded on its own, like the sweep guards each waiter it ends:
-            // this resumes user code, and a throw out of it must not take the
-            // read-side notification with it. Before the write side was ended
+            // Guarded like the sweep guards each waiter it ends, and for the
+            // sweep's real reason: the cancel goes back through the waiter's
+            // dispatcher, which can refuse it -- a cancellation handler that
+            // throws is taken by the coroutine machinery before this frame
+            // ever sees it. The refusal must not take the read-side
+            // notification below with it; before the write side was ended
             // here, onReadClosed was the only statement and could not be
             // skipped.
-            try {
+            answerFlushWaiter("cancelling the flush waiter for, while the stop notification goes on,") {
                 cont.cancel(stoppedLoopFlushCause())
-            } catch (t: Throwable) {
-                eventLoop.logger.warn(t) { "flush waiter's cancellation threw while the EventLoop was stopping" }
             }
         }
         // A FIN deferred while the loop was still running, whose drain never
@@ -830,6 +833,34 @@ class ReadinessIoTransport(
     }
 
     /**
+     * Answers the parked flush waiter with [delivery], and reports a refusal
+     * instead of letting it escape.
+     *
+     * The resume goes back through the waiter's *own* dispatcher — the
+     * caller's to choose, not this transport's — and one backed by a pool
+     * shut down under it refuses the work. The loop's hand-offs contain that
+     * refusal for their waiters; this is the same contract one layer up, and
+     * for the same reasons: the refusal is not a drain failure (whatever was
+     * being delivered already happened), the waiter owns nothing this
+     * transport must take back, and nothing can reach it afterwards — its
+     * slot was cleared when the answer was taken. What must not happen is
+     * the refusal escaping into the frame that delivered: the drain frames
+     * end the *connection* over what escapes them, and the stop notification
+     * would lose its read-side half.
+     *
+     * [what] names the delivery and what carries on without it, the same
+     * contract as the loop's hand-off reports.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun answerFlushWaiter(what: String, delivery: () -> Unit) {
+        try {
+            delivery()
+        } catch (refusal: Throwable) {
+            eventLoop.logger.error(refusal) { "$what fd=$fd threw; nothing can reach that waiter" }
+        }
+    }
+
+    /**
      * Resumes a parked flush waiter with [drainFailure] — the wait cannot
      * complete, and the failure is the reason. A no-op when nobody is parked.
      *
@@ -868,12 +899,8 @@ class ReadinessIoTransport(
         eventLoop.dispatch(
             EmptyCoroutineContext,
             Runnable {
-                try {
+                answerFlushWaiter("resuming the flush waiter with the drain failure for, while the loop goes on,") {
                     cont.resumeWithException(drainFailure)
-                } catch (resumeFailure: Throwable) {
-                    eventLoop.logger.warn(resumeFailure) {
-                        "resuming the flush waiter with the drain failure threw: fd=$fd"
-                    }
                 }
             },
         )
@@ -889,7 +916,13 @@ class ReadinessIoTransport(
         sendFinIfDrained()
         flushContinuation?.let { cont ->
             flushContinuation = null
-            cont.resume(Unit)
+            // The drain succeeded; only this waiter's dispatcher can refuse
+            // the news. A refusal must not escape into the drain frame --
+            // whose containment ends connections, and this one is healthy --
+            // nor skip the completion callback below.
+            answerFlushWaiter("resuming the drained flush waiter for, while the connection goes on serving,") {
+                cont.resume(Unit)
+            }
         }
         onFlushComplete?.invoke()
     }
