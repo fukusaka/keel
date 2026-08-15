@@ -29,6 +29,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.posix.SHUT_WR
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * Readiness-loop [IoTransport] implementation, shared by the kqueue and
@@ -88,8 +89,10 @@ class ReadinessIoTransport(
     // "nothing has failed yet" and find no evidence to the contrary -- the
     // close it runs is a no-op by then, so it cannot produce any.
     //
-    // No readiness path reaches that second entry today: all three guard on
-    // `opened`, the last of them (`onWritable`) only since the route was found.
+    // No containment path reaches that second entry today: every entry's body
+    // no-ops once `opened` is false (the readiness dispatch and the peer close
+    // through their own guards, the deferred-flush and half-close entries
+    // through the checks inside the work they run).
     // This is what keeps the invariant true if a fourth is added -- the guard's
     // own documentation invites new call sites -- so it is deliberately not
     // reachable from the seam, and no test pins it.
@@ -128,7 +131,7 @@ class ReadinessIoTransport(
         // local — a flush peeks the queue and removes an entry only as its
         // bytes are accounted for, so what a throw abandons is still queued
         // for the close to release.
-        containReadinessFailure(interest) {
+        containReadinessFailure(if (interest == Interest.READ) WHAT_READ_READINESS else WHAT_WRITE_READINESS) {
             when (interest) {
                 Interest.READ -> onReadable()
                 Interest.WRITE -> onWritable()
@@ -146,27 +149,27 @@ class ReadinessIoTransport(
      * open in CLOSE-WAIT holding its descriptor -- the loop survives, and the
      * fd is never released by anybody.
      *
-     * [readinessInterest] is the interest being handled, or `null` for the
-     * peer-close notification. An enum rather than a formatted string because
-     * this runs on every readiness event: the message is built inside the log
-     * lambda, which the level check already gates.
+     * [what] names the work being handled — one of the `WHAT_*` constants, so
+     * this per-event path allocates nothing building it: the message is built
+     * inside the log lambda, which the level check already gates.
      *
      * **It does not contain everything, despite the name.** If the connection
      * cannot be reported inactive — which in Pipeline mode is the close itself
      * — [body]'s failure is re-raised rather than swallowed; see
      * [endConnectionAfterFailure] for why, and for why that decision cannot be
      * made by calling the notification a second time. The intended recipient is
-     * the backstop in the readiness dispatch, which is the only *guard* between
-     * here and the loop's `pthread` entry point, so a new call site must be one
-     * that backstop reaches.
+     * the backstop in the readiness dispatch — or, for the deferred-flush
+     * entries, the loop's per-task guard — the only *guard* between here and
+     * the loop's `pthread` entry point, so a new call site must be one a
+     * backstop reaches. The one entry that has none is `awaitPendingFlush`'s
+     * register, which wraps this in its own catch for exactly that reason.
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun containReadinessFailure(readinessInterest: Interest?, body: () -> Unit) {
+    private inline fun containReadinessFailure(what: String, body: () -> Unit) {
         try {
             body()
         } catch (readinessFailure: Throwable) {
             eventLoop.logger.warn(readinessFailure) {
-                val what = readinessInterest?.let { "readiness for $it" } ?: "the peer close"
                 "handling $what threw; ending the connection: fd=$fd"
             }
             endConnectionAfterFailure(readinessFailure)
@@ -324,7 +327,7 @@ class ReadinessIoTransport(
     override fun onPeerClosed(interest: Interest) {
         if (interest != Interest.READ) return
         if (!opened) return
-        containReadinessFailure(readinessInterest = null) { notifyInactive() }
+        containReadinessFailure(WHAT_PEER_CLOSE) { notifyInactive() }
     }
 
     /**
@@ -694,7 +697,17 @@ class ReadinessIoTransport(
             // may make per connection, so blocking it would expose every such
             // caller to a wait that runs application teardown. The mid-shutdown
             // window keeps the dispatch, and the final drain still runs it.
-            else -> eventLoop.dispatch(EmptyCoroutineContext, Runnable { halfCloseAndReport() })
+            // Contained like the tick: this Runnable is loop-driven work on the
+            // connection with only the task guard above it, and under the
+            // coalescing opt-out the half-close drains synchronously — a drain
+            // failure here used to be swallowed with the connection left open
+            // and its queue poisoned. The inline arm above is different on
+            // purpose: its caller is on the loop, and the pipeline's error
+            // path owns the throw there, like a direct flush().
+            else -> eventLoop.dispatch(
+                EmptyCoroutineContext,
+                Runnable { containReadinessFailure(WHAT_HALF_CLOSE) { halfCloseAndReport() } },
+            )
         }
     }
 
@@ -711,6 +724,11 @@ class ReadinessIoTransport(
 
     /**
      * Attempts to send all pending writes via POSIX `write()`.
+     *
+     * A drain that throws propagates to the caller — the pipeline's error path
+     * owns it there — but only after [performFlush]'s funnel has answered the
+     * parked flush waiter and reported an unkeepable FIN deferral, so a direct
+     * caller's `catch` cannot strand either obligation.
      *
      * @return `true` if the queue is empty when this returns. `false` otherwise
      *         — which under the default coalescing means only that the drain was
@@ -732,15 +750,19 @@ class ReadinessIoTransport(
             EmptyCoroutineContext,
             Runnable {
                 if (!transport.opened) return@Runnable
+                // Consumed already? The awaited short-circuit (or a teardown's
+                // deferred drain) may have taken this schedule; running the
+                // drain again on what is usually an empty queue would report a
+                // second completion for the same flush.
+                if (!transport.flushScheduled) return@Runnable
                 transport.flushScheduled = false
-                val done = transport.performFlush()
-                if (done && transport.pendingWrites.isEmpty()) {
-                    transport.flushContinuation?.let { cont ->
-                        transport.flushContinuation = null
-                        cont.resume(Unit)
-                    }
-                    transport.onFlushComplete?.invoke()
-                    transport.sendFinIfDrained()
+                // Contained like readiness dispatch: this tick is loop-driven
+                // work on the connection, and a drain failure here used to be
+                // swallowed by the loop's task guard — waiter unanswered,
+                // connection left open. The funnel answers the waiter; the
+                // containment ends the connection.
+                transport.containReadinessFailure(WHAT_DEFERRED_FLUSH) {
+                    transport.drainAndNotifyIfComplete()
                 }
                 // The last chance this transport had to send a deferred FIN. If
                 // it is still pending after this, nothing else will take it.
@@ -752,13 +774,124 @@ class ReadinessIoTransport(
 
     private var flushScheduled = false
 
+    // Set when a drain attempt threw, cleared when the next attempt starts:
+    // distinguishes "queued bytes whose drain failed with its throw contained
+    // upstream" from every legitimate park (a waiter arriving before the
+    // producer's flush, a WouldBlock deferral whose WRITE arm is pending).
+    // Loop-confined, like the queue it describes.
+    private var drainPoisoned = false
+
+    /**
+     * Runs the drain, and owes two things to whoever is affected by its
+     * failure — through this funnel, so no entry point has to remember them:
+     * the caller parked in [awaitPendingFlush] is resumed with the failure
+     * (nothing else may ever complete that wait — under the coalescing opt-out
+     * there is no scheduled drain left, and a dispatched throw otherwise ends
+     * in a task guard that answers nobody), and a FIN deferral that just lost
+     * its last completion path is reported ([reportAbandonedFin] self-guards:
+     * on a live loop the queued entries still have completion paths, so
+     * nothing is reported or given up).
+     *
+     * What the funnel deliberately does **not** do is end the connection: the
+     * loop-driven entries (the coalesced tick, [onWritable], the register's
+     * short-circuit, the dispatched half-close) wrap it in
+     * [containReadinessFailure] and decide that; a direct `flush()` caller —
+     * including an on-loop `shutdownOutput()` — gets the throw and the
+     * pipeline's error path decides instead. The teardown's deferred drain is
+     * the remaining entry: there the stages carry the failure, and the waiter
+     * is answered by the close's own cancellation (see [failFlushWaiter]).
+     */
+    @Suppress("TooGenericExceptionCaught")
     private fun performFlush(): Boolean {
         if (pendingWrites.isEmpty()) return true
         flushCount++
-        if (pendingWrites.size == 1) {
-            return flushSingle()
+        drainPoisoned = false
+        try {
+            if (pendingWrites.size == 1) {
+                return flushSingle()
+            }
+            return flushGather()
+        } catch (drainFailure: Throwable) {
+            // Only when the failed entries are still queued: a drain that
+            // emptied the queue on its way to throwing (a refused release
+            // after the bytes were sent or dropped) leaves nothing poisoned
+            // behind, and a mark that outlived those entries would make the
+            // register eagerly drain a later, unrelated write its producer
+            // has not flushed yet.
+            drainPoisoned = pendingWrites.isNotEmpty()
+            // The FIN report's own failure is attached before the waiter is
+            // answered, for the same reason the answer below is deferred: the
+            // instance handed to the waiter must not be appended to after it
+            // is published.
+            runStage(drainFailure) { reportAbandonedFin() }
+            failFlushWaiter(drainFailure)
+            throw drainFailure
         }
-        return flushGather()
+    }
+
+    /**
+     * Resumes a parked flush waiter with [drainFailure] — the wait cannot
+     * complete, and the failure is the reason. A no-op when nobody is parked.
+     *
+     * `resumeWithException` rather than a cancellation: the two lifecycle ends
+     * ([stoppedLoopFlushCause] / the teardown's cancel) say "the world went
+     * away"; this says "the flush you are waiting for failed", and the caller
+     * of `awaitFlushComplete` should see that failure, not a cancellation.
+     *
+     * **Declines once the transport is closing.** Not an enumeration of who
+     * drains in that state — a direct `flush()` can also race an off-loop
+     * `markClosing` — but an invariant: [opened] false means a `close()` is in
+     * flight, and every close runs a teardown whose own waiter stage delivers
+     * the cancellation the close path has always promised. Answering here
+     * first would replace it with a raw failure.
+     *
+     * **The resume is dispatched, not inline.** The slot is cleared here — so
+     * the teardown's cancel stage and the register's identity check see the
+     * answer as taken — but the waiter receives [drainFailure] from a later
+     * loop task. The entry point above this funnel may still attach
+     * suppressed failures to the same instance during its wind-down, and this
+     * platform's `Throwable` keeps that list unsynchronized: an off-loop
+     * waiter resumed inline could observe it mid-append the moment its own
+     * thread prints the failure. Every attach this transport makes happens
+     * in the current task, and the queued resume runs strictly after all of
+     * them — per drain passage: a caller-cached singleton exception thrown
+     * across two passages shares the instance by the caller's own hand, an
+     * exposure that predates the deferral. A throw from the
+     * deferred resume is only reported — attaching it would be the very
+     * post-publication append this defers to avoid.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun failFlushWaiter(drainFailure: Throwable) {
+        if (!opened) return
+        val cont = flushContinuation ?: return
+        flushContinuation = null
+        eventLoop.dispatch(
+            EmptyCoroutineContext,
+            Runnable {
+                try {
+                    cont.resumeWithException(drainFailure)
+                } catch (resumeFailure: Throwable) {
+                    eventLoop.logger.warn(resumeFailure) {
+                        "resuming the flush waiter with the drain failure threw: fd=$fd"
+                    }
+                }
+            },
+        )
+    }
+
+    /**
+     * The completion every drained flush owes, in one place: the deferred FIN
+     * first — the transport's own obligation, and both callbacks below run
+     * user code that may close the transport, after which the FIN is
+     * deliberately not sent — then the parked waiter, then [onFlushComplete].
+     */
+    private fun notifyFlushDrained() {
+        sendFinIfDrained()
+        flushContinuation?.let { cont ->
+            flushContinuation = null
+            cont.resume(Unit)
+        }
+        onFlushComplete?.invoke()
     }
 
     /**
@@ -842,10 +975,12 @@ class ReadinessIoTransport(
         failure = runStage(failure) { cancelWriteIdleTimeout() }
         failure = runStage(failure) { releaseAllPendingWrites() }
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
+        // The transport's own cause, not the stopped-loop one -- this teardown
+        // runs on a live loop, and the wait ends because the transport closed.
         failure = runStage(failure) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
-                cont.cancel(stoppedLoopFlushCause())
+                cont.cancel(closedTransportFlushCause())
             }
         }
         // Withdraw the registrations before dropping the fd. The map is keyed by
@@ -1120,6 +1255,35 @@ class ReadinessIoTransport(
 
     private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
 
+    /**
+     * The cancel hook a parked waiter installs, hoisted so the park path pays
+     * one allocation per transport rather than one per await. Clears whatever
+     * is stored: at most one waiter exists at a time (see [awaitPendingFlush]),
+     * and a resumed continuation never runs its cancel handler.
+     */
+    private val clearFlushWaiter: (Throwable?) -> Unit = { flushContinuation = null }
+
+    /**
+     * The register's short-circuit: runs the drain the coalesced tick had
+     * scheduled, now that the waiter is stored — contained like the tick it
+     * replaces, and caught outright on top: this can run inline inside the
+     * suspend builder, where a re-raise from a failed wind-down would be
+     * thrown over a continuation the funnel already resumed. There is no
+     * backstop above that frame to hand it to; the warning is the report.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun drainScheduledForWaiter() {
+        try {
+            containReadinessFailure(WHAT_DEFERRED_FLUSH) {
+                drainAndNotifyIfComplete()
+            }
+        } catch (windDownFailure: Throwable) {
+            eventLoop.logger.warn(windDownFailure) {
+                "ending the connection after a failed awaited flush threw as well: fd=$fd"
+            }
+        }
+    }
+
     private fun registerWriteCallback() {
         // Declined once the transport is closing, like armRead: the ledger
         // update this follows runs user code (onWritabilityChanged), and a
@@ -1174,17 +1338,18 @@ class ReadinessIoTransport(
 
         // Retry drain immediately when fd becomes writable — do NOT go through
         // flush() which would re-defer to the next tick.
-        val done = performFlush()
-        // Both conditions, like the coalesced tick: a callback inside the
-        // drain can write new data, and "the flush completed" must not be
-        // reported over a refilled queue.
-        if (done && pendingWrites.isEmpty()) {
-            flushContinuation?.let { cont ->
-                flushContinuation = null
-                cont.resume(Unit)
-            }
-            onFlushComplete?.invoke()
-            sendFinIfDrained()
+        drainAndNotifyIfComplete()
+    }
+
+    /**
+     * Runs the drain and reports completion only when it drained everything.
+     * Both conditions, at every site that shares this: a callback inside the
+     * drain can write new data, and "the flush completed" must not be reported
+     * over a refilled queue.
+     */
+    private fun drainAndNotifyIfComplete() {
+        if (performFlush() && pendingWrites.isEmpty()) {
+            notifyFlushDrained()
         }
     }
 
@@ -1204,6 +1369,29 @@ class ReadinessIoTransport(
                     !opened -> cont.cancel(closedTransportFlushCause())
                     pendingWrites.isEmpty() -> cont.resume(Unit)
                     else -> {
+                        // About to park on a flush only a future event can
+                        // complete. If the loop has stopped polling, there is
+                        // no such event -- and this Runnable may be running in
+                        // the drain the stop sweep performs *after* walking the
+                        // participants, in which case onLoopStopped has already
+                        // been and gone and nothing is left to end the wait.
+                        // Storing here would reproduce the exact hang this
+                        // change exists to remove. Checked ahead of the
+                        // short-circuit too, which a still-queued tick may yet
+                        // drain in the sweep's final pass: cancellation is the
+                        // honest answer for a wait racing the wind-down, even
+                        // when those bytes go out moments later.
+                        if (eventLoop.isFinishing()) {
+                            cont.cancel(stoppedLoopFlushCause())
+                            return@Runnable
+                        }
+                        // Stored *before* the short-circuit drain below, so a
+                        // drain failure reaches this caller through the funnel
+                        // in performFlush. The old order drained first and
+                        // stored after -- a throw between the two left this
+                        // continuation neither stored nor resumed, parked for
+                        // good behind whatever guard swallowed it.
+                        flushContinuation = cont
                         // If a coalesced flush is already queued to run on the next
                         // EL tick, run it now instead of waiting for the tick to fire.
                         // The awaitFlushComplete path is the backpressure gate under
@@ -1216,27 +1404,29 @@ class ReadinessIoTransport(
                         // callers already suspended in `awaitPendingFlush()` short-circuit.
                         if (flushScheduled) {
                             flushScheduled = false
-                            val done = performFlush()
-                            if (done && pendingWrites.isEmpty()) {
-                                sendFinIfDrained()
-                                cont.resume(Unit)
-                                return@Runnable
-                            }
+                            drainScheduledForWaiter()
+                            // Answered by that drain -- resumed, failed by the
+                            // funnel, or cancelled by a containment close?
+                            // Then nothing is parked: skip the cancel hook and
+                            // its per-await allocation, which the common
+                            // drained-inline backpressure path never needs.
+                            if (flushContinuation !== cont) return@Runnable
+                        } else if (drainPoisoned && !eventLoop.hasCallbackRegistration(fd, Interest.WRITE)) {
+                            // Queued bytes whose last drain threw, with the
+                            // throw contained upstream -- the pipeline's flush
+                            // route converts it to an error event -- before
+                            // this caller arrived to wait, and nothing armed:
+                            // no completion path is left. Parking would wait
+                            // for an event that cannot come; retry the drain
+                            // with the waiter stored instead, so its outcome
+                            // -- a completion, a WRITE arm, or the funnel's
+                            // answer -- ends or grounds the wait. The flag is
+                            // what keeps every legitimate park (a waiter
+                            // arriving before the producer's flush) parked.
+                            drainScheduledForWaiter()
+                            if (flushContinuation !== cont) return@Runnable
                         }
-                        // About to park on a flush only a future event can
-                        // complete. If the loop has stopped polling, there is
-                        // no such event -- and this Runnable may be running in
-                        // the drain the stop sweep performs *after* walking the
-                        // participants, in which case onLoopStopped has already
-                        // been and gone and nothing is left to end the wait.
-                        // Storing here would reproduce the exact hang this
-                        // change exists to remove.
-                        if (eventLoop.isFinishing()) {
-                            cont.cancel(stoppedLoopFlushCause())
-                            return@Runnable
-                        }
-                        flushContinuation = cont
-                        cont.invokeOnCancellation { flushContinuation = null }
+                        cont.invokeOnCancellation(clearFlushWaiter)
                     }
                 }
             }
@@ -1338,5 +1528,13 @@ class ReadinessIoTransport(
          * for allocators that do not structure memory by size class.
          */
         const val READ_BUFFER_HINT_COUNT = 16
+
+        // [containReadinessFailure] labels — constants so the per-event
+        // dispatch path builds no strings outside the gated log lambda.
+        private const val WHAT_READ_READINESS = "readiness for READ"
+        private const val WHAT_WRITE_READINESS = "readiness for WRITE"
+        private const val WHAT_PEER_CLOSE = "the peer close"
+        private const val WHAT_DEFERRED_FLUSH = "the deferred flush"
+        private const val WHAT_HALF_CLOSE = "the dispatched half-close"
     }
 }
