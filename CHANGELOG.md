@@ -88,6 +88,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: a flush that fails no longer strands a caller suspended in
+  `awaitFlushComplete` — the drain itself resumes the wait with the failure, whichever path ran it,
+  and a loop-driven drain failure now closes the connection instead of leaving it open (#1058)
 - `engine-kqueue`, `engine-epoll`: a flush failure can no longer strand a pending write outside the
   queue — an entry leaves it only once its bytes are sent or definitively lost, so a refused release
   loses at most the buffer that refused, and cannot leak the entries behind it, wedge write
