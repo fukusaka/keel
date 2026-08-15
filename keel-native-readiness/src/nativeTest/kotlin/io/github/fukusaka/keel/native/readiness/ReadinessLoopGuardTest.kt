@@ -423,6 +423,13 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
         assertEquals(1, refusing.attempts, "the seam must have reached the resume")
         assertEquals(1, released, "the arm failure must release what the waiter owned")
+        // Like its three siblings: the report names the delivery and what
+        // carries on without it, which is the contract the helper's KDoc states
+        // and the only part of the report a reader acts on.
+        assertTrue(
+            loop.errors.any { it.contains("while the loop goes on arming others") },
+            "the report must name what carries on here, got: ${loop.errors}",
+        )
     }
 
     /** Records the interests it is handed, for the served-after-failure assertion. */

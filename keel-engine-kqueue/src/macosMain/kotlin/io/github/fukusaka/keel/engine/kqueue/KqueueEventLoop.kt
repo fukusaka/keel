@@ -289,8 +289,10 @@ internal class KqueueEventLoop(
     }
 
     /**
-     * EventLoop-thread submission of EV_ADD for [fd]. Resumes [cont] with
-     * an exception on failure (after removing [reg] from the chain at [key]).
+     * EventLoop-thread submission of EV_ADD for [fd]. On failure it removes
+     * [reg] from the chain at [key] and fails [cont] with the error — through
+     * the base's hand-off helper, because that resume goes through the waiter's
+     * own dispatcher and a refusal must not escape this loop.
      *
      * [key] is computed by the caller (`register()`) so the error path
      * does not recompute `registrationKey(fd, interest)`.
@@ -325,7 +327,7 @@ internal class KqueueEventLoop(
             // own dispatcher too, and a refusal here would leave a waiter
             // nothing can reach -- on the connect path, holding a descriptor
             // whose own release paths cannot run either.
-            deliverOrRelease(reg, "failing the waiter for, after its arm could not be made,") {
+            deliverOrRelease(reg, "failing the waiter for, while the loop goes on arming others,") {
                 cont.resumeWithException(
                     IllegalStateException("kevent(EV_ADD, fd=$fd) failed: ${errnoMessage(kevErr)}"),
                 )

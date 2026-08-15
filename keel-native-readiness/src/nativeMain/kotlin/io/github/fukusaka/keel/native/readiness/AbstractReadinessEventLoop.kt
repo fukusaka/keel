@@ -784,12 +784,16 @@ abstract class AbstractReadinessEventLoop :
          * dispatcher, which may refuse the work.
          *
          * The waiter is unreachable by then: it left the ledger when the
-         * answer was taken, so no later sweep or cancellation can find it, and
-         * the answer that failed is the only one this loop had. A waiter that
-         * owns something for the duration of its wait — the connect path owns
-         * its descriptor — releases it here, because none of its own endings
-         * will run. `null` for a waiter that owns nothing: an `accept()`
-         * caller's server fd belongs to the server.
+         * answer was taken, so nothing later can find it, and the answer that
+         * failed is the only one this loop had. A waiter that owns something
+         * for the duration of its wait — the connect path owns its descriptor
+         * — releases it here. On most routes that is the only release that
+         * runs; on the stop sweep the waiter's own cancellation handler runs
+         * first, because a cancelled continuation runs its handlers before the
+         * resumption the dispatcher then refuses. Both call the same release,
+         * whose one-shot claim admits one of them. `null` for a waiter that
+         * owns nothing: an `accept()` caller's server fd belongs to the
+         * server.
          *
          * Called at most once, and guarded by its callers. On the loop thread
          * for every route but one: a loop closed without ever running does its
@@ -1033,8 +1037,11 @@ abstract class AbstractReadinessEventLoop :
             // produced. The returned [Registration] was never appended, so the
             // caller's `invokeOnCancellation { unregister(reg) }` is a no-op and
             // the rest of its handler -- closing the fd it owns -- still runs.
-            // Guarded for the reason the sweep guards the identical call: this
-            // runs the caller's cancellation handler, which is user code.
+            // Guarded on its own reason, not the sweep's: the continuation has
+            // not suspended yet, so the dispatcher the sweep guards against is
+            // never consulted -- `invokeOnCancellation`, installed a line later
+            // on an already-cancelled continuation, runs inline instead. What
+            // is left to guard is that handler, which is the caller's code.
             try {
                 cont.cancel(
                     CancellationException("EventLoop stopped before fd=$fd could register for $interest"),
@@ -1083,7 +1090,7 @@ abstract class AbstractReadinessEventLoop :
      * the waiter is already out of the ledger. The hook passed to [register] is
      * the only thing left that knows this descriptor is owned.
      *
-     * [unregister] runs on both paths too, and is documented as a no-op when the
+     * [unregister] runs on the two that end in this frame, and is a no-op when the
      * node is already gone — which it is on the [submitArm] path, which removes
      * it before resuming. Keeping it on the failure path is defensive: the only
      * other way to fail a waiter is [cancelAll], whose one caller passes
@@ -1458,8 +1465,9 @@ abstract class AbstractReadinessEventLoop :
      * resumed with an exception does not. Measured on this target rather than
      * assumed. That asymmetry used to be the whole reason for the choice — the
      * connect path's handler was the only thing closing the socket, so resuming
-     * here leaked it. [awaitWritableOwningFd] now releases on both endings, so
-     * that consequence is gone and this stands on the reason below instead. The
+     * here leaked it. [awaitWritableOwningFd] now releases on every one of its
+     * endings, so that consequence is gone and this stands on the reason below
+     * instead. The
      * asymmetry itself is unchanged, and a handler is still the only thing a
      * caller can hang clean-up on without wrapping the wait.
      *

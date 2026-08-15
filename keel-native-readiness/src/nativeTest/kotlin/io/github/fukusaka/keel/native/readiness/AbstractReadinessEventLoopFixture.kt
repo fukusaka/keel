@@ -214,7 +214,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
                 // Through the helper, as both engines do: the arm failure is a
                 // hand-off like any other, and a test asserting on it must see
                 // the shape production has.
-                deliverOrRelease(reg, "failing the waiter for, after its arm could not be made,") {
+                deliverOrRelease(reg, "failing the waiter for, while the loop goes on arming others,") {
                     cont.resumeWith(Result.failure(IllegalStateException("arm(fd=$fd) failed: errno=$err")))
                 }
                 return
