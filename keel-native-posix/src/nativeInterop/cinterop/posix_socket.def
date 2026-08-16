@@ -413,8 +413,8 @@ static inline void keel_set_nosigpipe(int fd) {
  *
  * The name differs by platform: macOS defines `IOV_MAX` in <limits.h>,
  * glibc leaves that undefined unless a feature-test macro asks for it and
- * defines `UIO_MAXIOV` in <sys/uio.h> instead. Both are 1024 (measured on
- * macOS 15 / Linux 6.14). `sysconf(_SC_IOV_MAX)` answers on both and is the
+ * defines `UIO_MAXIOV` in <sys/uio.h> instead. Both are 1024 on the hosts
+ * this project builds on. `sysconf(_SC_IOV_MAX)` answers on both and is the
  * fallback; POSIX guarantees at least `_XOPEN_IOV_MAX` (16), which is the
  * floor if even sysconf declines.
  *

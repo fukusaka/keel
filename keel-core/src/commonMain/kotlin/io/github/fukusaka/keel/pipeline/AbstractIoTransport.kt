@@ -593,10 +593,11 @@ abstract class AbstractIoTransport(
     // successful `write`/`writev` syscall). Failed / WouldBlock outcomes
     // do not count as partial writes. A flush that issues several syscalls
     // — a gather too large for the platform's iovec limit is offered in
-    // batches — still counts once: the ratio these two feed is "how often
-    // did a syscall take only part of what it was offered", and a batch
-    // boundary is not that. Nor is it "how often did a flush leave bytes
-    // behind": a flush that ends in WouldBlock leaves bytes behind and
+    // batches — still counts once, which is what keeps the ratio these two
+    // feed per *flush* rather than per syscall: "how often did a flush
+    // observe a syscall taking only part of its offer". A batch boundary is
+    // not a partial write. Nor is the ratio "how often did a flush leave
+    // bytes behind": a flush that ends in WouldBlock leaves bytes behind and
     // counts zero, deliberately — a socket that took nothing is a different
     // slow path from one that took some.
 

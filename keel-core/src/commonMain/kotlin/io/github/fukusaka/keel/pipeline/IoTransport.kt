@@ -289,7 +289,9 @@ interface IoTransport {
      *
      * **May raise, on implementations whose flush does.** The buffered
      * writes are sent first, so a caller already on the transport's own
-     * context can be told they could not be. A caller off that context only
+     * context can be told they could not be — though not when the
+     * implementation defers the drain to a later tick, which the readiness
+     * engines do by default: that tick contains the failure instead. A caller off that context only
      * queues the request, so the failure is reported and contained there
      * instead of travelling back.
      */

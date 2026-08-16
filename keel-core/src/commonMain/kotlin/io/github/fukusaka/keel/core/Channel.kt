@@ -120,8 +120,11 @@ interface Channel : AutoCloseable {
      * failure as something to handle where it surfaces, not as something to
      * ask after.
      *
-     * Only the readiness engines report it at all today. The others do not,
-     * in ways that differ between them; converging them is tracked.
+     * The readiness engines report it. Among the others only nio does, and
+     * only with flush coalescing off — on the default coalescing path it
+     * loses the failure to the loop's task guard. netty, nwconnection,
+     * nodejs and io_uring do not report it at all, in ways that differ
+     * between them; converging them is tracked.
      */
     suspend fun flush() {
         requestFlush()
@@ -156,11 +159,13 @@ interface Channel : AutoCloseable {
      * Engines that use the [requestFlush] + [awaitFlushComplete] pattern
      * must override.
      *
-     * **May raise, for the same reason [flush] does** — but only when this
-     * waiter reaches a deferred drain before whatever else would run it. A
-     * drain that already finished is over: this returns normally, or fails
-     * with the cancellation a close installs. It is not a way to ask, after
-     * the fact, whether the last flush reached the peer.
+     * **May raise, for the same reason [flush] does**, on two routes: when
+     * this waiter reaches a deferred drain before whatever else would run
+     * it, and when it re-drives a queue whose previous drain failed with
+     * that failure contained elsewhere. Otherwise a finished drain is over —
+     * this returns normally, or fails with the cancellation a close
+     * installs. It is not a way to ask, after the fact, whether the last
+     * flush reached the peer.
      */
     suspend fun awaitFlushComplete() {}
 
@@ -206,8 +211,10 @@ interface Channel : AutoCloseable {
      * not be sent. Under flush coalescing — on by default in the readiness
      * engines — the drain runs on a later tick instead, which contains the
      * failure and ends the connection rather than raising here. A caller off
-     * the engine's thread only queues the request, so it is always reported
-     * there instead of travelling back.
+     * the engine's thread does not carry the failure back either way: it
+     * queues the request, or — on an engine whose loop has already stopped,
+     * where the buffered writes will never drain — is refused and reported
+     * there.
      */
     fun shutdownOutput()
 
