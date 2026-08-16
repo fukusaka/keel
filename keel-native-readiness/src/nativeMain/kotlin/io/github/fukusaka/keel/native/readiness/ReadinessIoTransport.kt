@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.core.RefusedWriteException
+import io.github.fukusaka.keel.core.TransportFailureException
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.IOV_MAX
@@ -281,6 +282,17 @@ class ReadinessIoTransport(
      * then there is only the one.
      */
     @Suppress("TooGenericExceptionCaught")
+    /**
+     * Why this transport's write side ended, when it ended in a failure
+     * rather than a close its caller asked for.
+     *
+     * A refusal discards the queue on its way out, so a caller that arrives
+     * afterwards finds an empty queue and a closed transport — indistinguishable
+     * from an orderly close unless the reason is kept. Set once, by the drain
+     * that hit it.
+     */
+    private var transportFailure: TransportFailureException? = null
+
     private fun endConnectionAfterFailure(readinessFailure: Throwable) {
         // Gated on the sticky record, not on the notification's own flag: on a
         // second entry the first wind-down has already failed, and calling the
@@ -885,7 +897,24 @@ class ReadinessIoTransport(
             // instance handed to the waiter must not be appended to after it
             // is published.
             runStage(drainFailure) { reportAbandonedFin() }
+            // Before the connection ends, not after: failFlushWaiter declines
+            // once `opened` is false, so answering has to happen while this
+            // transport still counts as live.
             failFlushWaiter(drainFailure)
+            if (drainFailure is RefusedWriteException) {
+                // The write side is finished, and which path ran the drain is
+                // not something a caller chooses -- so it cannot be what
+                // decides whether the connection survives. The loop-driven
+                // entries reach the same end through their containment; this
+                // makes the direct callers reach it too, and the second call
+                // is a no-op because `markClosing` flips `opened` once.
+                //
+                // Recorded first: a later waiter has no queue left to inspect
+                // -- the refusal discarded it -- so the reason is the only
+                // thing that can tell it what happened.
+                transportFailure = drainFailure
+                endConnectionAfterFailure(drainFailure)
+            }
             throw drainFailure
         }
     }
@@ -1509,7 +1538,12 @@ class ReadinessIoTransport(
         failure = runStage(failure) { releaseQueuedWrites() }
         failure = runStage(failure) { updatePendingBytes(-orphanedBytes) }
         failure?.let { cause.addSuppressed(it) }
-        raiseLeavingRemainderArmed(cause)
+        // No arm: a refusal ends the connection, and the teardown releases
+        // whatever a resumed producer wrote while this ran. Arming for it
+        // would register interest in a descriptor about to be withdrawn --
+        // the shape this raise had before the connection's end became part
+        // of the contract.
+        throw cause
     }
 
     // --- Async write readiness ---
@@ -1958,8 +1992,30 @@ class ReadinessIoTransport(
     }
 
     /** The other reason a flush wait ends unsatisfied: the transport itself is gone. */
-    private fun closedTransportFlushCause() =
-        CancellationException("transport closed before the pending flush on fd=$fd could drain")
+    /**
+     * Why a wait on this transport's flush ended, for a transport that is
+     * closed.
+     *
+     * A close the caller asked for is a cancellation: ending work it started
+     * is what cancellation means. A close the *transport* forced — because a
+     * send was refused — is not, and carrying it as one would make a caller
+     * choose between swallowing real cancellations and letting a dead
+     * connection cancel its scope. The recorded reason decides which this is;
+     * it also rides along as the cancellation's cause when there is one, so a
+     * caller that only looks at the cancellation can still see why.
+     *
+     * Delivering the failure *as* a failure, rather than as a cancellation
+     * carrying one, is the next step and not this one — the cancellation
+     * shape stays until the waiter paths change with it.
+     */
+    private fun closedTransportFlushCause(): CancellationException {
+        val why = transportFailure
+        return if (why == null) {
+            CancellationException("transport closed before the pending flush on fd=$fd could drain")
+        } else {
+            CancellationException("the pending flush on fd=$fd ended with the connection: ${why.message}", why)
+        }
+    }
 
     private companion object {
         /**

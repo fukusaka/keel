@@ -104,13 +104,15 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a refused gather still arms what the water-mark callback wrote`() = runBlocking {
+    fun `a refused gather discards what the water-mark callback wrote`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // Dropping the queue crosses low water, which resumes the producer
             // synchronously -- and a producer that answers by writing leaves
-            // the queue non-empty at the raise. The reporting exit's arm sits
-            // past the throw, so unless the raise arms, those bytes wait for
-            // the close with nothing scheduled to attempt them.
+            // the queue non-empty at the raise. Those bytes go with the
+            // connection: the send was refused, so there is nothing left to
+            // send them on, and arming for them would register interest in a
+            // descriptor about to be withdrawn. What they must not do is
+            // leak.
             val transport = transport()
             var refilled = false
             transport.onWritabilityChanged = { writable ->
@@ -127,15 +129,12 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
             assertFailsWith<RefusedWriteException> { transport.flush() }
 
             assertTrue(refilled, "the drop's ledger update must have resumed the producer")
-            assertEquals(7, transport.pendingByteCount(), "the refill is not part of what was dropped")
-            assertTrue(
-                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
-                "the refill must have a continuation, got: ${eventLoop.armedCallbacks}",
-            )
+            assertFalse(transport.isOpen, "a refused send leaves nothing to send on")
+            assertEquals(0, transport.pendingByteCount(), "the refill went with the connection")
             fake.assertAllConsumed()
 
             transport.onWritabilityChanged = null
-            transport.close()
+            eventLoop.drainDispatched()
             tracker.assertNoLeaks()
         }
     }
@@ -273,6 +272,34 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
 
         transport.close()
         tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a refused send ends the connection even when no loop path contained it`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The loop-driven entries wrap the drain and end the connection on
+            // a failure. A direct flush -- the shape a coalescing opt-out
+            // takes -- had no such wrapper, so the same refusal left the
+            // transport open over a write side that can no longer send. Which
+            // path ran the drain is not something a caller chooses, so it
+            // cannot be what decides whether the connection survives.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            var inactive = false
+            transport.onReadClosed = { inactive = true }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            assertFailsWith<RefusedWriteException> { transport.flush() }
+
+            assertFalse(transport.isOpen, "a refused send leaves nothing to send on")
+            assertTrue(inactive, "and the connection is reported inactive")
+            assertEquals(0, transport.pendingByteCount(), "the discarded bytes leave no ledger behind")
+            fake.assertAllConsumed()
+
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
     }
 
     @Test
