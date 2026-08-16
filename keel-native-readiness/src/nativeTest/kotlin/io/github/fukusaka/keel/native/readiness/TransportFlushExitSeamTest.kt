@@ -7,8 +7,7 @@ import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.async
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
@@ -91,9 +90,7 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             // coalescing opt-out path). The drain succeeds -- the waiter must
             // hear about it from this entry too, not stay parked until the
             // next readiness or the close.
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the flush")
 
             fake.enqueueWrite(fd, WriteResult.Written(5))
@@ -148,8 +145,7 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             // tick. Arming WRITE as well would race that tick -- the loser
             // fires on the queue the winner emptied, reporting a completion
             // nothing awaited and draining bytes a producer had not flushed.
-            eventLoop.close()
-            eventLoop = FakeLoop(runDispatchedInline = false, flushCoalescing = true)
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
             val transport = transport()
             var completions = 0
             transport.onFlushComplete = { completions++ }
@@ -239,9 +235,7 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             }
             transport.write(tracker.allocate(total).apply { writerIndex = total })
 
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the flush")
 
             assertFalse(transport.flush(), "the outer flush still reports its own WouldBlock")
@@ -369,8 +363,7 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             // readiness wins the race. The tick still fires — its schedule flag
             // is only consumed by the awaited short-circuit — and lands on the
             // queue readiness emptied and reported.
-            eventLoop.close()
-            eventLoop = FakeLoop(runDispatchedInline = false, flushCoalescing = true)
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
             fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
             val transport = transport()
             var completions = 0
@@ -501,8 +494,7 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             // itself: a producer that wrote after the awaited short-circuit
             // took the schedule has not asked for a flush yet, and the spent
             // tick draining those bytes would jump its coalescing turn.
-            eventLoop.close()
-            eventLoop = FakeLoop(runDispatchedInline = false)
+            rebuildLoop(runDispatchedInline = false)
             fake.enqueueWrite(fd, WriteResult.Written(5))
             val transport = transport()
             var completions = 0
@@ -511,9 +503,7 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             transport.write(tracker.allocate(16).apply { writerIndex = 5 })
             assertFalse(transport.flush(), "coalescing defers the drain to the tick")
 
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertTrue(waiter.await().isSuccess, "the short-circuit drained the wait inline")
             assertEquals(1, completions, "the drained flush reports once")
 
@@ -548,19 +538,16 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             // queue. The enclosing frame's FIN send ran before this deferral
             // existed, so the reentrant frame itself owes it: any exit that
             // observes the queue drained does.
-            eventLoop.close()
-            eventLoop = FakeLoop(runDispatchedInline = false, flushCoalescing = true)
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
             fake.enqueueWrite(fd, WriteResult.Written(5), WriteResult.Written(5))
             val transport = transport()
             val scope = this
-            var waiter: kotlinx.coroutines.Deferred<Result<Unit>>? = null
+            var waiter: Deferred<Result<Unit>>? = null
             transport.onFlushComplete = {
                 if (waiter == null) {
                     transport.write(tracker.allocate(16).apply { writerIndex = 5 })
                     transport.shutdownOutput()
-                    waiter = scope.async(start = CoroutineStart.UNDISPATCHED) {
-                        runCatching { transport.awaitPendingFlush() }
-                    }
+                    waiter = scope.parkFlushWaiter(transport)
                 }
             }
             transport.write(tracker.allocate(16).apply { writerIndex = 5 })
@@ -578,12 +565,4 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
         }
     }
 
-    private companion object {
-        /** The transport's water marks; the imports tie the tests to the real thresholds. */
-        const val HIGH_WATER = IoTransport.DEFAULT_HIGH_WATER_MARK
-        const val LOW_WATER = IoTransport.DEFAULT_LOW_WATER_MARK
-
-        /** Wall-clock bound for the parked-waiter tests; sibling seam budget. */
-        const val FUNNEL_TIMEOUT_MS = 5_000L
-    }
 }

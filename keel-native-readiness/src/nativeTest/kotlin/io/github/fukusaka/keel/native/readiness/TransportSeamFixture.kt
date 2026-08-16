@@ -5,6 +5,11 @@ package io.github.fukusaka.keel.native.readiness
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
+import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
@@ -63,4 +68,37 @@ internal abstract class TransportSeamFixture : AbstractReadinessEventLoopFixture
 
     /** The transport under test, wired to the fixture's loop, allocator and syscall fake. */
     protected fun transport(): ReadinessIoTransport = ReadinessIoTransport(fd, eventLoop, tracker, fake)
+
+    /**
+     * Replaces the [setUp] loop with one built to the test's shape, closing
+     * the old one first — the pair the tests all need in that order, owned
+     * here so a copy cannot drop the close and silently skip the fixture
+     * loop's teardown.
+     */
+    protected fun rebuildLoop(
+        onLoopThread: Boolean = true,
+        runDispatchedInline: Boolean = true,
+        flushCoalescing: Boolean = true,
+    ) {
+        eventLoop.close()
+        eventLoop = FakeLoop(onLoopThread, runDispatchedInline, flushCoalescing)
+    }
+
+    /**
+     * Parks a flush waiter and hands back its outcome: started undispatched
+     * so an on-loop register runs inline inside this call, with the result
+     * caught so a failed await cannot cancel the test's own scope before
+     * its assertions run.
+     */
+    protected fun CoroutineScope.parkFlushWaiter(transport: ReadinessIoTransport): Deferred<Result<Unit>> =
+        async(start = CoroutineStart.UNDISPATCHED) {
+            runCatching { transport.awaitPendingFlush() }
+        }
 }
+
+/** Wall-clock bound for the seam tests' parked waiters and dispatched work; shared budget. */
+internal const val FUNNEL_TIMEOUT_MS = 5_000L
+
+/** The transport's water marks; tying the tests to the real thresholds. */
+internal const val HIGH_WATER = IoTransport.DEFAULT_HIGH_WATER_MARK
+internal const val LOW_WATER = IoTransport.DEFAULT_LOW_WATER_MARK
