@@ -1298,7 +1298,9 @@ class ReadinessIoTransport(
      * release to the end: the entries behind the refusal are still walked,
      * the split entry is still re-offset — losing that re-offset meant
      * re-sending bytes the peer already had — and the ledger and the WRITE
-     * re-arm are still settled before the refusal is raised.
+     * re-arm are still settled before the refusal is raised, on every batch
+     * that leaves the queue non-empty, whether the kernel took it whole or
+     * in part.
      */
     private fun flushGather(): Boolean {
         // Batched, because the syscall's region limit is not a byte limit: a
@@ -1384,12 +1386,27 @@ class ReadinessIoTransport(
                 failure?.let { throw it }
                 return false
             }
-            failure?.let { throw it }
+            failure?.let { raiseLeavingRemainderArmed(it) }
         }
         // Everything this drain was handed is out. A queue that is not empty
         // now holds what a report-side producer wrote while it ran, and the
         // exit gives that its own continuation.
         return true
+    }
+
+    /**
+     * Raises [failure] out of the gather drain, arming write readiness first
+     * if anything is still queued.
+     *
+     * The refusal ends this drain, not the queue. A batch the kernel took
+     * *whole* leaves the entries behind it queued with this frame as the last
+     * thing that was going to offer them, so it owes the same arm the partial
+     * branch gives — there is no later batch to reach them, and the arm's own
+     * failure joins the one being raised rather than replacing it.
+     */
+    private fun raiseLeavingRemainderArmed(failure: Throwable): Nothing {
+        if (pendingWrites.isEmpty()) throw failure
+        throw runStage(failure) { registerWriteCallback() } ?: failure
     }
 
     /**
