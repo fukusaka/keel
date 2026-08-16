@@ -177,6 +177,51 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a raise with a coalescing tick pending leaves the arm to the tick`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The reporting exit declines to arm against a scheduled tick,
+            // because the tick will drain this queue and the arm would buy a
+            // redundant syscall plus a wake the tick has already made stale.
+            // The raising exit is the same exit for this purpose.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            val transport = transport()
+            var refilled = false
+            transport.onWritabilityChanged = { writable ->
+                if (writable && !refilled) {
+                    refilled = true
+                    transport.write(tracker.allocate(16).apply { writerIndex = 7 })
+                }
+            }
+            val half = HIGH_WATER / 2 + 1
+            transport.write(tracker.allocate(half).apply { writerIndex = half })
+            transport.write(tracker.allocate(half).apply { writerIndex = half })
+            assertFalse(transport.flush(), "coalescing defers the drain to a tick")
+            assertTrue(eventLoop.armedCallbacks.isEmpty(), "nothing is armed yet, got: ${eventLoop.armedCallbacks}")
+
+            // Write readiness beats the tick: the drain runs with the tick
+            // still scheduled, and the kernel refuses it.
+            fake.enqueueWritev(fd, WriteResult.Failed(EPIPE))
+            transport.onReady(Interest.WRITE)
+
+            assertTrue(refilled, "the drop's ledger update must have resumed the producer")
+            assertTrue(
+                eventLoop.armedCallbacks.isEmpty(),
+                "the pending tick owns the continuation, got: ${eventLoop.armedCallbacks}",
+            )
+            // The readiness containment ends the connection, whose teardown
+            // takes the refill with it -- so the arm this test is about would
+            // have been for a transport that is already gone.
+            assertFalse(transport.isOpen, "a loop-driven drain failure ends the connection")
+            assertEquals(0, transport.pendingByteCount(), "and its teardown releases what was queued")
+            fake.assertAllConsumed()
+
+            transport.onWritabilityChanged = null
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a close during the batch loop stops it before the next write`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // Off-loop close: the flag flips at once but the teardown is
