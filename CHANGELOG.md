@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: transport teardown stats report the longest run of drains that moved no bytes, so a
+  socket that stays unwritable is visible (#1062)
 - `native-posix`: `IOV_MAX` is published so gather callers can bound their batches (#1062)
 - `core`: `LoggerFactory.guarded()` — wraps a factory so its loggers cannot throw, and is applied to
   the configured factory by every engine (#1038)
@@ -97,6 +99,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it accepts — over `IOV_MAX` it wrote nothing, and the queue was dropped as if sent (#1062)
 - `engine-kqueue`, `engine-epoll`: a write the kernel definitively refused now reports the
   failure instead of a completed flush (#1062)
+- `native-posix`: `ENOBUFS` from a write is now retryable rather than a refusal, so a kernel
+  briefly out of buffer space no longer ends the connection (#1062)
 - `engine-kqueue`, `engine-epoll`: a flush that raises now arms write readiness for whatever a
   resumed producer wrote before the raise, instead of leaving it queued until close — including a
   completion callback that writes and then throws (#1062)
