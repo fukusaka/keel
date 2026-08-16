@@ -803,8 +803,9 @@ class ReadinessIoTransport(
      * deferred FIN      the reentrant branch itself, over the queue it
      *                   emptied (no outer decision can cover a half-close
      *                   made by the report's own callbacks)
-     * parked waiter     the register's post-drain re-check (its park
-     *                   happens after the outer report gate ran)
+     * parked waiter     pre-fold park: the outer frame's report. Park
+     *                   inside the fold window (after the outer report
+     *                   gate ran): the register's post-drain re-check
      * onFlushComplete   nobody — deliberately folded; the reentrant
      *                   flush's return value is the pump's signal
      * arm / tick        the outer frame, over the queue as every
@@ -982,13 +983,18 @@ class ReadinessIoTransport(
     }
 
     /**
-     * The one shape of a successful waiter answer, shared by every path that
-     * resumes it: clear the slot first — the identity checks elsewhere read
-     * it — then deliver through the refusal guard. The message names the
-     * path that emptied the queue, so a refusal report still says which one.
+     * The one shape of a successful waiter answer, shared by the three paths
+     * that resume one — whose preconditions differ: the report and the
+     * register's re-check answer the continuation the slot holds, but the
+     * already-drained arm answers a caller that was never stored, while the
+     * slot may hold an *earlier* waiter whose report the outer frame still
+     * owes. The clear is therefore gated on identity — clearing another
+     * waiter's slot here stranded it until close, measured. The message
+     * names the path that emptied the queue, so a refusal report still says
+     * which one.
      */
     private fun resumeDrainedWaiter(cont: CancellableContinuation<Unit>, what: String) {
-        flushContinuation = null
+        if (flushContinuation === cont) flushContinuation = null
         answerFlushWaiter(what) {
             cont.resume(Unit)
         }
