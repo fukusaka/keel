@@ -108,6 +108,11 @@ interface Channel : AutoCloseable {
      *
      * For fire-and-forget flushing (no completion wait), call
      * [requestFlush] directly.
+     *
+     * **May raise, on engines whose send can fail definitively.** A send the
+     * platform refused outright is a failure, not a completed flush, and the
+     * bytes it was carrying are gone; whatever remains queued is released
+     * when the channel closes.
      */
     suspend fun flush() {
         requestFlush()
@@ -141,6 +146,9 @@ interface Channel : AutoCloseable {
      * Default: no-op (assumes [flush] override handles completion).
      * Engines that use the [requestFlush] + [awaitFlushComplete] pattern
      * must override.
+     *
+     * **May raise, for the same reason [flush] does** — this is the half
+     * that waits, so a definitive send failure is the answer it gets.
      */
     suspend fun awaitFlushComplete() {}
 
@@ -180,6 +188,11 @@ interface Channel : AutoCloseable {
      * idle timeout (disabled by default). Call [close] instead when the FIN
      * has to go out regardless — it supersedes a pending half-close and
      * discards what was still queued.
+     *
+     * **May raise, on engines whose send can fail definitively**, since the
+     * buffered writes go first: a caller already on the engine's own thread
+     * is told they could not be. A caller off that thread only queues the
+     * request, so the failure is reported there instead of travelling back.
      */
     fun shutdownOutput()
 
