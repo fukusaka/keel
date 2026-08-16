@@ -1428,8 +1428,12 @@ class ReadinessIoTransport(
      * The callbacks this exit runs — the water-mark's writability signal
      * inside the drain, the waiter's resumed frame and [onFlushComplete]
      * inside the report — may `flush()` again, synchronously. A reentrant
-     * arrival drains without reporting or arming; the outer frame decides
-     * both over the queue as every contributor left it. The report's
+     * arrival drains without reporting or arming — though it does send a
+     * FIN deferred over the queue it emptied: the transport's own
+     * obligation, which a half-close made by the report's own callbacks
+     * defers after the outer frame's send already ran, so no outer decision
+     * can cover it. The outer frame decides
+     * the report and the arm over the queue as every contributor left it. The report's
      * predicate is therefore the **queue**, not this frame's own pass: a
      * remainder this pass blocked on may have been finished by a reentrant
      * flush — the canonical backpressure resume does exactly that — and its
@@ -1442,7 +1446,8 @@ class ReadinessIoTransport(
      * synchronously parks its waiter *after* this frame's report gate has
      * run, over a queue its reentrant drain may have emptied in silence —
      * so the register re-checks the queue after its short-circuited drain
-     * and answers its own waiter.
+     * and answers its own waiter, and the reentrant branch above sends a
+     * FIN deferred in that same window.
      *
      * An episode is a queue that held bytes and ran dry, which is why the
      * report also requires bytes pending *at entry*: the continuations this
@@ -1482,7 +1487,15 @@ class ReadinessIoTransport(
      *   answer.
      */
     private fun drainAndNotifyIfComplete(): Boolean {
-        if (draining) return performFlush() && pendingWrites.isEmpty()
+        if (draining) {
+            val emptiedReentrantly = performFlush() && pendingWrites.isEmpty()
+            // The FIN is owed by any exit that observes the queue drained,
+            // and the outer frame cannot cover this one: a half-close from
+            // the report's own callbacks defers its FIN after the outer
+            // frame's send already ran. Self-guarded, like the outer send.
+            if (pendingWrites.isEmpty()) sendFinIfDrained()
+            return emptiedReentrantly
+        }
         val hadPending = pendingWrites.isNotEmpty()
         draining = true
         try {
