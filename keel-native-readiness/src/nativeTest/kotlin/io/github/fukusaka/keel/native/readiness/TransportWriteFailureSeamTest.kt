@@ -284,6 +284,42 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
             tracker.assertNoLeaks()
         }
     }
+
+    @Test
+    fun `a reentrant flush during the batch loop does not leave it indexing a drained queue`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The canonical backpressure resume, met by a queue that needs
+            // more than one batch: the ledger update between batches resumes
+            // a producer, and a producer that answers by flushing drains from
+            // the same queue this frame is still counting through.
+            val transport = transport()
+            val each = 64
+            repeat(IOV_MAX + 2) { transport.write(tracker.allocate(each).apply { writerIndex = each }) }
+            var reentered = false
+            transport.onWritabilityChanged = { writable ->
+                if (writable && !reentered) {
+                    reentered = true
+                    fake.enqueueWritev(fd, WriteResult.Written(each * 2))
+                    transport.flush()
+                }
+            }
+            fake.enqueueWritev(fd, WriteResult.Written(IOV_MAX * each))
+
+            assertTrue(transport.flush(), "the queue drains, whoever drained the tail of it")
+
+            assertTrue(reentered, "the ledger update must have resumed the producer")
+            assertEquals(0, transport.pendingByteCount(), "every region is out")
+            assertEquals(
+                2,
+                fake.writevCalls,
+                "the reentrant drain took the second batch; this frame must not re-offer it",
+            )
+            fake.assertAllConsumed()
+            transport.onWritabilityChanged = null
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
 }
 
 /**
