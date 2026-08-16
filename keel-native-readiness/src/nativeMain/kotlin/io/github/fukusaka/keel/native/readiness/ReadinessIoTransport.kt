@@ -790,11 +790,14 @@ class ReadinessIoTransport(
 
     /**
      * True while [drainAndNotifyIfComplete] is on this stack. A reentrant
-     * `flush()` from one of the exit's own callbacks drains without
-     * reporting or arming — the outer frame decides both over the queue as
-     * every contributor left it. (Opt-out only by construction: a coalesced
-     * reentrant `flush()` defers to its tick and never reaches this exit.)
-     * Loop-confined, like every field here.
+     * arrival from one of the exit's own callbacks drains — and sends a FIN
+     * deferred over a queue it emptied — without reporting or arming: the
+     * outer frame decides those over the queue as every contributor left
+     * it. Two routes arrive reentrantly: a reentrant `flush()` under the
+     * coalescing opt-out (coalesced, it defers to its tick instead), and —
+     * in either configuration — the register's short-circuited drain, when
+     * a report callback awaits synchronously. Loop-confined, like every
+     * field here.
      */
     private var draining = false
 
@@ -1432,7 +1435,8 @@ class ReadinessIoTransport(
      * FIN deferred over the queue it emptied: the transport's own
      * obligation, which a half-close made by the report's own callbacks
      * defers after the outer frame's send already ran, so no outer decision
-     * can cover it. The outer frame decides
+     * can cover it (a mid-drain reentrancy's send, by contrast, is merely
+     * earlier than the outer frame's own). The outer frame decides
      * the report and the arm over the queue as every contributor left it. The report's
      * predicate is therefore the **queue**, not this frame's own pass: a
      * remainder this pass blocked on may have been finished by a reentrant
@@ -1489,10 +1493,16 @@ class ReadinessIoTransport(
     private fun drainAndNotifyIfComplete(): Boolean {
         if (draining) {
             val emptiedReentrantly = performFlush() && pendingWrites.isEmpty()
-            // The FIN is owed by any exit that observes the queue drained,
-            // and the outer frame cannot cover this one: a half-close from
-            // the report's own callbacks defers its FIN after the outer
-            // frame's send already ran. Self-guarded, like the outer send.
+            // The FIN is owed by any exit that observes the queue
+            // drained. For a half-close made by the report's own callbacks
+            // no outer decision can cover it — the outer frame's send ran
+            // before the deferral existed; for a mid-drain reentrancy the
+            // outer frame would cover it later, and this send is merely
+            // early. Self-guarded and idempotent either way, like the
+            // outer send. Gated on the queue because that is how the
+            // rule reads — measured equivalent to gating on this pass, since
+            // whichever frame's drain empties the queue completes its own
+            // pass and pays the FIN itself.
             if (pendingWrites.isEmpty()) sendFinIfDrained()
             return emptiedReentrantly
         }
