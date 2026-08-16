@@ -38,6 +38,23 @@ import kotlinx.cinterop.ULongVar
  * long-standing gap where errno-branch behaviour could only be
  * verified via integration-style stress tests (see
  * `IoUringPipelinedServerTest` history).
+ *
+ * ## What a result means
+ *
+ * **[WriteResult.Failed] and [ReadResult.Failed] are definitive, on every
+ * implementation of this interface.** Callers do not read the errno to
+ * decide what to do next and do not retry: a refused write ends the
+ * connection's write side. **An implementation owes that classification
+ * itself** — retry what is retryable (`EINTR` is the one the bundled C
+ * wrappers loop on) and report what is merely blocked as
+ * [WriteResult.WouldBlock] / [ReadResult.WouldBlock]. An implementation
+ * that answers `Failed` for a transient condition costs the connection.
+ *
+ * The corollary belongs to the caller: **the shape of a request is theirs
+ * to respect, not this interface's to diagnose.** A gather offering more
+ * regions than the platform accepts writes nothing and answers `EINVAL`,
+ * which no implementation can distinguish afterwards from any other
+ * argument error — see [IOV_MAX] and [writev].
  */
 @OptIn(ExperimentalForeignApi::class)
 public interface NativeSocket {
@@ -69,21 +86,6 @@ public interface NativeSocket {
      */
     public fun write(fd: Int, buf: CPointer<ByteVar>, length: Int): WriteResult
 
-    /*
-     * **`Failed` means definitive, on every implementation of this
-     * interface.** Callers do not classify the errno and do not retry: a
-     * refused write ends the connection's write side. An implementation owes
-     * that classification itself — retry what is retryable (`EINTR` is the
-     * one the bundled wrappers loop on) and report what is merely blocked as
-     * `WouldBlock`. Returning `Failed` for a transient condition costs the
-     * connection.
-     *
-     * **Request shape is the caller's to respect, not this interface's to
-     * diagnose.** A gather offering more regions than the platform accepts
-     * writes nothing and answers `EINVAL`, which no implementation can
-     * distinguish afterwards from any other argument error — see [IOV_MAX].
-     */
-
     /**
      * Gather-write: writes [count] regions to [fd] in a single
      * `writev(2)` call.
@@ -100,9 +102,14 @@ public interface NativeSocket {
      * stay with the caller, who must keep the pointed-to buffers alive
      * for the duration of the call.
      *
+     * **At most [IOV_MAX] regions.** More is not a large write: the
+     * platform takes none of them and answers `EINVAL`, indistinguishable
+     * afterwards from any other argument error, so a caller with a longer
+     * queue issues several calls rather than one.
+     *
      * @param count number of active entries — only `bases[0..count-1]` /
-     *   `lens[0..count-1]` are read. Must be `>= 0` and within the
-     *   caller's allocated capacity for both arrays.
+     *   `lens[0..count-1]` are read. Must be `>= 0`, within the caller's
+     *   allocated capacity for both arrays, and no greater than [IOV_MAX].
      */
     public fun writev(
         fd: Int,
