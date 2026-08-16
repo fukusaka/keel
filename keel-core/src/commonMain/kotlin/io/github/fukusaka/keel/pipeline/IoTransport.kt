@@ -171,6 +171,13 @@ interface IoTransport {
      *         Implementations predating this rule may still answer true
      *         over a queue their own water-mark callback refilled;
      *         converging them is tracked follow-up work.
+     *
+     * **May raise.** A send the platform definitively refused is a failure,
+     * not a completed flush, and reaches the caller as one — as does a
+     * failure in the bookkeeping around it (releasing a buffer, resuming a
+     * waiter). Whatever is unfinished stays queued for the close. A caller
+     * on the pipeline route does not see this: `DefaultPipeline` catches and
+     * propagates it as a pipeline error.
      */
     fun flush(): Boolean
 

@@ -1321,16 +1321,20 @@ class ReadinessIoTransport(
      */
     private fun flushGather(): Boolean {
         // Batched, because the syscall's region limit is not a byte limit: a
-        // gather offering more than IOV_MAX regions writes nothing at all and
-        // answers EINVAL. The loop is what keeps that an implementation
+        // gather offering more than IOV_MAX regions writes nothing at all
+        // and fails. The loop is what keeps that an implementation
         // detail -- a caller that queued more than the kernel takes in one
         // call still sees its flush drain, in as many calls as that takes.
         //
-        // Bounded by the queue this drain was handed, not by the queue as it
-        // stands: the ledger update below resumes a producer at the low-water
-        // crossing, and what that producer writes is a new episode owed a
-        // continuation, not more work for this call. Chasing it here would let
-        // one connection hold the loop thread for as long as it keeps writing.
+        // Bounded by the *count* this drain was handed, not by the queue as
+        // it stands: the ledger update below resumes a producer at the
+        // low-water crossing, and what that producer writes is a new episode
+        // owed a continuation, not more work for this call. Chasing it here
+        // would let one connection hold the loop thread for as long as it
+        // keeps writing. (A count, not an identity: a reentrant drain that
+        // takes the entries this frame owed leaves the later batches offering
+        // the producer's newer ones. Order is preserved and nothing is lost —
+        // what the bound buys is termination, not which bytes go.)
         //
         // And bounded by a close that lands *while* it runs -- a callback the
         // ledger update resumes can end the connection, and the batches after

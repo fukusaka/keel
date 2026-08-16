@@ -412,7 +412,7 @@ static inline void keel_set_nosigpipe(int fd) {
  * fallback; POSIX guarantees at least `_XOPEN_IOV_MAX` (16), which is the
  * floor if even sysconf declines.
  *
- * A caller that offers more than this gets `EINVAL` from the syscall with
+ * A caller that offers more than this gets a definitive failure with
  * nothing written — indistinguishable at the errno from a genuine argument
  * error, which is why callers bound the batch rather than classify the
  * failure afterwards.

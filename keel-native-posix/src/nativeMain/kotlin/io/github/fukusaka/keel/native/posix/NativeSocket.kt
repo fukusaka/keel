@@ -52,7 +52,7 @@ import kotlinx.cinterop.ULongVar
  *
  * The corollary belongs to the caller: **the shape of a request is theirs
  * to respect, not this interface's to diagnose.** A gather offering more
- * regions than the platform accepts writes nothing and answers `EINVAL`,
+ * regions than the platform accepts writes nothing and fails,
  * which no implementation can distinguish afterwards from any other
  * argument error — see [IOV_MAX] and [writev].
  */
@@ -103,7 +103,7 @@ public interface NativeSocket {
      * for the duration of the call.
      *
      * **At most [IOV_MAX] regions.** More is not a large write: the
-     * platform takes none of them and answers `EINVAL`, indistinguishable
+     * platform takes none of them and fails, indistinguishable
      * afterwards from any other argument error, so a caller with a longer
      * queue issues several calls rather than one.
      *

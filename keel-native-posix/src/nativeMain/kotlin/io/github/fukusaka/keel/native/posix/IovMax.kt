@@ -11,10 +11,14 @@ import posix_socket.keel_iov_max
  * flush: the value is a kernel build constant, and the gather path consults
  * it on every call.
  *
- * **Offering more is not a partial write — it is `EINVAL` with nothing
- * sent.** The errno does not distinguish "too many regions" from any other
- * argument error, so a caller cannot classify its way out afterwards; it has
- * to keep each batch within this bound and issue another call for the rest.
+ * **Offering more is not a partial write — nothing is sent and the call
+ * fails.** Which errno says so depends on the syscall underneath: measured
+ * at `IOV_MAX + 1` regions, `writev(2)` answers `EINVAL` and `sendmsg(2)` —
+ * what the Linux build issues, for its per-call `SIGPIPE` suppression —
+ * answers `EMSGSIZE`. Neither distinguishes "too many regions" from the
+ * other ways that errno arises, so a caller cannot classify its way out
+ * afterwards; it has to keep each batch within this bound and issue another
+ * call for the rest.
  */
 @OptIn(ExperimentalForeignApi::class)
 public val IOV_MAX: Int = keel_iov_max()
