@@ -217,6 +217,12 @@ static inline int keel_shutdown(int fd, int how) {
  * wrappers above — callers never need to handle EINTR).
  */
 static ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int count) {
+    /*
+     * Variable-length array, so its size is the caller's `count`. Callers
+     * keep that within `keel_iov_max()` because the kernel takes no more --
+     * which also bounds this to ~16 KiB of stack. Before that bound existed
+     * it grew with the queue.
+     */
     struct iovec iov[count];
     for (int i = 0; i < count; i++) {
         iov[i].iov_base = (void *)bases[i];
