@@ -5,9 +5,10 @@ import kotlin.test.assertTrue
 
 /**
  * The published region limit is what every gather caller batches against, so
- * its own shape is worth pinning: a batch loop that computes
- * `minOf(owed, IOV_MAX)` offers zero regions if the constant is not positive,
- * writes nothing, and never decrements what it owes.
+ * its own shape is worth pinning: a batch loop computing `minOf(owed, IOV_MAX)`
+ * against a non-positive constant offers zero regions, and a zero-region write
+ * is reported as a definitive failure — which drops the whole queue. The
+ * constant is the only thing standing between a batching caller and that.
  *
  * The exact value is the platform's and not asserted — POSIX requires at
  * least 16 (`_XOPEN_IOV_MAX`), and both hosts this project builds on report
