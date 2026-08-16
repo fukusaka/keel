@@ -93,6 +93,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it accepts — over `IOV_MAX` it wrote nothing, and the queue was dropped as if sent (#1062)
 - `engine-kqueue`, `engine-epoll`: a write the kernel definitively refused now reports the
   failure instead of a completed flush (#1062)
+- `engine-kqueue`, `engine-epoll`: a flush that raises now arms write readiness for whatever a
+  resumed producer wrote before the raise, instead of leaving it queued until close (#1062)
 - `engine-kqueue`, `engine-epoll`: a stale write-readiness wake or an overtaken coalescing
   tick no longer repeats the flush-completion report (#1061)
 - `engine-kqueue`, `engine-epoll`: a queue refilled mid-drain by the water-mark callback now
