@@ -642,5 +642,4 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             tracker.assertNoLeaks()
         }
     }
-
 }

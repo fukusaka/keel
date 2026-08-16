@@ -3,7 +3,6 @@
 package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.native.posix.WriteResult
-import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -564,5 +563,4 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             tracker.assertNoLeaks()
         }
     }
-
 }

@@ -168,6 +168,9 @@ interface IoTransport {
      *         `true` reaches the caller. false when the send is still
      *         pending (e.g. EAGAIN, an async submission) — implementations
      *         that always complete asynchronously always answer false.
+     *         Implementations predating this rule may still answer true
+     *         over a queue their own water-mark callback refilled;
+     *         converging them is tracked follow-up work.
      */
     fun flush(): Boolean
 

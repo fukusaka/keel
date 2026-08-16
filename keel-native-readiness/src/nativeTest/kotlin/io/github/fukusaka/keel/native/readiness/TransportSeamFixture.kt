@@ -6,11 +6,11 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
-import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
 import platform.posix.close
