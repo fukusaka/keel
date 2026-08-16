@@ -594,7 +594,11 @@ abstract class AbstractIoTransport(
     // do not count as partial writes. A flush that issues several syscalls
     // — a gather too large for the platform's iovec limit is offered in
     // batches — still counts once: the ratio these two feed is "how often
-    // did a flush leave bytes behind", and a batch boundary is not that.
+    // did a syscall take only part of what it was offered", and a batch
+    // boundary is not that. Nor is it "how often did a flush leave bytes
+    // behind": a flush that ends in WouldBlock leaves bytes behind and
+    // counts zero, deliberately — a socket that took nothing is a different
+    // slow path from one that took some.
 
     /**
      * Total `flush` calls on this transport — not syscalls: one call may
@@ -609,7 +613,9 @@ abstract class AbstractIoTransport(
      * Number of `flush` invocations that observed a partial write
      * (`writtenBytes < totalBytes` from a successful `write`/`writev`).
      * The ratio `partialWriteCount / flushCount` is the empirical
-     * partial-write firing rate for this transport's lifetime.
+     * partial-write firing rate for this transport's lifetime — not the rate
+     * at which flushes left bytes queued, which also counts the socket
+     * taking nothing at all.
      */
     protected var partialWriteCount: Long = 0
 

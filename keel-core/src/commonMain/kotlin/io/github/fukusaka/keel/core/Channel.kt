@@ -110,11 +110,18 @@ interface Channel : AutoCloseable {
      * [requestFlush] directly.
      *
      * **May raise.** A send the platform refused outright is a failure, not a
-     * completed flush, and the bytes it was carrying are gone. Only the
-     * readiness engines say so today; the rest answer such a refusal as a
-     * completed flush, which is a gap in them rather than a difference in
-     * kind, and converging them is tracked. Write callers should be prepared
-     * for the failure either way.
+     * completed flush, and the bytes it was carrying are gone.
+     *
+     * **Which call sees it is the call that ran the drain that hit it**, and
+     * no call is guaranteed to be that call: this one when it drains in
+     * place, [awaitFlushComplete] when the drain was deferred and this waiter
+     * reached it first, and neither when a scheduled drain got there first —
+     * that path contains the failure and ends the connection. Treat the
+     * failure as something to handle where it surfaces, not as something to
+     * ask after.
+     *
+     * Only the readiness engines report it at all today. The others do not,
+     * in ways that differ between them; converging them is tracked.
      */
     suspend fun flush() {
         requestFlush()
@@ -149,10 +156,11 @@ interface Channel : AutoCloseable {
      * Engines that use the [requestFlush] + [awaitFlushComplete] pattern
      * must override.
      *
-     * **May raise, for the same reason [flush] does** — this is the half
-     * that waits, so a definitive send failure is the answer it gets. It is
-     * also the half that carries it when the engine defers the drain, which
-     * the readiness engines do by default.
+     * **May raise, for the same reason [flush] does** — but only when this
+     * waiter reaches a deferred drain before whatever else would run it. A
+     * drain that already finished is over: this returns normally, or fails
+     * with the cancellation a close installs. It is not a way to ask, after
+     * the fact, whether the last flush reached the peer.
      */
     suspend fun awaitFlushComplete() {}
 
@@ -193,14 +201,13 @@ interface Channel : AutoCloseable {
      * has to go out regardless — it supersedes a pending half-close and
      * discards what was still queued.
      *
-     * **May raise**, since the buffered writes go first: a caller already on
-     * the engine's own thread can be told they could not be sent. Whether it
-     * is depends on when the drain runs — an engine that coalesces flushes
-     * into a later tick, which the readiness engines do by default, contains
-     * the failure there and reports it rather than raising here. A caller off
+     * **May raise**, since the buffered writes go first: a caller on the
+     * engine's own thread whose half-close drains in place is told they could
+     * not be sent. Under flush coalescing — on by default in the readiness
+     * engines — the drain runs on a later tick instead, which contains the
+     * failure and ends the connection rather than raising here. A caller off
      * the engine's thread only queues the request, so it is always reported
-     * there instead of travelling back. [awaitFlushComplete] is the reliable
-     * way to observe it.
+     * there instead of travelling back.
      */
     fun shutdownOutput()
 

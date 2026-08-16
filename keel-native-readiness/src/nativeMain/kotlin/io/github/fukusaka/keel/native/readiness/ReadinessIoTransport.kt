@@ -396,8 +396,10 @@ class ReadinessIoTransport(
         // the deferral through `abandonDeferredFin` and reads the loop's
         // termination hand-off -- and it is the last thing standing between
         // the sweep and the connection learning it is over. (Not guarded
-        // against the logger: those are guarded once, where the engine wraps
-        // the configured factory.)
+        // against a logger *implementation*: the engine wraps the configured
+        // factory once, so its own calls cannot throw. A message expression
+        // is evaluated at the call site and is outside that wrapper, which is
+        // why the ones here build no strings.)
         try {
             reportAbandonedFin()
         } catch (t: Throwable) {
