@@ -47,10 +47,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **BREAKING** (`core`): a send the platform definitively refused is reported as a failure rather
-  than a completed flush, so `IoTransport.flush()` may now raise where it returned `true`. On the
-  `Channel` surface that reaches `flush()` / `awaitFlushComplete()` (the awaited half raises) and
-  `shutdownOutput()` (delegated bare); the handler route stays contained, since `DefaultPipeline`
-  catches and propagates it as a pipeline error (#1062)
+  than a completed flush — `IoTransport.flush()` may raise where it returned `true`, reaching the
+  `Channel` surface through `awaitFlushComplete()` and `shutdownOutput()` (#1062)
 - `engine-kqueue`, `engine-epoll`: the two readiness engines now share one implementation, in the new
   `keel-native-readiness` module (#1052)
 - `native-posix`: no longer carries that implementation, so `engine-io-uring`,

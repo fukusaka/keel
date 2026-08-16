@@ -598,8 +598,10 @@ abstract class AbstractIoTransport(
     // observe a syscall taking only part of its offer". A batch boundary is
     // not a partial write. Nor is the ratio "how often did a flush leave
     // bytes behind": a flush that ends in WouldBlock leaves bytes behind and
-    // counts zero, deliberately — a socket that took nothing is a different
-    // slow path from one that took some.
+    // counts zero, deliberately — a syscall that took nothing is a different
+    // slow path from one that took some, and batching makes the two
+    // coexist, since a later batch can block after an earlier one went out
+    // whole.
 
     /**
      * Total `flush` calls on this transport — not syscalls: one call may

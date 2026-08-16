@@ -112,19 +112,15 @@ interface Channel : AutoCloseable {
      * **May raise.** A send the platform refused outright is a failure, not a
      * completed flush, and the bytes it was carrying are gone.
      *
-     * **Which call sees it is the call that ran the drain that hit it**, and
-     * no call is guaranteed to be that call: this one when it drains in
-     * place, [awaitFlushComplete] when the drain was deferred and this waiter
-     * reached it first, and neither when a scheduled drain got there first —
-     * that path contains the failure and ends the connection. Treat the
-     * failure as something to handle where it surfaces, not as something to
-     * ask after.
+     * **It never travels back through the request half.** [requestFlush]
+     * runs the drain through the pipeline, which converts a handler failure
+     * into an error event rather than returning it — so it is
+     * [awaitFlushComplete], the half that waits, that raises. See there for
+     * when it has something left to observe and when it does not.
      *
-     * The readiness engines report it. Among the others only nio does, and
-     * only with flush coalescing off — on the default coalescing path it
-     * loses the failure to the loop's task guard. netty, nwconnection,
-     * nodejs and io_uring do not report it at all, in ways that differ
-     * between them; converging them is tracked.
+     * Engines differ in whether they report a refused send at all, and this
+     * is the contract they are converging on rather than one they all meet;
+     * converging them is tracked.
      */
     suspend fun flush() {
         requestFlush()
@@ -159,13 +155,18 @@ interface Channel : AutoCloseable {
      * Engines that use the [requestFlush] + [awaitFlushComplete] pattern
      * must override.
      *
-     * **May raise, for the same reason [flush] does**, on two routes: when
-     * this waiter reaches a deferred drain before whatever else would run
-     * it, and when it re-drives a queue whose previous drain failed with
-     * that failure contained elsewhere. Otherwise a finished drain is over —
-     * this returns normally, or fails with the cancellation a close
-     * installs. It is not a way to ask, after the fact, whether the last
-     * flush reached the peer.
+     * **May raise**, whenever a failing drain is still there to be observed:
+     * one this call runs itself, one it re-drives because the last drain
+     * threw with the queue left behind, or one that fails elsewhere while
+     * this call is parked — the transport answers a parked waiter with the
+     * failure whatever ran into it.
+     *
+     * **It raises nothing when the failure is already spent.** A drain that
+     * threw *and* emptied the queue — a refused send discards what it could
+     * not deliver — leaves this call nothing to find, so it returns
+     * normally; the failure went to the pipeline's error path when it
+     * happened. This is therefore not a way to ask, after the fact, whether
+     * the last flush reached the peer.
      */
     suspend fun awaitFlushComplete() {}
 

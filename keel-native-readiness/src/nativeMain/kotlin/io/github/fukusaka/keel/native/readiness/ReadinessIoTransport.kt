@@ -399,7 +399,7 @@ class ReadinessIoTransport(
         // against a logger *implementation*: the engine wraps the configured
         // factory once, so its own calls cannot throw. A message expression
         // is evaluated at the call site and is outside that wrapper, which is
-        // why the ones here build no strings.)
+        // why the ones here call nothing that can throw.)
         try {
             reportAbandonedFin()
         } catch (t: Throwable) {
