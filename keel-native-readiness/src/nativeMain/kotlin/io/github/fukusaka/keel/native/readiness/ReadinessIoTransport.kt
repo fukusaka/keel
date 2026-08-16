@@ -761,10 +761,13 @@ class ReadinessIoTransport(
             EmptyCoroutineContext,
             Runnable {
                 if (!transport.opened) return@Runnable
-                // Consumed already? The awaited short-circuit (or a teardown's
-                // deferred drain) may have taken this schedule; running the
-                // drain again on what is usually an empty queue would report a
-                // second completion for the same flush.
+                // Consumed already? The awaited short-circuit (or a
+                // teardown's deferred drain) may have taken this schedule.
+                // The exit's entry rule already keeps a spent tick from
+                // re-reporting; this check keeps it from draining at all —
+                // bytes a producer wrote after the schedule was consumed have
+                // not asked for a flush yet, and a spent tick draining them
+                // would jump its coalescing turn.
                 if (!transport.flushScheduled) return@Runnable
                 transport.flushScheduled = false
                 // Contained like readiness dispatch: this tick is loop-driven
@@ -1428,7 +1431,8 @@ class ReadinessIoTransport(
      * remainder this pass blocked on may have been finished by a reentrant
      * flush — the canonical backpressure resume does exactly that — and its
      * frame reported nothing, so an empty queue here is reported here,
-     * whoever emptied it. This is also what bounds a completion-driven pump:
+     * whoever emptied it — provided this frame entered over a live episode,
+     * per the entry rule below. This is also what bounds a completion-driven pump:
      * its inner flush drains inline and comes straight back, instead of
      * reporting a completion that would pump again.
      *
@@ -1437,10 +1441,13 @@ class ReadinessIoTransport(
      * exit leaves — a blocked pass's arm, a scheduled tick — outlive the
      * queue they were left for when a direct flush drains it first, and the
      * stale wake or overtaken tick then lands here with nothing to do. Its
-     * episode's report already went out at the entry that emptied the queue;
-     * repeating it would announce a completion nothing awaited to the
-     * [onFlushComplete] pump. (A direct `flush()` never gets this far on an
-     * empty queue — it short-circuits at its own first line.)
+     * episode was either reported at the entry that emptied the queue, or
+     * that entry threw out of its drain past the report — which is why the
+     * deferred FIN is sent outside the report's gate: the transport's own
+     * obligation stands whether or not the episode's report was ever made.
+     * Repeating the report, though, would announce a completion nothing
+     * awaited to the [onFlushComplete] pump. (A direct `flush()` never gets
+     * this far on an empty queue — it short-circuits at its own first line.)
      *
      * The arm is decided *after* the report, so bytes a report-side callback
      * wrote without flushing are not stranded — and it is skipped when a tick
@@ -1473,8 +1480,17 @@ class ReadinessIoTransport(
         try {
             val completedPass = performFlush()
             val emptied = completedPass && pendingWrites.isEmpty()
-            if (hadPending && pendingWrites.isEmpty()) {
-                notifyFlushDrained()
+            if (pendingWrites.isEmpty()) {
+                // The FIN is the transport's own obligation, not the
+                // episode's: the entry that emptied the queue can throw out
+                // of its drain past its own report — a refused release, a
+                // throwing writability handler — leaving the FIN deferred
+                // over a drained queue. Self-guarded and idempotent, so the
+                // repeat inside notifyFlushDrained is a no-op.
+                sendFinIfDrained()
+                if (hadPending) {
+                    notifyFlushDrained()
+                }
             }
             if (pendingWrites.isNotEmpty() && !flushScheduled) {
                 registerWriteCallback()
