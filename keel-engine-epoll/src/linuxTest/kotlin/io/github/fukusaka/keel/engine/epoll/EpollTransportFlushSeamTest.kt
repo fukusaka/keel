@@ -13,6 +13,7 @@ import platform.posix.ECONNRESET
 import platform.posix.EPIPE
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -105,10 +106,12 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
     }
 
     @Test
-    fun `flushSingle with Failed drops buffer and returns true`() {
-        // ECONNRESET / EPIPE: connection is unrecoverably broken. The
-        // engine logs, releases the buffer, and returns `true` (flush
-        // "done" — there's nothing left to send because the pipe is gone).
+    fun `flushSingle with Failed drops the buffer and raises the refusal`() {
+        // ECONNRESET / EPIPE: connection is unrecoverably broken. The engine
+        // releases the buffer — those bytes can never reach the peer — and
+        // raises, because a write that did not happen is not a completed
+        // flush: the raise is what answers the parked waiter and ends the
+        // connection.
         val fake = FakeNativeSocket().apply {
             enqueueWrite(fd, WriteResult.Failed(ECONNRESET))
         }
@@ -121,12 +124,15 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
         buf.writerIndex = 5
         transport.write(buf)
 
-        val done = transport.flush()
+        val thrown = assertFailsWith<IllegalStateException> { transport.flush() }
 
-        assertTrue(done, "a dropped buffer still leaves nothing to flush")
+        assertTrue(
+            checkNotNull(thrown.message).contains("write() failed"),
+            "the failure names the syscall and its errno, got: ${thrown.message}",
+        )
         assertEquals(1, fake.writeCalls)
         // A second flush() must not retry — the buffer was dropped.
-        assertTrue(transport.flush(), "second flush is a no-op")
+        assertTrue(transport.flush(), "the drop left nothing to flush")
         assertEquals(1, fake.writeCalls)
         fake.assertAllConsumed()
         tracker.assertNoLeaks()
@@ -217,7 +223,7 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
     }
 
     @Test
-    fun `flushGather with Failed drops all buffers`() {
+    fun `flushGather with Failed drops all buffers and raises the refusal`() {
         val fake = FakeNativeSocket().apply {
             enqueueWritev(fd, WriteResult.Failed(EPIPE))
         }
@@ -231,12 +237,15 @@ internal class EpollTransportFlushSeamTest : EpollTransportSeamFixture() {
         transport.write(buf1)
         transport.write(buf2)
 
-        val done = transport.flush()
+        val thrown = assertFailsWith<IllegalStateException> { transport.flush() }
 
-        assertTrue(done, "flush must report the queue drained")
+        assertTrue(
+            checkNotNull(thrown.message).contains("writev() failed"),
+            "the failure names the syscall and its errno, got: ${thrown.message}",
+        )
         assertEquals(1, fake.writevCalls)
         // Pending queue cleared — second flush must be a no-op.
-        assertTrue(transport.flush(), "second flush is a no-op")
+        assertTrue(transport.flush(), "the drop left nothing to flush")
         assertEquals(1, fake.writevCalls)
         fake.assertAllConsumed()
         tracker.assertNoLeaks()
