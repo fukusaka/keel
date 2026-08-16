@@ -7,8 +7,9 @@ import posix_socket.keel_iov_max
  * The kernel's per-call limit on the number of regions a gather write may
  * offer — `IOV_MAX` on macOS, `UIO_MAXIOV` on glibc, 1024 on both.
  *
- * Read once at class-init rather than per flush: the value is a kernel build
- * constant, and the gather path consults it on every call.
+ * Resolved once when this file's properties initialise rather than per
+ * flush: the value is a kernel build constant, and the gather path consults
+ * it on every call.
  *
  * **Offering more is not a partial write — it is `EINVAL` with nothing
  * sent.** The errno does not distinguish "too many regions" from any other

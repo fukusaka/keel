@@ -20,6 +20,7 @@ import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import io.github.fukusaka.keel.pipeline.RefusedWriteException
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.plus
@@ -1409,7 +1410,11 @@ class ReadinessIoTransport(
      * write failure, which is the cause the caller asked about.
      */
     private fun dropRefusedWrites(syscall: String, errno: Int): Nothing {
-        val cause = RefusedWriteException("$syscall() failed: fd=$fd ${errnoMessage(errno)}")
+        // errno 0 reaches here from the seam's zero-byte-write rule, where
+        // there is no errno to name -- "Undefined error: 0" in an exception a
+        // user reads is worse than saying what happened.
+        val why = if (errno == 0) "wrote no bytes" else errnoMessage(errno)
+        val cause = RefusedWriteException("$syscall() failed: fd=$fd $why")
         // Snapshot first: releaseQueuedWrites deliberately leaves the ledger
         // alone, so this is the only reading of it that still names the bytes
         // being dropped.
@@ -1875,20 +1880,3 @@ class ReadinessIoTransport(
         private const val WHAT_HALF_CLOSE = "the dispatched half-close"
     }
 }
-
-/**
- * A write the kernel definitively refused, raised by the drain so the funnel
- * can answer the parked waiter and the loop-driven entries can end the
- * connection.
- *
- * A named type rather than a bare `error(...)` for one reader: the teardown
- * discards the unsent data by contract, so a peer that has gone is the
- * ordinary outcome there and not a failure of the close — while a refused
- * release or a failed withdrawal in the same stage still is. Nothing else
- * distinguishes them; both are `IllegalStateException` in this tree.
- *
- * Kept an [IllegalStateException] so a caller that already catches the shape
- * `connect` and `accept` raise for a definitive syscall failure sees no
- * change.
- */
-internal class RefusedWriteException(message: String) : IllegalStateException(message)

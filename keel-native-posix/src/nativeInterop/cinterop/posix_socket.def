@@ -10,6 +10,7 @@ headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h sys/time.h unistd.h st
 #include <sys/un.h>
 #include <stddef.h>
 #include <errno.h>
+#include <limits.h>
 
 /* htons/ntohs/htonl are macros — cinterop cannot bind them directly. */
 static inline uint16_t keel_htons(uint16_t hostshort) { return htons(hostshort); }

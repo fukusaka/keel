@@ -69,6 +69,21 @@ public interface NativeSocket {
      */
     public fun write(fd: Int, buf: CPointer<ByteVar>, length: Int): WriteResult
 
+    /*
+     * **`Failed` means definitive, on every implementation of this
+     * interface.** Callers do not classify the errno and do not retry: a
+     * refused write ends the connection's write side. An implementation owes
+     * that classification itself — retry what is retryable (`EINTR` is the
+     * one the bundled wrappers loop on) and report what is merely blocked as
+     * `WouldBlock`. Returning `Failed` for a transient condition costs the
+     * connection.
+     *
+     * **Request shape is the caller's to respect, not this interface's to
+     * diagnose.** A gather offering more regions than the platform accepts
+     * writes nothing and answers `EINVAL`, which no implementation can
+     * distinguish afterwards from any other argument error — see [IOV_MAX].
+     */
+
     /**
      * Gather-write: writes [count] regions to [fd] in a single
      * `writev(2)` call.

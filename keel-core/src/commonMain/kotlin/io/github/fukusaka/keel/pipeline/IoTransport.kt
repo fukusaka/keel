@@ -236,6 +236,14 @@ interface IoTransport {
      * that (the write-idle timer force-closes a peer that never drains) and
      * is disabled by default. A [close] before the drain finishes supersedes
      * the half-close and discards what was still queued.
+     *
+     * **May raise, on implementations whose flush does.** The buffered
+     * writes are sent first, so a caller already on the transport's own
+     * context can be told they could not be — and then the FIN is
+     * deliberately not sent either, because a stream the peer received
+     * truncated has no orderly end to announce. A caller off that context
+     * only queues the request, so the failure is reported and contained
+     * there instead of travelling back.
      */
     /**
      * True when the caller is already on the context this transport's
