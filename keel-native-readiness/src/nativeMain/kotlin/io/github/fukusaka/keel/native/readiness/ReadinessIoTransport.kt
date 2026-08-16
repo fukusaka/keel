@@ -1399,7 +1399,15 @@ class ReadinessIoTransport(
                     consumed = writtenBytes
                 }
             }
-            failure = runStage(failure) { updatePendingBytes(-writtenBytes) }
+            // By what the walk actually took off the queue, not by what the
+            // seam said it wrote. Those agree unless the seam reports more
+            // than it was offered, and then the walk runs the queue empty
+            // with bytes left over -- settling by the larger number drives
+            // the ledger negative, which latches `isWritable` true and
+            // mis-counts every water-mark crossing after it. The old shape
+            // was self-limiting because it settled by the batch total; a
+            // walk that can stop early is not.
+            failure = runStage(failure) { updatePendingBytes(-consumed) }
 
             if (writtenBytes < offeredBytes) {
                 // The socket took part of this batch, so it will not take the
