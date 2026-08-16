@@ -804,9 +804,11 @@ class ReadinessIoTransport(
      *                   emptied (no outer decision can cover a half-close
      *                   made by the report's own callbacks)
      * parked waiter     pre-fold park: the outer frame's report. Park
-     *                   inside the fold window, before the outer report:
-     *                   the register's already-drained arm (the queue is
-     *                   empty when it looks). After the outer report gate
+     *                   inside the fold window over a queue not yet empty:
+     *                   also the outer report (hadPending was true at its
+     *                   entry). Park inside the window at an empty queue,
+     *                   before the outer report: the register's
+     *                   already-drained arm. After the outer report gate
      *                   ran: the register's post-drain re-check
      * onFlushComplete   nobody — deliberately folded; the reentrant
      *                   flush's return value is the pump's signal

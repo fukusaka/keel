@@ -271,6 +271,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in both the request and response decoders instead of silently framing on the first value,
   closing a request/response-splitting vector (RFC 9110 §8.6 / RFC 9112 §6.3) (#967)
 
+### Documentation
+
+- `core`: `IoTransport.flush()` / `onFlushComplete` contracts now state the episode rule
+  and the synchronous-completion allowance implementations must bound (#1061)
+
 ## [0.4.2] - 2026-07-17
 
 ### Changed
