@@ -527,6 +527,44 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a second waiter answered at the drained queue does not strand the first`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Two waiters can overlap through the exit's canonical shape: A
+            // parks over a non-empty queue, the drain's water-mark crossing
+            // resumes a producer whose reentrant flush empties it, and a
+            // second caller awaits inline before the outer frame's report.
+            // B is answered at the already-drained arm — whose answer must
+            // not touch the slot it never occupied: A's report is still
+            // owed by the outer frame.
+            val total = HIGH_WATER + LOW_WATER
+            val written = HIGH_WATER + LOW_WATER / 2
+            fake.enqueueWrite(fd, WriteResult.Written(written), WriteResult.WouldBlock)
+            val transport = transport()
+            val scope = this
+            var second: Deferred<Result<Unit>>? = null
+            transport.onWritabilityChanged = { writable ->
+                if (writable && second == null) {
+                    fake.enqueueWrite(fd, WriteResult.Written(LOW_WATER / 2))
+                    transport.flush()
+                    second = scope.parkFlushWaiter(transport)
+                }
+            }
+            transport.write(tracker.allocate(total).apply { writerIndex = total })
+            val first = parkFlushWaiter(transport)
+            assertTrue(transport.hasFlushWaiter(), "the first waiter must be parked before the flush")
+
+            assertFalse(transport.flush(), "the outer flush still reports its own WouldBlock")
+
+            assertTrue(checkNotNull(second).await().isSuccess, "the second waiter sees the drained queue")
+            assertFalse(transport.hasFlushWaiter(), "the emptied queue must answer the first waiter too")
+            assertTrue(first.await().isSuccess, "the first waiter must not be stranded by the second's answer")
+            fake.assertAllConsumed()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a FIN deferred inside the report is sent by the reentrant drain that empties its bytes`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The FIN half of the report-parked window: the completion
