@@ -1276,7 +1276,7 @@ class ReadinessIoTransport(
         var failure: Throwable? = null
         failure = runStage(failure) { pw.buf.release() }
         failure = runStage(failure) { updatePendingBytes(-pw.length) }
-        failure?.let { throw it }
+        failure?.let { raiseLeavingRemainderArmed(it) }
     }
 
     /**
@@ -1315,9 +1315,9 @@ class ReadinessIoTransport(
      * release to the end: the entries behind the refusal are still walked,
      * the split entry is still re-offset — losing that re-offset meant
      * re-sending bytes the peer already had — and the ledger and the WRITE
-     * re-arm are still settled before the refusal is raised, on every batch
-     * that leaves the queue non-empty, whether the kernel took it whole or
-     * in part.
+     * re-arm are still settled before the refusal is raised. Every exit that
+     * leaves the queue non-empty arms it, through
+     * [raiseLeavingRemainderArmed].
      */
     private fun flushGather(): Boolean {
         // Batched, because the syscall's region limit is not a byte limit: a
@@ -1416,14 +1416,24 @@ class ReadinessIoTransport(
     }
 
     /**
-     * Raises [failure] out of the gather drain, arming write readiness first
-     * if anything is still queued.
+     * The one way a drain raises: arming write readiness first if anything is
+     * still queued.
      *
-     * The refusal ends this drain, not the queue. A batch the kernel took
-     * *whole* leaves the entries behind it queued with this frame as the last
-     * thing that was going to offer them, so it owes the same arm the partial
-     * branch gives — there is no later batch to reach them, and the arm's own
-     * failure joins the one being raised rather than replacing it.
+     * A throw ends this drain, not the queue, and the drain is the last thing
+     * that was going to offer what remains. Three places reach it and each
+     * can leave a non-empty queue — a batch the kernel took *whole* whose
+     * release then refused, a definitive refusal whose ledger update resumed
+     * a producer that wrote again, and the single-write path's own release.
+     * The reporting exit's arm sits past the throw, so without this the
+     * remainder waits for the close.
+     *
+     * The arm's own failure joins the one being raised rather than replacing
+     * it. That path is nearly unreachable — a kernel arm that fails is
+     * reported and withdrawn inside the event loop rather than raised — but
+     * "nearly" is not a contract, and the cost of saying it here is one
+     * `runStage`. **Note what that leaves**: a silently-withdrawn arm strands
+     * the remainder just the same. The event loop's ERROR report is the only
+     * signal, and closing that gap belongs with the arm, not here.
      */
     private fun raiseLeavingRemainderArmed(failure: Throwable): Nothing {
         if (pendingWrites.isEmpty()) throw failure
@@ -1467,7 +1477,7 @@ class ReadinessIoTransport(
         failure = runStage(failure) { releaseQueuedWrites() }
         failure = runStage(failure) { updatePendingBytes(-orphanedBytes) }
         failure?.let { cause.addSuppressed(it) }
-        throw cause
+        raiseLeavingRemainderArmed(cause)
     }
 
     // --- Async write readiness ---
