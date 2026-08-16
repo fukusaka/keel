@@ -253,6 +253,28 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a seam reporting more than it was offered cannot drive the ledger negative`() {
+        // The walk stops when the queue runs out, so a seam that over-reports
+        // leaves bytes it claimed but nothing to attribute them to. Settling
+        // by the claim rather than by what left the queue latches isWritable
+        // true for the life of the connection -- the ledger gates it and both
+        // water marks. The batch total the old shape settled by was
+        // self-limiting; a walk that can stop early is not.
+        fake.enqueueWritev(fd, WriteResult.Written(12))
+        val transport = transport()
+        transport.write(tracker.allocate(16).apply { writerIndex = 4 })
+        transport.write(tracker.allocate(16).apply { writerIndex = 4 })
+
+        transport.flush()
+
+        assertEquals(0, transport.pendingByteCount(), "the ledger may name only what was queued")
+        fake.assertAllConsumed()
+
+        transport.close()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
     fun `a close during the batch loop stops it before the next write`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // Off-loop close: the flag flips at once but the teardown is
