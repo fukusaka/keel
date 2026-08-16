@@ -4,6 +4,8 @@ package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.pipeline.IoTransport
+import io.github.fukusaka.keel.testing.InjectedFault
+import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
@@ -12,6 +14,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -26,8 +29,8 @@ import kotlin.test.assertTrue
  * queue an earlier flush already drained. The failure funnel and the
  * waiter's answers are pinned by the sibling [TransportFlushFunnelSeamTest].
  *
- * Every test here drives loop-dispatched work or parks a real waiter, so
- * each is bounded by [withTimeout] (wall-clock: `runBlocking` builder, per
+ * Several tests park a real waiter or drive loop-dispatched work, so every
+ * test is bounded by [withTimeout] (wall-clock: `runBlocking` builder, per
  * the project's timeout rule).
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -407,6 +410,124 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             assertTrue(transport.flush(), "the direct retry drains everything")
             assertEquals(1, fake.shutdownCalls, "the emptying direct flush must send the deferred FIN")
             fake.assertAllConsumed()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a deferred FIN survives a drain that threw after emptying the queue`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The entry that empties the queue does not always report: a
+            // refused release throws out of the drain after the entry was
+            // dequeued, so the frame leaves past the report with the queue
+            // empty and the FIN still deferred. The FIN is the transport's
+            // own obligation, not the episode's — the next entry to observe
+            // the drained queue owes it, report or no report.
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.WouldBlock, WriteResult.Written(5))
+            val transport = transport()
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
+            transport.shutdownOutput()
+            assertEquals(0, fake.shutdownCalls, "the FIN is deferred behind the buffered bytes")
+
+            // The drain sends the bytes, then the refused release throws —
+            // queue empty, FIN unsent, connection still open (a direct
+            // flush's throw belongs to the pipeline's error path).
+            assertFailsWith<InjectedFault> { transport.flush() }
+            assertEquals(0, fake.shutdownCalls, "the throw left the report unreached")
+
+            // The armed wake is the FIN's only remaining completion path.
+            transport.onReady(Interest.WRITE)
+            assertEquals(1, fake.shutdownCalls, "the stale wake must send the deferred FIN")
+
+            failing.releaseUnderlying()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a reentrant flush refilled by its own callbacks does not answer true`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The reentrant branch answers the same own-pass rule as the
+            // outer frame: a pass whose ledger update refilled the queue is
+            // not a completed flush, however completely it drained what it
+            // found. The refill rides the outer frame's exit for its
+            // continuation.
+            val total = HIGH_WATER + LOW_WATER
+            fake.enqueueWrite(fd, WriteResult.Written(5), WriteResult.Written(total))
+            val transport = transport()
+            var reentrantAnswer: Boolean? = null
+            var refilled = false
+            transport.onFlushComplete = {
+                if (reentrantAnswer == null) {
+                    transport.write(tracker.allocate(total).apply { writerIndex = total })
+                    reentrantAnswer = transport.flush()
+                }
+            }
+            transport.onWritabilityChanged = { writable ->
+                if (writable && !refilled) {
+                    refilled = true
+                    transport.write(tracker.allocate(16).apply { writerIndex = 10 })
+                }
+            }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            assertTrue(
+                transport.flush(),
+                "the outer frame's own pass emptied — the report-side bytes are a new episode",
+            )
+            assertTrue(refilled, "the reentrant drain's low-water crossing refilled the queue")
+            assertEquals(false, reentrantAnswer, "a refilled queue is not a completed flush, reentrant or not")
+            assertEquals(10, transport.pendingByteCount(), "the refill is still queued")
+            transport.onWritabilityChanged = null
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a consumed tick does not eagerly drain bytes the producer has not flushed`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The tick's consumed-already check is not about the report — the
+            // entry predicate silences that on its own — but about the drain
+            // itself: a producer that wrote after the awaited short-circuit
+            // took the schedule has not asked for a flush yet, and the spent
+            // tick draining those bytes would jump its coalescing turn.
+            eventLoop.close()
+            eventLoop = FakeLoop(runDispatchedInline = false)
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            var completions = 0
+            transport.onFlushComplete = { completions++ }
+
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "coalescing defers the drain to the tick")
+
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(waiter.await().isSuccess, "the short-circuit drained the wait inline")
+            assertEquals(1, completions, "the drained flush reports once")
+
+            // Written after the schedule was consumed, not flushed.
+            transport.write(tracker.allocate(16).apply { writerIndex = 7 })
+
+            eventLoop.drainDispatched()
+            assertEquals(7, transport.pendingByteCount(), "the consumed tick must leave unflushed bytes queued")
+            assertEquals(1, completions, "and must not report anything for them")
+            // The spent tick must not even attempt the drain: one write
+            // syscall for the short-circuit's own drain, and no WRITE arm
+            // for bytes whose flush has not been asked for.
+            assertEquals(1, fake.writeCalls + fake.writevCalls, "the spent tick must not attempt a drain")
+            assertFalse(
+                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+                "a drain nobody scheduled must not arm WRITE, got: ${eventLoop.armedCallbacks}",
+            )
+
             transport.close()
             tracker.assertNoLeaks()
         }
