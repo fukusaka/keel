@@ -1322,6 +1322,13 @@ class ReadinessIoTransport(
         val openedAtEntry = opened
         var owed = pendingWrites.size
         while (owed > 0 && (opened || !openedAtEntry)) {
+            // Not what this frame counted, if the queue holds less: the
+            // ledger update below resumes a producer, and a producer that
+            // answers by flushing drains from this same queue -- reentrantly,
+            // through the exit's own fold. What it took, this frame no longer
+            // owes; offering it again would index past the deque.
+            owed = minOf(owed, pendingWrites.size)
+            if (owed == 0) break
             val count = minOf(owed, IOV_MAX)
             eventLoop.ensureWritevCapacity(count)
             val bases = eventLoop.writevBases
