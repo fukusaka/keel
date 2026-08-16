@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.native.posix.IOV_MAX
@@ -1979,20 +1980,3 @@ class ReadinessIoTransport(
         private const val WHAT_HALF_CLOSE = "the dispatched half-close"
     }
 }
-
-/**
- * A write the platform definitively refused, with the queued bytes discarded
- * because they can never reach the peer.
- *
- * Raised by the drain rather than answered as a completed flush, so the
- * funnel can tell the parked waiter and the loop-driven entries can end the
- * connection. Named so the teardown can tell it from the other failures its
- * stages carry: discarding the unsent data is what `close` documents it
- * does, so a peer that has gone is that stage's ordinary outcome, while a
- * refused release or a failed withdrawal still says the teardown itself is
- * incomplete. Nothing else distinguishes them — both are
- * [IllegalStateException] in this tree, which this stays, so a caller that
- * already catches the shape a definitive syscall failure raises sees no
- * change.
- */
-internal class RefusedWriteException(message: String) : IllegalStateException(message)

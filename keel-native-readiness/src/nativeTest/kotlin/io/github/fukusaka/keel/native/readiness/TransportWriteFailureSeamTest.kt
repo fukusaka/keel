@@ -2,6 +2,7 @@
 
 package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.IOV_MAX
 import io.github.fukusaka.keel.native.posix.NativeSocket
