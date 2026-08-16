@@ -166,7 +166,15 @@ interface Channel : AutoCloseable {
      * Or a `CancellationException` naming the connection's end, when the
      * drain that hit the failure was one the engine ran on its own — a
      * scheduled tick, a stopping loop. Those contain the failure and end the
-     * connection, and this call reports *that*, not the send's error.
+     * connection, and this call reports *that*, not the send's error. The
+     * refusal rides along as the cancellation's cause where one is known, so
+     * the reason is recoverable even on that route.
+     *
+     * **Which of the two you get is still narrower than it should be**: a
+     * loop that ended by throwing is reported the same way as one that was
+     * asked to stop, because nothing records which happened. Converging that
+     * — so a fault the application did not choose arrives as
+     * [EngineFailureException] rather than a cancellation — is tracked.
      *
      * **Which of the two, and whether either arrives, depends on who ran the
      * failing drain** — which in turn depends on the engine's flush

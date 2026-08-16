@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **BREAKING** (`core`): `TransportFailureException` — the sealed supertype for a transport failing
+  in a way the caller did not ask for, with `RefusedWriteException` and `EngineFailureException`
+  under it. `RefusedWriteException` moves here from an engine's internals; nothing raises
+  `EngineFailureException` yet (#1062)
 - `core`: transport teardown stats report the longest run of drains that moved no bytes, so a
   socket that stays unwritable is visible (#1062)
 - `native-posix`: `IOV_MAX` is published so gather callers can bound their batches (#1062)
@@ -99,6 +103,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it accepts — over `IOV_MAX` it wrote nothing, and the queue was dropped as if sent (#1062)
 - `engine-kqueue`, `engine-epoll`: a write the kernel definitively refused now reports the
   failure instead of a completed flush (#1062)
+- **BREAKING** (`engine-kqueue`, `engine-epoll`): a definitively refused send ends the connection
+  whichever path ran the drain — a direct flush left it open before, so whether a dead write side
+  survived depended on a setting the caller does not choose (#1062)
 - `native-posix`: `ENOBUFS` from a write is now retryable rather than a refusal, so a kernel
   briefly out of buffer space no longer ends the connection (#1062)
 - `engine-kqueue`, `engine-epoll`: a flush that raises now arms write readiness for whatever a

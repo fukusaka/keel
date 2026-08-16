@@ -55,6 +55,13 @@ public class RefusedWriteException(
  * reason the application did not choose — so every connection it served is
  * gone with it, not just this one. Treat it as a fault to report rather than
  * a connection to retry.
+ *
+ * **No transport raises this yet.** A loop that ends by throwing currently
+ * ends its waits the same way one that was asked to stop does — as a
+ * cancellation — because nothing records which happened. This type is
+ * declared now so the sealed set is complete from the start: adding a subtype
+ * later would break an exhaustive `when` that a caller had already written
+ * against it. Making it reachable is tracked separately.
  */
 public class EngineFailureException(
     message: String,
