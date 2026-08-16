@@ -804,8 +804,10 @@ class ReadinessIoTransport(
      *                   emptied (no outer decision can cover a half-close
      *                   made by the report's own callbacks)
      * parked waiter     pre-fold park: the outer frame's report. Park
-     *                   inside the fold window (after the outer report
-     *                   gate ran): the register's post-drain re-check
+     *                   inside the fold window, before the outer report:
+     *                   the register's already-drained arm (the queue is
+     *                   empty when it looks). After the outer report gate
+     *                   ran: the register's post-drain re-check
      * onFlushComplete   nobody — deliberately folded; the reentrant
      *                   flush's return value is the pump's signal
      * arm / tick        the outer frame, over the queue as every
@@ -989,7 +991,8 @@ class ReadinessIoTransport(
      * already-drained arm answers a caller that was never stored, while the
      * slot may hold an *earlier* waiter whose report the outer frame still
      * owes. The clear is therefore gated on identity — clearing another
-     * waiter's slot here stranded it until close, measured. The message
+     * waiter's slot here stranded it for good, measured: even the close's
+     * teardown reads only the slot the clear emptied. The message
      * names the path that emptied the queue, so a refusal report still says
      * which one.
      */
@@ -1365,9 +1368,15 @@ class ReadinessIoTransport(
 
     /**
      * The cancel hook a parked waiter installs, hoisted so the park path pays
-     * one allocation per transport rather than one per await. Clears whatever
-     * is stored: at most one waiter exists at a time (see [awaitPendingFlush]),
-     * and a resumed continuation never runs its cancel handler.
+     * one allocation per transport rather than one per await — which is also
+     * why it cannot check identity: a shared hook does not know whose
+     * cancellation fired it. It clears whatever is stored, on the design
+     * assumption of one waiter at a time. Overlapping waiters are a known
+     * pre-existing loss this single slot cannot carry — the second store
+     * evicts the first, and this hook can clear a slot another waiter
+     * occupies — tracked with the flush-waiter contract follow-up; nothing
+     * in the interface forbids the overlap yet. A resumed continuation
+     * never runs its cancel handler.
      */
     private val clearFlushWaiter: (Throwable?) -> Unit = { flushContinuation = null }
 
