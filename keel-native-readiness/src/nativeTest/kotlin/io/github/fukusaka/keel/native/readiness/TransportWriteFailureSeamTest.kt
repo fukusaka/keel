@@ -222,6 +222,37 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a completion callback that writes and then throws still leaves the queue armed`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The report frame is the one place a throw could strand a queue
+            // with nothing marking it poisoned: the drain's own failures set
+            // that flag, so a later waiter re-drives them, but a failure out
+            // here does not. The completion callback runs application code
+            // and can both refill the queue and throw.
+            val transport = transport()
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.onFlushComplete = {
+                transport.onFlushComplete = null
+                transport.write(tracker.allocate(16).apply { writerIndex = 9 })
+                throw InjectedFault("completion callback refused")
+            }
+
+            assertFailsWith<InjectedFault> { transport.flush() }
+
+            assertEquals(9, transport.pendingByteCount(), "the callback's write is still queued")
+            assertTrue(
+                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+                "and needs the continuation this frame owed it, got: ${eventLoop.armedCallbacks}",
+            )
+            fake.assertAllConsumed()
+
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a close during the batch loop stops it before the next write`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // Off-loop close: the flag flips at once but the teardown is
