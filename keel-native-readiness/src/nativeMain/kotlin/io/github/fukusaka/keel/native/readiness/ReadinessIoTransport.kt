@@ -1432,17 +1432,31 @@ class ReadinessIoTransport(
      * its inner flush drains inline and comes straight back, instead of
      * reporting a completion that would pump again.
      *
+     * An episode is a queue that held bytes and ran dry, which is why the
+     * report also requires bytes pending *at entry*: the continuations this
+     * exit leaves — a blocked pass's arm, a scheduled tick — outlive the
+     * queue they were left for when a direct flush drains it first, and the
+     * stale wake or overtaken tick then lands here with nothing to do. Its
+     * episode's report already went out at the entry that emptied the queue;
+     * repeating it would announce a completion nothing awaited to the
+     * [onFlushComplete] pump. (A direct `flush()` never gets this far on an
+     * empty queue — it short-circuits at its own first line.)
+     *
      * The arm is decided *after* the report, so bytes a report-side callback
      * wrote without flushing are not stranded — and it is skipped when a tick
      * is already scheduled to take them: arming then would race the tick, and
-     * the loser would fire on the queue the winner emptied, reporting a
-     * completion nothing awaited and eagerly draining bytes a producer had
-     * written but not yet flushed. The arm is not gated on this frame's own
-     * pass: a blocked pass armed on its own before returning false, but a
+     * the loser would fire on the queue the winner emptied — a stale wake the
+     * entry check above now answers with silence, but still a wasted arm for
+     * bytes a producer had not flushed. The arm is not gated on this frame's
+     * own pass: a blocked pass armed on its own before returning false, but a
      * reentrant flush may have emptied what it would have retried and a
      * report-side callback may have written since — the queue at this line
-     * is what needs a continuation, whatever this frame's pass did, and
-     * re-arming over the blocked path's own arm is an idempotent overwrite.
+     * is what needs a continuation, whatever this frame's pass did.
+     * Re-arming over the blocked path's own arm replaces the same listener in
+     * the ledger and repeats the kernel arm; the state is idempotent, the
+     * repeat syscall is a real cost on the blocked-write path where epoll's
+     * interest cache absorbs it and kqueue's does not — consolidating the
+     * arm sites is tracked separately.
      *
      * @return true when this frame's own pass completed and emptied the
      *   queue — the answer a direct `flush()` caller reports onward. A
@@ -1454,11 +1468,12 @@ class ReadinessIoTransport(
      */
     private fun drainAndNotifyIfComplete(): Boolean {
         if (draining) return performFlush() && pendingWrites.isEmpty()
+        val hadPending = pendingWrites.isNotEmpty()
         draining = true
         try {
             val completedPass = performFlush()
             val emptied = completedPass && pendingWrites.isEmpty()
-            if (pendingWrites.isEmpty()) {
+            if (hadPending && pendingWrites.isEmpty()) {
                 notifyFlushDrained()
             }
             if (pendingWrites.isNotEmpty() && !flushScheduled) {
