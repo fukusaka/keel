@@ -1093,7 +1093,24 @@ class ReadinessIoTransport(
                     // we were discarding the bytes anyway -- which is what
                     // `close()` documents it does with them, and the ordinary
                     // outcome for the connection this stage exists to end.
-                    eventLoop.logger.warn(refused) { "the deferred flush found the peer gone while closing: fd=$fd" }
+                    //
+                    // Only this one, though. A refused release or a failed
+                    // withdrawal that happened during the same drain rides
+                    // along as a suppressed cause, and those *are* teardown
+                    // incompleteness -- containing them because of the
+                    // company they keep would make a leak silent whenever a
+                    // dead peer happened to coincide with it.
+                    val alsoIncomplete = refused.suppressedExceptions
+                    if (alsoIncomplete.isEmpty()) {
+                        eventLoop.logger.warn(refused) { "the deferred flush found the peer gone while closing: fd=$fd" }
+                    } else {
+                        eventLoop.logger.warn(refused) {
+                            "the deferred flush found the peer gone while closing, and did not finish cleaning up: fd=$fd"
+                        }
+                        val first = alsoIncomplete.first()
+                        alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
+                        throw first
+                    }
                 }
             }
         }
