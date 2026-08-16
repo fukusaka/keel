@@ -56,8 +56,8 @@ internal abstract class KqueueTransportSeamFixture {
 
     @BeforeTest
     fun setUp() {
-        // Disable the per-tick flush coalescing so `flush()` delegates
-        // synchronously to `performFlush()` — the seam tests exercise
+        // Disable the per-tick flush coalescing so `flush()` drains
+        // synchronously through the funnel's shared exit — the seam tests exercise
         // errno branches / syscall behaviour and are not driving an EL
         // thread that could drain the deferred runnable. Under the opt-out
         // the semantics reduce to pre-#899 immediate-send.

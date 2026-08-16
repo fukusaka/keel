@@ -533,8 +533,8 @@ class KqueueEngineReadWriteTest {
     @Test
     fun echoRoundTripWithFlushCoalescingDisabled() = runBlocking {
         // Verifies that IoEngineConfig.flushCoalescing = false preserves
-        // correctness — each keel-side flush drains synchronously via
-        // performFlush() instead of scheduling a next-tick coalesce.
+        // correctness — each keel-side flush drains synchronously through
+        // the funnel's shared exit instead of scheduling a next-tick coalesce.
         withTimeout(5.seconds) {
             val engine = KqueueEngine(IoEngineConfig(flushCoalescing = false))
             val server = engine.bind(LOOPBACK_HOST, 0)
