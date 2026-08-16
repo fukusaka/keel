@@ -737,9 +737,9 @@ class ReadinessIoTransport(
      *   queue. A remainder a reentrant flush finished is reported but
      *   answered `false` here — the caller asked about its own flush — and
      *   bytes the completion callbacks write after the check are a new
-     *   episode, not folded into this answer. `false` otherwise
-     *         — which under the default coalescing means only that the drain was
-     *         deferred to the loop, not that anything hit `EAGAIN`.
+     *   episode, not folded into this answer. `false` otherwise — which
+     *   under the default coalescing means only that the drain was deferred
+     *   to the loop, not that anything hit `EAGAIN`.
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
@@ -1437,7 +1437,12 @@ class ReadinessIoTransport(
      * whoever emptied it — provided this frame entered over a live episode,
      * per the entry rule below. This is also what bounds a completion-driven pump:
      * its inner flush drains inline and comes straight back, instead of
-     * reporting a completion that would pump again.
+     * reporting a completion that would pump again. One party cannot rely
+     * on that fold: a report callback that writes, flushes and awaits
+     * synchronously parks its waiter *after* this frame's report gate has
+     * run, over a queue its reentrant drain may have emptied in silence —
+     * so the register re-checks the queue after its short-circuited drain
+     * and answers its own waiter.
      *
      * An episode is a queue that held bytes and ran dry, which is why the
      * report also requires bytes pending *at entry*: the continuations this
@@ -1597,6 +1602,26 @@ class ReadinessIoTransport(
                             // arriving before the producer's flush) parked.
                             drainScheduledForWaiter()
                             if (flushContinuation !== cont) return@Runnable
+                        }
+                        // Still stored, over a queue the short-circuited drain
+                        // may have emptied without saying so: this register can
+                        // run inside an enclosing exit's report — a completion
+                        // callback that writes, flushes and awaits
+                        // synchronously — and a reentrant drain reports
+                        // nothing. The enclosing frame's report gate ran
+                        // before this episode existed, so no report will
+                        // consume this waiter, and an empty queue leaves no
+                        // arm and no tick to answer it later. The register
+                        // answers its own waiter, like the already-drained arm
+                        // above.
+                        if (pendingWrites.isEmpty()) {
+                            flushContinuation = null
+                            answerFlushWaiter(
+                                "resuming the reentrantly-drained flush waiter for, while the loop goes on,",
+                            ) {
+                                cont.resume(Unit)
+                            }
+                            return@Runnable
                         }
                         cont.invokeOnCancellation(clearFlushWaiter)
                     }
