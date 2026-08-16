@@ -88,6 +88,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: a gather write no longer offers the kernel more regions than
+  it accepts — over `IOV_MAX` it wrote nothing, and the queue was dropped as if sent (#1062)
+- `engine-kqueue`, `engine-epoll`: a write the kernel definitively refused now reports the
+  failure instead of a completed flush (#1062)
 - `engine-kqueue`, `engine-epoll`: a stale write-readiness wake or an overtaken coalescing
   tick no longer repeats the flush-completion report (#1061)
 - `engine-kqueue`, `engine-epoll`: a queue refilled mid-drain by the water-mark callback now
@@ -275,6 +279,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `core`: `IoTransport.flush()` / `onFlushComplete` contracts now state the episode rule
   and the synchronous-completion allowance implementations must bound (#1061)
+- `native-posix`: `IOV_MAX` is published so gather callers can bound their batches (#1062)
 
 ## [0.4.2] - 2026-07-17
 
