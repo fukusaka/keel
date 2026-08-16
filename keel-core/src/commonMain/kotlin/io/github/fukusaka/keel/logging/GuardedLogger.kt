@@ -39,10 +39,12 @@ package io.github.fukusaka.keel.logging
  * **The message lambda is not covered.** The inline extensions pass
  * `message()` as an argument to [Logger.rawLog], so it is evaluated at the
  * call site, before this guard is entered — a throwing message expression
- * escapes whenever the level is loggable. Keel's own expressions interpolate
- * values it holds and call only helpers that do not throw (`errnoMessage`
- * and the like), which is what keeps that unreached — a discipline, not a
- * guarantee this class provides. Closing it properly is tracked.
+ * escapes whenever the level is loggable. Keel's own expressions call only
+ * helpers that do not throw (`errnoMessage` and the like), and where they
+ * interpolate an application-supplied object they reach for its type rather
+ * than anything it computes. That is what keeps the escape unreached — a
+ * discipline, not a guarantee this class provides. Closing it properly is
+ * tracked.
  *
  * Idempotent: wrapping a factory that is already wrapped returns it unchanged.
  */

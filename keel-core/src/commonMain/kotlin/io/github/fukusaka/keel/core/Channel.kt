@@ -103,8 +103,8 @@ interface Channel : AutoCloseable {
      * until all bytes are sent.
      *
      * Default implementation calls [requestFlush] + [awaitFlushComplete].
-     * Engines that override this directly (e.g., Netty, NWConnection) do
-     * not need to implement [requestFlush]/[awaitFlushComplete].
+     * An engine may override this directly instead, and then owes neither —
+     * none in this tree does today.
      *
      * For fire-and-forget flushing (no completion wait), call
      * [requestFlush] directly.
@@ -155,18 +155,25 @@ interface Channel : AutoCloseable {
      * Engines that use the [requestFlush] + [awaitFlushComplete] pattern
      * must override.
      *
-     * **May raise**, whenever a failing drain is still there to be observed:
-     * one this call runs itself, one it re-drives because the last drain
-     * threw with the queue left behind, or one that fails elsewhere while
-     * this call is parked — the transport answers a parked waiter with the
-     * failure whatever ran into it.
+     * **May raise, and with either of two kinds of failure.**
      *
-     * **It raises nothing when the failure is already spent.** A drain that
-     * threw *and* emptied the queue — a refused send discards what it could
-     * not deliver — leaves this call nothing to find, so it returns
-     * normally; the failure went to the pipeline's error path when it
-     * happened. This is therefore not a way to ask, after the fact, whether
-     * the last flush reached the peer.
+     * The send's own, whenever a failing drain is still there to be
+     * observed: one this call runs itself, one it re-drives because the last
+     * drain threw with the queue left behind, or one that fails elsewhere
+     * while this call is parked — the transport answers a parked waiter with
+     * the failure whatever ran into it.
+     *
+     * Or a `CancellationException` naming the connection's end, when the
+     * drain that hit the failure was one the engine ran on its own — a
+     * scheduled tick, a stopping loop. Those contain the failure and end the
+     * connection, and this call reports *that*, not the send's error.
+     *
+     * **Which of the two, and whether either arrives, depends on who ran the
+     * failing drain** — which in turn depends on the engine's flush
+     * coalescing, on by default in the readiness engines. Where the drain ran
+     * inside the request and emptied the queue, this call finds nothing and
+     * returns normally. It is therefore not a way to ask, after the fact,
+     * whether the last flush reached the peer.
      */
     suspend fun awaitFlushComplete() {}
 
