@@ -109,10 +109,12 @@ interface Channel : AutoCloseable {
      * For fire-and-forget flushing (no completion wait), call
      * [requestFlush] directly.
      *
-     * **May raise, on engines whose send can fail definitively.** A send the
-     * platform refused outright is a failure, not a completed flush, and the
-     * bytes it was carrying are gone; whatever remains queued is released
-     * when the channel closes.
+     * **May raise.** A send the platform refused outright is a failure, not a
+     * completed flush, and the bytes it was carrying are gone. Only the
+     * readiness engines say so today; the rest answer such a refusal as a
+     * completed flush, which is a gap in them rather than a difference in
+     * kind, and converging them is tracked. Write callers should be prepared
+     * for the failure either way.
      */
     suspend fun flush() {
         requestFlush()
@@ -148,7 +150,9 @@ interface Channel : AutoCloseable {
      * must override.
      *
      * **May raise, for the same reason [flush] does** — this is the half
-     * that waits, so a definitive send failure is the answer it gets.
+     * that waits, so a definitive send failure is the answer it gets. It is
+     * also the half that carries it when the engine defers the drain, which
+     * the readiness engines do by default.
      */
     suspend fun awaitFlushComplete() {}
 
@@ -189,10 +193,14 @@ interface Channel : AutoCloseable {
      * has to go out regardless — it supersedes a pending half-close and
      * discards what was still queued.
      *
-     * **May raise, on engines whose send can fail definitively**, since the
-     * buffered writes go first: a caller already on the engine's own thread
-     * is told they could not be. A caller off that thread only queues the
-     * request, so the failure is reported there instead of travelling back.
+     * **May raise**, since the buffered writes go first: a caller already on
+     * the engine's own thread can be told they could not be sent. Whether it
+     * is depends on when the drain runs — an engine that coalesces flushes
+     * into a later tick, which the readiness engines do by default, contains
+     * the failure there and reports it rather than raising here. A caller off
+     * the engine's thread only queues the request, so it is always reported
+     * there instead of travelling back. [awaitFlushComplete] is the reliable
+     * way to observe it.
      */
     fun shutdownOutput()
 

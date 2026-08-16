@@ -1695,6 +1695,11 @@ class ReadinessIoTransport(
             // this frame was the last to look at, and unlike the drain's own
             // failures nothing marks it poisoned, so no later waiter re-drives
             // it. The first failure is raised once the rest have run.
+            //
+            // The FIN stage is in the group for uniformity, not for a failure
+            // that exists: `sendFin` reports a refused `shutdown` and returns.
+            // It is here so a future send that does raise cannot silently take
+            // the report and the arm with it.
             var failure: Throwable? = null
             if (pendingWrites.isEmpty()) {
                 // The FIN is the transport's own obligation, not the
