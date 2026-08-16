@@ -1084,7 +1084,17 @@ class ReadinessIoTransport(
         failure = runStage(failure) {
             if (flushScheduled) {
                 flushScheduled = false
-                performFlush()
+                try {
+                    performFlush()
+                } catch (refused: RefusedWriteException) {
+                    // Not carried to `close()`'s caller. Every other failure
+                    // here says the teardown itself is incomplete, which the
+                    // caller can act on; this one says the peer is gone while
+                    // we were discarding the bytes anyway -- which is what
+                    // `close()` documents it does with them, and the ordinary
+                    // outcome for the connection this stage exists to end.
+                    eventLoop.logger.warn(refused) { "the deferred flush found the peer gone while closing: fd=$fd" }
+                }
             }
         }
         failure = runStage(failure) { cancelIdleTimeout() }
@@ -1296,8 +1306,22 @@ class ReadinessIoTransport(
         // answers EINVAL. The loop is what keeps that an implementation
         // detail -- a caller that queued more than the kernel takes in one
         // call still sees its flush drain, in as many calls as that takes.
-        while (true) {
-            val count = minOf(pendingWrites.size, IOV_MAX)
+        //
+        // Bounded by the queue this drain was handed, not by the queue as it
+        // stands: the ledger update below resumes a producer at the low-water
+        // crossing, and what that producer writes is a new episode owed a
+        // continuation, not more work for this call. Chasing it here would let
+        // one connection hold the loop thread for as long as it keeps writing.
+        //
+        // And bounded by a close that lands *while* it runs -- a callback the
+        // ledger update resumes can end the connection, and the batches after
+        // it are writes the application asked not to make. Not simply
+        // `opened`: the teardown's own last-chance drain runs with the flag
+        // already down, and that one is deliberate.
+        val openedAtEntry = opened
+        var owed = pendingWrites.size
+        while (owed > 0 && (opened || !openedAtEntry)) {
+            val count = minOf(owed, IOV_MAX)
             eventLoop.ensureWritevCapacity(count)
             val bases = eventLoop.writevBases
             val lens = eventLoop.writevLens
@@ -1332,6 +1356,7 @@ class ReadinessIoTransport(
                 val pw = pendingWrites.first()
                 if (consumed + pw.length <= writtenBytes) {
                     consumed += pw.length
+                    owed--
                     pendingWrites.removeFirst()
                     failure = runStage(failure) { pw.buf.release() }
                 } else {
@@ -1353,11 +1378,11 @@ class ReadinessIoTransport(
                 return false
             }
             failure?.let { throw it }
-            // The ledger update above runs the water-mark callback, which may
-            // have written more or closed the transport; either way the queue
-            // is what says whether another batch is owed.
-            if (pendingWrites.isEmpty()) return true
         }
+        // Everything this drain was handed is out. A queue that is not empty
+        // now holds what a report-side producer wrote while it ran, and the
+        // exit gives that its own continuation.
+        return true
     }
 
     /**
@@ -1384,7 +1409,7 @@ class ReadinessIoTransport(
      * write failure, which is the cause the caller asked about.
      */
     private fun dropRefusedWrites(syscall: String, errno: Int): Nothing {
-        val cause = IllegalStateException("$syscall() failed: fd=$fd ${errnoMessage(errno)}")
+        val cause = RefusedWriteException("$syscall() failed: fd=$fd ${errnoMessage(errno)}")
         // Snapshot first: releaseQueuedWrites deliberately leaves the ledger
         // alone, so this is the only reading of it that still names the bytes
         // being dropped.
@@ -1850,3 +1875,20 @@ class ReadinessIoTransport(
         private const val WHAT_HALF_CLOSE = "the dispatched half-close"
     }
 }
+
+/**
+ * A write the kernel definitively refused, raised by the drain so the funnel
+ * can answer the parked waiter and the loop-driven entries can end the
+ * connection.
+ *
+ * A named type rather than a bare `error(...)` for one reader: the teardown
+ * discards the unsent data by contract, so a peer that has gone is the
+ * ordinary outcome there and not a failure of the close — while a refused
+ * release or a failed withdrawal in the same stage still is. Nothing else
+ * distinguishes them; both are `IllegalStateException` in this tree.
+ *
+ * Kept an [IllegalStateException] so a caller that already catches the shape
+ * `connect` and `accept` raise for a definitive syscall failure sees no
+ * change.
+ */
+internal class RefusedWriteException(message: String) : IllegalStateException(message)

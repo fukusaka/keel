@@ -591,12 +591,17 @@ abstract class AbstractIoTransport(
     // or single, regardless of outcome) and [partialWriteCount] for every
     // observed partial write (i.e. `writtenBytes < totalBytes` after a
     // successful `write`/`writev` syscall). Failed / WouldBlock outcomes
-    // do not count as partial writes.
+    // do not count as partial writes. A flush that issues several syscalls
+    // — a gather too large for the platform's iovec limit is offered in
+    // batches — still counts once: the ratio these two feed is "how often
+    // did a flush leave bytes behind", and a batch boundary is not that.
 
     /**
-     * Total `flush` syscall invocations on this transport. Includes both
-     * single-buffer and gather paths regardless of outcome (success, partial,
-     * WouldBlock, Failed). Stays at zero on read-only transports.
+     * Total `flush` calls on this transport — not syscalls: one call may
+     * issue several when the queue exceeds the platform's per-call region
+     * limit. Includes both single-buffer and gather paths regardless of
+     * outcome (success, partial, WouldBlock, Failed). Stays at zero on
+     * read-only transports.
      */
     protected var flushCount: Long = 0
 
