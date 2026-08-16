@@ -250,6 +250,11 @@ public class FakeNativeSocket : NativeSocket {
         lens: CPointer<ULongVar>,
         count: Int,
     ): WriteResult {
+        // The one precondition a real kernel answers with an unclassifiable
+        // errno, so the seam answers it with a name instead: a caller that
+        // outgrows the bound fails here, in a test, rather than losing a
+        // whole queue in production.
+        check(count <= IOV_MAX) { "writev() offered $count regions, over the $IOV_MAX the platform takes" }
         return flushing(writevQueue, fd) { _writevCalls++ }
     }
 

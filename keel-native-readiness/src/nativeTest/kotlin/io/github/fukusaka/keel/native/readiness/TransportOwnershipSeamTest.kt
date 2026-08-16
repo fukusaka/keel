@@ -2,6 +2,7 @@
 
 package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.native.posix.IOV_MAX
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.testing.InjectedFault
@@ -176,6 +177,49 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
         // WouldBlock — re-sending 5 bytes the peer already has.
         fake.enqueueWrite(fd, WriteResult.Written(5))
         assertTrue(transport.flush(), "the remainder must flush from the re-offset head")
+        assertEquals(0, transport.pendingByteCount())
+        fake.assertAllConsumed()
+
+        failing.releaseUnderlying()
+        transport.close()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a refused release in a full batch still re-arms the entries behind it`() {
+        // A queue past the region limit, taken whole by the first batch, with
+        // an entry whose release refuses. The refusal ends the drain, but the
+        // entries the kernel never saw are still queued and this frame was
+        // the last thing that was going to offer them -- so it owes the same
+        // write-readiness arm the partial-batch shape gives, and there is no
+        // later batch to reach them.
+        val bytesPerEntry = 8
+        val batched = IOV_MAX + 2
+        fake.enqueueWritev(fd, WriteResult.Written(IOV_MAX * bytesPerEntry))
+        val transport = transport()
+
+        val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = bytesPerEntry })
+        transport.write(failing)
+        repeat(batched - 1) {
+            transport.write(tracker.allocate(16).apply { writerIndex = bytesPerEntry })
+        }
+
+        assertFailsWith<InjectedFault> { transport.flush() }
+        assertEquals(1, failing.refusedReleases, "the seam must have reached the release")
+        assertEquals(
+            2 * bytesPerEntry,
+            transport.pendingByteCount(),
+            "the ledger must name exactly what the kernel was never offered",
+        )
+        assertTrue(
+            eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+            "a stranded remainder with no arm has nothing left to send it",
+        )
+
+        // And the arm leads somewhere: the remainder drains from where the
+        // batch stopped, without re-offering what already went out.
+        fake.enqueueWritev(fd, WriteResult.Written(2 * bytesPerEntry))
+        assertTrue(transport.flush(), "the remainder must flush on the next readiness")
         assertEquals(0, transport.pendingByteCount())
         fake.assertAllConsumed()
 

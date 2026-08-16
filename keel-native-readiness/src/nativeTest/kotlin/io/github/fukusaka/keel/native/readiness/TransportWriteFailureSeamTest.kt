@@ -6,6 +6,8 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.IOV_MAX
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.testing.InjectedFault
+import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
@@ -26,7 +28,7 @@ import kotlin.test.assertTrue
  *
  * Two rules, both about not claiming more than happened. **The batch stays
  * within what the syscall accepts**: a gather offering more regions than
- * `IOV_MAX` is not a large write, it is `EINVAL` with nothing sent, so the
+ * `IOV_MAX` is not a large write, it is a failure with nothing sent, so the
  * queue is offered in bounded batches instead. **A refused write is not a
  * completed flush**: the bytes are dropped because they can never reach the
  * peer, but the failure is raised rather than answered as success — the
@@ -45,7 +47,7 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     fun `a gather larger than the platform limit is offered in batches the kernel accepts`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // One region over the limit is the whole defect: the kernel takes
-            // none of them and answers EINVAL, which is indistinguishable from
+            // none of them and fails, which is indistinguishable from
             // any other argument error once it has happened.
             val counting = WritevCountRecorder(fake)
             val transport = ReadinessIoTransport(fd, eventLoop, tracker, counting)
@@ -154,6 +156,39 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
                 "the refusal is reported, not silent, got: ${eventLoop.warnings}",
             )
             fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused release during the closing drain still reaches the caller`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // A gone peer is contained because close() was asked to discard
+            // those bytes anyway. A release that refuses during the same drain
+            // is a different thing -- the teardown did not finish -- and it
+            // rides along as a suppressed cause on the very type the
+            // containment matches. Containing it because of the company it
+            // keeps would make a leak silent exactly when a dead peer
+            // coincides with one.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWritev(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 10 })
+            transport.write(failing)
+            transport.write(tracker.allocate(16).apply { writerIndex = 10 })
+            assertFalse(transport.flush(), "coalescing defers the drain to a tick that never runs")
+
+            assertFailsWith<InjectedFault> { transport.close() }
+
+            assertEquals(1, failing.refusedReleases, "the drain must have reached the release")
+            assertFalse(transport.isOpen, "the teardown still ends the connection")
+            assertTrue(
+                eventLoop.warnings.any { it.contains("did not finish cleaning up") },
+                "the gone peer is still reported alongside, got: ${eventLoop.warnings}",
+            )
+            fake.assertAllConsumed()
+
+            failing.releaseUnderlying()
             tracker.assertNoLeaks()
         }
     }
