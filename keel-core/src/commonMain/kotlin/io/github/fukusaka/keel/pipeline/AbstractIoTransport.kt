@@ -456,31 +456,18 @@ abstract class AbstractIoTransport(
             return
         }
         finDeferred = true
-        // Both exits release the deferral, because a throwing flush would
-        // otherwise wedge the transport for good: [write] is already gated by
-        // outputShutdown, so nothing would ever refill the queue and no
-        // completion path would run to release it.
-        //
-        // They release it differently, and only for one failure. A
-        // [RefusedWriteException] says the platform would not take those
-        // bytes and the drain discarded them — the queue is empty for the
-        // same reason a drained one is, so [sendFinIfDrained] cannot tell
-        // the difference, and a FIN here would announce an orderly end to a
-        // stream the peer received truncated. Give the deferral up instead
-        // and let the peer learn when the descriptor closes. Every other
-        // failure left the bytes' fate to the drain itself — a refused
-        // *release* still wrote them — so the FIN is owed as usual. (An
-        // implementation whose flush never throws is unaffected.)
+        // `finally` because a throwing flush would otherwise wedge the
+        // transport for good: [write] is already gated by outputShutdown, so
+        // nothing would ever refill the queue and no completion path would run
+        // to release the deferred FIN.
         try {
             flush()
-        } catch (flushFailure: Throwable) {
-            if (flushFailure is RefusedWriteException) abandonDeferredFin() else sendFinIfDrained()
-            throw flushFailure
+        } finally {
+            // Covers a flush that drained synchronously — engines whose flush
+            // completes asynchronously reach sendFinIfDrained from their
+            // completion path instead.
+            sendFinIfDrained()
         }
-        // Covers a flush that drained synchronously — engines whose flush
-        // completes asynchronously reach sendFinIfDrained from their
-        // completion path instead.
-        sendFinIfDrained()
     }
 
     /**

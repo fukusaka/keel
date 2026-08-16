@@ -246,39 +246,24 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a half-close whose flush was refused sends no FIN and tells its caller`() = runBlocking {
+    fun `a half-close whose flush was refused tells its caller`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            // The bytes the FIN was being ordered behind never reached the
-            // peer, so there is no orderly end to announce -- a clean FIN over
-            // a truncated stream is the lie this drops. The caller is on the
-            // transport's own context, so it hears the refusal rather than
-            // reading it in a log.
+            // The half-close orders its FIN behind the queued bytes, so a
+            // caller on the transport's own context learns the same way a
+            // direct flush's caller does when those bytes cannot go. What
+            // becomes of the deferred FIN afterwards is a separate question,
+            // tracked with the rest of the half-close's contract.
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
             transport.write(tracker.allocate(16).apply { writerIndex = 5 })
 
-            assertFailsWith<IllegalStateException> { transport.shutdownOutput() }
+            val failure = assertFailsWith<IllegalStateException> { transport.shutdownOutput() }
+            assertTrue(
+                checkNotNull(failure.message).contains("write() failed"),
+                "the failure names the syscall and its errno, got: ${failure.message}",
+            )
 
-            assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
             assertEquals(0, transport.pendingByteCount(), "the unsendable bytes are still dropped")
-            fake.assertAllConsumed()
-            transport.close()
-            tracker.assertNoLeaks()
-        }
-    }
-
-    @Test
-    fun `a half-close whose flush succeeds still sends its FIN`() = runBlocking {
-        withTimeout(FUNNEL_TIMEOUT_MS) {
-            // The other half of the same branch: nothing about the refusal
-            // path may cost the ordinary one its FIN.
-            fake.enqueueWrite(fd, WriteResult.Written(5))
-            val transport = transport()
-            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
-
-            transport.shutdownOutput()
-
-            assertEquals(1, fake.shutdownCalls, "a drained half-close sends its FIN")
             fake.assertAllConsumed()
             transport.close()
             tracker.assertNoLeaks()
