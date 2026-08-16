@@ -331,6 +331,48 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a waiter parked inside the exit's report is answered by its own register`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The completion callback runs the ordinary producer sequence
+            // synchronously: write, flush (schedules a tick), await. The
+            // register consumes that tick and short-circuits the drain — but
+            // it is running inside the enclosing exit's report, so the drain
+            // is reentrant and reports nothing. The register cannot rely on
+            // the report to consume its waiter there: it re-checks the queue
+            // it just drained and answers the waiter itself.
+            eventLoop.close()
+            eventLoop = FakeLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Written(5), WriteResult.Written(5))
+            val transport = transport()
+            val scope = this
+            var completions = 0
+            var waiter: kotlinx.coroutines.Deferred<Result<Unit>>? = null
+            transport.onFlushComplete = {
+                completions++
+                if (waiter == null) {
+                    transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+                    transport.flush()
+                    waiter = scope.async(start = CoroutineStart.UNDISPATCHED) {
+                        runCatching { transport.awaitPendingFlush() }
+                    }
+                }
+            }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "coalescing defers the first episode to its tick")
+
+            eventLoop.drainDispatched()
+
+            assertFalse(transport.hasFlushWaiter(), "the register must not leave its waiter parked on an emptied queue")
+            assertEquals(0, transport.pendingByteCount(), "the short-circuited drain emptied the second episode")
+            assertTrue(checkNotNull(waiter).await().isSuccess, "the waiter must see the completion")
+            assertEquals(1, completions, "the reentrant episode stays folded — the register answers only its waiter")
+            fake.assertAllConsumed()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a waiter arriving after a contained drain failure is not parked on a dead queue`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The pipeline's flush route contains a drain throw before any

@@ -20,11 +20,10 @@ import kotlin.test.BeforeTest
  * The engines' transport seam fixtures drive the same class through a real
  * `KqueueEventLoop` / `EpollEventLoop`; this one drives it through the
  * [FakeLoop] it shares with the loop tests, with [FakeLoop.armedCallbacks]
- * recording what `registerWriteCallback` would have armed. [setUp] builds it
- * coalescing-off so `flush()` drains synchronously through the funnel's shared
- * exit;
- * tests that need the coalesced tick or a deferred dispatch close it and
- * build their own. The flush paths under test never need readiness delivered,
+ * recording what `registerWriteCallback` would have armed. [setUp] builds
+ * it coalescing-off so `flush()` drains synchronously through the funnel's
+ * shared exit; tests that need the coalesced tick or a deferred dispatch
+ * close it and build their own. The flush paths under test never need readiness delivered,
  * so no thread and no kernel; tests that need a concrete loop's cinterop stay
  * engine-side, per the project's seam / integration split.
  *
