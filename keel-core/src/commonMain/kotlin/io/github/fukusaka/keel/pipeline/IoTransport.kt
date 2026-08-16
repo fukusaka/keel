@@ -161,7 +161,8 @@ interface IoTransport {
      * Sends all buffered writes to the network.
      *
      * @return true if the flush completed synchronously — this call's own
-     *         drain emptied the queue. Bytes that completion callbacks write
+     *         drain emptied the queue (trivially true when nothing was
+     *         pending). Bytes that completion callbacks write
      *         from inside the call are a new flush, not folded into this
      *         answer, so buffered data may be pending again by the time a
      *         `true` reaches the caller. false when the send is still
@@ -178,9 +179,8 @@ interface IoTransport {
      * [flush] drains in place may fire it synchronously, from inside that
      * call. Implementations that allow the synchronous firing must bound a
      * completion-driven pump (write the next chunk and flush from here)
-     * rather than recurse through it. Used internally by
-     * [awaitPendingFlush]. Pipeline [HeadHandler] does not set this
-     * (fire-and-forget).
+     * rather than recurse through it. Pipeline [HeadHandler] does not set
+     * this (fire-and-forget).
      */
     var onFlushComplete: (() -> Unit)?
 

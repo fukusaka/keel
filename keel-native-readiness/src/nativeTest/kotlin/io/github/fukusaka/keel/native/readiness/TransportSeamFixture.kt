@@ -23,9 +23,10 @@ import kotlin.test.BeforeTest
  * recording what `registerWriteCallback` would have armed. [setUp] builds
  * it coalescing-off so `flush()` drains synchronously through the funnel's
  * shared exit; tests that need the coalesced tick or a deferred dispatch
- * close it and build their own. The flush paths under test never need readiness delivered,
- * so no thread and no kernel; tests that need a concrete loop's cinterop stay
- * engine-side, per the project's seam / integration split.
+ * close it and build their own. The flush paths under test never need
+ * readiness delivered, so no thread and no kernel; tests that need a
+ * concrete loop's cinterop stay engine-side, per the project's seam /
+ * integration split.
  *
  * The syscall fake, the tracking allocator and the disposable fd are fixture
  * state so the tests do not repeat the same construction preamble;

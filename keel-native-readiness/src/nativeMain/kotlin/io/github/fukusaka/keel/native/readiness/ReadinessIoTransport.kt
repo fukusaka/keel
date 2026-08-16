@@ -734,7 +734,7 @@ class ReadinessIoTransport(
      * caller's `catch` cannot strand either obligation.
      *
      * @return `true` when this flush's own drain completed and emptied the
-     *   queue. A remainder a reentrant flush finished is reported but
+     *   queue (trivially true when nothing was pending). A remainder a reentrant flush finished is reported but
      *   answered `false` here — the caller asked about its own flush — and
      *   bytes the completion callbacks write after the check are a new
      *   episode, not folded into this answer. `false` otherwise — which
@@ -1436,14 +1436,15 @@ class ReadinessIoTransport(
      * obligation, which a half-close made by the report's own callbacks
      * defers after the outer frame's send already ran, so no outer decision
      * can cover it (a mid-drain reentrancy's send, by contrast, is merely
-     * earlier than the outer frame's own). The outer frame decides
-     * the report and the arm over the queue as every contributor left it. The report's
-     * predicate is therefore the **queue**, not this frame's own pass: a
+     * earlier than the outer frame's own). The outer frame decides the
+     * report and the arm over the queue as every contributor left it. The
+     * report's predicate is therefore the **queue**, not this frame's own pass: a
      * remainder this pass blocked on may have been finished by a reentrant
      * flush — the canonical backpressure resume does exactly that — and its
      * frame reported nothing, so an empty queue here is reported here,
-     * whoever emptied it — provided this frame entered over a live episode,
-     * per the entry rule below. This is also what bounds a completion-driven pump:
+     * whoever emptied it — provided this frame entered over a live
+     * episode, per the entry rule below. This is also what bounds a
+     * completion-driven pump:
      * its inner flush drains inline and comes straight back, instead of
      * reporting a completion that would pump again. One party cannot rely
      * on that fold: a report callback that writes, flushes and awaits
@@ -1451,7 +1452,12 @@ class ReadinessIoTransport(
      * run, over a queue its reentrant drain may have emptied in silence —
      * so the register re-checks the queue after its short-circuited drain
      * and answers its own waiter, and the reentrant branch above sends a
-     * FIN deferred in that same window.
+     * FIN deferred in that same window. One emptier is deliberately not
+     * special-cased: a teardown run by a drain's own callback clears the
+     * queue, and the report then fires over bytes that were discarded, not
+     * sent — the waiter is cancelled honestly by the teardown itself, and
+     * whether the completion callback should stay silent for that emptier
+     * is tracked as follow-up work.
      *
      * An episode is a queue that held bytes and ran dry, which is why the
      * report also requires bytes pending *at entry*: the continuations this

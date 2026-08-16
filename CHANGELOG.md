@@ -88,16 +88,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-kqueue`, `engine-epoll`: a stale write-readiness wake or overtaken coalescing tick
-  landing on a queue an earlier flush already drained no longer repeats the flush-completion
-  report (#1061)
+- `engine-kqueue`, `engine-epoll`: a stale write-readiness wake or an overtaken coalescing
+  tick no longer repeats the flush-completion report (#1061)
 - `engine-kqueue`, `engine-epoll`: a queue refilled mid-drain by the water-mark callback now
   re-arms write readiness rather than waiting for the next app flush (#1061)
 - `engine-kqueue`, `engine-epoll`: a direct flush that drains everything now answers a waiter
   parked in `awaitFlushComplete` (#1061)
 - `engine-kqueue`, `engine-epoll`: the coalescing opt-out's `flush()` now reports completion
-  synchronously — callback and deferred FIN — and returns false over a queue its own drain did
-  not empty (#1061)
+  synchronously and returns false over a queue its own drain did not empty (#1061)
 - `engine-kqueue`, `engine-epoll`: a dispatcher refusal while answering a flush waiter no longer
   ends the healthy connection nor skips its completion callback (#1060)
 - `engine-kqueue`, `engine-epoll`: a dispatcher that refuses a waiter's resumption no longer

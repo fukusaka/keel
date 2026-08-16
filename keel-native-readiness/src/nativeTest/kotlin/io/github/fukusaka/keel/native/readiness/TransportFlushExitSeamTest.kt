@@ -26,7 +26,10 @@ import kotlin.test.assertTrue
  * reentrant flushes from the exit's own callbacks fold into the outer
  * frame's single report, and the continuations the exit leaves behind — a
  * blocked pass's arm, a scheduled tick — report nothing when they land on a
- * queue an earlier flush already drained. The failure funnel and the
+ * queue an earlier flush already drained. Two further duties ride the same
+ * exit and are pinned here too: the deferred FIN, owed by any exit that
+ * observes the queue drained (report or no report), and the spent tick's
+ * refusal to drain bytes nobody flushed. The failure funnel and the
  * waiter's answers are pinned by the sibling [TransportFlushFunnelSeamTest].
  *
  * Several tests park a real waiter or drive loop-dispatched work, so every
@@ -247,7 +250,7 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             assertEquals(1, completions, "one emptied queue, one report")
             yield()
             assertTrue(waiter.isCompleted, "the waiter must have been resumed")
-            assertTrue(checkNotNull(waiter.await().isSuccess), "the waiter must see the completion")
+            assertTrue(checkNotNull(waiter).await().isSuccess, "the waiter must see the completion")
             transport.close()
             tracker.assertNoLeaks()
         }
