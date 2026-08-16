@@ -1688,6 +1688,14 @@ class ReadinessIoTransport(
         try {
             val completedPass = performFlush()
             val emptied = completedPass && pendingWrites.isEmpty()
+            // One obligation group, for the reason the drain paths have one:
+            // the report runs application code, and a report that throws must
+            // not take the arm with it. It can *create* the need for one — a
+            // completion callback that writes and then throws leaves a queue
+            // this frame was the last to look at, and unlike the drain's own
+            // failures nothing marks it poisoned, so no later waiter re-drives
+            // it. The first failure is raised once the rest have run.
+            var failure: Throwable? = null
             if (pendingWrites.isEmpty()) {
                 // The FIN is the transport's own obligation, not the
                 // episode's: the entry that emptied the queue can throw out
@@ -1695,14 +1703,15 @@ class ReadinessIoTransport(
                 // throwing writability handler — leaving the FIN deferred
                 // over a drained queue. Self-guarded and idempotent, so the
                 // repeat inside notifyFlushDrained is a no-op.
-                sendFinIfDrained()
+                failure = runStage(failure) { sendFinIfDrained() }
                 if (hadPending) {
-                    notifyFlushDrained()
+                    failure = runStage(failure) { notifyFlushDrained() }
                 }
             }
             if (pendingWrites.isNotEmpty() && !flushScheduled) {
-                registerWriteCallback()
+                failure = runStage(failure) { registerWriteCallback() }
             }
+            failure?.let { throw it }
             return emptied
         } finally {
             draining = false
