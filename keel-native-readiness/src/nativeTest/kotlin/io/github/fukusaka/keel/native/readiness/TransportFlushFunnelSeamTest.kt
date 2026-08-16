@@ -844,6 +844,128 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
         }
     }
 
+    @Test
+    fun `readiness landing on a queue an earlier flush drained does not repeat the report`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The arm the exit leaves for a report-side write goes stale when
+            // the application flushes those bytes itself before readiness
+            // arrives. The late wake then finds nothing to drain — and a queue
+            // that was already empty when the drain was entered is not an
+            // episode: its report went out when it emptied. Without the entry
+            // check, the wake re-announced that completion.
+            fake.enqueueWrite(fd, WriteResult.Written(5), WriteResult.Written(5))
+            val transport = transport()
+            var completions = 0
+            val late = tracker.allocate(16).apply { writerIndex = 5 }
+            var wrote = false
+            transport.onFlushComplete = {
+                completions++
+                if (!wrote) {
+                    wrote = true
+                    transport.write(late)
+                }
+            }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            assertTrue(transport.flush(), "the first episode drains and is reported")
+            assertTrue(
+                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+                "the report-side write leaves WRITE armed",
+            )
+            assertTrue(transport.flush(), "the application flushes the second episode itself")
+            assertEquals(2, completions, "two episodes, two reports")
+
+            // The armed wake arrives after both episodes ended.
+            transport.onReady(Interest.WRITE)
+            assertEquals(2, completions, "a stale wake on an emptied queue must not repeat the report")
+            fake.assertAllConsumed()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a blocked pass's arm gone stale by a direct flush does not repeat the report`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The same staleness through the blocked path's own arm: the
+            // retry it registered is overtaken by a direct flush that drains
+            // everything and reports. The wake that then lands owes nothing.
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
+            val transport = transport()
+            var completions = 0
+            transport.onFlushComplete = { completions++ }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
+            assertTrue(transport.flush(), "the direct retry drains everything")
+            assertEquals(1, completions, "one episode, one report")
+
+            transport.onReady(Interest.WRITE)
+            assertEquals(1, completions, "the overtaken retry must not repeat the report")
+            fake.assertAllConsumed()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a scheduled tick landing on a queue readiness already drained does not repeat the report`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The third stale continuation: under coalescing, a second flush()
+            // schedules a tick while the blocked first pass's arm is out, and
+            // readiness wins the race. The tick still fires — its schedule flag
+            // is only consumed by the awaited short-circuit — and lands on the
+            // queue readiness emptied and reported.
+            eventLoop.close()
+            eventLoop = FakeLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
+            val transport = transport()
+            var completions = 0
+            transport.onFlushComplete = { completions++ }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            assertFalse(transport.flush(), "the first flush defers to its tick")
+            eventLoop.drainDispatched()
+            assertTrue(
+                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+                "the tick's blocked pass arms WRITE",
+            )
+            assertFalse(transport.flush(), "the second flush schedules another tick")
+
+            transport.onReady(Interest.WRITE)
+            assertEquals(1, completions, "readiness drained the queue and reported it")
+
+            eventLoop.drainDispatched()
+            assertEquals(1, completions, "the overtaken tick must not repeat the report")
+            fake.assertAllConsumed()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a deferred FIN goes out with the direct flush that drains its bytes`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Pins the opt-out half of the FIN deferral: the half-close's own
+            // attempt blocks, and the completion path that finally drains the
+            // bytes is a plain direct flush() — whose exit owes the FIN like
+            // every other emptying entry.
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.WouldBlock, WriteResult.Written(5))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            assertFalse(transport.flush(), "the first attempt blocks")
+            transport.shutdownOutput()
+            assertEquals(0, fake.shutdownCalls, "the FIN is deferred behind the buffered bytes")
+
+            assertTrue(transport.flush(), "the direct retry drains everything")
+            assertEquals(1, fake.shutdownCalls, "the emptying direct flush must send the deferred FIN")
+            fake.assertAllConsumed()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
     private companion object {
         /** The transport's water marks; the imports tie the tests to the real thresholds. */
         const val HIGH_WATER = IoTransport.DEFAULT_HIGH_WATER_MARK
