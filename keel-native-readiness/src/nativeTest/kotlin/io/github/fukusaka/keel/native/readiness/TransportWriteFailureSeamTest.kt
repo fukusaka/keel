@@ -103,6 +103,80 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a refused gather still arms what the water-mark callback wrote`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Dropping the queue crosses low water, which resumes the producer
+            // synchronously -- and a producer that answers by writing leaves
+            // the queue non-empty at the raise. The reporting exit's arm sits
+            // past the throw, so unless the raise arms, those bytes wait for
+            // the close with nothing scheduled to attempt them.
+            val transport = transport()
+            var refilled = false
+            transport.onWritabilityChanged = { writable ->
+                if (writable && !refilled) {
+                    refilled = true
+                    transport.write(tracker.allocate(16).apply { writerIndex = 7 })
+                }
+            }
+            val half = HIGH_WATER / 2 + 1
+            transport.write(tracker.allocate(half).apply { writerIndex = half })
+            transport.write(tracker.allocate(half).apply { writerIndex = half })
+            fake.enqueueWritev(fd, WriteResult.Failed(EPIPE))
+
+            assertFailsWith<RefusedWriteException> { transport.flush() }
+
+            assertTrue(refilled, "the drop's ledger update must have resumed the producer")
+            assertEquals(7, transport.pendingByteCount(), "the refill is not part of what was dropped")
+            assertTrue(
+                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+                "the refill must have a continuation, got: ${eventLoop.armedCallbacks}",
+            )
+            fake.assertAllConsumed()
+
+            transport.onWritabilityChanged = null
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused release on the single-write path still arms what the callback wrote`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Same shape one queue entry down, where the write path is the
+            // single one rather than the gather: the entry's release refuses,
+            // the ledger update that follows resumes the producer, and the
+            // frame raises with the producer's bytes queued behind it.
+            val transport = transport()
+            var refilled = false
+            transport.onWritabilityChanged = { writable ->
+                if (writable && !refilled) {
+                    refilled = true
+                    transport.write(tracker.allocate(16).apply { writerIndex = 7 })
+                }
+            }
+            val over = HIGH_WATER + 1
+            val failing = FailingReleaseIoBuf(tracker.allocate(over).apply { writerIndex = over })
+            transport.write(failing)
+            fake.enqueueWrite(fd, WriteResult.Written(over))
+
+            assertFailsWith<InjectedFault> { transport.flush() }
+
+            assertTrue(refilled, "the ledger update must have resumed the producer")
+            assertEquals(7, transport.pendingByteCount(), "only the refill remains")
+            assertTrue(
+                eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+                "the refill must have a continuation, got: ${eventLoop.armedCallbacks}",
+            )
+            fake.assertAllConsumed()
+
+            transport.onWritabilityChanged = null
+            failing.releaseUnderlying()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a close during the batch loop stops it before the next write`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // Off-loop close: the flag flips at once but the teardown is
