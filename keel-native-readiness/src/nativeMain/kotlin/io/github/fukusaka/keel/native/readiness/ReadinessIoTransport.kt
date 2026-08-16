@@ -8,6 +8,7 @@ import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.IOV_MAX
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
@@ -390,9 +391,13 @@ class ReadinessIoTransport(
         // came. Which path finds a deferral depends on when it was created, not
         // on drain order: this one exists before the sweep reaches this
         // transport, whereas one created later is found by the half-close
-        // itself. Guarded for the same reason as the cancel above -- the logger
-        // is user-supplied, and a throw here must not take the read-side
-        // notification with it.
+        // itself. Guarded because the read-side notification below must run
+        // whatever this does: the report is more than a log line -- it claims
+        // the deferral through `abandonDeferredFin` and reads the loop's
+        // termination hand-off -- and it is the last thing standing between
+        // the sweep and the connection learning it is over. (Not guarded
+        // against the logger: those are guarded once, where the engine wraps
+        // the configured factory.)
         try {
             reportAbandonedFin()
         } catch (t: Throwable) {
@@ -1219,12 +1224,7 @@ class ReadinessIoTransport(
                     deferRemainder(written)
                     return false
                 }
-                is WriteResult.Failed -> {
-                    // Other error (EPIPE, ECONNRESET) — log and drop the entry.
-                    eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                    completeHead()
-                    return true
-                }
+                is WriteResult.Failed -> dropRefusedWrites("write", result.errno)
             }
         }
         completeHead()
@@ -1279,89 +1279,121 @@ class ReadinessIoTransport(
     // --- Gather-write flush ---
 
     /**
-     * Writes multiple pending buffers via `writev()`. Falls back to
-     * single-buffer retry on partial write or EAGAIN.
+     * Writes the queued buffers via `writev()`, in batches of at most
+     * [IOV_MAX] regions, until the queue is empty or the socket stops taking
+     * them. Falls back to write readiness on partial write or EAGAIN.
      *
      * Same ownership rule as [flushSingle] — a throw anywhere leaves whatever
-     * is unfinished queued for the teardown. The partial walk carries a
-     * refused release to the end: the entries behind the refusal are still
-     * walked, the split entry is still re-offset — losing that re-offset
-     * meant re-sending bytes the peer already had — and the ledger and the
-     * WRITE re-arm are still settled before the refusal is raised.
+     * is unfinished queued for the teardown. The walk carries a refused
+     * release to the end: the entries behind the refusal are still walked,
+     * the split entry is still re-offset — losing that re-offset meant
+     * re-sending bytes the peer already had — and the ledger and the WRITE
+     * re-arm are still settled before the refusal is raised.
      */
     private fun flushGather(): Boolean {
-        val count = pendingWrites.size
-        eventLoop.ensureWritevCapacity(count)
-        val bases = eventLoop.writevBases
-        val lens = eventLoop.writevLens
-        var totalBytes = 0
-        for (i in 0 until count) {
-            val pw = pendingWrites[i]
-            bases[i] = (pw.buf.unsafePointer + pw.offset)!!
-            lens[i] = pw.length.convert()
-            totalBytes += pw.length
-        }
-        val writtenBytes: Int = when (val result = nativeSocket.writev(fd, bases, lens, count)) {
-            WriteResult.WouldBlock -> {
-                // Nothing written — register WRITE and retry all later.
-                registerWriteCallback()
+        // Batched, because the syscall's region limit is not a byte limit: a
+        // gather offering more than IOV_MAX regions writes nothing at all and
+        // answers EINVAL. The loop is what keeps that an implementation
+        // detail -- a caller that queued more than the kernel takes in one
+        // call still sees its flush drain, in as many calls as that takes.
+        while (true) {
+            val count = minOf(pendingWrites.size, IOV_MAX)
+            eventLoop.ensureWritevCapacity(count)
+            val bases = eventLoop.writevBases
+            val lens = eventLoop.writevLens
+            var offeredBytes = 0
+            for (i in 0 until count) {
+                val pw = pendingWrites[i]
+                bases[i] = (pw.buf.unsafePointer + pw.offset)!!
+                lens[i] = pw.length.convert()
+                offeredBytes += pw.length
+            }
+            val writtenBytes: Int = when (val result = nativeSocket.writev(fd, bases, lens, count)) {
+                WriteResult.WouldBlock -> {
+                    // Nothing written — register WRITE and retry all later.
+                    registerWriteCallback()
+                    return false
+                }
+                is WriteResult.Failed -> dropRefusedWrites("writev", result.errno)
+                is WriteResult.Written -> result.bytes
+            }
+
+            // Release what went out and re-offset the entry the batch split,
+            // walking by bytes rather than by entry so the same walk serves a
+            // batch the kernel took whole and one it took part of. Draining
+            // from the head and mutating the split entry in place keeps the
+            // per-partial-write `mutableListOf<PendingWrite>()` + Iterator
+            // allocations out of the path, and holds the `PendingWrite`
+            // allocations to one (the split entry — trailing untouched
+            // entries stay as-is).
+            var failure: Throwable? = null
+            var consumed = 0
+            while (consumed < writtenBytes && pendingWrites.isNotEmpty()) {
+                val pw = pendingWrites.first()
+                if (consumed + pw.length <= writtenBytes) {
+                    consumed += pw.length
+                    pendingWrites.removeFirst()
+                    failure = runStage(failure) { pw.buf.release() }
+                } else {
+                    // Non-negative by the walk's own bound: consumed only
+                    // advances while consumed + pw.length <= writtenBytes.
+                    val alreadyWritten = writtenBytes - consumed
+                    pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
+                    consumed = writtenBytes
+                }
+            }
+            failure = runStage(failure) { updatePendingBytes(-writtenBytes) }
+
+            if (writtenBytes < offeredBytes) {
+                // The socket took part of this batch, so it will not take the
+                // next one either — leave the rest to write readiness.
+                partialWriteCount++
+                failure = runStage(failure) { registerWriteCallback() }
+                failure?.let { throw it }
                 return false
             }
-            is WriteResult.Failed -> {
-                // Other error — log and drop the whole queue.
-                eventLoop.logger.warn { "writev() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                completeAll(totalBytes)
-                return true
-            }
-            is WriteResult.Written -> result.bytes
+            failure?.let { throw it }
+            // The ledger update above runs the water-mark callback, which may
+            // have written more or closed the transport; either way the queue
+            // is what says whether another batch is owed.
+            if (pendingWrites.isEmpty()) return true
         }
-
-        if (writtenBytes >= totalBytes) {
-            completeAll(totalBytes)
-            return true
-        }
-
-        // Partial writev: release fully-written buffers, adjust the split buffer.
-        // Drain fully-written entries from the head of the deque, mutate
-        // the partially-written entry in place at the head, leave the rest.
-        // Eliminates the per-partial-write `mutableListOf<PendingWrite>()`
-        // + Iterator allocations that the old rebuild-and-replace path
-        // required, and reduces the `PendingWrite` allocations to one
-        // (only the partial entry — trailing untouched entries stay as-is).
-        partialWriteCount++
-        var failure: Throwable? = null
-        var consumed = 0
-        while (pendingWrites.isNotEmpty()) {
-            val pw = pendingWrites.first()
-            if (consumed + pw.length <= writtenBytes) {
-                consumed += pw.length
-                pendingWrites.removeFirst()
-                failure = runStage(failure) { pw.buf.release() }
-            } else {
-                // Non-negative by the walk's own bound: consumed only advances
-                // while consumed + pw.length <= writtenBytes.
-                val alreadyWritten = writtenBytes - consumed
-                pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
-                break
-            }
-        }
-        failure = runStage(failure) { updatePendingBytes(-writtenBytes) }
-        failure = runStage(failure) { registerWriteCallback() }
-        failure?.let { throw it }
-        return false
     }
 
     /**
-     * Ends every queued entry's life at once — the whole queue was written, or
-     * the whole `writev()` definitively failed. [releaseQueuedWrites] already
-     * carries refusals to the end of its walk; this owes the ledger update on
-     * top, whatever that walk raised.
+     * Ends every queued entry's life at once because the kernel refused the
+     * write, and raises the refusal.
+     *
+     * **Dropping is right, answering "flush completed" is not.** A write the
+     * kernel definitively refused leaves bytes that can never reach the peer
+     * — the seam has already retried what is retryable (its wrappers loop on
+     * `EINTR`) and separated what is merely blocked (`WouldBlock`), so what
+     * arrives here is the end of this connection's write side. Holding the
+     * queue would only hand the teardown buffers to release; releasing it
+     * while reporting success told the parked waiter, [onFlushComplete] and a
+     * deferred FIN that everything went out.
+     *
+     * Raising is how the failure reaches them instead: [performFlush]'s
+     * funnel answers the waiter with it, the loop-driven entries end the
+     * connection through their containment, and a direct `flush()` caller
+     * gets it on the pipeline's error path — which is what the read path has
+     * always done with its own `Failed` (it reports the connection inactive
+     * rather than pretending the read succeeded).
+     *
+     * A refused release is carried to the end of the walk and attached to the
+     * write failure, which is the cause the caller asked about.
      */
-    private fun completeAll(totalBytes: Int) {
+    private fun dropRefusedWrites(syscall: String, errno: Int): Nothing {
+        val cause = IllegalStateException("$syscall() failed: fd=$fd ${errnoMessage(errno)}")
+        // Snapshot first: releaseQueuedWrites deliberately leaves the ledger
+        // alone, so this is the only reading of it that still names the bytes
+        // being dropped.
+        val orphanedBytes = pendingBytes
         var failure: Throwable? = null
         failure = runStage(failure) { releaseQueuedWrites() }
-        failure = runStage(failure) { updatePendingBytes(-totalBytes) }
-        failure?.let { throw it }
+        failure = runStage(failure) { updatePendingBytes(-orphanedBytes) }
+        failure?.let { cause.addSuppressed(it) }
+        throw cause
     }
 
     // --- Async write readiness ---
