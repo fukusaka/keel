@@ -160,30 +160,35 @@ interface IoTransport {
     /**
      * Sends all buffered writes to the network.
      *
-     * @return true if the flush completed synchronously (all bytes sent),
-     *         false if an async send is pending (e.g., EAGAIN, io_uring SQE).
+     * @return true if the flush completed synchronously — this call's own
+     *         drain emptied the queue. Bytes that completion callbacks write
+     *         from inside the call are a new flush, not folded into this
+     *         answer, so buffered data may be pending again by the time a
+     *         `true` reaches the caller. false when the send is still
+     *         pending (e.g. EAGAIN, an async submission) — implementations
+     *         that always complete asynchronously always answer false.
      */
     fun flush(): Boolean
 
     /**
      * Callback invoked when a pending flush completes.
      *
-     * May fire later, from the transport's write-readiness retry or its
-     * coalesced drain — and an implementation whose [flush] drains in place
-     * may fire it synchronously, from inside that call. Implementations that
-     * allow the synchronous firing must bound a completion-driven pump
-     * (write the next chunk and flush from here) rather than recurse
-     * through it. Used internally by [awaitPendingFlush]. Pipeline
-     * [HeadHandler] does not set this (fire-and-forget).
+     * May fire later, from whatever completes the send — a readiness retry, a
+     * scheduled drain, an I/O completion — and an implementation whose
+     * [flush] drains in place may fire it synchronously, from inside that
+     * call. Implementations that allow the synchronous firing must bound a
+     * completion-driven pump (write the next chunk and flush from here)
+     * rather than recurse through it. Used internally by
+     * [awaitPendingFlush]. Pipeline [HeadHandler] does not set this
+     * (fire-and-forget).
      */
     var onFlushComplete: (() -> Unit)?
 
     /**
      * Suspends until all pending async flush operations complete.
      *
-     * Returns immediately if the last [flush] completed synchronously
-     * (returned true). Called by Coroutine mode's
-     * [io.github.fukusaka.keel.core.Channel.awaitFlushComplete].
+     * Returns immediately when no send is pending. Called by Coroutine
+     * mode's [io.github.fukusaka.keel.core.Channel.awaitFlushComplete].
      */
     suspend fun awaitPendingFlush()
 
