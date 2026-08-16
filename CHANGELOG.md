@@ -88,6 +88,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: a stale write-readiness wake or overtaken coalescing tick
+  landing on a queue an earlier flush already drained no longer repeats the flush-completion
+  report (#1061)
 - `engine-kqueue`, `engine-epoll`: a queue refilled mid-drain by the water-mark callback now
   re-arms write readiness rather than waiting for the next app flush (#1061)
 - `engine-kqueue`, `engine-epoll`: a direct flush that drains everything now answers a waiter
