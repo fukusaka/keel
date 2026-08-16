@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `native-posix`: `IOV_MAX` is published so gather callers can bound their batches (#1062)
 - `core`: `LoggerFactory.guarded()` — wraps a factory so its loggers cannot throw, and is applied to
   the configured factory by every engine (#1038)
 - `core`: `IoTransport.canDispatchToOwningContext` — whether work handed to the transport's
@@ -279,7 +280,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `core`: `IoTransport.flush()` / `onFlushComplete` contracts now state the episode rule
   and the synchronous-completion allowance implementations must bound (#1061)
-- `native-posix`: `IOV_MAX` is published so gather callers can bound their batches (#1062)
 
 ## [0.4.2] - 2026-07-17
 
