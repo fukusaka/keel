@@ -217,8 +217,9 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
             // low water resumes the producer, whose reentrant flush drains
             // the remainder to completion. The outer frame's own pass did not
             // complete -- but the queue is empty, every byte is out, and the
-            // report is owed to whoever is listening: the parked waiter, the
-            // completion callback, a deferred FIN. The sibling ownership test
+            // report is owed to whoever is listening: the parked waiter and
+            // the completion callback (the deferred FIN is discharged before
+            // the report, as the transport's own obligation). The sibling ownership test
             // pins the other halves of this shape (the false return, the
             // absent re-arm); this one pins the report.
             val total = HIGH_WATER + LOW_WATER

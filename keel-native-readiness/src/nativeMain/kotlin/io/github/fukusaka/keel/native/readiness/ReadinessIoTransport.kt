@@ -939,10 +939,13 @@ class ReadinessIoTransport(
     }
 
     /**
-     * The completion every drained flush owes, in one place: the deferred FIN
-     * first — the transport's own obligation, and both callbacks below run
-     * user code that may close the transport, after which the FIN is
-     * deliberately not sent — then the parked waiter, then [onFlushComplete].
+     * The episode's completion report, in one place: the parked waiter, then
+     * [onFlushComplete]. The deferred FIN is discharged at the exit before
+     * this runs — the transport's own obligation, owed whether or not an
+     * episode's report is — and the self-guarded repeat here only keeps this
+     * helper safe standalone. FIN before both callbacks matters because both
+     * run user code that may close the transport, after which the FIN is
+     * deliberately not sent.
      */
     private fun notifyFlushDrained() {
         sendFinIfDrained()
