@@ -534,6 +534,47 @@ internal class TransportFlushExitSeamTest : TransportSeamFixture() {
         }
     }
 
+    @Test
+    fun `a FIN deferred inside the report is sent by the reentrant drain that empties its bytes`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The FIN half of the report-parked window: the completion
+            // callback writes, half-closes and awaits synchronously. The
+            // half-close defers its FIN behind the queued bytes and its own
+            // attempt only schedules a tick; the register consumes that tick
+            // and its short-circuited drain -- reentrant here -- empties the
+            // queue. The enclosing frame's FIN send ran before this deferral
+            // existed, so the reentrant frame itself owes it: any exit that
+            // observes the queue drained does.
+            eventLoop.close()
+            eventLoop = FakeLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Written(5), WriteResult.Written(5))
+            val transport = transport()
+            val scope = this
+            var waiter: kotlinx.coroutines.Deferred<Result<Unit>>? = null
+            transport.onFlushComplete = {
+                if (waiter == null) {
+                    transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+                    transport.shutdownOutput()
+                    waiter = scope.async(start = CoroutineStart.UNDISPATCHED) {
+                        runCatching { transport.awaitPendingFlush() }
+                    }
+                }
+            }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "coalescing defers the first episode to its tick")
+
+            eventLoop.drainDispatched()
+
+            assertEquals(0, transport.pendingByteCount(), "the reentrant drain emptied the half-close's bytes")
+            assertEquals(1, fake.shutdownCalls, "the reentrant drain that emptied the queue must send the deferred FIN")
+            assertFalse(transport.hasFlushWaiter(), "and the register still answers its waiter")
+            assertTrue(checkNotNull(waiter).await().isSuccess, "the waiter must see the completion")
+            fake.assertAllConsumed()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
     private companion object {
         /** The transport's water marks; the imports tie the tests to the real thresholds. */
         const val HIGH_WATER = IoTransport.DEFAULT_HIGH_WATER_MARK

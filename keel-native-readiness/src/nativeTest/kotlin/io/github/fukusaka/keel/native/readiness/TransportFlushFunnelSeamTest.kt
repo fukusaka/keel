@@ -39,8 +39,12 @@ import kotlin.test.assertTrue
  * dispatcher contract on purpose:
  * the teardown's two staged cancels (carried to `close()`'s caller), and
  * the answers no dispatcher can refuse because the caller has not suspended
- * — the register's arms run inline on-loop, and the quiescent-loop cancel
- * that answers before the register is ever dispatched.
+ * — the register's arms run inline on-loop (including the
+ * reentrantly-drained re-check, whose window exists only for a register
+ * running inside the exit's report, i.e. inline — measured: the resume
+ * lands before the suspension completes and consults no dispatcher), and
+ * the quiescent-loop cancel that answers before the register is ever
+ * dispatched.
  *
  * Two routes the seam cannot reach: a deferred FIN abandoned because the
  * drain failed while the loop was finishing, and the register's
