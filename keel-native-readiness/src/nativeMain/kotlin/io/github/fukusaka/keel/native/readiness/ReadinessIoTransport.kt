@@ -1315,9 +1315,9 @@ class ReadinessIoTransport(
      * release to the end: the entries behind the refusal are still walked,
      * the split entry is still re-offset — losing that re-offset meant
      * re-sending bytes the peer already had — and the ledger and the WRITE
-     * re-arm are still settled before the refusal is raised. Every exit that
-     * leaves the queue non-empty arms it, through
-     * [raiseLeavingRemainderArmed].
+     * re-arm are still settled before the refusal is raised, through
+     * [raiseLeavingRemainderArmed], whose KDoc says which exits come there
+     * and which arm on their own.
      */
     private fun flushGather(): Boolean {
         // Batched, because the syscall's region limit is not a byte limit: a
@@ -1416,16 +1416,29 @@ class ReadinessIoTransport(
     }
 
     /**
-     * The one way a drain raises: arming write readiness first if anything is
-     * still queued.
+     * Raises out of a drain that got as far as moving bytes, arming write
+     * readiness first for whatever it leaves queued.
      *
      * A throw ends this drain, not the queue, and the drain is the last thing
-     * that was going to offer what remains. Three places reach it and each
+     * that was going to offer what remains. Three places reach here and each
      * can leave a non-empty queue — a batch the kernel took *whole* whose
      * release then refused, a definitive refusal whose ledger update resumed
      * a producer that wrote again, and the single-write path's own release.
      * The reporting exit's arm sits past the throw, so without this the
      * remainder waits for the close.
+     *
+     * **Not every raise in a flush comes here, and that is deliberate.** The
+     * ones that do not are the ones that fail on the way *in*: a buffer whose
+     * pointer the platform cannot take, or scratch the loop cannot size. Those
+     * end the drain before the first syscall, and the retry an arm would buy
+     * runs the same failing step again — a configuration answer, not a
+     * transient one. Arming for it would spin the loop against it. The
+     * `WouldBlock` and partial-write exits do not come here either: those are
+     * not failures, and each already arms on its own path.
+     *
+     * Gated the same way as the reporting exit: a scheduled coalescing tick
+     * will drain this queue, so arming against it buys a redundant syscall and
+     * a wake the tick has already made stale.
      *
      * The arm's own failure joins the one being raised rather than replacing
      * it. That path is nearly unreachable — a kernel arm that fails is
@@ -1436,7 +1449,7 @@ class ReadinessIoTransport(
      * signal, and closing that gap belongs with the arm, not here.
      */
     private fun raiseLeavingRemainderArmed(failure: Throwable): Nothing {
-        if (pendingWrites.isEmpty()) throw failure
+        if (pendingWrites.isEmpty() || flushScheduled) throw failure
         throw runStage(failure) { registerWriteCallback() } ?: failure
     }
 
