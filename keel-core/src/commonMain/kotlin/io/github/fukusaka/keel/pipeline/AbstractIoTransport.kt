@@ -623,6 +623,39 @@ abstract class AbstractIoTransport(
     protected var partialWriteCount: Long = 0
 
     /**
+     * Longest run of consecutive drains that moved nothing — the socket
+     * answered "not now" every time and the drain re-armed and waited.
+     *
+     * A handful is ordinary backpressure. A large one says the transport
+     * spent its life re-arming against a socket that stayed unwritable, which
+     * is the shape a persistent `ENOBUFS` would take: the kernel is out of
+     * buffer space, the socket itself is writable, so readiness fires again
+     * at once. Nothing guards against that today — this counter is what would
+     * make it visible if it ever happened.
+     */
+    protected var maxConsecutiveBlockedDrains: Long = 0
+
+    /** Running length of the current blocked run, folded into the maximum. */
+    private var consecutiveBlockedDrains: Long = 0
+
+    /**
+     * Records a drain that moved no bytes, for [maxConsecutiveBlockedDrains].
+     * Subclasses call this from the path that answers `WouldBlock` with
+     * nothing written.
+     */
+    protected fun recordBlockedDrain() {
+        consecutiveBlockedDrains++
+        if (consecutiveBlockedDrains > maxConsecutiveBlockedDrains) {
+            maxConsecutiveBlockedDrains = consecutiveBlockedDrains
+        }
+    }
+
+    /** Ends the current blocked run; called whenever a drain moves bytes. */
+    protected fun recordDrainProgress() {
+        consecutiveBlockedDrains = 0
+    }
+
+    /**
      * Logs the slow-path instrumentation counters on transport teardown.
      * Subclass [close] implementations call this from a teardown body —
      * on the EventLoop thread, or on the closing caller once a stopped
@@ -643,7 +676,8 @@ abstract class AbstractIoTransport(
             0
         }
         logger.debug {
-            "transport stats: $fdLabel flush=$flushCount partial=$partialWriteCount ratio_bp=$ratioBp"
+            "transport stats: $fdLabel flush=$flushCount partial=$partialWriteCount ratio_bp=$ratioBp " +
+                "max_blocked_run=$maxConsecutiveBlockedDrains"
         }
     }
 

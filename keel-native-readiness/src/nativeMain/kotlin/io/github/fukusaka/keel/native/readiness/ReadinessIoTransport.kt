@@ -1250,6 +1250,7 @@ class ReadinessIoTransport(
             when (val result = nativeSocket.write(fd, ptr, pw.length - written)) {
                 is WriteResult.Written -> written += result.bytes
                 WriteResult.WouldBlock -> {
+                    if (written == 0) recordBlockedDrain() else recordDrainProgress()
                     deferRemainder(written)
                     return false
                 }
@@ -1367,6 +1368,7 @@ class ReadinessIoTransport(
             val writtenBytes: Int = when (val result = nativeSocket.writev(fd, bases, lens, count)) {
                 WriteResult.WouldBlock -> {
                     // Nothing written — register WRITE and retry all later.
+                    recordBlockedDrain()
                     registerWriteCallback()
                     return false
                 }
@@ -1407,6 +1409,7 @@ class ReadinessIoTransport(
             // mis-counts every water-mark crossing after it. The old shape
             // was self-limiting because it settled by the batch total; a
             // walk that can stop early is not.
+            if (consumed > 0) recordDrainProgress()
             failure = runStage(failure) { updatePendingBytes(-consumed) }
 
             if (writtenBytes < offeredBytes) {
