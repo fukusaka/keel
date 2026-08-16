@@ -1428,13 +1428,18 @@ class ReadinessIoTransport(
      * remainder waits for the close.
      *
      * **Not every raise in a flush comes here, and that is deliberate.** The
-     * ones that do not are the ones that fail on the way *in*: a buffer whose
-     * pointer the platform cannot take, or scratch the loop cannot size. Those
-     * end the drain before the first syscall, and the retry an arm would buy
-     * runs the same failing step again — a configuration answer, not a
-     * transient one. Arming for it would spin the loop against it. The
-     * `WouldBlock` and partial-write exits do not come here either: those are
-     * not failures, and each already arms on its own path.
+     * ones that do not are the ones that fail while *preparing* a batch: a
+     * buffer whose pointer the platform cannot take, or scratch the loop
+     * cannot size. What an arm would buy there is a retry that runs the same
+     * failing step again — a configuration answer, not a transient one — so
+     * arming would spin the loop against it. Note that these are not
+     * necessarily pre-syscall: batches after the first prepare with bytes
+     * already gone, so such a raise can leave a queue that nothing arms. A
+     * later `awaitPendingFlush` still re-drives it through the poisoned-queue
+     * retry; a fire-and-forget producer's remainder waits for the close. That
+     * is the accepted cost of not spinning. The `WouldBlock` and partial-write
+     * exits do not come here either: those are not failures, and each already
+     * arms on its own path.
      *
      * Gated the same way as the reporting exit: a scheduled coalescing tick
      * will drain this queue, so arming against it buys a redundant syscall and

@@ -50,6 +50,12 @@ import kotlinx.cinterop.ULongVar
  * [WriteResult.WouldBlock] / [ReadResult.WouldBlock]. An implementation
  * that answers `Failed` for a transient condition costs the connection.
  *
+ * **[WriteResult.Written] means progress.** A caller may loop on a partial
+ * write, so an implementation that answers `Written(0)` for an offer of more
+ * than zero bytes gives that loop nothing to advance on. Report the
+ * would-block and the refusal as themselves; the bundled implementation maps
+ * a zero-byte return to [WriteResult.Failed] for exactly this reason.
+ *
  * The corollary belongs to the caller: **the shape of a request is theirs
  * to respect, not this interface's to diagnose.** A gather offering more
  * regions than the platform accepts writes nothing and fails,
