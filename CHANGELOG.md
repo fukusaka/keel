@@ -88,6 +88,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-kqueue`, `engine-epoll`: a stale write-readiness wake or an overtaken coalescing
+  tick no longer repeats the flush-completion report (#1061)
+- `engine-kqueue`, `engine-epoll`: a queue refilled mid-drain by the water-mark callback now
+  re-arms write readiness rather than waiting for the next app flush (#1061)
+- `engine-kqueue`, `engine-epoll`: a direct flush that drains everything now answers a waiter
+  parked in `awaitFlushComplete` (#1061)
+- `engine-kqueue`, `engine-epoll`: the coalescing opt-out's `flush()` now reports completion
+  synchronously and returns false over a queue its own drain did not empty (#1061)
 - `engine-kqueue`, `engine-epoll`: a dispatcher refusal while answering a flush waiter no longer
   ends the healthy connection nor skips its completion callback (#1060)
 - `engine-kqueue`, `engine-epoll`: a dispatcher that refuses a waiter's resumption no longer
@@ -262,6 +270,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   signed (`+5` / `-5`), overflowing, or conflicting (duplicate fields with differing values) —
   in both the request and response decoders instead of silently framing on the first value,
   closing a request/response-splitting vector (RFC 9110 §8.6 / RFC 9112 §6.3) (#967)
+
+### Documentation
+
+- `core`: `IoTransport.flush()` / `onFlushComplete` contracts now state the episode rule
+  and the synchronous-completion allowance implementations must bound (#1061)
 
 ## [0.4.2] - 2026-07-17
 

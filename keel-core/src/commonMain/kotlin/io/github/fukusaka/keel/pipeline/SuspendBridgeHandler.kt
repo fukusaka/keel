@@ -247,8 +247,11 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
     /**
      * Flushes through the Pipeline outbound path.
      *
-     * Non-suspend: propagateFlush triggers IoTransport.flush() which
-     * is fire-and-forget (async completion via onFlushComplete callback).
+     * Non-suspend: propagateFlush triggers IoTransport.flush() and does not
+     * consult the result — completion arrives via the onFlushComplete
+     * callback, which an implementation may fire synchronously from inside
+     * the flush call (see [IoTransport.onFlushComplete]) or later from its
+     * completion path.
      */
     fun flush() {
         ctx.propagateFlush()

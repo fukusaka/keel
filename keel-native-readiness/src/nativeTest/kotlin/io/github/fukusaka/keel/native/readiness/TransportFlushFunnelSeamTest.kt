@@ -6,11 +6,12 @@ import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import io.github.fukusaka.keel.testing.buf.PointerlessIoBuf
+import io.github.fukusaka.keel.testing.buf.ReleaseHookIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.async
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -33,11 +34,18 @@ import kotlin.test.assertTrue
  * register's two reachable immediate arms, dispatched so the answer rides
  * the waiter's own dispatcher — have a refusal reported as the transport's
  * own rather than escaping into the frame that delivered; two of those
- * refusal tests involve no drain at all. Outside that contract on purpose:
+ * refusal tests involve no drain at all. The exit's episode rule — one
+ * report per emptied queue, and the continuations the exit leaves — is
+ * pinned by the sibling [TransportFlushExitSeamTest]. Outside the
+ * dispatcher contract on purpose:
  * the teardown's two staged cancels (carried to `close()`'s caller), and
  * the answers no dispatcher can refuse because the caller has not suspended
- * — the register's arms run inline on-loop, and the quiescent-loop cancel
- * that answers before the register is ever dispatched.
+ * — the register's arms run inline on-loop (including the
+ * reentrantly-drained re-check, whose window exists only for a register
+ * running inside the exit's report, i.e. inline — measured: the resume
+ * lands before the suspension completes and consults no dispatcher), and
+ * the quiescent-loop cancel that answers before the register is ever
+ * dispatched.
  *
  * Two routes the seam cannot reach: a deferred FIN abandoned because the
  * drain failed while the loop was finishing, and the register's
@@ -62,9 +70,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
 
             // runCatching inside the async: a failed async cancels its parent
             // scope, which would fail the test before its own assertions run.
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the flush")
 
             // The drain throws out of a plain flush() — no tick, no readiness
@@ -84,8 +90,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     @Test
     fun `a drain failure in the coalesced tick answers the waiter and ends the connection`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            eventLoop.close()
-            eventLoop = FakeLoop(runDispatchedInline = false)
+            rebuildLoop(runDispatchedInline = false)
             fake.enqueueWrite(fd, WriteResult.Written(5))
             val transport = transport()
             var inactive = false
@@ -93,9 +98,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
             transport.write(failing)
 
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the tick")
 
             assertFalse(transport.flush(), "coalescing defers the drain to the tick")
@@ -117,17 +120,14 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     @Test
     fun `a drain failure in the awaited short-circuit does not strand the dispatched waiter`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            eventLoop.close()
-            eventLoop = FakeLoop(onLoopThread = false, runDispatchedInline = false)
+            rebuildLoop(onLoopThread = false, runDispatchedInline = false)
             fake.enqueueWrite(fd, WriteResult.Written(5))
             val transport = transport()
             val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
             transport.write(failing)
 
             // Off-loop caller: the register is dispatched, not run inline.
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertFalse(waiter.isCompleted, "the register has not run yet")
 
             // A flush lands behind the queued register, so when the register
@@ -150,8 +150,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     @Test
     fun `a drain failure in the dispatched half-close ends the connection`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            eventLoop.close()
-            eventLoop = FakeLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
+            rebuildLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
             fake.enqueueWrite(fd, WriteResult.Written(5))
             val transport = transport()
             var inactive = false
@@ -189,9 +188,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
             transport.write(failing)
 
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the retry")
             assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
 
@@ -212,8 +209,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     @Test
     fun `a drained short-circuit sends the deferred FIN before running the completion callbacks`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            eventLoop.close()
-            eventLoop = FakeLoop(runDispatchedInline = false)
+            rebuildLoop(runDispatchedInline = false)
             fake.enqueueWrite(fd, WriteResult.Written(5))
             val transport = transport()
             var completions = 0
@@ -228,9 +224,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             transport.write(tracker.allocate(16).apply { writerIndex = 5 })
             transport.shutdownOutput()
 
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
 
             assertEquals(1, fake.shutdownCalls, "the FIN must be sent before the callbacks can close the transport")
             assertEquals(1, completions, "the short-circuit owes the completion callback too")
@@ -242,16 +236,13 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     @Test
     fun `a drain failure during close still answers the waiter with the close's cancellation`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            eventLoop.close()
-            eventLoop = FakeLoop(runDispatchedInline = false)
+            rebuildLoop(runDispatchedInline = false)
             fake.enqueueWrite(fd, WriteResult.Written(5))
             val transport = transport()
             val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
             transport.write(failing)
 
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertFalse(transport.flush(), "coalescing defers the drain")
 
             // close() runs the deferred drain as its first stage; the refusal
@@ -280,9 +271,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             val transport = transport()
             transport.write(tracker.allocate(16).apply { writerIndex = 5 })
 
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertTrue(transport.hasFlushWaiter(), "the waiter must be parked")
 
             // External cancellation must clear the slot through the parked
@@ -300,8 +289,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     @Test
     fun `a tick consumed by the awaited short-circuit does not report the flush again`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            eventLoop.close()
-            eventLoop = FakeLoop(runDispatchedInline = false)
+            rebuildLoop(runDispatchedInline = false)
             fake.enqueueWrite(fd, WriteResult.Written(5))
             val transport = transport()
             var completions = 0
@@ -310,9 +298,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             transport.write(tracker.allocate(16).apply { writerIndex = 5 })
             assertFalse(transport.flush(), "coalescing defers the drain to the tick")
 
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertTrue(waiter.await().isSuccess, "the short-circuit drained the wait inline")
             assertEquals(1, completions, "the drained flush reports once")
 
@@ -323,6 +309,90 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             assertEquals(1, completions, "a consumed tick must not report the same flush again")
 
             transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a waiter parked inside the exit's report is answered by its own register`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The completion callback runs the ordinary producer sequence
+            // synchronously: write, flush (schedules a tick), await. The
+            // register consumes that tick and short-circuits the drain — but
+            // it is running inside the enclosing exit's report, so the drain
+            // is reentrant and reports nothing. The register cannot rely on
+            // the report to consume its waiter there: it re-checks the queue
+            // it just drained and answers the waiter itself.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Written(5), WriteResult.Written(5))
+            val transport = transport()
+            val scope = this
+            var completions = 0
+            var waiter: Deferred<Result<Unit>>? = null
+            transport.onFlushComplete = {
+                completions++
+                if (waiter == null) {
+                    transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+                    transport.flush()
+                    waiter = scope.parkFlushWaiter(transport)
+                }
+            }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "coalescing defers the first episode to its tick")
+
+            eventLoop.drainDispatched()
+
+            assertFalse(transport.hasFlushWaiter(), "the register must not leave its waiter parked on an emptied queue")
+            assertEquals(0, transport.pendingByteCount(), "the short-circuited drain emptied the second episode")
+            assertTrue(checkNotNull(waiter).await().isSuccess, "the waiter must see the completion")
+            assertEquals(1, completions, "the reentrant episode stays folded — the register answers only its waiter")
+            fake.assertAllConsumed()
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a waiter whose emptying drain raced an off-loop close hears the close instead of success`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The release hook plays the racing thread: close() lands off-loop
+            // (markClosing flips `opened` synchronously, the teardown is
+            // dispatched), then the release refuses -- the drain emptied the
+            // queue but threw before any report, and the failure funnel
+            // declined its waiter on the flipped flag. The register's
+            // re-check is the last to see this waiter; "the flush completed"
+            // is not something it can honestly report on a closing
+            // connection, so it must answer with the close's own cause --
+            // same ranking as its first arm.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            val racing = ReleaseHookIoBuf(tracker.allocate(16).apply { writerIndex = 5 }) {
+                eventLoop.onLoopThread = false
+                transport.close()
+                eventLoop.onLoopThread = true
+            }
+            transport.write(racing)
+            assertFalse(transport.flush(), "coalescing defers the drain to the tick")
+
+            // The register runs inline, consumes the tick, and short-circuits
+            // the drain; everything above happens inside this call.
+            val waiter = parkFlushWaiter(transport)
+
+            assertFalse(transport.hasFlushWaiter(), "the waiter must not be left parked")
+            val failure = waiter.await().exceptionOrNull()
+            assertIs<CancellationException>(
+                failure,
+                "a closing connection's waiter hears the close, not success, got: ${waiter.await()}",
+            )
+            assertTrue(
+                checkNotNull(failure.message).contains("transport closed before the pending flush"),
+                "the cancellation must carry the close's own cause, got: ${failure.message}",
+            )
+
+            // The dispatched teardown finds the slot already answered.
+            eventLoop.drainDispatched()
+            racing.releaseUnderlying()
             tracker.assertNoLeaks()
         }
     }
@@ -344,9 +414,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             // retries the drain with the waiter stored, so the repeat failure
             // reaches this caller through the funnel and the containment ends
             // the connection.
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertIs<ClassCastException>(
                 waiter.await().exceptionOrNull(),
                 "the waiter must not be parked on a queue nothing will drain",
@@ -372,9 +440,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             // legitimate park the poisoned-queue retry must leave parked:
             // nothing about this entry has failed.
             transport.write(tracker.allocate(16).apply { writerIndex = 5 })
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertTrue(
                 transport.hasFlushWaiter(),
                 "the waiter parks; the mark must not outlive the entries whose drain failed",
@@ -391,16 +457,13 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     @Test
     fun `the deferred answer reaches the waiter only after the failing task finishes`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            eventLoop.close()
-            eventLoop = FakeLoop(runDispatchedInline = false, flushCoalescing = false)
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = false)
             fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
             val transport = transport()
             val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
             transport.write(failing)
 
-            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            val waiter = parkFlushWaiter(transport)
             assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
 
             // The retry's drain failure answers the waiter through the funnel —
@@ -529,8 +592,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             // Off-loop caller: the register Runnable is dispatched, so by the
             // time it runs the caller has suspended and the immediate answer
             // rides the waiter's own dispatcher, like any other hand-off.
-            eventLoop.close()
-            eventLoop = FakeLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
+            rebuildLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
             val transport = transport()
 
             val refusing = RefusingDispatcher()
@@ -556,8 +618,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     @Test
     fun `a refused answer at the register's closed-transport arm is reported rather than thrown at the loop`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            eventLoop.close()
-            eventLoop = FakeLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
+            rebuildLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
             val transport = transport()
             transport.close()
 
@@ -580,10 +641,5 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             )
             tracker.assertNoLeaks()
         }
-    }
-
-    private companion object {
-        /** Wall-clock bound for the parked-waiter tests; sibling seam budget. */
-        const val FUNNEL_TIMEOUT_MS = 5_000L
     }
 }

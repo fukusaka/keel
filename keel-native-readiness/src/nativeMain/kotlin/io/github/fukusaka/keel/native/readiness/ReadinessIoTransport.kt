@@ -23,6 +23,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.convert
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.set
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
@@ -733,17 +734,26 @@ class ReadinessIoTransport(
      * parked flush waiter and reported an unkeepable FIN deferral, so a direct
      * caller's `catch` cannot strand either obligation.
      *
-     * @return `true` if the queue is empty when this returns. `false` otherwise
-     *         — which under the default coalescing means only that the drain was
-     *         deferred to the loop, not that anything hit `EAGAIN`.
+     * @return `true` when this flush's own drain completed and emptied the
+     *   queue (trivially true when nothing was pending). A remainder a
+     *   reentrant flush finished is reported but
+     *   answered `false` here — the caller asked about its own flush — and
+     *   bytes the completion callbacks write after the check are a new
+     *   episode, not folded into this answer. `false` otherwise — which
+     *   under the default coalescing means only that the drain was deferred
+     *   to the loop, not that anything hit `EAGAIN`.
      */
     override fun flush(): Boolean {
         if (pendingWrites.isEmpty()) return true
         // Opt-out: bypass coalescing when the engine config disables it.
-        // Each flush() drains synchronously through performFlush, matching
-        // the pre-#899 immediate-send behaviour for latency-sensitive
-        // workloads (mirrors NIO #897 opt-out).
-        if (!eventLoop.flushCoalescing) return performFlush()
+        // Each flush() drains synchronously, matching the pre-#899
+        // immediate-send behaviour for latency-sensitive workloads (mirrors
+        // NIO #897 opt-out) — through the funnel's shared exit, so a parked
+        // waiter hears of a completion from this entry like any other, and a
+        // refill leaves a scheduled continuation. Before the exit was shared,
+        // a waiter parked ahead of a direct flush stayed parked until the
+        // next readiness or the close, however completely that flush drained.
+        if (!eventLoop.flushCoalescing) return drainAndNotifyIfComplete()
         // Defer to next EL tick so same-tick per-emit requestFlush calls
         // coalesce into one writev (mirrors NIO #897).
         if (flushScheduled) return false
@@ -753,10 +763,13 @@ class ReadinessIoTransport(
             EmptyCoroutineContext,
             Runnable {
                 if (!transport.opened) return@Runnable
-                // Consumed already? The awaited short-circuit (or a teardown's
-                // deferred drain) may have taken this schedule; running the
-                // drain again on what is usually an empty queue would report a
-                // second completion for the same flush.
+                // Consumed already? The awaited short-circuit (or a
+                // teardown's deferred drain) may have taken this schedule.
+                // The exit's entry rule already keeps a spent tick from
+                // re-reporting; this check keeps it from draining at all —
+                // bytes a producer wrote after the schedule was consumed have
+                // not asked for a flush yet, and a spent tick draining them
+                // would jump its coalescing turn.
                 if (!transport.flushScheduled) return@Runnable
                 transport.flushScheduled = false
                 // Contained like readiness dispatch: this tick is loop-driven
@@ -776,6 +789,43 @@ class ReadinessIoTransport(
     }
 
     private var flushScheduled = false
+
+    /**
+     * True while [drainAndNotifyIfComplete] is on this stack. A reentrant
+     * arrival from one of the exit's own callbacks drains without running
+     * the exit's duties; this is the fold that bounds a completion-driven
+     * pump, and **this table is the normative ledger of who pays each duty
+     * the fold swallows**:
+     *
+     * ```
+     * duty              paid in the fold window by
+     * ----------------  ------------------------------------------------
+     * deferred FIN      the reentrant branch itself, over the queue it
+     *                   emptied (no outer decision can cover a half-close
+     *                   made by the report's own callbacks)
+     * parked waiter     pre-fold park: the outer frame's report. Park
+     *                   inside the fold window over a queue not yet empty:
+     *                   also the outer report (hadPending was true at its
+     *                   entry). Park inside the window at an empty queue,
+     *                   before the outer report: the register's
+     *                   already-drained arm. After the outer report gate
+     *                   ran: the register's post-drain re-check
+     * onFlushComplete   nobody — deliberately folded; the reentrant
+     *                   flush's return value is the pump's signal
+     * arm / tick        the outer frame, over the queue as every
+     *                   contributor left it
+     * ```
+     *
+     * A duty added to the completion report later must take a row here:
+     * `notifyFlushDrained` does not run for a reentrantly-drained episode,
+     * and rounds of review found exactly this shape dropping the waiter
+     * and the FIN before the table existed. Two routes arrive reentrantly:
+     * a reentrant `flush()` under the coalescing opt-out (coalesced, it
+     * defers to its tick instead), and — in either configuration — the
+     * register's short-circuited drain, when a report callback awaits
+     * synchronously. Loop-confined, like every field here.
+     */
+    private var draining = false
 
     // Set when a drain attempt threw, cleared when the next attempt starts:
     // distinguishes "queued bytes whose drain failed with its throw contained
@@ -893,6 +943,14 @@ class ReadinessIoTransport(
      * exposure that predates the deferral. A throw from the
      * deferred resume is only reported — attaching it would be the very
      * post-publication append this defers to avoid.
+     *
+     * **The deferral cannot strand the waiter.** `flush()` is loop-confined
+     * (the transport's non-suspend API contract), so this frame is proof the
+     * loop is alive, and a task queued by a live loop frame is drained — by
+     * the loop's next pass, or by the stop sweep's final drain, which runs
+     * after the participants are told for exactly this. A dispatch onto a
+     * queue nothing reads again would need this frame to run after the
+     * loop's terminal sequence, which the confinement rules out.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun failFlushWaiter(drainFailure: Throwable) {
@@ -910,24 +968,41 @@ class ReadinessIoTransport(
     }
 
     /**
-     * The completion every drained flush owes, in one place: the deferred FIN
-     * first — the transport's own obligation, and both callbacks below run
-     * user code that may close the transport, after which the FIN is
-     * deliberately not sent — then the parked waiter, then [onFlushComplete].
+     * The episode's completion report, in one place: the parked waiter, then
+     * [onFlushComplete]. The deferred FIN is not this report's to send — the
+     * exit discharges it before this runs, the transport's own obligation,
+     * owed whether or not an episode's report is. That ordering matters
+     * because both callbacks here run user code that may close the
+     * transport, after which the FIN is deliberately not sent.
      */
     private fun notifyFlushDrained() {
-        sendFinIfDrained()
         flushContinuation?.let { cont ->
-            flushContinuation = null
             // The drain succeeded; only this waiter's dispatcher can refuse
             // the news. A refusal must not escape into the drain frame --
             // whose containment ends connections, and this one is healthy --
             // nor skip the completion callback below.
-            answerFlushWaiter("resuming the drained flush waiter for, while the connection goes on serving,") {
-                cont.resume(Unit)
-            }
+            resumeDrainedWaiter(cont, "resuming the drained flush waiter for, while the connection goes on serving,")
         }
         onFlushComplete?.invoke()
+    }
+
+    /**
+     * The one shape of a successful waiter answer, shared by the three paths
+     * that resume one — whose preconditions differ: the report and the
+     * register's re-check answer the continuation the slot holds, but the
+     * already-drained arm answers a caller that was never stored, while the
+     * slot may hold an *earlier* waiter whose report the outer frame still
+     * owes. The clear is therefore gated on identity — clearing another
+     * waiter's slot here stranded it for good, measured: even the close's
+     * teardown reads only the slot the clear emptied. The message
+     * names the path that emptied the queue, so a refusal report still says
+     * which one.
+     */
+    private fun resumeDrainedWaiter(cont: CancellableContinuation<Unit>, what: String) {
+        if (flushContinuation === cont) flushContinuation = null
+        answerFlushWaiter(what) {
+            cont.resume(Unit)
+        }
     }
 
     /**
@@ -1291,13 +1366,19 @@ class ReadinessIoTransport(
 
     // --- Async write readiness ---
 
-    private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
+    private var flushContinuation: CancellableContinuation<Unit>? = null
 
     /**
      * The cancel hook a parked waiter installs, hoisted so the park path pays
-     * one allocation per transport rather than one per await. Clears whatever
-     * is stored: at most one waiter exists at a time (see [awaitPendingFlush]),
-     * and a resumed continuation never runs its cancel handler.
+     * one allocation per transport rather than one per await — which is also
+     * why it cannot check identity: a shared hook does not know whose
+     * cancellation fired it. It clears whatever is stored, on the design
+     * assumption of one waiter at a time. Overlapping waiters are a known
+     * pre-existing loss this single slot cannot carry — the second store
+     * evicts the first, and this hook can clear a slot another waiter
+     * occupies — tracked with the flush-waiter contract follow-up; nothing
+     * in the interface forbids the overlap yet. A resumed continuation
+     * never runs its cancel handler.
      */
     private val clearFlushWaiter: (Throwable?) -> Unit = { flushContinuation = null }
 
@@ -1380,14 +1461,117 @@ class ReadinessIoTransport(
     }
 
     /**
-     * Runs the drain and reports completion only when it drained everything.
-     * Both conditions, at every site that shares this: a callback inside the
-     * drain can write new data, and "the flush completed" must not be reported
-     * over a refilled queue.
+     * The funnel's shared exit: runs the drain and leaves behind either a
+     * completion report or a scheduled continuation — never a stranded queue.
+     *
+     * Completion is reported only when the drain emptied everything. Both
+     * conditions, at every entry that shares this: a callback inside the
+     * drain can write new data, and "the flush completed" must not be
+     * reported over a refilled queue. But a refill must not be *stranded*
+     * either: the pass completed, so no blocked-write path armed WRITE, and
+     * without the arm here the refill would wait for an app flush that may
+     * never come — the water-mark callback that wrote it was told the
+     * transport is writable again, not that it must flush.
+     *
+     * **One report per episode, made by the outer frame over the queue.**
+     * The callbacks this exit runs — the water-mark's writability signal
+     * inside the drain, the waiter's resumed frame and [onFlushComplete]
+     * inside the report — may `flush()` again, synchronously. A reentrant
+     * arrival drains without running the exit's duties; who pays each duty
+     * the fold swallows is the ledger on [draining], the normative
+     * statement. The report's predicate is the **queue**, not this frame's
+     * own pass: a remainder this pass blocked on may have been finished by
+     * a reentrant flush — the canonical backpressure resume does exactly
+     * that — and its frame reported nothing, so an empty queue here is
+     * reported here, whoever emptied it — provided this frame entered over
+     * a live episode, per the entry rule below. This is also what bounds a
+     * completion-driven pump: its inner flush drains inline and comes
+     * straight back, instead of reporting a completion that would pump
+     * again. One emptier is deliberately not special-cased: a teardown run
+     * by a drain's own callback clears the queue, and the report then fires
+     * over bytes that were discarded, not sent — the waiter is cancelled
+     * honestly by the teardown itself, and whether the completion callback
+     * should stay silent for that emptier is tracked as follow-up work.
+     *
+     * An episode is a queue that held bytes and ran dry, which is why the
+     * report also requires bytes pending *at entry*: the continuations this
+     * exit leaves — a blocked pass's arm, a scheduled tick — outlive the
+     * queue they were left for when a direct flush drains it first, and the
+     * stale wake or overtaken tick then lands here with nothing to do. Its
+     * episode was either reported at the entry that emptied the queue, or
+     * that entry threw out of its drain past the report — which is why the
+     * deferred FIN is sent outside the report's gate: the transport's own
+     * obligation stands whether or not the episode's report was ever made.
+     * Repeating the report, though, would announce a completion nothing
+     * awaited to the [onFlushComplete] pump. (A direct `flush()` never gets
+     * this far on an empty queue — it short-circuits at its own first line.)
+     * The deeper-looking alternative — withdrawing the stale continuation
+     * at its source, deregistering the arm and cancelling the tick when a
+     * direct flush empties the queue — was considered and rejected: it puts
+     * a registration-ledger lock plus a `kevent()`/`epoll_ctl` on every
+     * emptying direct flush, the latency path the coalescing opt-out exists
+     * for, to save one spurious wake per stale arm. The entry read is one
+     * field comparison.
+     *
+     * The arm is decided *after* the report, so bytes a report-side callback
+     * wrote without flushing are not stranded — and it is skipped when a tick
+     * is already scheduled to take them: arming then would race the tick, and
+     * the loser would fire on the queue the winner emptied — a stale wake the
+     * entry check above now answers with silence, but still a wasted arm for
+     * bytes a producer had not flushed. The arm is not gated on this frame's
+     * own pass: a blocked pass armed on its own before returning false, but a
+     * reentrant flush may have emptied what it would have retried and a
+     * report-side callback may have written since — the queue at this line
+     * is what needs a continuation, whatever this frame's pass did.
+     * Re-arming over the blocked path's own arm replaces the same listener in
+     * the ledger and repeats the kernel arm; the state is idempotent, the
+     * repeat syscall is a real cost on the blocked-write path where epoll's
+     * interest cache absorbs it and kqueue's does not — consolidating the
+     * arm sites is tracked separately.
+     *
+     * @return true when this frame's own pass completed and emptied the
+     *   queue — the answer a direct `flush()` caller reports onward. A
+     *   remainder a reentrant flush finished is *reported* but still answered
+     *   false here: the outer pass's own block is what the caller asked
+     *   about. Bytes written by the report's own callbacks are a new episode,
+     *   left armed or tick-scheduled rather than folded into this one's
+     *   answer.
      */
-    private fun drainAndNotifyIfComplete() {
-        if (performFlush() && pendingWrites.isEmpty()) {
-            notifyFlushDrained()
+    private fun drainAndNotifyIfComplete(): Boolean {
+        if (draining) {
+            val emptiedReentrantly = performFlush() && pendingWrites.isEmpty()
+            // The fold's FIN row (see [draining]): a half-close made by
+            // the report's own callbacks defers after the outer frame's
+            // send ran, so this frame pays it. Self-guarded and idempotent;
+            // gated on the queue as the rule reads (measured equivalent to
+            // gating on this pass — whichever frame empties completes its
+            // own pass and pays here itself).
+            if (pendingWrites.isEmpty()) sendFinIfDrained()
+            return emptiedReentrantly
+        }
+        val hadPending = pendingWrites.isNotEmpty()
+        draining = true
+        try {
+            val completedPass = performFlush()
+            val emptied = completedPass && pendingWrites.isEmpty()
+            if (pendingWrites.isEmpty()) {
+                // The FIN is the transport's own obligation, not the
+                // episode's: the entry that emptied the queue can throw out
+                // of its drain past its own report — a refused release, a
+                // throwing writability handler — leaving the FIN deferred
+                // over a drained queue. Self-guarded and idempotent, so the
+                // repeat inside notifyFlushDrained is a no-op.
+                sendFinIfDrained()
+                if (hadPending) {
+                    notifyFlushDrained()
+                }
+            }
+            if (pendingWrites.isNotEmpty() && !flushScheduled) {
+                registerWriteCallback()
+            }
+            return emptied
+        } finally {
+            draining = false
         }
     }
 
@@ -1418,11 +1602,10 @@ class ReadinessIoTransport(
                     ) {
                         cont.cancel(closedTransportFlushCause())
                     }
-                    pendingWrites.isEmpty() -> answerFlushWaiter(
+                    pendingWrites.isEmpty() -> resumeDrainedWaiter(
+                        cont,
                         "resuming the already-drained flush waiter for, while the loop goes on,",
-                    ) {
-                        cont.resume(Unit)
-                    }
+                    )
                     else -> {
                         // About to park on a flush only a future event can
                         // complete. If the loop has stopped polling, there is
@@ -1484,6 +1667,44 @@ class ReadinessIoTransport(
                             // arriving before the producer's flush) parked.
                             drainScheduledForWaiter()
                             if (flushContinuation !== cont) return@Runnable
+                        }
+                        // Re-read before answering anything below: the first
+                        // arm's read is stale across a whole drain by now, and
+                        // an off-loop close() can flip the flag mid-drain —
+                        // the funnel's failFlushWaiter declines on exactly
+                        // that read and leaves this waiter stored. With a
+                        // close under way, "the flush completed" is not
+                        // something this path can honestly report (the same
+                        // ranking as the first arm), and the close's dispatched
+                        // teardown must not be relied on to answer first — it
+                        // runs after this task. Answer with the close's own
+                        // cause, inline, like the arm above.
+                        if (!opened) {
+                            flushContinuation = null
+                            answerFlushWaiter(
+                                "cancelling the flush waiter of a closing transport for, while the wind-down goes on,",
+                            ) {
+                                cont.cancel(closedTransportFlushCause())
+                            }
+                            return@Runnable
+                        }
+                        // Still stored, over a queue the short-circuited drain
+                        // may have emptied without saying so: this register can
+                        // run inside an enclosing exit's report — a completion
+                        // callback that writes, flushes and awaits
+                        // synchronously — and a reentrant drain reports
+                        // nothing. The enclosing frame's report gate ran
+                        // before this episode existed, so no report will
+                        // consume this waiter, and an empty queue leaves no
+                        // arm and no tick to answer it later. The register
+                        // answers its own waiter, like the already-drained arm
+                        // above.
+                        if (pendingWrites.isEmpty()) {
+                            resumeDrainedWaiter(
+                                cont,
+                                "resuming the reentrantly-drained flush waiter for, while the loop goes on,",
+                            )
+                            return@Runnable
                         }
                         cont.invokeOnCancellation(clearFlushWaiter)
                     }
