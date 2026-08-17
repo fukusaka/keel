@@ -481,6 +481,15 @@ class ReadinessIoTransport(
     @InternalReadinessEngineApi
     fun pendingByteCount(): Int = pendingBytes
 
+    /**
+     * The longest run of consecutive drains that moved no bytes, for tests.
+     *
+     * Reaches the outside only through a debug line at teardown otherwise,
+     * which is how two wrong versions of this count shipped unnoticed.
+     */
+    @InternalReadinessEngineApi
+    fun longestBlockedDrainRun(): Long = maxConsecutiveBlockedDrains
+
     // --- Read path ---
 
     override var readEnabled: Boolean = false
@@ -906,10 +915,19 @@ class ReadinessIoTransport(
         drainPoisoned = false
         // One record per drain, taken on the way out whichever exit it takes
         // -- including the throwing ones, whose bytes still left or did not.
+        //
+        // Saved and restored around this drain, because drains nest: the
+        // ledger update below resumes a producer synchronously, and a
+        // producer that answers by flushing runs a whole drain inside this
+        // one. Sharing the field with it would hand the enclosing drain the
+        // nested drain's answer -- and the nested one is typically the empty
+        // retry, so a connection moving megabytes would read as stuck.
+        val enclosingMovedBytes = drainMovedBytes
         drainMovedBytes = false
         try {
             val drained = if (pendingWrites.size == 1) flushSingle() else flushGather()
             recordDrainOutcome(drainMovedBytes)
+            drainMovedBytes = enclosingMovedBytes || drainMovedBytes
             return drained
         } catch (drainFailure: Throwable) {
             // Only when the failed entries are still queued: a drain that
@@ -929,7 +947,8 @@ class ReadinessIoTransport(
             // transport still counts as live.
             failFlushWaiter(drainFailure)
             recordDrainOutcome(drainMovedBytes)
-            if (drainFailure is RefusedWriteException && opened) {
+            drainMovedBytes = enclosingMovedBytes || drainMovedBytes
+            if (drainFailure is RefusedWriteException) {
                 // The write side is finished, and which path ran the drain is
                 // not something a caller chooses -- so it cannot be what
                 // decides whether the connection survives. Gated on `opened`
@@ -946,7 +965,11 @@ class ReadinessIoTransport(
                 // -- the refusal discarded it -- so the reason is the only
                 // thing that can tell it what happened.
                 transportFailure = drainFailure
-                endConnectionAfterFailure(drainFailure)
+                // The wind-down is what the gate is for, not the record: a
+                // teardown's own deferred drain arrives with the connection
+                // already ending, and a waiter it cancels still needs to be
+                // told the send was refused rather than that someone closed.
+                if (opened) endConnectionAfterFailure(drainFailure)
             }
             throw drainFailure
         }
