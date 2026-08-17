@@ -295,11 +295,16 @@ interface IoTransport {
      * hears: on both paths the connection ends, no FIN follows the refused
      * bytes, and [awaitPendingFlush] is where the reason is asked for.
      *
-     * Whatever else the flush throws still propagates — a drain that also
+     * Whatever else the flush throws is not contained — a drain that also
      * could not release its buffers, or could not finish winding down,
-     * re-raises the refusal carrying that as a suppressed cause, and it is
-     * that cause which comes out of here. Those leave work unfinished and
-     * nothing else reports them.
+     * re-raises the refusal carrying that as a suppressed cause, and that
+     * cause is what leaves the half-close. Where it goes depends on there
+     * being a frame to take it: a caller whose half-close ran in place
+     * receives it, and one whose half-close was handed to the transport's
+     * own context has already returned, so the implementation reports it
+     * there instead. Unlike the refusal, this is a fault rather than an
+     * answer to the caller's question, and the rule for those is to reach
+     * whoever can act — never to be dropped.
      */
     fun shutdownOutput()
 

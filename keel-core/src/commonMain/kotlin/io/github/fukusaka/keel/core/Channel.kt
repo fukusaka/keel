@@ -235,9 +235,11 @@ interface Channel : AutoCloseable {
      * depend on it: the connection ends and no FIN follows the refused bytes.
      * [awaitFlushComplete] is where the reason is asked for.
      *
-     * A failure that is not the refusal does propagate — a drain that also
+     * A failure that is not the refusal is not contained — a drain that also
      * could not release its buffers, or could not finish winding the
-     * connection down. Nothing else reports those.
+     * connection down. It reaches this caller when the half-close ran on the
+     * engine's own thread, and is reported by the engine when it did not,
+     * because by then this call has already returned.
      */
     fun shutdownOutput()
 
