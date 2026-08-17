@@ -181,13 +181,15 @@ abstract class AbstractIoTransport(
      * reader with EOF. A pipeline absorbs a repeat, but that is a guard in
      * another module; a Coroutine-mode handler has none.
      *
-     * **This gate covers only what routes through it**, which today is the two
-     * idle-timeout reclamations here and the readiness transports' own
-     * wind-down. Every other transport reports from its own peer-close
-     * handling and does not consult this flag, so a FIN followed by an idle
-     * timeout still reports twice there — measured on nio, netty and
-     * nwconnection, and unchanged from before this gate existed. Converging
-     * them is tracked with the rest of those transports' contract work.
+     * **This gate covers only what routes through it.** Every transport
+     * reaches it from the two idle-timeout reclamations here, which are this
+     * class's own code — but only the readiness transports route their
+     * wind-down through it as well. The rest report from their own peer-close
+     * handling without consulting the flag, so a FIN followed by an idle
+     * timeout reports twice there, unchanged from before this gate existed.
+     * netty and io_uring carry independent flags of their own; nodejs carries
+     * none and reports from two callbacks. Converging them is tracked with
+     * the rest of those transports' contract work.
      *
      * **EventLoop thread**, like every other wind-down step.
      */

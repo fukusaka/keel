@@ -107,8 +107,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   whichever path ran the drain — a direct flush left it open before, so whether a dead write side
   survived depended on a setting the caller does not choose (#1062)
 - **BREAKING** (`engine-kqueue`, `engine-epoll`): a connection is reported inactive once across the
-  paths that reach the shared gate — the idle timeouts, a refused send, and the containment that
-  catches it. The other transports still report from their own FIN handling, outside it (#1062)
+  paths that reach the shared gate — a refused send, the containment that catches it, and the idle
+  timeouts, which every transport inherits. The other transports still report their peer-close
+  handling outside it (#1062)
 - `native-posix`, `engine-kqueue`, `engine-epoll`: `ENOBUFS` from a write is retryable rather than
   a refusal, so a kernel briefly out of buffer space no longer ends the connection. **A sustained
   shortage now retries without backoff** — the socket stays writable, so readiness re-fires at once
