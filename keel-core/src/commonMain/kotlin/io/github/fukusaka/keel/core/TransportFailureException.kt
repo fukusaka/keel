@@ -37,9 +37,11 @@ public sealed class TransportFailureException(
  * blocked is reported as such and retried, so anything that reaches here has
  * already been classified as final. The write side of the connection is over.
  *
- * Also the type a transport reads to decide what to do with a half-close it
- * had deferred: a FIN announces an orderly end, which is not true of a stream
- * the peer received truncated, so a refused flush withholds it.
+ * A half-close whose flush ends this way sends no FIN, because the connection
+ * ends with the refusal and the FIN is owed only by a transport still open.
+ * Announcing an orderly end over a stream the peer received truncated would
+ * be a lie either way; that it is currently avoided as a consequence rather
+ * than as a decision is tracked.
  */
 public class RefusedWriteException(
     message: String,

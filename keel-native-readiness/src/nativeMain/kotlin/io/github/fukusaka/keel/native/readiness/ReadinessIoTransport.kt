@@ -197,6 +197,16 @@ class ReadinessIoTransport(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun notifyInactive() {
+        // At most once. "Inactive" is a fact about the connection, not an
+        // event each path that discovers it gets to raise -- and two paths do
+        // discover it now: the funnel ends the connection on a refused send,
+        // and the loop-driven entry that called it then contains the same
+        // throw and ends it again. `markClosing` makes the *close* half
+        // idempotent and nothing made this half so; the pipeline happens to
+        // absorb the repeat, which is a guard in another module rather than
+        // something this contract states.
+        if (inactiveReported) return
+        inactiveReported = true
         try {
             onReadClosed?.invoke()
         } catch (notifyFailure: Throwable) {
@@ -204,6 +214,9 @@ class ReadinessIoTransport(
             throw notifyFailure
         }
     }
+
+    /** Whether [notifyInactive] has already run; see there for why once. */
+    private var inactiveReported = false
 
     /**
      * Notifies inactivity, then forces the close — the order the idle-timeout
@@ -281,7 +294,6 @@ class ReadinessIoTransport(
      * reacting to it. On the paths above the first two are the same object, and
      * then there is only the one.
      */
-    @Suppress("TooGenericExceptionCaught")
     /**
      * Why this transport's write side ended, when it ended in a failure
      * rather than a close its caller asked for.
@@ -293,6 +305,14 @@ class ReadinessIoTransport(
      */
     private var transportFailure: TransportFailureException? = null
 
+    /**
+     * Whether the drain in progress has moved any bytes, for the blocked-run
+     * counter. Set by whichever write path consumed something; read once, on
+     * the way out of [performFlush]. EventLoop-thread only, like the drain.
+     */
+    private var drainMovedBytes: Boolean = false
+
+    @Suppress("TooGenericExceptionCaught")
     private fun endConnectionAfterFailure(readinessFailure: Throwable) {
         // Gated on the sticky record, not on the notification's own flag: on a
         // second entry the first wind-down has already failed, and calling the
@@ -865,25 +885,32 @@ class ReadinessIoTransport(
      * on a live loop the queued entries still have completion paths, so
      * nothing is reported or given up).
      *
-     * What the funnel deliberately does **not** do is end the connection: the
+     * **A definitively refused send ends the connection here**, whichever
+     * entry ran the drain — that is the one failure whose consequence cannot
+     * depend on the caller's position, since the write side is finished
+     * either way. Every other failure keeps the older division: the
      * loop-driven entries (the coalesced tick, [onWritable], the register's
      * short-circuit, the dispatched half-close) wrap it in
-     * [containReadinessFailure] and decide that; a direct `flush()` caller —
+     * [containReadinessFailure] and decide, while a direct `flush()` caller —
      * including an on-loop `shutdownOutput()` — gets the throw and the
      * pipeline's error path decides instead. The teardown's deferred drain is
-     * the remaining entry: there the stages carry the failure, and the waiter
-     * is answered by the close's own cancellation (see [failFlushWaiter]).
+     * the remaining entry: there the stages carry the failure, the waiter is
+     * answered by the close's own cancellation (see [failFlushWaiter]), and
+     * the refusal does **not** re-enter the wind-down — the connection is
+     * already ending.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun performFlush(): Boolean {
         if (pendingWrites.isEmpty()) return true
         flushCount++
         drainPoisoned = false
+        // One record per drain, taken on the way out whichever exit it takes
+        // -- including the throwing ones, whose bytes still left or did not.
+        drainMovedBytes = false
         try {
-            if (pendingWrites.size == 1) {
-                return flushSingle()
-            }
-            return flushGather()
+            val drained = if (pendingWrites.size == 1) flushSingle() else flushGather()
+            recordDrainOutcome(drainMovedBytes)
+            return drained
         } catch (drainFailure: Throwable) {
             // Only when the failed entries are still queued: a drain that
             // emptied the queue on its way to throwing (a refused release
@@ -901,10 +928,16 @@ class ReadinessIoTransport(
             // once `opened` is false, so answering has to happen while this
             // transport still counts as live.
             failFlushWaiter(drainFailure)
-            if (drainFailure is RefusedWriteException) {
+            recordDrainOutcome(drainMovedBytes)
+            if (drainFailure is RefusedWriteException && opened) {
                 // The write side is finished, and which path ran the drain is
                 // not something a caller chooses -- so it cannot be what
-                // decides whether the connection survives. The loop-driven
+                // decides whether the connection survives. Gated on `opened`
+                // because a teardown's own deferred drain arrives here with
+                // the connection already ending: starting a second wind-down
+                // there would run an application callback inside the close,
+                // and its throw would ride out on this failure as though the
+                // teardown had left something undone. The loop-driven
                 // entries reach the same end through their containment; this
                 // makes the direct callers reach it too, and the second call
                 // is a no-op because `markClosing` flips `opened` once.
@@ -1278,9 +1311,11 @@ class ReadinessIoTransport(
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
             when (val result = nativeSocket.write(fd, ptr, pw.length - written)) {
-                is WriteResult.Written -> written += result.bytes
+                is WriteResult.Written -> {
+                    written += result.bytes
+                    if (result.bytes > 0) drainMovedBytes = true
+                }
                 WriteResult.WouldBlock -> {
-                    if (written == 0) recordBlockedDrain() else recordDrainProgress()
                     deferRemainder(written)
                     return false
                 }
@@ -1398,7 +1433,6 @@ class ReadinessIoTransport(
             val writtenBytes: Int = when (val result = nativeSocket.writev(fd, bases, lens, count)) {
                 WriteResult.WouldBlock -> {
                     // Nothing written — register WRITE and retry all later.
-                    recordBlockedDrain()
                     registerWriteCallback()
                     return false
                 }
@@ -1439,7 +1473,7 @@ class ReadinessIoTransport(
             // mis-counts every water-mark crossing after it. The old shape
             // was self-limiting because it settled by the batch total; a
             // walk that can stop early is not.
-            if (consumed > 0) recordDrainProgress()
+            if (consumed > 0) drainMovedBytes = true
             failure = runStage(failure) { updatePendingBytes(-consumed) }
 
             if (writtenBytes < offeredBytes) {

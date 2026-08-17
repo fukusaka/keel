@@ -639,20 +639,24 @@ abstract class AbstractIoTransport(
     private var consecutiveBlockedDrains: Long = 0
 
     /**
-     * Records a drain that moved no bytes, for [maxConsecutiveBlockedDrains].
-     * Subclasses call this from the path that answers `WouldBlock` with
-     * nothing written.
+     * Records how a whole drain went, for [maxConsecutiveBlockedDrains].
+     *
+     * Called once per drain, by the drain itself, with whether it moved any
+     * bytes — not per syscall and not per branch. A run is a property of
+     * consecutive *drains*, so anything that answers only some of a drain's
+     * exits counts the wrong thing: a gather whose first batch went out
+     * whole and whose second blocked moved bytes, and a single write that
+     * drained its queue completely never reaches a blocked branch at all.
      */
-    protected fun recordBlockedDrain() {
+    protected fun recordDrainOutcome(movedBytes: Boolean) {
+        if (movedBytes) {
+            consecutiveBlockedDrains = 0
+            return
+        }
         consecutiveBlockedDrains++
         if (consecutiveBlockedDrains > maxConsecutiveBlockedDrains) {
             maxConsecutiveBlockedDrains = consecutiveBlockedDrains
         }
-    }
-
-    /** Ends the current blocked run; called whenever a drain moves bytes. */
-    protected fun recordDrainProgress() {
-        consecutiveBlockedDrains = 0
     }
 
     /**

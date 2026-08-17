@@ -176,12 +176,12 @@ interface Channel : AutoCloseable {
      * — so a fault the application did not choose arrives as
      * [EngineFailureException] rather than a cancellation — is tracked.
      *
-     * **Which of the two, and whether either arrives, depends on who ran the
-     * failing drain** — which in turn depends on the engine's flush
-     * coalescing, on by default in the readiness engines. Where the drain ran
-     * inside the request and emptied the queue, this call finds nothing and
-     * returns normally. It is therefore not a way to ask, after the fact,
-     * whether the last flush reached the peer.
+     * **Whether either arrives depends on there being a failure left to
+     * report.** A drain that ran inside the request and emptied the queue
+     * leaves this call nothing to find, so it returns normally — the failure
+     * went to the pipeline's error path when it happened, and on a refusal
+     * the connection ended with it. This is therefore not a way to ask, after
+     * the fact, whether the last flush reached the peer.
      */
     suspend fun awaitFlushComplete() {}
 
