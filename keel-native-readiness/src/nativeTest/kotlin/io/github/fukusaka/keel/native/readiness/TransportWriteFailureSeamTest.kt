@@ -366,7 +366,11 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
         // something else -- one never reset, the other let a nested drain
         // answer for its caller -- and neither was caught, because nothing
         // read it.
-        fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
+        // Blocked, moving, blocked. Asserting only after the moving drain
+        // cannot tell a reset from no reset -- the max is 1 either way. The
+        // second blocked drain is what distinguishes them: 1 if the run was
+        // broken, 2 if it was not.
+        fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5), WriteResult.WouldBlock)
         val transport = transport()
         transport.write(tracker.allocate(16).apply { writerIndex = 5 })
 
@@ -374,7 +378,14 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
         assertEquals(1, transport.longestBlockedDrainRun(), "one drain moved nothing")
 
         assertTrue(transport.flush(), "the retry writes it")
-        assertEquals(1, transport.longestBlockedDrainRun(), "and the run stops there")
+
+        transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+        assertFalse(transport.flush(), "the socket blocks again")
+        assertEquals(
+            1,
+            transport.longestBlockedDrainRun(),
+            "the drain that moved bytes broke the run, so this one starts a new one",
+        )
 
         fake.assertAllConsumed()
         transport.close()
@@ -440,6 +451,66 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
                 "the refusal must be the reason given, got: ${ended?.cause}",
             )
             fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a drain that moved nothing is not credited with a nested drain's bytes`() {
+        // The mirror of the nesting case: here the enclosing drain writes
+        // nothing -- the send is refused -- and the ledger update that
+        // discards its queue resumes a producer whose own drain does write.
+        // Folding the nested answer outward would credit the refused drain
+        // with bytes it never sent.
+        val over = HIGH_WATER + 1
+        val transport = transport()
+        var refilled = false
+        transport.onWritabilityChanged = { writable ->
+            if (writable && !refilled) {
+                refilled = true
+                transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+                transport.flush()
+            }
+        }
+        fake.enqueueWritev(fd, WriteResult.Failed(EPIPE))
+        fake.enqueueWrite(fd, WriteResult.Written(5))
+        transport.write(tracker.allocate(over).apply { writerIndex = over })
+        transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+        assertFailsWith<RefusedWriteException> { transport.flush() }
+
+        assertTrue(refilled, "the drop's ledger update must have resumed the producer")
+        assertEquals(
+            1,
+            transport.longestBlockedDrainRun(),
+            "the refused drain moved nothing, whatever the drain inside it did",
+        )
+
+        transport.onWritabilityChanged = null
+        eventLoop.drainDispatched()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a stopped loop does not report a connection inactive a second time`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The stop sweep is a readiness path that ends a connection, so it
+            // reports through the same place as the rest. Reaching for the
+            // callback directly re-reported a connection a peer close had
+            // already ended -- visible in Coroutine mode, where the peer-close
+            // path deliberately leaves the transport open.
+            val transport = transport()
+            var inactiveCalls = 0
+            transport.onReadClosed = { inactiveCalls++ }
+
+            transport.onPeerClosed(Interest.READ)
+            assertEquals(1, inactiveCalls, "the peer close reports it")
+
+            transport.onLoopStopped()
+            assertEquals(1, inactiveCalls, "and the stop sweep does not report it again")
+
+            transport.close()
+            eventLoop.drainDispatched()
             tracker.assertNoLeaks()
         }
     }
