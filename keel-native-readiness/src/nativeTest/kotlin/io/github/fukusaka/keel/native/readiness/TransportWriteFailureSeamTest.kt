@@ -304,6 +304,124 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a refused half-close does not raise where the drain ran in place`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // A half-close sends the buffered bytes first, so it can be the
+            // call that discovers the peer is gone. Whether it *is* depends on
+            // where the drain ran -- here in place, elsewhere on a later tick
+            // -- and that is not something a caller can know. So the refusal
+            // is not raised from here on either path; it is delivered where
+            // both paths deliver it.
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            transport.shutdownOutput()
+
+            assertFalse(transport.isOpen, "the refusal still ends the connection")
+            fake.assertAllConsumed()
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused half-close sends no FIN`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The bytes the FIN was ordered behind never reached the peer. An
+            // orderly end announced over a stream the peer received truncated
+            // would say the exchange finished when it did not.
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            transport.shutdownOutput()
+
+            assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
+            assertEquals(0, transport.pendingByteCount(), "the unsendable bytes are still dropped")
+            fake.assertAllConsumed()
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused half-close still ends a later wait with the refusal`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Not raising is only safe because the reason survives: the
+            // caller that wants it asks the wait, and gets the refusal rather
+            // than a bare "closed" it could not tell from an orderly end.
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            transport.shutdownOutput()
+
+            val ended = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+            val refusal = ended?.cause
+            assertIs<RefusedWriteException>(
+                refusal,
+                "the refusal must still be the reason given, got: $refusal",
+            )
+            assertTrue(
+                checkNotNull(refusal.message).contains("write() failed"),
+                "and must still name the syscall and its errno, got: ${refusal.message}",
+            )
+            fake.assertAllConsumed()
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a half-close that drains still sends its FIN`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The other side of the same branch: containing the refusal must
+            // not cost the ordinary half-close the FIN it is owed.
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            transport.shutdownOutput()
+
+            assertEquals(1, fake.shutdownCalls, "a drained half-close sends its FIN")
+            assertTrue(transport.isOpen, "and leaves the connection to the caller to close")
+            fake.assertAllConsumed()
+            transport.close()
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused half-close answers the same way when the drain is deferred`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The configuration the other half-close tests do not run in.
+            // Coalescing moves the drain to a later tick, which is the reason
+            // the in-place path must not raise: the same call on the same
+            // transport must not answer two different ways.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            transport.shutdownOutput()
+            assertTrue(
+                transport.isOpen,
+                "coalescing defers the drain, so the half-close returns before the refusal exists",
+            )
+
+            transport.onReady(Interest.WRITE)
+
+            assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
+            assertFalse(transport.isOpen, "and the refusal ends the connection once the drain runs")
+            fake.assertAllConsumed()
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a refused send reports the connection inactive once`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // Two paths now discover the same dead connection: the funnel
@@ -719,31 +837,6 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
             assertTrue(inactive, "a refused write must report the connection inactive")
             assertFalse(transport.isOpen, "and close it, like every other loop-driven failure")
             fake.assertAllConsumed()
-            tracker.assertNoLeaks()
-        }
-    }
-
-    @Test
-    fun `a half-close whose flush was refused tells its caller`() = runBlocking {
-        withTimeout(FUNNEL_TIMEOUT_MS) {
-            // The half-close orders its FIN behind the queued bytes, so a
-            // caller on the transport's own context learns the same way a
-            // direct flush's caller does when those bytes cannot go. What
-            // becomes of the deferred FIN afterwards is a separate question,
-            // tracked with the rest of the half-close's contract.
-            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
-            val transport = transport()
-            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
-
-            val failure = assertFailsWith<IllegalStateException> { transport.shutdownOutput() }
-            assertTrue(
-                checkNotNull(failure.message).contains("write() failed"),
-                "the failure names the syscall and its errno, got: ${failure.message}",
-            )
-
-            assertEquals(0, transport.pendingByteCount(), "the unsendable bytes are still dropped")
-            fake.assertAllConsumed()
-            transport.close()
             tracker.assertNoLeaks()
         }
     }
