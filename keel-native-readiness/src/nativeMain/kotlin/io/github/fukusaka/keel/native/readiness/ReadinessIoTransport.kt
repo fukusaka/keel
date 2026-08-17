@@ -182,6 +182,24 @@ class ReadinessIoTransport(
     }
 
     /**
+     * Why this transport's write side ended, when it ended in a failure
+     * rather than a close its caller asked for.
+     *
+     * A refusal discards the queue on its way out, so a caller that arrives
+     * afterwards finds an empty queue and a closed transport — indistinguishable
+     * from an orderly close unless the reason is kept. Set once, by the drain
+     * that hit it.
+     */
+    private var transportFailure: TransportFailureException? = null
+
+    /**
+     * Whether the drain in progress has moved any bytes, for the blocked-run
+     * counter. Set by whichever write path consumed something; read once, on
+     * the way out of [performFlush]. EventLoop-thread only, like the drain.
+     */
+    private var drainMovedBytes: Boolean = false
+
+    /**
      * Reports this connection inactive, remembering it if that throws.
      *
      * Every readiness path that ends a connection goes through here rather than
@@ -294,24 +312,6 @@ class ReadinessIoTransport(
      * reacting to it. On the paths above the first two are the same object, and
      * then there is only the one.
      */
-    /**
-     * Why this transport's write side ended, when it ended in a failure
-     * rather than a close its caller asked for.
-     *
-     * A refusal discards the queue on its way out, so a caller that arrives
-     * afterwards finds an empty queue and a closed transport — indistinguishable
-     * from an orderly close unless the reason is kept. Set once, by the drain
-     * that hit it.
-     */
-    private var transportFailure: TransportFailureException? = null
-
-    /**
-     * Whether the drain in progress has moved any bytes, for the blocked-run
-     * counter. Set by whichever write path consumed something; read once, on
-     * the way out of [performFlush]. EventLoop-thread only, like the drain.
-     */
-    private var drainMovedBytes: Boolean = false
-
     @Suppress("TooGenericExceptionCaught")
     private fun endConnectionAfterFailure(readinessFailure: Throwable) {
         // Gated on the sticky record, not on the notification's own flag: on a
@@ -358,8 +358,9 @@ class ReadinessIoTransport(
      * covers, and where it stops, is written at the arm in [onChannelAttached] — the
      * registration is one-shot, so a connection that receives anything before
      * the close is not covered by it.
-     * Calling `onReadClosed` twice is benign — the cancel guards in the
-     * connection handlers (PR #459 / #460) are idempotent.
+     * The report itself does not repeat — [notifyInactive] makes it at most
+     * once for the whole transport, so the handlers' idempotence is a second
+     * line rather than the reason this is safe.
      */
     override fun onPeerClosed(interest: Interest) {
         if (interest != Interest.READ) return
@@ -438,7 +439,14 @@ class ReadinessIoTransport(
         } catch (t: Throwable) {
             eventLoop.logger.warn(t) { "reporting an abandoned half-close threw while the EventLoop was stopping" }
         }
-        onReadClosed?.invoke()
+        // Through the one place that reports, not around it: this is a
+        // readiness path that ends a connection, and the report is at most
+        // once across all of them. Reaching for [onReadClosed] here left a
+        // connection already reported by a peer close reported again, and a
+        // later report unsuppressed -- both measurable in Coroutine mode,
+        // where this entry deliberately does not close and leaves the
+        // transport open for the other to reach.
+        notifyInactive()
     }
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
@@ -927,7 +935,7 @@ class ReadinessIoTransport(
         try {
             val drained = if (pendingWrites.size == 1) flushSingle() else flushGather()
             recordDrainOutcome(drainMovedBytes)
-            drainMovedBytes = enclosingMovedBytes || drainMovedBytes
+            drainMovedBytes = enclosingMovedBytes
             return drained
         } catch (drainFailure: Throwable) {
             // Only when the failed entries are still queued: a drain that
@@ -947,7 +955,7 @@ class ReadinessIoTransport(
             // transport still counts as live.
             failFlushWaiter(drainFailure)
             recordDrainOutcome(drainMovedBytes)
-            drainMovedBytes = enclosingMovedBytes || drainMovedBytes
+            drainMovedBytes = enclosingMovedBytes
             if (drainFailure is RefusedWriteException) {
                 // The write side is finished, and which path ran the drain is
                 // not something a caller chooses -- so it cannot be what
