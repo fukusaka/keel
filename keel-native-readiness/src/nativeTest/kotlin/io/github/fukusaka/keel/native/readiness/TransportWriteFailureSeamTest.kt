@@ -22,6 +22,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -352,6 +353,91 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
             assertFalse(
                 eventLoop.warnings.any { it.contains("did not finish cleaning up") },
                 "and not as teardown incompleteness, got: ${eventLoop.warnings}",
+            )
+            fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a drain that moved bytes ends the blocked run`() {
+        // The counter's whole job is telling ordinary backpressure from a
+        // socket that stays unwritable. Two shipped versions of it counted
+        // something else -- one never reset, the other let a nested drain
+        // answer for its caller -- and neither was caught, because nothing
+        // read it.
+        fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
+        val transport = transport()
+        transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+        assertFalse(transport.flush(), "the socket takes nothing")
+        assertEquals(1, transport.longestBlockedDrainRun(), "one drain moved nothing")
+
+        assertTrue(transport.flush(), "the retry writes it")
+        assertEquals(1, transport.longestBlockedDrainRun(), "and the run stops there")
+
+        fake.assertAllConsumed()
+        transport.close()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a nested drain does not answer for the drain it runs inside`() {
+        // The ledger update resumes a producer synchronously, and a producer
+        // that answers by flushing runs a whole drain inside this one. The
+        // nested drain finds an empty queue or a blocked socket while the
+        // enclosing one is moving real bytes -- so sharing one record between
+        // them reads a healthy connection as stuck.
+        val half = HIGH_WATER / 2 + 1
+        val transport = transport()
+        var refilled = false
+        transport.onWritabilityChanged = { writable ->
+            if (writable && !refilled) {
+                refilled = true
+                transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+                transport.flush()
+            }
+        }
+        fake.enqueueWritev(fd, WriteResult.Written(half * 2))
+        fake.enqueueWrite(fd, WriteResult.WouldBlock)
+        transport.write(tracker.allocate(half).apply { writerIndex = half })
+        transport.write(tracker.allocate(half).apply { writerIndex = half })
+
+        transport.flush()
+
+        assertTrue(refilled, "the ledger update must have resumed the producer")
+        assertEquals(
+            1,
+            transport.longestBlockedDrainRun(),
+            "only the nested drain moved nothing; the one it ran inside moved everything",
+        )
+
+        transport.onWritabilityChanged = null
+        fake.assertAllConsumed()
+        transport.close()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a refusal during the closing drain is still the reason a later waiter is told`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The teardown's deferred drain hits a gone peer. The connection
+            // is already ending, so nothing re-enters the wind-down -- but
+            // the refusal is known, and a caller told only "closed" cannot
+            // tell a refused send from an orderly close.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "coalescing defers the drain to the teardown")
+
+            transport.close()
+            eventLoop.drainDispatched()
+
+            val ended = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+            assertIs<RefusedWriteException>(
+                ended?.cause,
+                "the refusal must be the reason given, got: ${ended?.cause}",
             )
             fake.assertAllConsumed()
             tracker.assertNoLeaks()
