@@ -171,6 +171,32 @@ abstract class AbstractIoTransport(
         reclaimAfterIdle()
     }
 
+    /**
+     * Reports the connection inactive, at most once for this transport.
+     *
+     * "Inactive" is a fact about the connection, not an event each path that
+     * discovers it gets to raise. Several do: an idle timeout reclaiming it, a
+     * peer closing, a definitively refused send, and the containment that
+     * catches that refusal — and a handler's `onInactive` is not free to run
+     * twice. It releases the aggregator's held chunks, the decoder's borrowed
+     * header set, the server's registry entry, and wakes a parked reader with
+     * EOF. A pipeline absorbs a repeat, but that is a guard in another module;
+     * a Coroutine-mode handler has none.
+     *
+     * Returns whether this call was the one that reported, for a caller that
+     * needs to know whether the handler ran.
+     *
+     * **EventLoop thread**, like every other wind-down step.
+     */
+    protected fun reportInactiveOnce(): Boolean {
+        if (inactiveReported) return false
+        inactiveReported = true
+        onReadClosed?.invoke()
+        return true
+    }
+
+    private var inactiveReported = false
+
     private var writeIdleHandle: TimerHandle? = null
 
     /**
@@ -235,7 +261,7 @@ abstract class AbstractIoTransport(
     private fun reclaimAfterIdle() {
         var failure: Throwable? = null
         try {
-            onReadClosed?.invoke()
+            reportInactiveOnce()
         } catch (notifyFailure: Throwable) {
             failure = notifyFailure
         }
@@ -692,8 +718,8 @@ abstract class AbstractIoTransport(
         // calls recordDrainOutcome would otherwise print `max_blocked_run=0`,
         // which reads as "this connection never stalled" when it means "this
         // transport does not answer that question".
-        val blockedRun = if (drainOutcomesRecorded) " max_blocked_run=$maxConsecutiveBlockedDrains" else ""
         logger.debug {
+            val blockedRun = if (drainOutcomesRecorded) " max_blocked_run=$maxConsecutiveBlockedDrains" else ""
             "transport stats: $fdLabel flush=$flushCount partial=$partialWriteCount ratio_bp=$ratioBp" + blockedRun
         }
     }

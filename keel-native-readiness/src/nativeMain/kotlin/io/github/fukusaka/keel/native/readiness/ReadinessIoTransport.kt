@@ -215,26 +215,16 @@ class ReadinessIoTransport(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun notifyInactive() {
-        // At most once. "Inactive" is a fact about the connection, not an
-        // event each path that discovers it gets to raise -- and two paths do
-        // discover it now: the funnel ends the connection on a refused send,
-        // and the loop-driven entry that called it then contains the same
-        // throw and ends it again. `markClosing` makes the *close* half
-        // idempotent and nothing made this half so; the pipeline happens to
-        // absorb the repeat, which is a guard in another module rather than
-        // something this contract states.
-        if (inactiveReported) return
-        inactiveReported = true
+        // At most once, through the base -- the idle-timeout reclamation
+        // reports from there too, and a gate that lived here would leave that
+        // path outside it.
         try {
-            onReadClosed?.invoke()
+            reportInactiveOnce()
         } catch (notifyFailure: Throwable) {
             windDownFailed = true
             throw notifyFailure
         }
     }
-
-    /** Whether [notifyInactive] has already run; see there for why once. */
-    private var inactiveReported = false
 
     /**
      * Notifies inactivity, then forces the close — the order the idle-timeout
