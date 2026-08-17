@@ -213,10 +213,15 @@ public sealed class ReadResult {
  *
  * - [Written] — the kernel accepted some bytes. Partial writes are
  *   possible; callers drive a loop until all bytes are transferred.
- * - [WouldBlock] — the send buffer was full (`EAGAIN` / `EWOULDBLOCK`).
- *   Callers register a write-readiness callback (`EPOLLOUT` /
- *   `EVFILT_WRITE`) and resume later.
- * - [Failed] — any other `errno`. A `send(2)` / `write(2)` that returns
+ * - [WouldBlock] — **the send did not happen but will succeed later**:
+ *   the socket's send buffer was full (`EAGAIN` / `EWOULDBLOCK`), or the
+ *   kernel was out of buffer space (`ENOBUFS`), which says nothing about
+ *   this socket and everything about load. Callers register a
+ *   write-readiness callback (`EPOLLOUT` / `EVFILT_WRITE`) and resume
+ *   later, so an implementation that reports a retryable condition as
+ *   [Failed] costs the connection. `ENOMEM` is not in this set: it is not
+ *   scoped to socket buffer space and carries no such promise.
+ * - [Failed] — **definitive**: any errno that is not one of those. A `send(2)` / `write(2)` that returns
  *   0 on a non-empty request is also mapped to `Failed(errno = 0)` by
  *   the production impl; callers that want to distinguish this edge
  *   case branch on `errno == 0` inside the failure handler.

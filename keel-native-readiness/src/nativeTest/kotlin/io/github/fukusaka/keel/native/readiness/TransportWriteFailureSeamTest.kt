@@ -303,6 +303,62 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a refused send reports the connection inactive once`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Two paths now discover the same dead connection: the funnel
+            // ends it, and the loop-driven entry that called the funnel
+            // contains the same throw and ends it again. Inactive is a fact
+            // about the connection, not an event each discoverer raises.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            var inactiveCalls = 0
+            transport.onReadClosed = { inactiveCalls++ }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            transport.onReady(Interest.WRITE)
+
+            assertEquals(1, inactiveCalls, "the connection is reported inactive once")
+            assertFalse(transport.isOpen)
+            fake.assertAllConsumed()
+
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a throwing inactive handler during the closing drain is not the teardown's failure`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The teardown's deferred drain hits a gone peer. Ending the
+            // connection a second time from inside that close would run an
+            // application callback there, and its throw would ride out on the
+            // refusal as though the teardown had left something undone -- the
+            // one thing close() is supposed to tell its caller.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.onReadClosed = { throw InjectedFault("inactive handler refused") }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "coalescing defers the drain to the teardown")
+
+            transport.close()
+
+            assertFalse(transport.isOpen)
+            assertTrue(
+                eventLoop.warnings.any { it.contains("found the peer gone while closing") },
+                "the gone peer is reported, got: ${eventLoop.warnings}",
+            )
+            assertFalse(
+                eventLoop.warnings.any { it.contains("did not finish cleaning up") },
+                "and not as teardown incompleteness, got: ${eventLoop.warnings}",
+            )
+            fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a close during the batch loop stops it before the next write`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // Off-loop close: the flag flips at once but the teardown is

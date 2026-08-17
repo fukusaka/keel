@@ -12,8 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in a way the caller did not ask for, with `RefusedWriteException` and `EngineFailureException`
   under it. `RefusedWriteException` moves here from an engine's internals; nothing raises
   `EngineFailureException` yet (#1062)
-- `core`: transport teardown stats report the longest run of drains that moved no bytes, so a
-  socket that stays unwritable is visible (#1062)
+- `core`: transport teardown stats report the longest run of consecutive drains that moved no
+  bytes, so a socket that stays unwritable is visible (#1062)
 - `native-posix`: `IOV_MAX` is published so gather callers can bound their batches (#1062)
 - `core`: `LoggerFactory.guarded()` — wraps a factory so its loggers cannot throw, and is applied to
   the configured factory by every engine (#1038)
@@ -108,9 +108,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   survived depended on a setting the caller does not choose (#1062)
 - `native-posix`: `ENOBUFS` from a write is now retryable rather than a refusal, so a kernel
   briefly out of buffer space no longer ends the connection (#1062)
-- `engine-kqueue`, `engine-epoll`: a flush that raises now arms write readiness for whatever a
-  resumed producer wrote before the raise, instead of leaving it queued until close — including a
-  completion callback that writes and then throws (#1062)
+- `engine-kqueue`, `engine-epoll`: a flush that raises over a queue it did not discard now arms
+  write readiness for whatever a resumed producer wrote before the raise — including a completion
+  callback that writes and then throws. A refused send discards instead, and ends the
+  connection (#1062)
 - `engine-kqueue`, `engine-epoll`: a stale write-readiness wake or an overtaken coalescing
   tick no longer repeats the flush-completion report (#1061)
 - `engine-kqueue`, `engine-epoll`: a queue refilled mid-drain by the water-mark callback now
