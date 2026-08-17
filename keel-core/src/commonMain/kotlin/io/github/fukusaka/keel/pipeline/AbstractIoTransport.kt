@@ -528,12 +528,36 @@ abstract class AbstractIoTransport(
                 alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
                 throw first
             }
+            reportContainedHalfCloseRefusal(refused)
         } finally {
             // Covers a flush that drained synchronously — engines whose flush
             // completes asynchronously reach sendFinIfDrained from their
             // completion path instead.
             sendFinIfDrained()
         }
+    }
+
+    /**
+     * Says that a half-close met a refused send and did not raise it.
+     *
+     * Not raising is what makes the answer the same on both drain paths, but
+     * it also means a caller with nothing parked on the flush is told nothing
+     * at all: `write(); shutdownOutput(); close()` would end a dead connection
+     * without exception, log or cause. That is the silence this exists to
+     * break, and the transport that met the refusal is the one holding a
+     * logger, so it is the one asked.
+     *
+     * Only for a refusal travelling alone. One carrying a suppressed cause is
+     * re-raised instead and reported by whoever catches it.
+     *
+     * The default does nothing, which is correct only while a transport that
+     * does not override this also never raises [TransportFailureException] —
+     * true of every transport but the readiness ones today. Overriding it is
+     * part of adopting the failure type, not an option alongside it.
+     */
+    protected open fun reportContainedHalfCloseRefusal(refused: TransportFailureException) {
+        // Overridden where a logger exists; see the KDoc for why the default
+        // is empty rather than this being abstract.
     }
 
     /**

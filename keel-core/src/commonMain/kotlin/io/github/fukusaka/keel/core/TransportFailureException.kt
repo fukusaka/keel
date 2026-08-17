@@ -3,9 +3,17 @@ package io.github.fukusaka.keel.core
 /**
  * The transport failed, and what it was carrying did not reach the peer.
  *
- * Raised from the calls that wait for a send to land — [Channel.flush] and
- * [Channel.awaitFlushComplete] — and delivered to pipeline handlers through
- * their error path, which is where a handler-only application sees it.
+ * Raised from the calls that wait for a send to land — [Channel.flush], and
+ * [Channel.awaitFlushComplete] for a wait that was already parked when the
+ * send was refused. A wait begun *after* the connection ended is answered
+ * with a cancellation carrying this as its cause instead; closing that gap is
+ * tracked. [Channel.shutdownOutput] does not raise it at all — it would do so
+ * only when the drain happened to run in place, which the caller does not
+ * choose.
+ *
+ * A pipelined application sees it on the handler error path where the call
+ * goes through the pipeline, which `flush()` does and the half-close does
+ * not; the half-close reports only that the connection went inactive.
  *
  * **This is not a cancellation, and that distinction is the point.** A
  * caller that closes its own channel gets a `CancellationException`, because

@@ -752,14 +752,19 @@ class ReadinessIoTransport(
             // connection with only the task guard above it, and under the
             // coalescing opt-out the half-close drains synchronously — a drain
             // failure here used to be swallowed with the connection left open
-            // and its queue poisoned. The inline arm above is different on
-            // purpose: its caller is on the loop, and the pipeline's error
-            // path owns the throw there, like a direct flush().
+            // and its queue poisoned. What reaches this guard is what the
+            // half-close does not contain itself: a refusal travelling alone
+            // is reported by [reportContainedHalfCloseRefusal] and never
+            // arrives, while anything riding on it does.
             else -> eventLoop.dispatch(
                 EmptyCoroutineContext,
                 Runnable { containReadinessFailure(WHAT_HALF_CLOSE) { halfCloseAndReport() } },
             )
         }
+    }
+
+    override fun reportContainedHalfCloseRefusal(refused: TransportFailureException) {
+        eventLoop.logger.warn(refused) { "the half-close found the peer gone: fd=$fd" }
     }
 
     override fun sendFin() {
