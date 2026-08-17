@@ -109,6 +109,29 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a contained refusal is still reported`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Not raising costs the one thing raising did: a caller with
+            // nothing parked on the flush would otherwise end a dead
+            // connection with no exception, no cause and no log. The
+            // transport that met the refusal is the one holding a logger.
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            transport.shutdownOutput()
+
+            assertTrue(
+                eventLoop.warnings.any { "the half-close found the peer gone" in it },
+                "the refusal must be reported, not silent: ${eventLoop.warnings}",
+            )
+            fake.assertAllConsumed()
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a half-close does not contain what rode on the refusal`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The refusal is contained because it is already reported. A
