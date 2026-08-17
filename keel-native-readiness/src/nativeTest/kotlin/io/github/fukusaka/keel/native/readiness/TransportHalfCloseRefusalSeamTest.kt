@@ -130,7 +130,7 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
                 "and the report must carry the refusal, or the errno is not in the log",
             )
             assertFalse(
-                eventLoop.warnings.any { "did not finish cleaning up" in it },
+                eventLoop.warnings.any { "the half-close found the peer gone, and did not finish" in it },
                 "and must not claim cleanup failed when it did not: ${eventLoop.warnings}",
             )
             fake.assertAllConsumed()
@@ -160,11 +160,11 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
             )
 
             assertTrue(
-                eventLoop.warnings.any { "did not finish cleaning up" in it },
+                eventLoop.warnings.any { "the half-close found the peer gone, and did not finish" in it },
                 "the report must say this is not the whole story: ${eventLoop.warnings}",
             )
             assertIs<RefusedWriteException>(
-                eventLoop.logger.causeOfWarning("did not finish cleaning up"),
+                eventLoop.logger.causeOfWarning("the half-close found the peer gone, and did not finish"),
                 "and must still carry the refusal it names",
             )
 
@@ -199,6 +199,38 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
             assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
             assertFalse(transport.isOpen, "the refusal still ends the connection")
             fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `an off-loop half-close reports what rode on the refusal rather than dropping it`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // A rider leaves the half-close either way, but where it lands is
+            // not the same: the in-place caller catches it, and this caller
+            // has already returned by the time the drain runs. What must not
+            // differ is that someone is told -- here the guard the dispatched
+            // half-close runs inside.
+            rebuildLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            transport.shutdownOutput()
+            runCatching { eventLoop.drainDispatched() }
+
+            assertTrue(
+                eventLoop.warnings.any { "the half-close found the peer gone, and did not finish" in it },
+                "the refusal must still be named on this arm: ${eventLoop.warnings}",
+            )
+            assertTrue(
+                eventLoop.warnings.any { "the dispatched half-close" in it },
+                "and the rider must be reported rather than dropped: ${eventLoop.warnings}",
+            )
+            assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
+            fake.assertAllConsumed()
+            failing.releaseUnderlying()
             tracker.assertNoLeaks()
         }
     }
