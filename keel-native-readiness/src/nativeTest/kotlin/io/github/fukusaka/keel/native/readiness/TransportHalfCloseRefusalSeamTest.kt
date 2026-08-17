@@ -151,10 +151,42 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
                 "the refused release is what comes out, not the refusal that carried it",
             )
 
+            assertTrue(
+                eventLoop.warnings.any { "the half-close found the peer gone" in it },
+                "and the refusal it carried is still named: ${eventLoop.warnings}",
+            )
+
             assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
             fake.assertAllConsumed()
             failing.releaseUnderlying()
             eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `an off-loop half-close reports its refusal too`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The other arm: a caller off the transport's context has the
+            // half-close dispatched, and the refusal is contained inside that
+            // Runnable -- below the guard that used to be what logged it. If
+            // containment moved without the report, this is where the silence
+            // would be, because this caller never had the throw to lose.
+            rebuildLoop(onLoopThread = false, runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            transport.shutdownOutput()
+            eventLoop.drainDispatched()
+
+            assertTrue(
+                eventLoop.warnings.any { "the half-close found the peer gone" in it },
+                "the dispatched half-close must report it too: ${eventLoop.warnings}",
+            )
+            assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
+            assertFalse(transport.isOpen, "the refusal still ends the connection")
+            fake.assertAllConsumed()
             tracker.assertNoLeaks()
         }
     }
