@@ -313,12 +313,29 @@ internal abstract class AbstractReadinessEventLoopFixture {
     protected class RecordingLogger : Logger {
         val logged = mutableListOf<Pair<LogLevel, String>>()
 
+        /**
+         * The throwable each record carried, in the same order as [logged].
+         *
+         * Kept apart so the existing message-only assertions stay as they
+         * are, and so a test can pin that a report names its cause: a
+         * `warn(cause) { ... }` degraded to `warn { ... }` reads identically
+         * in [logged] while the errno and the cause are gone from the log.
+         */
+        val loggedCauses = mutableListOf<Throwable?>()
+
         val warnings: List<String> get() = logged.filter { it.first == LogLevel.WARN }.map { it.second }
+
+        /** The throwable recorded alongside the first WARN whose message contains [fragment], if any. */
+        fun causeOfWarning(fragment: String): Throwable? {
+            val at = logged.indexOfFirst { it.first == LogLevel.WARN && fragment in it.second }
+            return if (at < 0) null else loggedCauses[at]
+        }
 
         override fun isLoggable(level: LogLevel) = true
 
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
             logged.add(level to message.toString())
+            loggedCauses.add(throwable)
         }
     }
 

@@ -125,6 +125,14 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
                 eventLoop.warnings.any { "the half-close found the peer gone" in it },
                 "the refusal must be reported, not silent: ${eventLoop.warnings}",
             )
+            assertIs<RefusedWriteException>(
+                eventLoop.logger.causeOfWarning("the half-close found the peer gone"),
+                "and the report must carry the refusal, or the errno is not in the log",
+            )
+            assertFalse(
+                eventLoop.warnings.any { "did not finish cleaning up" in it },
+                "and must not claim cleanup failed when it did not: ${eventLoop.warnings}",
+            )
             fake.assertAllConsumed()
             eventLoop.drainDispatched()
             tracker.assertNoLeaks()
@@ -152,8 +160,12 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
             )
 
             assertTrue(
-                eventLoop.warnings.any { "the half-close found the peer gone" in it },
-                "and the refusal it carried is still named: ${eventLoop.warnings}",
+                eventLoop.warnings.any { "did not finish cleaning up" in it },
+                "the report must say this is not the whole story: ${eventLoop.warnings}",
+            )
+            assertIs<RefusedWriteException>(
+                eventLoop.logger.causeOfWarning("did not finish cleaning up"),
+                "and must still carry the refusal it names",
             )
 
             assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
@@ -212,7 +224,7 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a refused half-close answers the same way when the drain is deferred`() = runBlocking {
+    fun `a deferred half-close returns before the refusal exists and ends on the tick`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The configuration the other half-close tests do not run in.
             // Coalescing moves the drain to a later tick, which is the reason
