@@ -38,6 +38,31 @@ import kotlinx.cinterop.ULongVar
  * long-standing gap where errno-branch behaviour could only be
  * verified via integration-style stress tests (see
  * `IoUringPipelinedServerTest` history).
+ *
+ * ## What a result means
+ *
+ * **[WriteResult.Failed] and [ReadResult.Failed] are definitive, on every
+ * implementation of this interface.** Callers do not read the errno to
+ * decide what to do next and do not retry: a refused write ends the
+ * connection's write side. **An implementation owes that classification
+ * itself** — retry what is retryable (`EINTR` is the one the bundled C
+ * wrappers loop on) and report what is merely blocked as
+ * [WriteResult.WouldBlock] / [ReadResult.WouldBlock]. An implementation
+ * that answers `Failed` for a transient condition costs the connection.
+ *
+ * **[WriteResult.Written] means progress, and no more than was offered.** A
+ * caller may loop on a partial write, so an implementation that answers
+ * `Written(0)` for an offer of more than zero bytes gives that loop nothing
+ * to advance on; one that answers more than it was handed makes the caller's
+ * bookkeeping name bytes that never existed. Report the would-block and the
+ * refusal as themselves; the bundled implementation maps a zero-byte return
+ * to [WriteResult.Failed] for exactly this reason.
+ *
+ * The corollary belongs to the caller: **the shape of a request is theirs
+ * to respect, not this interface's to diagnose.** A gather offering more
+ * regions than the platform accepts writes nothing and fails,
+ * which no implementation can distinguish afterwards from any other
+ * argument error — see [IOV_MAX] and [writev].
  */
 @OptIn(ExperimentalForeignApi::class)
 public interface NativeSocket {
@@ -85,9 +110,14 @@ public interface NativeSocket {
      * stay with the caller, who must keep the pointed-to buffers alive
      * for the duration of the call.
      *
+     * **At most [IOV_MAX] regions.** More is not a large write: the
+     * platform takes none of them and fails, indistinguishable
+     * afterwards from any other argument error, so a caller with a longer
+     * queue issues several calls rather than one.
+     *
      * @param count number of active entries — only `bases[0..count-1]` /
-     *   `lens[0..count-1]` are read. Must be `>= 0` and within the
-     *   caller's allocated capacity for both arrays.
+     *   `lens[0..count-1]` are read. Must be `>= 0`, within the caller's
+     *   allocated capacity for both arrays, and no greater than [IOV_MAX].
      */
     public fun writev(
         fd: Int,
@@ -183,10 +213,15 @@ public sealed class ReadResult {
  *
  * - [Written] — the kernel accepted some bytes. Partial writes are
  *   possible; callers drive a loop until all bytes are transferred.
- * - [WouldBlock] — the send buffer was full (`EAGAIN` / `EWOULDBLOCK`).
- *   Callers register a write-readiness callback (`EPOLLOUT` /
- *   `EVFILT_WRITE`) and resume later.
- * - [Failed] — any other `errno`. A `send(2)` / `write(2)` that returns
+ * - [WouldBlock] — **the send did not happen but will succeed later**:
+ *   the socket's send buffer was full (`EAGAIN` / `EWOULDBLOCK`), or the
+ *   kernel was out of buffer space (`ENOBUFS`), which says nothing about
+ *   this socket and everything about load. Callers register a
+ *   write-readiness callback (`EPOLLOUT` / `EVFILT_WRITE`) and resume
+ *   later, so an implementation that reports a retryable condition as
+ *   [Failed] costs the connection. `ENOMEM` is not in this set: it is not
+ *   scoped to socket buffer space and carries no such promise.
+ * - [Failed] — **definitive**: any errno that is not one of those. A `send(2)` / `write(2)` that returns
  *   0 on a non-empty request is also mapped to `Failed(errno = 0)` by
  *   the production impl; callers that want to distinguish this edge
  *   case branch on `errno == 0` inside the failure handler.

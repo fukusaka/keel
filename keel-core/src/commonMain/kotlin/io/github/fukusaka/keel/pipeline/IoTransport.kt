@@ -171,6 +171,13 @@ interface IoTransport {
      *         Implementations predating this rule may still answer true
      *         over a queue their own water-mark callback refilled;
      *         converging them is tracked follow-up work.
+     *
+     * **May raise.** A send the platform definitively refused is a failure,
+     * not a completed flush, and reaches the caller as one — as does a
+     * failure in the bookkeeping around it (releasing a buffer, resuming a
+     * waiter). Whatever is unfinished stays queued for the close. A caller
+     * on the pipeline route does not see this: `DefaultPipeline` catches and
+     * propagates it as a pipeline error.
      */
     fun flush(): Boolean
 
@@ -217,27 +224,6 @@ interface IoTransport {
     // === Lifecycle ===
 
     /**
-     * Sends TCP FIN to the peer (half-close).
-     *
-     * The read side remains open so the peer's remaining data can be
-     * consumed. Implementations must be idempotent.
-     *
-     * **Safe to call from any thread, and the FIN may be sent after this
-     * returns.** Engines that own an EventLoop issue the syscall on that
-     * thread, so an off-loop caller only queues the request. Observe the
-     * effect through the peer, not through the call returning.
-     *
-     * Buffered writes are sent first: whatever [write] queued before this
-     * call reaches the peer ahead of the FIN. Writes issued *after* it are
-     * discarded — the caller declared it had nothing more to send.
-     *
-     * Ordering the FIN behind the data also makes it as slow as the data: a
-     * peer that stops reading holds both back. `idleTimeoutMillis` bounds
-     * that (the write-idle timer force-closes a peer that never drains) and
-     * is disabled by default. A [close] before the drain finishes supersedes
-     * the half-close and discards what was still queued.
-     */
-    /**
      * True when the caller is already on the context this transport's
      * non-suspend API must be used from — the EventLoop thread, or the serial
      * dispatch queue that stands in for one.
@@ -280,6 +266,38 @@ interface IoTransport {
      */
     val canDispatchToOwningContext: Boolean get() = true
 
+    /**
+     * Sends TCP FIN to the peer (half-close).
+     *
+     * The read side remains open so the peer's remaining data can be
+     * consumed. Implementations must be idempotent.
+     *
+     * **Safe to call from any thread, and the FIN may be sent after this
+     * returns.** Engines that own an EventLoop issue the syscall on that
+     * thread, so an off-loop caller only queues the request. Observe the
+     * effect through the peer, not through the call returning.
+     *
+     * Buffered writes are sent first: whatever [write] queued before this
+     * call reaches the peer ahead of the FIN. Writes issued *after* it are
+     * discarded — the caller declared it had nothing more to send.
+     *
+     * Ordering the FIN behind the data also makes it as slow as the data: a
+     * peer that stops reading holds both back. `idleTimeoutMillis` bounds
+     * that (the write-idle timer force-closes a peer that never drains) and
+     * is disabled by default. A [close] before the drain finishes supersedes
+     * the half-close and discards what was still queued.
+     *
+     * **May raise, on implementations whose flush does.** The buffered
+     * writes are sent first, so a caller already on the transport's own
+     * context can be told they could not be — though not when the
+     * implementation defers the drain to a later tick, which the readiness
+     * engines do by default: that tick contains the failure instead.
+     *
+     * A caller off that context never carries the failure back. It queues
+     * the request, or — on an implementation whose loop has already stopped,
+     * where the buffered writes will never drain — has it refused and
+     * reported there.
+     */
     fun shutdownOutput()
 
     /**

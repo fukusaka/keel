@@ -1,4 +1,4 @@
-headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h sys/time.h unistd.h string.h sys/un.h stddef.h errno.h
+headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h sys/time.h unistd.h string.h sys/un.h stddef.h errno.h limits.h
 ---
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -10,6 +10,7 @@ headers = sys/socket.h netinet/in.h arpa/inet.h sys/uio.h sys/time.h unistd.h st
 #include <sys/un.h>
 #include <stddef.h>
 #include <errno.h>
+#include <limits.h>
 
 /* htons/ntohs/htonl are macros — cinterop cannot bind them directly. */
 static inline uint16_t keel_htons(uint16_t hostshort) { return htons(hostshort); }
@@ -216,6 +217,12 @@ static inline int keel_shutdown(int fd, int how) {
  * wrappers above — callers never need to handle EINTR).
  */
 static ssize_t keel_writev(int fd, const void **bases, const size_t *lens, int count) {
+    /*
+     * Variable-length array, so its size is the caller's `count`. Callers
+     * keep that within `keel_iov_max()` because the kernel takes no more --
+     * which also bounds this to ~16 KiB of stack. Before that bound existed
+     * it grew with the queue.
+     */
     struct iovec iov[count];
     for (int i = 0; i < count; i++) {
         iov[i].iov_base = (void *)bases[i];
@@ -397,6 +404,33 @@ static inline void keel_set_nosigpipe(int fd) {
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
 #else
     (void)fd;
+#endif
+}
+
+/*
+ * The kernel's per-call limit on `writev` / `sendmsg` iovec entries, as a
+ * function because every spelling of it is a macro.
+ *
+ * The name differs by platform: macOS defines `IOV_MAX` in <limits.h>,
+ * glibc leaves that undefined unless a feature-test macro asks for it and
+ * defines `UIO_MAXIOV` in <sys/uio.h> instead. Both are 1024 on the hosts
+ * this project builds on. `sysconf(_SC_IOV_MAX)` answers on both and is the
+ * fallback; POSIX guarantees at least `_XOPEN_IOV_MAX` (16), which is the
+ * floor if even sysconf declines.
+ *
+ * A caller that offers more than this gets a definitive failure with
+ * nothing written — indistinguishable at the errno from a genuine argument
+ * error, which is why callers bound the batch rather than classify the
+ * failure afterwards.
+ */
+static inline int keel_iov_max(void) {
+#if defined(IOV_MAX)
+    return IOV_MAX;
+#elif defined(UIO_MAXIOV)
+    return UIO_MAXIOV;
+#else
+    long n = sysconf(_SC_IOV_MAX);
+    return n > 0 ? (int)n : 16;
 #endif
 }
 

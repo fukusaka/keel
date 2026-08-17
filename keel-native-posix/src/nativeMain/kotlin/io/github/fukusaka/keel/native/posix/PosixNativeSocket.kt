@@ -11,6 +11,7 @@ import kotlinx.cinterop.set
 import platform.posix.EAGAIN
 import platform.posix.EINPROGRESS
 import platform.posix.EINTR
+import platform.posix.ENOBUFS
 import platform.posix.EWOULDBLOCK
 import platform.posix.FD_CLOEXEC
 import platform.posix.F_GETFD
@@ -168,20 +169,35 @@ public object PosixNativeSocket : NativeSocket {
         return if (r == 0) CloseResult.Ok else CloseResult.Failed(errno)
     }
 
-    private fun decodeWriteResult(n: Long): WriteResult = when {
-        n > 0 -> WriteResult.Written(n.toInt())
-        // TCP write(2) returning 0 for non-empty data is unexpected
-        // (POSIX permits it for 0-length requests). Treat as Failed
-        // so callers route through teardown instead of silently
-        // looping or counting it as a successful zero-byte write.
-        n == 0L -> WriteResult.Failed(0)
-        else -> {
-            val err = errno
-            if (err == EAGAIN || err == EWOULDBLOCK) {
-                WriteResult.WouldBlock
-            } else {
-                WriteResult.Failed(err)
-            }
-        }
-    }
+    private fun decodeWriteResult(n: Long): WriteResult = classifyWriteReturn(n, errno)
+}
+
+/**
+ * The write path's answer for a syscall return and the errno beside it.
+ *
+ * Split out from the socket so the classification can be exercised without a
+ * kernel that will produce each errno on demand — `ENOBUFS` in particular
+ * needs the host out of buffer space, which no test should arrange.
+ *
+ * **The one retryable answer is [WriteResult.WouldBlock].** `EAGAIN` and
+ * `EWOULDBLOCK` are the obvious members; `ENOBUFS` joins them because it says
+ * the kernel is out of buffer space, not that this socket is finished. The
+ * send succeeds once space frees, which is what write readiness waits for,
+ * and calling it definitive would end connections under exactly the load that
+ * produces it. libuv classifies it the same way (`uv__try_write` answers
+ * `UV_EAGAIN` for `EAGAIN`, `EWOULDBLOCK` and `ENOBUFS` alike).
+ *
+ * `ENOMEM` is deliberately not included: it is not scoped to socket buffer
+ * space, and libuv does not include it either.
+ *
+ * A zero return for a non-empty request is [WriteResult.Failed]: TCP
+ * `write(2)` does not do that (POSIX permits it only for zero-length
+ * requests), so the caller routes it through teardown rather than looping on
+ * a write that moves nothing or counting it as progress.
+ */
+internal fun classifyWriteReturn(n: Long, err: Int): WriteResult = when {
+    n > 0 -> WriteResult.Written(n.toInt())
+    n == 0L -> WriteResult.Failed(0)
+    err == EAGAIN || err == EWOULDBLOCK || err == ENOBUFS -> WriteResult.WouldBlock
+    else -> WriteResult.Failed(err)
 }

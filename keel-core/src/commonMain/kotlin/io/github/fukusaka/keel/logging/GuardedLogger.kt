@@ -34,9 +34,17 @@ package io.github.fukusaka.keel.logging
  * `CancellationException` — a logger is not a suspending API and cancellation
  * does not travel through one, so a `CancellationException` from here is a
  * broken logger rather than a real cancellation, and letting it out would be
- * the escape this exists to stop. The message lambda is evaluated inside the
- * guard too, so a throw from keel's own message expression is contained on the
- * same terms.
+ * the escape this exists to stop.
+ *
+ * **The message lambda is not covered.** The inline extensions pass
+ * `message()` as an argument to [Logger.rawLog], so it is evaluated at the
+ * call site, before this guard is entered — a throwing message expression
+ * escapes whenever the level is loggable. Keel's own expressions call only
+ * helpers that do not throw (`errnoMessage` and the like), and where they
+ * interpolate an application-supplied object they reach for its type rather
+ * than anything it computes. That is what keeps the escape unreached — a
+ * discipline, not a guarantee this class provides. Closing it properly is
+ * tracked.
  *
  * Idempotent: wrapping a factory that is already wrapped returns it unchanged.
  */

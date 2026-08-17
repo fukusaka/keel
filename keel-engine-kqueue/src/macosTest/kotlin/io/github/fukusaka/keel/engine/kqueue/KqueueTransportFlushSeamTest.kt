@@ -13,6 +13,7 @@ import platform.posix.ECONNRESET
 import platform.posix.EPIPE
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -88,7 +89,7 @@ internal class KqueueTransportFlushSeamTest : KqueueTransportSeamFixture() {
     }
 
     @Test
-    fun `flushSingle with Failed drops buffer and returns true`() {
+    fun `flushSingle with Failed drops the buffer and raises the refusal`() {
         val fake = FakeNativeSocket().apply {
             enqueueWrite(fd, WriteResult.Failed(ECONNRESET))
         }
@@ -101,9 +102,16 @@ internal class KqueueTransportFlushSeamTest : KqueueTransportSeamFixture() {
         buf.writerIndex = 5
         transport.write(buf)
 
-        assertTrue(transport.flush(), "a dropped buffer still leaves nothing to flush")
+        // The bytes can never reach the peer, so dropping them is right --
+        // answering "flush completed" is not, and the raise is what tells the
+        // parked waiter and ends the connection.
+        val thrown = assertFailsWith<IllegalStateException> { transport.flush() }
+        assertTrue(
+            checkNotNull(thrown.message).contains("write() failed"),
+            "the failure names the syscall and its errno, got: ${thrown.message}",
+        )
         assertEquals(1, fake.writeCalls)
-        assertTrue(transport.flush(), "second flush is a no-op")
+        assertTrue(transport.flush(), "the drop left nothing to flush")
         assertEquals(1, fake.writeCalls)
         fake.assertAllConsumed()
         tracker.assertNoLeaks()
@@ -183,7 +191,7 @@ internal class KqueueTransportFlushSeamTest : KqueueTransportSeamFixture() {
     }
 
     @Test
-    fun `flushGather with Failed drops all buffers`() {
+    fun `flushGather with Failed drops all buffers and raises the refusal`() {
         val fake = FakeNativeSocket().apply {
             enqueueWritev(fd, WriteResult.Failed(EPIPE))
         }
@@ -197,9 +205,13 @@ internal class KqueueTransportFlushSeamTest : KqueueTransportSeamFixture() {
         transport.write(buf1)
         transport.write(buf2)
 
-        assertTrue(transport.flush(), "flush must report the queue drained")
+        val thrown = assertFailsWith<IllegalStateException> { transport.flush() }
+        assertTrue(
+            checkNotNull(thrown.message).contains("writev() failed"),
+            "the failure names the syscall and its errno, got: ${thrown.message}",
+        )
         assertEquals(1, fake.writevCalls)
-        assertTrue(transport.flush(), "second flush is a no-op")
+        assertTrue(transport.flush(), "the drop left nothing to flush")
         assertEquals(1, fake.writevCalls)
         fake.assertAllConsumed()
         tracker.assertNoLeaks()

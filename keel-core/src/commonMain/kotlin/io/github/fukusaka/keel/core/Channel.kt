@@ -103,11 +103,24 @@ interface Channel : AutoCloseable {
      * until all bytes are sent.
      *
      * Default implementation calls [requestFlush] + [awaitFlushComplete].
-     * Engines that override this directly (e.g., Netty, NWConnection) do
-     * not need to implement [requestFlush]/[awaitFlushComplete].
+     * An engine may override this directly instead, and then owes neither —
+     * none in this tree does today.
      *
      * For fire-and-forget flushing (no completion wait), call
      * [requestFlush] directly.
+     *
+     * **May raise.** A send the platform refused outright is a failure, not a
+     * completed flush, and the bytes it was carrying are gone.
+     *
+     * **It never travels back through the request half.** [requestFlush]
+     * runs the drain through the pipeline, which converts a handler failure
+     * into an error event rather than returning it — so it is
+     * [awaitFlushComplete], the half that waits, that raises. See there for
+     * when it has something left to observe and when it does not.
+     *
+     * Engines differ in whether they report a refused send at all, and this
+     * is the contract they are converging on rather than one they all meet;
+     * converging them is tracked.
      */
     suspend fun flush() {
         requestFlush()
@@ -141,6 +154,34 @@ interface Channel : AutoCloseable {
      * Default: no-op (assumes [flush] override handles completion).
      * Engines that use the [requestFlush] + [awaitFlushComplete] pattern
      * must override.
+     *
+     * **May raise, and with either of two kinds of failure.**
+     *
+     * The send's own, whenever a failing drain is still there to be
+     * observed: one this call runs itself, one it re-drives because the last
+     * drain threw with the queue left behind, or one that fails elsewhere
+     * while this call is parked — the transport answers a parked waiter with
+     * the failure whatever ran into it.
+     *
+     * Or a `CancellationException` naming the connection's end, when the
+     * drain that hit the failure was one the engine ran on its own — a
+     * scheduled tick, a stopping loop. Those contain the failure and end the
+     * connection, and this call reports *that*, not the send's error. The
+     * refusal rides along as the cancellation's cause where one is known, so
+     * the reason is recoverable even on that route.
+     *
+     * **Which of the two you get is still narrower than it should be**: a
+     * loop that ended by throwing is reported the same way as one that was
+     * asked to stop, because nothing records which happened. Converging that
+     * — so a fault the application did not choose arrives as
+     * [EngineFailureException] rather than a cancellation — is tracked.
+     *
+     * **Whether either arrives depends on there being a failure left to
+     * report.** A drain that ran inside the request and emptied the queue
+     * leaves this call nothing to find, so it returns normally — the failure
+     * went to the pipeline's error path when it happened, and on a refusal
+     * the connection ended with it. This is therefore not a way to ask, after
+     * the fact, whether the last flush reached the peer.
      */
     suspend fun awaitFlushComplete() {}
 
@@ -180,6 +221,16 @@ interface Channel : AutoCloseable {
      * idle timeout (disabled by default). Call [close] instead when the FIN
      * has to go out regardless — it supersedes a pending half-close and
      * discards what was still queued.
+     *
+     * **May raise**, since the buffered writes go first: a caller on the
+     * engine's own thread whose half-close drains in place is told they could
+     * not be sent. Under flush coalescing — on by default in the readiness
+     * engines — the drain runs on a later tick instead, which contains the
+     * failure and ends the connection rather than raising here. A caller off
+     * the engine's thread does not carry the failure back either way: it
+     * queues the request, or — on an engine whose loop has already stopped,
+     * where the buffered writes will never drain — is refused and reported
+     * there.
      */
     fun shutdownOutput()
 

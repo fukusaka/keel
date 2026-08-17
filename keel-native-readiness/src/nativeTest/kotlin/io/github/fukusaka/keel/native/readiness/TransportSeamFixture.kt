@@ -70,6 +70,19 @@ internal abstract class TransportSeamFixture : AbstractReadinessEventLoopFixture
     protected fun transport(): ReadinessIoTransport = ReadinessIoTransport(fd, eventLoop, tracker, fake)
 
     /**
+     * A transport with the idle timeouts armed, for the paths that reclaim a
+     * stalled connection. Drive the timer with [expireIdleTimeouts]; the fake
+     * loop has no clock of its own.
+     */
+    protected fun transportWithIdleTimeout(millis: Long): ReadinessIoTransport =
+        ReadinessIoTransport(fd, eventLoop, tracker, fake, idleTimeoutMillis = millis)
+
+    /** Fires every deadline due at [now], which the fake loop never does by itself. */
+    protected fun expireIdleTimeouts(now: Long = Long.MAX_VALUE) {
+        eventLoop.deadlineScheduler.expireDue(now)
+    }
+
+    /**
      * Replaces the [setUp] loop with one built to the test's shape, closing
      * the old one first — the pair the tests all need in that order, owned
      * here so a copy cannot drop the close and silently skip the fixture

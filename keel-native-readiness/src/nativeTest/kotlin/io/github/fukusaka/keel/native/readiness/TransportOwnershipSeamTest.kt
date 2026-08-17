@@ -2,6 +2,7 @@
 
 package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.native.posix.IOV_MAX
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.testing.InjectedFault
@@ -12,8 +13,10 @@ import platform.posix.ECONNRESET
 import platform.posix.EPIPE
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -39,12 +42,12 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
      * asserts what the refusal may not cost. Both `completeHead` exits route
      * through here; the two callers exist to pin each call site.
      */
-    private fun assertSingleRefusalSettlesLedger() {
+    private fun assertSingleRefusalSettlesLedger(): Throwable {
         val transport = transport()
         val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
         transport.write(failing)
 
-        assertFailsWith<InjectedFault> { transport.flush() }
+        val thrown = assertFails { transport.flush() }
         assertEquals(1, failing.refusedReleases, "the seam must have reached the release")
         assertEquals(0, transport.pendingByteCount(), "the ledger must not name bytes that are gone")
         assertTrue(transport.flush(), "nothing remains to flush afterwards")
@@ -52,16 +55,17 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
         failing.releaseUnderlying()
         transport.close()
         tracker.assertNoLeaks()
+        return thrown
     }
 
     /** The gather twin of [assertSingleRefusalSettlesLedger]: two entries, the first refusing. */
-    private fun assertQueueRefusalSettlesLedger() {
+    private fun assertQueueRefusalSettlesLedger(): Throwable {
         val transport = transport()
         val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 10 })
         transport.write(failing)
         transport.write(tracker.allocate(16).apply { writerIndex = 10 })
 
-        assertFailsWith<InjectedFault> { transport.flush() }
+        val thrown = assertFails { transport.flush() }
         assertEquals(1, failing.refusedReleases, "the seam must have reached the release")
         assertEquals(0, transport.pendingByteCount(), "the ledger must not name bytes that are gone")
         assertTrue(transport.flush(), "nothing remains to flush afterwards")
@@ -69,6 +73,7 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
         failing.releaseUnderlying()
         transport.close()
         tracker.assertNoLeaks()
+        return thrown
     }
 
     @Test
@@ -103,7 +108,10 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
     @Test
     fun `a refused release after a completed write still empties the ledger`() {
         fake.enqueueWrite(fd, WriteResult.Written(5))
-        assertSingleRefusalSettlesLedger()
+        assertIs<InjectedFault>(
+            assertSingleRefusalSettlesLedger(),
+            "the write succeeded, so the refusal is the only failure to raise",
+        )
         assertEquals(1, fake.writeCalls)
         fake.assertAllConsumed()
     }
@@ -111,21 +119,36 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
     @Test
     fun `a refused release after a failed write still empties the ledger`() {
         fake.enqueueWrite(fd, WriteResult.Failed(ECONNRESET))
-        assertSingleRefusalSettlesLedger()
+        // Two failures at once: the write the kernel refused is the cause the
+        // caller asked about, and the refusal rides along.
+        val thrown = assertSingleRefusalSettlesLedger()
+        assertIs<IllegalStateException>(thrown, "the refused write is the cause")
+        assertTrue(
+            thrown.suppressedExceptions.any { it is InjectedFault },
+            "the refused release must travel with it, got: ${thrown.suppressedExceptions}",
+        )
         fake.assertAllConsumed()
     }
 
     @Test
     fun `a failed writev empties the ledger even when a release refuses`() {
         fake.enqueueWritev(fd, WriteResult.Failed(EPIPE))
-        assertQueueRefusalSettlesLedger()
+        val thrown = assertQueueRefusalSettlesLedger()
+        assertIs<IllegalStateException>(thrown, "the refused writev is the cause")
+        assertTrue(
+            thrown.suppressedExceptions.any { it is InjectedFault },
+            "the refused release must travel with it, got: ${thrown.suppressedExceptions}",
+        )
         fake.assertAllConsumed()
     }
 
     @Test
     fun `a fully written gather with a refused release still empties the ledger`() {
         fake.enqueueWritev(fd, WriteResult.Written(20))
-        assertQueueRefusalSettlesLedger()
+        assertIs<InjectedFault>(
+            assertQueueRefusalSettlesLedger(),
+            "the gather succeeded, so the refusal is the only failure to raise",
+        )
         fake.assertAllConsumed()
     }
 
@@ -154,6 +177,49 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
         // WouldBlock — re-sending 5 bytes the peer already has.
         fake.enqueueWrite(fd, WriteResult.Written(5))
         assertTrue(transport.flush(), "the remainder must flush from the re-offset head")
+        assertEquals(0, transport.pendingByteCount())
+        fake.assertAllConsumed()
+
+        failing.releaseUnderlying()
+        transport.close()
+        tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a refused release in a full batch still re-arms the entries behind it`() {
+        // A queue past the region limit, taken whole by the first batch, with
+        // an entry whose release refuses. The refusal ends the drain, but the
+        // entries the kernel never saw are still queued and this frame was
+        // the last thing that was going to offer them -- so it owes the same
+        // write-readiness arm the partial-batch shape gives, and there is no
+        // later batch to reach them.
+        val bytesPerEntry = 8
+        val batched = IOV_MAX + 2
+        fake.enqueueWritev(fd, WriteResult.Written(IOV_MAX * bytesPerEntry))
+        val transport = transport()
+
+        val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = bytesPerEntry })
+        transport.write(failing)
+        repeat(batched - 1) {
+            transport.write(tracker.allocate(16).apply { writerIndex = bytesPerEntry })
+        }
+
+        assertFailsWith<InjectedFault> { transport.flush() }
+        assertEquals(1, failing.refusedReleases, "the seam must have reached the release")
+        assertEquals(
+            2 * bytesPerEntry,
+            transport.pendingByteCount(),
+            "the ledger must name exactly what the kernel was never offered",
+        )
+        assertTrue(
+            eventLoop.armedCallbacks.contains(fd to Interest.WRITE),
+            "a stranded remainder with no arm has nothing left to send it",
+        )
+
+        // And the arm leads somewhere: the remainder drains from where the
+        // batch stopped, without re-offering what already went out.
+        fake.enqueueWritev(fd, WriteResult.Written(2 * bytesPerEntry))
+        assertTrue(transport.flush(), "the remainder must flush on the next readiness")
         assertEquals(0, transport.pendingByteCount())
         fake.assertAllConsumed()
 

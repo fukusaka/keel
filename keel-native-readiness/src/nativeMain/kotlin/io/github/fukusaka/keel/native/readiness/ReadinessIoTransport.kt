@@ -6,8 +6,11 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.core.RefusedWriteException
+import io.github.fukusaka.keel.core.TransportFailureException
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.native.posix.IOV_MAX
 import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.PosixNativeSocket
 import io.github.fukusaka.keel.native.posix.ReadResult
@@ -179,6 +182,24 @@ class ReadinessIoTransport(
     }
 
     /**
+     * Why this transport's write side ended, when it ended in a failure
+     * rather than a close its caller asked for.
+     *
+     * A refusal discards the queue on its way out, so a caller that arrives
+     * afterwards finds an empty queue and a closed transport — indistinguishable
+     * from an orderly close unless the reason is kept. Set once, by the drain
+     * that hit it.
+     */
+    private var transportFailure: TransportFailureException? = null
+
+    /**
+     * Whether the drain in progress has moved any bytes, for the blocked-run
+     * counter. Set by whichever write path consumed something; read once, on
+     * the way out of [performFlush]. EventLoop-thread only, like the drain.
+     */
+    private var drainMovedBytes: Boolean = false
+
+    /**
      * Reports this connection inactive, remembering it if that throws.
      *
      * Every readiness path that ends a connection goes through here rather than
@@ -194,8 +215,11 @@ class ReadinessIoTransport(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun notifyInactive() {
+        // At most once, through the base -- the idle-timeout reclamation
+        // reports from there too, and a gate that lived here would leave that
+        // path outside it.
         try {
-            onReadClosed?.invoke()
+            reportInactiveOnce()
         } catch (notifyFailure: Throwable) {
             windDownFailed = true
             throw notifyFailure
@@ -206,8 +230,8 @@ class ReadinessIoTransport(
      * Notifies inactivity, then forces the close — the order the idle-timeout
      * paths on the base transport use, for the same reason.
      *
-     * Only the order is shared. Those two call [onReadClosed] directly and
-     * record nothing — there is no [windDownFailed] on that path, and a throw
+     * Only the order is shared. Those two report through the base's own gate
+     * and record nothing here — there is no [windDownFailed] on that path, and a throw
      * out of the report still ends at the deadline scheduler's own guard, which
      * warns and moves on to the next due timer. What they no longer lose to it
      * is the close: the base runs it whatever the report did and carries the
@@ -324,8 +348,9 @@ class ReadinessIoTransport(
      * covers, and where it stops, is written at the arm in [onChannelAttached] — the
      * registration is one-shot, so a connection that receives anything before
      * the close is not covered by it.
-     * Calling `onReadClosed` twice is benign — the cancel guards in the
-     * connection handlers (PR #459 / #460) are idempotent.
+     * The report itself does not repeat — [notifyInactive] makes it at most
+     * once for the whole transport, so the handlers' idempotence is a second
+     * line rather than the reason this is safe.
      */
     override fun onPeerClosed(interest: Interest) {
         if (interest != Interest.READ) return
@@ -390,15 +415,28 @@ class ReadinessIoTransport(
         // came. Which path finds a deferral depends on when it was created, not
         // on drain order: this one exists before the sweep reaches this
         // transport, whereas one created later is found by the half-close
-        // itself. Guarded for the same reason as the cancel above -- the logger
-        // is user-supplied, and a throw here must not take the read-side
-        // notification with it.
+        // itself. Guarded because the read-side notification below must run
+        // whatever this does: the report is more than a log line -- it claims
+        // the deferral through `abandonDeferredFin` and reads the loop's
+        // termination hand-off -- and it is the last thing standing between
+        // the sweep and the connection learning it is over. (Not guarded
+        // against a logger *implementation*: the engine wraps the configured
+        // factory once, so its own calls cannot throw. A message expression
+        // is evaluated at the call site and is outside that wrapper, which is
+        // why the ones here call nothing that can throw.)
         try {
             reportAbandonedFin()
         } catch (t: Throwable) {
             eventLoop.logger.warn(t) { "reporting an abandoned half-close threw while the EventLoop was stopping" }
         }
-        onReadClosed?.invoke()
+        // Through the one place that reports, not around it: this is a
+        // readiness path that ends a connection, and the report is at most
+        // once across all of them. Reaching for [onReadClosed] here left a
+        // connection already reported by a peer close reported again, and a
+        // later report unsuppressed -- both measurable in Coroutine mode,
+        // where this entry deliberately does not close and leaves the
+        // transport open for the other to reach.
+        notifyInactive()
     }
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
@@ -440,6 +478,15 @@ class ReadinessIoTransport(
      */
     @InternalReadinessEngineApi
     fun pendingByteCount(): Int = pendingBytes
+
+    /**
+     * The longest run of consecutive drains that moved no bytes, for tests.
+     *
+     * Reaches the outside only through a debug line at teardown otherwise,
+     * which is how two wrong versions of this count shipped unnoticed.
+     */
+    @InternalReadinessEngineApi
+    fun longestBlockedDrainRun(): Long = maxConsecutiveBlockedDrains
 
     // --- Read path ---
 
@@ -845,25 +892,41 @@ class ReadinessIoTransport(
      * on a live loop the queued entries still have completion paths, so
      * nothing is reported or given up).
      *
-     * What the funnel deliberately does **not** do is end the connection: the
+     * **A definitively refused send ends the connection here**, whichever
+     * entry ran the drain — that is the one failure whose consequence cannot
+     * depend on the caller's position, since the write side is finished
+     * either way. Every other failure keeps the older division: the
      * loop-driven entries (the coalesced tick, [onWritable], the register's
      * short-circuit, the dispatched half-close) wrap it in
-     * [containReadinessFailure] and decide that; a direct `flush()` caller —
+     * [containReadinessFailure] and decide, while a direct `flush()` caller —
      * including an on-loop `shutdownOutput()` — gets the throw and the
      * pipeline's error path decides instead. The teardown's deferred drain is
-     * the remaining entry: there the stages carry the failure, and the waiter
-     * is answered by the close's own cancellation (see [failFlushWaiter]).
+     * the remaining entry: there the stages carry the failure, the waiter is
+     * answered by the close's own cancellation (see [failFlushWaiter]), and
+     * the refusal does **not** re-enter the wind-down — the connection is
+     * already ending.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun performFlush(): Boolean {
         if (pendingWrites.isEmpty()) return true
         flushCount++
         drainPoisoned = false
+        // One record per drain, taken on the way out whichever exit it takes
+        // -- including the throwing ones, whose bytes still left or did not.
+        //
+        // Saved and restored around this drain, because drains nest: the
+        // ledger update below resumes a producer synchronously, and a
+        // producer that answers by flushing runs a whole drain inside this
+        // one. Sharing the field with it would hand the enclosing drain the
+        // nested drain's answer -- and the nested one is typically the empty
+        // retry, so a connection moving megabytes would read as stuck.
+        val enclosingMovedBytes = drainMovedBytes
+        drainMovedBytes = false
         try {
-            if (pendingWrites.size == 1) {
-                return flushSingle()
-            }
-            return flushGather()
+            val drained = if (pendingWrites.size == 1) flushSingle() else flushGather()
+            recordDrainOutcome(drainMovedBytes)
+            drainMovedBytes = enclosingMovedBytes
+            return drained
         } catch (drainFailure: Throwable) {
             // Only when the failed entries are still queued: a drain that
             // emptied the queue on its way to throwing (a refused release
@@ -877,7 +940,35 @@ class ReadinessIoTransport(
             // instance handed to the waiter must not be appended to after it
             // is published.
             runStage(drainFailure) { reportAbandonedFin() }
+            // Before the connection ends, not after: failFlushWaiter declines
+            // once `opened` is false, so answering has to happen while this
+            // transport still counts as live.
             failFlushWaiter(drainFailure)
+            recordDrainOutcome(drainMovedBytes)
+            drainMovedBytes = enclosingMovedBytes
+            if (drainFailure is RefusedWriteException) {
+                // The write side is finished, and which path ran the drain is
+                // not something a caller chooses -- so it cannot be what
+                // decides whether the connection survives. Gated on `opened`
+                // because a teardown's own deferred drain arrives here with
+                // the connection already ending: starting a second wind-down
+                // there would run an application callback inside the close,
+                // and its throw would ride out on this failure as though the
+                // teardown had left something undone. The loop-driven
+                // entries reach the same end through their containment; this
+                // makes the direct callers reach it too, and the second call
+                // is a no-op because `markClosing` flips `opened` once.
+                //
+                // Recorded first: a later waiter has no queue left to inspect
+                // -- the refusal discarded it -- so the reason is the only
+                // thing that can tell it what happened.
+                transportFailure = drainFailure
+                // The wind-down is what the gate is for, not the record: a
+                // teardown's own deferred drain arrives with the connection
+                // already ending, and a waiter it cancels still needs to be
+                // told the send was refused rather than that someone closed.
+                if (opened) endConnectionAfterFailure(drainFailure)
+            }
             throw drainFailure
         }
     }
@@ -1079,7 +1170,34 @@ class ReadinessIoTransport(
         failure = runStage(failure) {
             if (flushScheduled) {
                 flushScheduled = false
-                performFlush()
+                try {
+                    performFlush()
+                } catch (refused: RefusedWriteException) {
+                    // Not carried to `close()`'s caller. Every other failure
+                    // here says the teardown itself is incomplete, which the
+                    // caller can act on; this one says the peer is gone while
+                    // we were discarding the bytes anyway -- which is what
+                    // `close()` documents it does with them, and the ordinary
+                    // outcome for the connection this stage exists to end.
+                    //
+                    // Only this one, though. A refused release or a failed
+                    // withdrawal that happened during the same drain rides
+                    // along as a suppressed cause, and those *are* teardown
+                    // incompleteness -- containing them because of the
+                    // company they keep would make a leak silent whenever a
+                    // dead peer happened to coincide with it.
+                    val alsoIncomplete = refused.suppressedExceptions
+                    if (alsoIncomplete.isEmpty()) {
+                        eventLoop.logger.warn(refused) { "the deferred flush found the peer gone while closing: fd=$fd" }
+                    } else {
+                        eventLoop.logger.warn(refused) {
+                            "the deferred flush found the peer gone while closing, and did not finish cleaning up: fd=$fd"
+                        }
+                        val first = alsoIncomplete.first()
+                        alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
+                        throw first
+                    }
+                }
             }
         }
         failure = runStage(failure) { cancelIdleTimeout() }
@@ -1214,17 +1332,15 @@ class ReadinessIoTransport(
         while (written < pw.length) {
             val ptr = (pw.buf.unsafePointer + pw.offset + written)!!
             when (val result = nativeSocket.write(fd, ptr, pw.length - written)) {
-                is WriteResult.Written -> written += result.bytes
+                is WriteResult.Written -> {
+                    written += result.bytes
+                    if (result.bytes > 0) drainMovedBytes = true
+                }
                 WriteResult.WouldBlock -> {
                     deferRemainder(written)
                     return false
                 }
-                is WriteResult.Failed -> {
-                    // Other error (EPIPE, ECONNRESET) — log and drop the entry.
-                    eventLoop.logger.warn { "write() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                    completeHead()
-                    return true
-                }
+                is WriteResult.Failed -> dropRefusedWrites("write", result.errno)
             }
         }
         completeHead()
@@ -1249,7 +1365,7 @@ class ReadinessIoTransport(
         var failure: Throwable? = null
         failure = runStage(failure) { pw.buf.release() }
         failure = runStage(failure) { updatePendingBytes(-pw.length) }
-        failure?.let { throw it }
+        failure?.let { raiseLeavingRemainderArmed(it) }
     }
 
     /**
@@ -1279,89 +1395,210 @@ class ReadinessIoTransport(
     // --- Gather-write flush ---
 
     /**
-     * Writes multiple pending buffers via `writev()`. Falls back to
-     * single-buffer retry on partial write or EAGAIN.
+     * Writes the queued buffers via `writev()`, in batches of at most
+     * [IOV_MAX] regions, until the queue is empty or the socket stops taking
+     * them. Falls back to write readiness on partial write or EAGAIN.
      *
      * Same ownership rule as [flushSingle] — a throw anywhere leaves whatever
-     * is unfinished queued for the teardown. The partial walk carries a
-     * refused release to the end: the entries behind the refusal are still
-     * walked, the split entry is still re-offset — losing that re-offset
-     * meant re-sending bytes the peer already had — and the ledger and the
-     * WRITE re-arm are still settled before the refusal is raised.
+     * is unfinished queued for the teardown. The walk carries a refused
+     * release to the end: the entries behind the refusal are still walked,
+     * the split entry is still re-offset — losing that re-offset meant
+     * re-sending bytes the peer already had — and the ledger and the WRITE
+     * re-arm are still settled before the refusal is raised, through
+     * [raiseLeavingRemainderArmed], whose KDoc says which exits come there
+     * and which arm on their own.
      */
     private fun flushGather(): Boolean {
-        val count = pendingWrites.size
-        eventLoop.ensureWritevCapacity(count)
-        val bases = eventLoop.writevBases
-        val lens = eventLoop.writevLens
-        var totalBytes = 0
-        for (i in 0 until count) {
-            val pw = pendingWrites[i]
-            bases[i] = (pw.buf.unsafePointer + pw.offset)!!
-            lens[i] = pw.length.convert()
-            totalBytes += pw.length
-        }
-        val writtenBytes: Int = when (val result = nativeSocket.writev(fd, bases, lens, count)) {
-            WriteResult.WouldBlock -> {
-                // Nothing written — register WRITE and retry all later.
-                registerWriteCallback()
+        // Batched, because the syscall's region limit is not a byte limit: a
+        // gather offering more than IOV_MAX regions writes nothing at all
+        // and fails. The loop is what keeps that an implementation
+        // detail -- a caller that queued more than the kernel takes in one
+        // call still sees its flush drain, in as many calls as that takes.
+        //
+        // Bounded by the *count* this drain was handed, not by the queue as
+        // it stands: the ledger update below resumes a producer at the
+        // low-water crossing, and what that producer writes is a new episode
+        // owed a continuation, not more work for this call. Chasing it here
+        // would let one connection hold the loop thread for as long as it
+        // keeps writing. (A count, not an identity: a reentrant drain that
+        // takes the entries this frame owed leaves the later batches offering
+        // the producer's newer ones. Order is preserved and nothing is lost —
+        // what the bound buys is termination, not which bytes go.)
+        //
+        // And bounded by a close that lands *while* it runs -- a callback the
+        // ledger update resumes can end the connection, and the batches after
+        // it are writes the application asked not to make. Not simply
+        // `opened`: the teardown's own last-chance drain runs with the flag
+        // already down, and that one is deliberate.
+        val openedAtEntry = opened
+        var owed = pendingWrites.size
+        while (owed > 0 && (opened || !openedAtEntry)) {
+            // Not what this frame counted, if the queue holds less: the
+            // ledger update below resumes a producer, and a producer that
+            // answers by flushing drains from this same queue -- reentrantly,
+            // through the exit's own fold. What it took, this frame no longer
+            // owes; offering it again would index past the deque.
+            owed = minOf(owed, pendingWrites.size)
+            if (owed == 0) break
+            val count = minOf(owed, IOV_MAX)
+            eventLoop.ensureWritevCapacity(count)
+            val bases = eventLoop.writevBases
+            val lens = eventLoop.writevLens
+            var offeredBytes = 0
+            for (i in 0 until count) {
+                val pw = pendingWrites[i]
+                bases[i] = (pw.buf.unsafePointer + pw.offset)!!
+                lens[i] = pw.length.convert()
+                offeredBytes += pw.length
+            }
+            val writtenBytes: Int = when (val result = nativeSocket.writev(fd, bases, lens, count)) {
+                WriteResult.WouldBlock -> {
+                    // Nothing written — register WRITE and retry all later.
+                    registerWriteCallback()
+                    return false
+                }
+                is WriteResult.Failed -> dropRefusedWrites("writev", result.errno)
+                is WriteResult.Written -> result.bytes
+            }
+
+            // Release what went out and re-offset the entry the batch split,
+            // walking by bytes rather than by entry so the same walk serves a
+            // batch the kernel took whole and one it took part of. Draining
+            // from the head and mutating the split entry in place keeps the
+            // per-partial-write `mutableListOf<PendingWrite>()` + Iterator
+            // allocations out of the path, and holds the `PendingWrite`
+            // allocations to one (the split entry — trailing untouched
+            // entries stay as-is).
+            var failure: Throwable? = null
+            var consumed = 0
+            while (consumed < writtenBytes && pendingWrites.isNotEmpty()) {
+                val pw = pendingWrites.first()
+                if (consumed + pw.length <= writtenBytes) {
+                    consumed += pw.length
+                    owed--
+                    pendingWrites.removeFirst()
+                    failure = runStage(failure) { pw.buf.release() }
+                } else {
+                    // Non-negative by the walk's own bound: consumed only
+                    // advances while consumed + pw.length <= writtenBytes.
+                    val alreadyWritten = writtenBytes - consumed
+                    pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
+                    consumed = writtenBytes
+                }
+            }
+            // By what the walk actually took off the queue, not by what the
+            // seam said it wrote. Those agree unless the seam reports more
+            // than it was offered, and then the walk runs the queue empty
+            // with bytes left over -- settling by the larger number drives
+            // the ledger negative, which latches `isWritable` true and
+            // mis-counts every water-mark crossing after it. The old shape
+            // was self-limiting because it settled by the batch total; a
+            // walk that can stop early is not.
+            if (consumed > 0) drainMovedBytes = true
+            failure = runStage(failure) { updatePendingBytes(-consumed) }
+
+            if (writtenBytes < offeredBytes) {
+                // The socket took part of this batch, so it will not take the
+                // next one either — leave the rest to write readiness.
+                partialWriteCount++
+                failure = runStage(failure) { registerWriteCallback() }
+                failure?.let { throw it }
                 return false
             }
-            is WriteResult.Failed -> {
-                // Other error — log and drop the whole queue.
-                eventLoop.logger.warn { "writev() failed: fd=$fd ${errnoMessage(result.errno)}" }
-                completeAll(totalBytes)
-                return true
-            }
-            is WriteResult.Written -> result.bytes
+            failure?.let { raiseLeavingRemainderArmed(it) }
         }
-
-        if (writtenBytes >= totalBytes) {
-            completeAll(totalBytes)
-            return true
-        }
-
-        // Partial writev: release fully-written buffers, adjust the split buffer.
-        // Drain fully-written entries from the head of the deque, mutate
-        // the partially-written entry in place at the head, leave the rest.
-        // Eliminates the per-partial-write `mutableListOf<PendingWrite>()`
-        // + Iterator allocations that the old rebuild-and-replace path
-        // required, and reduces the `PendingWrite` allocations to one
-        // (only the partial entry — trailing untouched entries stay as-is).
-        partialWriteCount++
-        var failure: Throwable? = null
-        var consumed = 0
-        while (pendingWrites.isNotEmpty()) {
-            val pw = pendingWrites.first()
-            if (consumed + pw.length <= writtenBytes) {
-                consumed += pw.length
-                pendingWrites.removeFirst()
-                failure = runStage(failure) { pw.buf.release() }
-            } else {
-                // Non-negative by the walk's own bound: consumed only advances
-                // while consumed + pw.length <= writtenBytes.
-                val alreadyWritten = writtenBytes - consumed
-                pendingWrites[0] = PendingWrite(pw.buf, pw.offset + alreadyWritten, pw.length - alreadyWritten)
-                break
-            }
-        }
-        failure = runStage(failure) { updatePendingBytes(-writtenBytes) }
-        failure = runStage(failure) { registerWriteCallback() }
-        failure?.let { throw it }
-        return false
+        // Everything this drain was handed is out. A queue that is not empty
+        // now holds what a report-side producer wrote while it ran, and the
+        // exit gives that its own continuation.
+        return true
     }
 
     /**
-     * Ends every queued entry's life at once — the whole queue was written, or
-     * the whole `writev()` definitively failed. [releaseQueuedWrites] already
-     * carries refusals to the end of its walk; this owes the ledger update on
-     * top, whatever that walk raised.
+     * Raises out of a drain that got as far as moving bytes, arming write
+     * readiness first for whatever it leaves queued.
+     *
+     * A throw ends this drain, not the queue, and the drain is the last thing
+     * that was going to offer what remains. Three places reach here and each
+     * can leave a non-empty queue — a batch the kernel took *whole* whose
+     * release then refused, a definitive refusal whose ledger update resumed
+     * a producer that wrote again, and the single-write path's own release.
+     * The reporting exit's arm sits past the throw, so without this the
+     * remainder waits for the close.
+     *
+     * **Not every raise in a flush comes here, and that is deliberate.** The
+     * ones that do not are the ones that fail while *preparing* a batch: a
+     * buffer whose pointer the platform cannot take, or scratch the loop
+     * cannot size. What an arm would buy there is a retry that runs the same
+     * failing step again — a configuration answer, not a transient one — so
+     * arming would spin the loop against it. Note that these are not
+     * necessarily pre-syscall: batches after the first prepare with bytes
+     * already gone, so such a raise can leave a queue that nothing arms. A
+     * later `awaitPendingFlush` still re-drives it through the poisoned-queue
+     * retry; a fire-and-forget producer's remainder waits for the close. That
+     * is the accepted cost of not spinning. The `WouldBlock` and partial-write
+     * exits do not come here either: those are not failures, and each already
+     * arms on its own path.
+     *
+     * Gated the same way as the reporting exit: a scheduled coalescing tick
+     * will drain this queue, so arming against it buys a redundant syscall and
+     * a wake the tick has already made stale.
+     *
+     * The arm's own failure joins the one being raised rather than replacing
+     * it. That path is nearly unreachable — a kernel arm that fails is
+     * reported and withdrawn inside the event loop rather than raised — but
+     * "nearly" is not a contract, and the cost of saying it here is one
+     * `runStage`. **Note what that leaves**: a silently-withdrawn arm strands
+     * the remainder just the same. The event loop's ERROR report is the only
+     * signal, and closing that gap belongs with the arm, not here.
      */
-    private fun completeAll(totalBytes: Int) {
+    private fun raiseLeavingRemainderArmed(failure: Throwable): Nothing {
+        if (pendingWrites.isEmpty() || flushScheduled) throw failure
+        throw runStage(failure) { registerWriteCallback() } ?: failure
+    }
+
+    /**
+     * Ends every queued entry's life at once because the kernel refused the
+     * write, and raises the refusal.
+     *
+     * **Dropping is right, answering "flush completed" is not.** A write the
+     * kernel definitively refused leaves bytes that can never reach the peer
+     * — the seam has already retried what is retryable (its wrappers loop on
+     * `EINTR`) and separated what is merely blocked (`WouldBlock`), so what
+     * arrives here is the end of this connection's write side. Holding the
+     * queue would only hand the teardown buffers to release; releasing it
+     * while reporting success told the parked waiter, [onFlushComplete] and a
+     * deferred FIN that everything went out.
+     *
+     * Raising is how the failure reaches them instead: [performFlush]'s
+     * funnel answers the waiter with it, the loop-driven entries end the
+     * connection through their containment, and a direct `flush()` caller
+     * gets it on the pipeline's error path — which is what the read path has
+     * always done with its own `Failed` (it reports the connection inactive
+     * rather than pretending the read succeeded).
+     *
+     * A refused release is carried to the end of the walk and attached to the
+     * write failure, which is the cause the caller asked about.
+     */
+    private fun dropRefusedWrites(syscall: String, errno: Int): Nothing {
+        // errno 0 reaches here from the seam's zero-byte-write rule, where
+        // there is no errno to name -- "Undefined error: 0" in an exception a
+        // user reads is worse than saying what happened.
+        val why = if (errno == 0) "wrote no bytes" else errnoMessage(errno)
+        val cause = RefusedWriteException("$syscall() failed: fd=$fd $why")
+        // Snapshot first: releaseQueuedWrites deliberately leaves the ledger
+        // alone, so this is the only reading of it that still names the bytes
+        // being dropped.
+        val orphanedBytes = pendingBytes
         var failure: Throwable? = null
         failure = runStage(failure) { releaseQueuedWrites() }
-        failure = runStage(failure) { updatePendingBytes(-totalBytes) }
-        failure?.let { throw it }
+        failure = runStage(failure) { updatePendingBytes(-orphanedBytes) }
+        failure?.let { cause.addSuppressed(it) }
+        // No arm: a refusal ends the connection, and the teardown releases
+        // whatever a resumed producer wrote while this ran. Arming for it
+        // would register interest in a descriptor about to be withdrawn --
+        // the shape this raise had before the connection's end became part
+        // of the contract.
+        throw cause
     }
 
     // --- Async write readiness ---
@@ -1554,6 +1791,19 @@ class ReadinessIoTransport(
         try {
             val completedPass = performFlush()
             val emptied = completedPass && pendingWrites.isEmpty()
+            // One obligation group, for the reason the drain paths have one:
+            // the report runs application code, and a report that throws must
+            // not take the arm with it. It can *create* the need for one — a
+            // completion callback that writes and then throws leaves a queue
+            // this frame was the last to look at, and unlike the drain's own
+            // failures nothing marks it poisoned, so no later waiter re-drives
+            // it. The first failure is raised once the rest have run.
+            //
+            // The FIN stage is in the group for uniformity, not for a failure
+            // that exists: `sendFin` reports a refused `shutdown` and returns.
+            // It is here so a future send that does raise cannot silently take
+            // the report and the arm with it.
+            var failure: Throwable? = null
             if (pendingWrites.isEmpty()) {
                 // The FIN is the transport's own obligation, not the
                 // episode's: the entry that emptied the queue can throw out
@@ -1561,14 +1811,15 @@ class ReadinessIoTransport(
                 // throwing writability handler — leaving the FIN deferred
                 // over a drained queue. Self-guarded and idempotent, so the
                 // repeat inside notifyFlushDrained is a no-op.
-                sendFinIfDrained()
+                failure = runStage(failure) { sendFinIfDrained() }
                 if (hadPending) {
-                    notifyFlushDrained()
+                    failure = runStage(failure) { notifyFlushDrained() }
                 }
             }
             if (pendingWrites.isNotEmpty() && !flushScheduled) {
-                registerWriteCallback()
+                failure = runStage(failure) { registerWriteCallback() }
             }
+            failure?.let { throw it }
             return emptied
         } finally {
             draining = false
@@ -1796,8 +2047,30 @@ class ReadinessIoTransport(
     }
 
     /** The other reason a flush wait ends unsatisfied: the transport itself is gone. */
-    private fun closedTransportFlushCause() =
-        CancellationException("transport closed before the pending flush on fd=$fd could drain")
+    /**
+     * Why a wait on this transport's flush ended, for a transport that is
+     * closed.
+     *
+     * A close the caller asked for is a cancellation: ending work it started
+     * is what cancellation means. A close the *transport* forced — because a
+     * send was refused — is not, and carrying it as one would make a caller
+     * choose between swallowing real cancellations and letting a dead
+     * connection cancel its scope. The recorded reason decides which this is;
+     * it also rides along as the cancellation's cause when there is one, so a
+     * caller that only looks at the cancellation can still see why.
+     *
+     * Delivering the failure *as* a failure, rather than as a cancellation
+     * carrying one, is the next step and not this one — the cancellation
+     * shape stays until the waiter paths change with it.
+     */
+    private fun closedTransportFlushCause(): CancellationException {
+        val why = transportFailure
+        return if (why == null) {
+            CancellationException("transport closed before the pending flush on fd=$fd could drain")
+        } else {
+            CancellationException("the pending flush on fd=$fd ended with the connection: ${why.message}", why)
+        }
+    }
 
     private companion object {
         /**

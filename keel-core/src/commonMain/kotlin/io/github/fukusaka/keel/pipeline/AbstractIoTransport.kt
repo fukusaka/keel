@@ -171,6 +171,36 @@ abstract class AbstractIoTransport(
         reclaimAfterIdle()
     }
 
+    /**
+     * Reports the connection inactive, at most once for this transport.
+     *
+     * "Inactive" is a fact about the connection, not an event each path that
+     * discovers it gets to raise — and a handler's `onInactive` is not free to
+     * run twice. It releases the aggregator's held chunks, the decoder's
+     * borrowed header set, the server's registry entry, and wakes a parked
+     * reader with EOF. A pipeline absorbs a repeat, but that is a guard in
+     * another module; a Coroutine-mode handler has none.
+     *
+     * **This gate covers only what routes through it.** Every transport
+     * reaches it from the two idle-timeout reclamations here, which are this
+     * class's own code — but only the readiness transports route their
+     * wind-down through it as well. The rest report from their own peer-close
+     * handling without consulting the flag, so a FIN followed by an idle
+     * timeout reports twice there, unchanged from before this gate existed.
+     * netty and io_uring carry independent flags of their own; nodejs carries
+     * none and reports from two callbacks. Converging them is tracked with
+     * the rest of those transports' contract work.
+     *
+     * **EventLoop thread**, like every other wind-down step.
+     */
+    protected fun reportInactiveOnce() {
+        if (inactiveReported) return
+        inactiveReported = true
+        onReadClosed?.invoke()
+    }
+
+    private var inactiveReported = false
+
     private var writeIdleHandle: TimerHandle? = null
 
     /**
@@ -235,7 +265,7 @@ abstract class AbstractIoTransport(
     private fun reclaimAfterIdle() {
         var failure: Throwable? = null
         try {
-            onReadClosed?.invoke()
+            reportInactiveOnce()
         } catch (notifyFailure: Throwable) {
             failure = notifyFailure
         }
@@ -591,12 +621,24 @@ abstract class AbstractIoTransport(
     // or single, regardless of outcome) and [partialWriteCount] for every
     // observed partial write (i.e. `writtenBytes < totalBytes` after a
     // successful `write`/`writev` syscall). Failed / WouldBlock outcomes
-    // do not count as partial writes.
+    // do not count as partial writes. A flush that issues several syscalls
+    // — a gather too large for the platform's iovec limit is offered in
+    // batches — still counts once, which is what keeps the ratio these two
+    // feed per *flush* rather than per syscall: "how often did a flush
+    // observe a syscall taking only part of its offer". A batch boundary is
+    // not a partial write. Nor is the ratio "how often did a flush leave
+    // bytes behind": a flush that ends in WouldBlock leaves bytes behind and
+    // counts zero, deliberately — a syscall that took nothing is a different
+    // slow path from one that took some, and batching makes the two
+    // coexist, since a later batch can block after an earlier one went out
+    // whole.
 
     /**
-     * Total `flush` syscall invocations on this transport. Includes both
-     * single-buffer and gather paths regardless of outcome (success, partial,
-     * WouldBlock, Failed). Stays at zero on read-only transports.
+     * Total `flush` calls on this transport — not syscalls: one call may
+     * issue several when the queue exceeds the platform's per-call region
+     * limit. Includes both single-buffer and gather paths regardless of
+     * outcome (success, partial, WouldBlock, Failed). Stays at zero on
+     * read-only transports.
      */
     protected var flushCount: Long = 0
 
@@ -604,9 +646,57 @@ abstract class AbstractIoTransport(
      * Number of `flush` invocations that observed a partial write
      * (`writtenBytes < totalBytes` from a successful `write`/`writev`).
      * The ratio `partialWriteCount / flushCount` is the empirical
-     * partial-write firing rate for this transport's lifetime.
+     * partial-write firing rate for this transport's lifetime — not the rate
+     * at which flushes left bytes queued, which also counts the socket
+     * taking nothing at all.
      */
     protected var partialWriteCount: Long = 0
+
+    /**
+     * Longest run of consecutive drains that moved nothing — the socket
+     * answered "not now" every time and the drain re-armed and waited.
+     *
+     * A handful is ordinary backpressure. A large one says the transport
+     * spent its life re-arming against a socket that stayed unwritable, which
+     * is the shape a persistent `ENOBUFS` would take: the kernel is out of
+     * buffer space, the socket itself is writable, so readiness fires again
+     * at once. Nothing guards against that today — this counter is what would
+     * make it visible if it ever happened.
+     */
+    protected var maxConsecutiveBlockedDrains: Long = 0
+
+    /** Running length of the current blocked run, folded into the maximum. */
+    private var consecutiveBlockedDrains: Long = 0
+
+    /**
+     * Whether this transport answers the blocked-run question at all — set by
+     * the first [recordDrainOutcome]. Subclasses that do not record are not
+     * reporting zero stalls; they are reporting nothing, and the stats line
+     * says so by omitting the field.
+     */
+    private var drainOutcomesRecorded: Boolean = false
+
+    /**
+     * Records how a whole drain went, for [maxConsecutiveBlockedDrains].
+     *
+     * Called once per drain, by the drain itself, with whether it moved any
+     * bytes — not per syscall and not per branch. A run is a property of
+     * consecutive *drains*, so anything that answers only some of a drain's
+     * exits counts the wrong thing: a gather whose first batch went out
+     * whole and whose second blocked moved bytes, and a single write that
+     * drained its queue completely never reaches a blocked branch at all.
+     */
+    protected fun recordDrainOutcome(movedBytes: Boolean) {
+        drainOutcomesRecorded = true
+        if (movedBytes) {
+            consecutiveBlockedDrains = 0
+            return
+        }
+        consecutiveBlockedDrains++
+        if (consecutiveBlockedDrains > maxConsecutiveBlockedDrains) {
+            maxConsecutiveBlockedDrains = consecutiveBlockedDrains
+        }
+    }
 
     /**
      * Logs the slow-path instrumentation counters on transport teardown.
@@ -628,8 +718,13 @@ abstract class AbstractIoTransport(
         } else {
             0
         }
+        // Only the transports that record it print it. A subclass that never
+        // calls recordDrainOutcome would otherwise print `max_blocked_run=0`,
+        // which reads as "this connection never stalled" when it means "this
+        // transport does not answer that question".
         logger.debug {
-            "transport stats: $fdLabel flush=$flushCount partial=$partialWriteCount ratio_bp=$ratioBp"
+            val blockedRun = if (drainOutcomesRecorded) " max_blocked_run=$maxConsecutiveBlockedDrains" else ""
+            "transport stats: $fdLabel flush=$flushCount partial=$partialWriteCount ratio_bp=$ratioBp" + blockedRun
         }
     }
 
