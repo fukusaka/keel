@@ -763,7 +763,7 @@ class ReadinessIoTransport(
         }
     }
 
-    override fun reportContainedHalfCloseRefusal(refused: TransportFailureException, cleanupAlsoFailed: Boolean) {
+    override fun reportContainedHalfCloseRefusal(refused: RefusedWriteException, cleanupAlsoFailed: Boolean) {
         if (cleanupAlsoFailed) {
             eventLoop.logger.warn(refused) {
                 "the half-close found the peer gone, and did not finish cleaning up: fd=$fd"
@@ -912,9 +912,10 @@ class ReadinessIoTransport(
      * contain itself) wrap it in [containReadinessFailure] and decide, while
      * a direct `flush()` caller
      * gets the throw and the pipeline's error path decides instead. A
-     * half-close is neither, on any thread: it contains a refusal itself and
-     * reports it, so what reaches its guard or its caller is only what the
-     * refusal was carrying. The teardown's deferred drain is
+     * half-close is neither **when its own drain runs** — it contains the
+     * refusal and reports it, leaving only what the refusal carried. Under
+     * the default coalescing its drain is deferred, so it contains nothing
+     * and the tick's own entry above handles both. The teardown's deferred drain is
      * the remaining entry: there the stages carry the failure, the waiter is
      * answered by the close's own cancellation (see [failFlushWaiter]), and
      * the refusal does **not** re-enter the wind-down — the connection is

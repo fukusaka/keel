@@ -2,7 +2,7 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
-import io.github.fukusaka.keel.core.TransportFailureException
+import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import kotlin.concurrent.Volatile
@@ -484,8 +484,15 @@ abstract class AbstractIoTransport(
      *   raising it — it has already ended the connection and been offered to
      *   a parked waiter. Raising it here would answer one caller twice and
      *   another not at all, depending on where the drain ran.
-     * - **Anything it carried: carried to the caller.** A failed release or
-     *   an unfinished wind-down has no other reporter.
+     * - **Anything it carried: carried out of this frame.** A failed release
+     *   or an unfinished wind-down has no other reporter, so it is not
+     *   contained. Where it lands follows the drain: out to the caller when
+     *   the drain ran in this call, and to whatever ran the drain otherwise.
+     *
+     * Both only apply when the drain ran here at all. An implementation that
+     * defers it — which the readiness engines do by default — meets the
+     * refusal on a later turn of its loop, where its own containment reports
+     * it and this guard is never entered.
      *
      * The refusal is reported on **both** paths, before the split: a carried
      * cause is attached to the refusal one way only, so rethrowing it leaves
@@ -514,7 +521,7 @@ abstract class AbstractIoTransport(
         // to release the deferred FIN.
         try {
             flush()
-        } catch (refused: TransportFailureException) {
+        } catch (refused: RefusedWriteException) {
             // Contained, not discarded. Before unwinding to here the drain
             // recorded this as the reason the connection ended and offered it
             // to a parked flush waiter, so raising it again would tell one
@@ -573,7 +580,7 @@ abstract class AbstractIoTransport(
      * part of adopting the failure type, not an option alongside it.
      */
     protected open fun reportContainedHalfCloseRefusal(
-        refused: TransportFailureException,
+        refused: RefusedWriteException,
         cleanupAlsoFailed: Boolean,
     ) {
         // Overridden where a logger exists; see the KDoc for why the default

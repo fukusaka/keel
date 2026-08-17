@@ -237,9 +237,10 @@ interface Channel : AutoCloseable {
      *
      * A failure that is not the refusal is not contained — a drain that also
      * could not release its buffers, or could not finish winding the
-     * connection down. It reaches this caller when the half-close ran on the
-     * engine's own thread, and is reported by the engine when it did not,
-     * because by then this call has already returned.
+     * connection down. It follows the drain, like the refusal does: this
+     * call receives it only when the drain ran inside it, which under flush
+     * coalescing — on by default in the readiness engines — it does not. The
+     * engine reports it otherwise.
      */
     fun shutdownOutput()
 
