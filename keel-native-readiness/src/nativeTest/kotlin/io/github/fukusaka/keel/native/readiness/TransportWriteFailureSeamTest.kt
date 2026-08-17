@@ -516,6 +516,36 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `an idle reclamation and a refused send report inactive once between them`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The write-idle timer reclaims a stalled connection and reports
+            // it inactive; a handler that answers by flushing onto a gone peer
+            // reaches the refusal, which ends the connection and would report
+            // it again. Both are paths that discover the same fact, and the
+            // gate has to cover the one that lives on the base as well.
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Failed(EPIPE))
+            val transport = transportWithIdleTimeout(1)
+            var reports = 0
+            transport.onReadClosed = {
+                reports++
+                runCatching { transport.flush() }
+            }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "the socket takes nothing, which arms the write-idle timer")
+
+            expireIdleTimeouts()
+
+            assertEquals(1, reports, "the connection is reported inactive once between the two paths")
+            assertFalse(transport.isOpen)
+            fake.assertAllConsumed()
+
+            transport.onReadClosed = null
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a close during the batch loop stops it before the next write`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // Off-loop close: the flag flips at once but the teardown is
