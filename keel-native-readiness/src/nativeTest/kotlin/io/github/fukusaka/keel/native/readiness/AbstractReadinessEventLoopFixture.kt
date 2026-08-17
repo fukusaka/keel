@@ -311,7 +311,6 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * when a line's severity changes.
      */
     protected class RecordingLogger : Logger {
-        val logged = mutableListOf<Pair<LogLevel, String>>()
 
         /**
          * Every record with the throwable it carried, so a test can pin that
@@ -326,7 +325,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
          */
         val records = mutableListOf<Triple<LogLevel, String, Throwable?>>()
 
-        val warnings: List<String> get() = logged.filter { it.first == LogLevel.WARN }.map { it.second }
+        /** Level and message of every record, for the assertions that do not care about the cause. */
+        val logged: List<Pair<LogLevel, String>> get() = records.map { it.first to it.second }
+
+        val warnings: List<String> get() = records.filter { it.first == LogLevel.WARN }.map { it.second }
 
         /** The throwable recorded with the first WARN whose message contains [fragment], if any. */
         fun causeOfWarning(fragment: String): Throwable? =
@@ -335,9 +337,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
         override fun isLoggable(level: LogLevel) = true
 
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
-            val text = message.toString()
-            logged.add(level to text)
-            records.add(Triple(level, text, throwable))
+            records.add(Triple(level, message.toString(), throwable))
         }
     }
 

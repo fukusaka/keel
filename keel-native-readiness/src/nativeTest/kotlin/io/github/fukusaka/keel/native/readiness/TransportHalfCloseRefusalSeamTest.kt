@@ -3,6 +3,7 @@
 package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.core.RefusedWriteException
+import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
@@ -236,6 +237,37 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a deferred half-close still has its refusal reported by the loop`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The configuration the engines ship. The half-close's own drain
+            // never runs here, so the guard inside it is never entered and
+            // the report it makes is not the one that appears -- the loop's
+            // containment names the refusal instead. Pinned because "the
+            // refusal is always named" is the property, and every other case
+            // asserting it runs in the opt-out.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            transport.shutdownOutput()
+            transport.onReady(Interest.WRITE)
+
+            assertIs<RefusedWriteException>(
+                eventLoop.logger.records
+                    .firstOrNull { it.first == LogLevel.WARN && it.third is RefusedWriteException }
+                    ?.third,
+                "the refusal must be named on the shipping default too: ${eventLoop.warnings}",
+            )
+            assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
+            assertFalse(transport.isOpen, "and the refusal still ends the connection")
+            fake.assertAllConsumed()
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a half-close that drains still sends its FIN`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The other side of the same branch: containing the refusal must
@@ -256,7 +288,7 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a deferred half-close returns before the refusal exists and ends on the tick`() = runBlocking {
+    fun `a deferred half-close returns before the refusal exists and ends on a later turn`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The configuration the other half-close tests do not run in.
             // Coalescing moves the drain to a later tick, which is the reason
