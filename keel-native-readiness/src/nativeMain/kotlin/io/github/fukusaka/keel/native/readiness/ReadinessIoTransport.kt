@@ -230,8 +230,8 @@ class ReadinessIoTransport(
      * Notifies inactivity, then forces the close — the order the idle-timeout
      * paths on the base transport use, for the same reason.
      *
-     * Only the order is shared. Those two call [onReadClosed] directly and
-     * record nothing — there is no [windDownFailed] on that path, and a throw
+     * Only the order is shared. Those two report through the base's own gate
+     * and record nothing here — there is no [windDownFailed] on that path, and a throw
      * out of the report still ends at the deadline scheduler's own guard, which
      * warns and moves on to the next due timer. What they no longer lose to it
      * is the close: the base runs it whatever the report did and carries the

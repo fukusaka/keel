@@ -175,24 +175,26 @@ abstract class AbstractIoTransport(
      * Reports the connection inactive, at most once for this transport.
      *
      * "Inactive" is a fact about the connection, not an event each path that
-     * discovers it gets to raise. Several do: an idle timeout reclaiming it, a
-     * peer closing, a definitively refused send, and the containment that
-     * catches that refusal — and a handler's `onInactive` is not free to run
-     * twice. It releases the aggregator's held chunks, the decoder's borrowed
-     * header set, the server's registry entry, and wakes a parked reader with
-     * EOF. A pipeline absorbs a repeat, but that is a guard in another module;
-     * a Coroutine-mode handler has none.
+     * discovers it gets to raise — and a handler's `onInactive` is not free to
+     * run twice. It releases the aggregator's held chunks, the decoder's
+     * borrowed header set, the server's registry entry, and wakes a parked
+     * reader with EOF. A pipeline absorbs a repeat, but that is a guard in
+     * another module; a Coroutine-mode handler has none.
      *
-     * Returns whether this call was the one that reported, for a caller that
-     * needs to know whether the handler ran.
+     * **This gate covers only what routes through it**, which today is the two
+     * idle-timeout reclamations here and the readiness transports' own
+     * wind-down. Every other transport reports from its own peer-close
+     * handling and does not consult this flag, so a FIN followed by an idle
+     * timeout still reports twice there — measured on nio, netty and
+     * nwconnection, and unchanged from before this gate existed. Converging
+     * them is tracked with the rest of those transports' contract work.
      *
      * **EventLoop thread**, like every other wind-down step.
      */
-    protected fun reportInactiveOnce(): Boolean {
-        if (inactiveReported) return false
+    protected fun reportInactiveOnce() {
+        if (inactiveReported) return
         inactiveReported = true
         onReadClosed?.invoke()
-        return true
     }
 
     private var inactiveReported = false
