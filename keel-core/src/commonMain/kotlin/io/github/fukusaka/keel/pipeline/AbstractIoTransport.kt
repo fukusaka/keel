@@ -575,9 +575,9 @@ abstract class AbstractIoTransport(
      * also propagating, or that the two came from the same drain.
      *
      * The default does nothing, which is correct only while a transport that
-     * does not override this also never raises [TransportFailureException] —
-     * true of every transport but the readiness ones today. Overriding it is
-     * part of adopting the failure type, not an option alongside it.
+     * does not override this also never raises [RefusedWriteException] — true
+     * of every transport but the readiness ones today. Overriding it is part
+     * of adopting that failure, not an option alongside it.
      */
     protected open fun reportContainedHalfCloseRefusal(
         refused: RefusedWriteException,

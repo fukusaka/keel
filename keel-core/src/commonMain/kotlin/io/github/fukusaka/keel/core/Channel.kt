@@ -184,9 +184,11 @@ interface Channel : AutoCloseable {
      * the error path. This is therefore not a way to ask, after the fact,
      * whether the last flush reached the peer.
      *
-     * A refused [shutdownOutput] is not one of those — it ends the
-     * connection, which is a state this call still finds, and answers as the
-     * cancellation above.
+     * **A refusal is the exception, whichever call met it.** It ends the
+     * connection, and that is a state this call still finds however long
+     * afterwards it is asked — so it answers as the cancellation above
+     * rather than returning normally. Which call ran the drain does not
+     * enter into it; only that the failure was a refusal.
      */
     suspend fun awaitFlushComplete() {}
 

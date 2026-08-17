@@ -910,8 +910,8 @@ class ReadinessIoTransport(
      * loop-driven entries (the coalesced tick, [onWritable], the register's
      * short-circuit, and the dispatched half-close for whatever it does not
      * contain itself) wrap it in [containReadinessFailure] and decide, while
-     * a direct `flush()` caller
-     * gets the throw and the pipeline's error path decides instead. A
+     * a direct `flush()` caller gets the throw and the pipeline's error path
+     * decides instead. A
      * half-close is neither **when its own drain runs** — it contains the
      * refusal and reports it, leaving only what the refusal carried. Under
      * the default coalescing its drain is deferred, so it contains nothing
