@@ -178,10 +178,11 @@ interface Channel : AutoCloseable {
      *
      * **Whether either arrives depends on there being a failure left to
      * report.** A drain that ran inside the request and emptied the queue
-     * leaves this call nothing to find, so it returns normally — the failure
-     * went to the pipeline's error path when it happened, and on a refusal
-     * the connection ended with it. This is therefore not a way to ask, after
-     * the fact, whether the last flush reached the peer.
+     * leaves this call nothing to find, so it returns normally — a [flush]
+     * that met the failure raised it there and a pipelined one took it to the
+     * error path, a [shutdownOutput] that met it reported it, and on a
+     * refusal the connection ended with it either way. This is therefore not
+     * a way to ask, after the fact, whether the last flush reached the peer.
      */
     suspend fun awaitFlushComplete() {}
 

@@ -510,10 +510,9 @@ abstract class AbstractIoTransport(
             flush()
         } catch (refused: TransportFailureException) {
             // Contained, not discarded. Before unwinding to here the drain
-            // recorded this as the reason the connection ended and answered
-            // the flush waiter with it, so the caller that wants it already
-            // has it -- and this call's contract is not to be told twice on
-            // one path and not at all on the other.
+            // recorded this as the reason the connection ended and offered it
+            // to a parked flush waiter, so raising it again would tell one
+            // caller twice on one path and another nothing on the other.
             //
             // Only the refusal itself, though. A drain that also failed to
             // release its buffers, or whose wind-down did not finish, carries
@@ -522,13 +521,17 @@ abstract class AbstractIoTransport(
             // them, and containing them because of the company they keep
             // would make a leak silent whenever a dead peer coincided with
             // one.
+            // Reported before the rider check, not after it: what is rethrown
+            // below is the rider, which carries no way back to the refusal --
+            // so a refusal that happened to arrive with company would
+            // otherwise be the one thing nobody names.
+            reportContainedHalfCloseRefusal(refused)
             val alsoIncomplete = refused.suppressedExceptions
             if (alsoIncomplete.isNotEmpty()) {
                 val first = alsoIncomplete.first()
                 alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
                 throw first
             }
-            reportContainedHalfCloseRefusal(refused)
         } finally {
             // Covers a flush that drained synchronously — engines whose flush
             // completes asynchronously reach sendFinIfDrained from their
@@ -547,8 +550,11 @@ abstract class AbstractIoTransport(
      * break, and the transport that met the refusal is the one holding a
      * logger, so it is the one asked.
      *
-     * Only for a refusal travelling alone. One carrying a suppressed cause is
-     * re-raised instead and reported by whoever catches it.
+     * Called for every refusal the half-close contains, including one that
+     * arrived carrying a suppressed cause. That cause is rethrown, but it
+     * holds no reference back to the refusal, so leaving this to whoever
+     * catches it would lose the refusal exactly when something else had
+     * failed alongside it.
      *
      * The default does nothing, which is correct only while a transport that
      * does not override this also never raises [TransportFailureException] —

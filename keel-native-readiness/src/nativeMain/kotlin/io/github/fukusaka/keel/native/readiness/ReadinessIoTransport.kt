@@ -903,9 +903,11 @@ class ReadinessIoTransport(
      * either way. Every other failure keeps the older division: the
      * loop-driven entries (the coalesced tick, [onWritable], the register's
      * short-circuit, the dispatched half-close) wrap it in
-     * [containReadinessFailure] and decide, while a direct `flush()` caller —
-     * including an on-loop `shutdownOutput()` — gets the throw and the
-     * pipeline's error path decides instead. The teardown's deferred drain is
+     * [containReadinessFailure] and decide, while a direct `flush()` caller
+     * gets the throw and the pipeline's error path decides instead. A
+     * half-close is neither, on any thread: it contains a refusal itself and
+     * reports it, so what reaches its guard or its caller is only what the
+     * refusal was carrying. The teardown's deferred drain is
      * the remaining entry: there the stages carry the failure, the waiter is
      * answered by the close's own cancellation (see [failFlushWaiter]), and
      * the refusal does **not** re-enter the wind-down — the connection is
