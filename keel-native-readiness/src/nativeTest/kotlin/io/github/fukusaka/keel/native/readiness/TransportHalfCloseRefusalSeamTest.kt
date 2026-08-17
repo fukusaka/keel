@@ -259,6 +259,14 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
                     ?.third,
                 "the refusal must be named on the shipping default too: ${eventLoop.warnings}",
             )
+            // And named by the loop, not by the half-close's own guard --
+            // which is what tells the two drain locations apart. Without
+            // this the case is satisfied by either configuration and does
+            // not hold the one it is named for.
+            assertFalse(
+                eventLoop.warnings.any { "the half-close found the peer gone" in it },
+                "the deferred drain never enters that guard: ${eventLoop.warnings}",
+            )
             assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
             assertFalse(transport.isOpen, "and the refusal still ends the connection")
             fake.assertAllConsumed()
