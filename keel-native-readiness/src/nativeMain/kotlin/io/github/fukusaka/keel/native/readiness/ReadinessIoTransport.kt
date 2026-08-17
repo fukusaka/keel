@@ -763,8 +763,14 @@ class ReadinessIoTransport(
         }
     }
 
-    override fun reportContainedHalfCloseRefusal(refused: TransportFailureException) {
-        eventLoop.logger.warn(refused) { "the half-close found the peer gone: fd=$fd" }
+    override fun reportContainedHalfCloseRefusal(refused: TransportFailureException, cleanupAlsoFailed: Boolean) {
+        if (cleanupAlsoFailed) {
+            eventLoop.logger.warn(refused) {
+                "the half-close found the peer gone, and did not finish cleaning up: fd=$fd"
+            }
+        } else {
+            eventLoop.logger.warn(refused) { "the half-close found the peer gone: fd=$fd" }
+        }
     }
 
     override fun sendFin() {
@@ -902,8 +908,9 @@ class ReadinessIoTransport(
      * depend on the caller's position, since the write side is finished
      * either way. Every other failure keeps the older division: the
      * loop-driven entries (the coalesced tick, [onWritable], the register's
-     * short-circuit, the dispatched half-close) wrap it in
-     * [containReadinessFailure] and decide, while a direct `flush()` caller
+     * short-circuit, and the dispatched half-close for whatever it does not
+     * contain itself) wrap it in [containReadinessFailure] and decide, while
+     * a direct `flush()` caller
      * gets the throw and the pipeline's error path decides instead. A
      * half-close is neither, on any thread: it contains a refusal itself and
      * reports it, so what reaches its guard or its caller is only what the

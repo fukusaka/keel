@@ -531,8 +531,8 @@ abstract class AbstractIoTransport(
             // below is the rider, which carries no way back to the refusal --
             // so a refusal that happened to arrive with company would
             // otherwise be the one thing nobody names.
-            reportContainedHalfCloseRefusal(refused)
             val alsoIncomplete = refused.suppressedExceptions
+            reportContainedHalfCloseRefusal(refused, alsoIncomplete.isNotEmpty())
             if (alsoIncomplete.isNotEmpty()) {
                 val first = alsoIncomplete.first()
                 alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
@@ -562,12 +562,20 @@ abstract class AbstractIoTransport(
      * catches it would lose the refusal exactly when something else had
      * failed alongside it.
      *
+     * [cleanupAlsoFailed] says whether it arrived that way, so the report can
+     * say that this is not the whole story. Without it a reader of the log
+     * sees one line about a gone peer and cannot tell that an exception is
+     * also propagating, or that the two came from the same drain.
+     *
      * The default does nothing, which is correct only while a transport that
      * does not override this also never raises [TransportFailureException] —
      * true of every transport but the readiness ones today. Overriding it is
      * part of adopting the failure type, not an option alongside it.
      */
-    protected open fun reportContainedHalfCloseRefusal(refused: TransportFailureException) {
+    protected open fun reportContainedHalfCloseRefusal(
+        refused: TransportFailureException,
+        cleanupAlsoFailed: Boolean,
+    ) {
         // Overridden where a logger exists; see the KDoc for why the default
         // is empty rather than this being abstract.
     }

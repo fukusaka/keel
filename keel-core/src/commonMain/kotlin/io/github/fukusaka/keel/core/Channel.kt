@@ -164,11 +164,12 @@ interface Channel : AutoCloseable {
      * the failure whatever ran into it.
      *
      * Or a `CancellationException` naming the connection's end, when the
-     * drain that hit the failure was one the engine ran on its own — a
-     * scheduled tick, a stopping loop. Those contain the failure and end the
-     * connection, and this call reports *that*, not the send's error. The
-     * refusal rides along as the cancellation's cause where one is known, so
-     * the reason is recoverable even on that route.
+     * failure was met by a drain that contained it rather than handing it
+     * back — one the engine ran on its own (a scheduled tick, a stopping
+     * loop), or one a [shutdownOutput] ran, which contains a refusal by
+     * design. Those end the connection, and this call reports *that*, not
+     * the send's error. The refusal rides along as the cancellation's cause
+     * where one is known, so the reason is recoverable even on that route.
      *
      * **Which of the two you get is still narrower than it should be**: a
      * loop that ended by throwing is reported the same way as one that was
@@ -178,11 +179,14 @@ interface Channel : AutoCloseable {
      *
      * **Whether either arrives depends on there being a failure left to
      * report.** A drain that ran inside the request and emptied the queue
-     * leaves this call nothing to find, so it returns normally — a [flush]
-     * that met the failure raised it there and a pipelined one took it to the
-     * error path, a [shutdownOutput] that met it reported it, and on a
-     * refusal the connection ended with it either way. This is therefore not
-     * a way to ask, after the fact, whether the last flush reached the peer.
+     * leaves this call nothing to find, so it returns normally: a [flush]
+     * that met the failure raised it there, and a pipelined one took it to
+     * the error path. This is therefore not a way to ask, after the fact,
+     * whether the last flush reached the peer.
+     *
+     * A refused [shutdownOutput] is not one of those — it ends the
+     * connection, which is a state this call still finds, and answers as the
+     * cancellation above.
      */
     suspend fun awaitFlushComplete() {}
 
