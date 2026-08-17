@@ -222,15 +222,14 @@ interface Channel : AutoCloseable {
      * has to go out regardless — it supersedes a pending half-close and
      * discards what was still queued.
      *
-     * **May raise**, since the buffered writes go first: a caller on the
-     * engine's own thread whose half-close drains in place is told they could
-     * not be sent. Under flush coalescing — on by default in the readiness
-     * engines — the drain runs on a later tick instead, which contains the
-     * failure and ends the connection rather than raising here. A caller off
-     * the engine's thread does not carry the failure back either way: it
-     * queues the request, or — on an engine whose loop has already stopped,
-     * where the buffered writes will never drain — is refused and reported
-     * there.
+     * **Does not raise when the send is refused**, even though the buffered
+     * writes go first and this call may be the one that meets the refusal.
+     * Which call meets it depends on where the drain ran — in place, or on a
+     * later tick under flush coalescing, on by default in the readiness
+     * engines — and a caller cannot know which it got. So the answer does not
+     * depend on it: the connection ends, no FIN follows the refused bytes, and
+     * the failure arrives at [awaitFlushComplete] and at a pipeline handler's
+     * error path. Catch it there, not here.
      */
     fun shutdownOutput()
 

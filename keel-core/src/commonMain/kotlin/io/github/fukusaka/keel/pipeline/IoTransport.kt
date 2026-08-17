@@ -287,16 +287,14 @@ interface IoTransport {
      * is disabled by default. A [close] before the drain finishes supersedes
      * the half-close and discards what was still queued.
      *
-     * **May raise, on implementations whose flush does.** The buffered
-     * writes are sent first, so a caller already on the transport's own
-     * context can be told they could not be — though not when the
-     * implementation defers the drain to a later tick, which the readiness
-     * engines do by default: that tick contains the failure instead.
-     *
-     * A caller off that context never carries the failure back. It queues
-     * the request, or — on an implementation whose loop has already stopped,
-     * where the buffered writes will never drain — has it refused and
-     * reported there.
+     * **A refused send is not raised from here.** Sending the buffered
+     * writes first means this call can be the one that meets the refusal,
+     * but only when the drain runs in place — an implementation that defers
+     * it to a later tick, which the readiness engines do by default, meets
+     * it there instead. The caller picked neither, so neither is what it
+     * hears: the refusal reaches it through the flush waiter and the
+     * pipeline's error path, on both paths alike. The connection has ended
+     * and no FIN follows the bytes that were refused.
      */
     fun shutdownOutput()
 
