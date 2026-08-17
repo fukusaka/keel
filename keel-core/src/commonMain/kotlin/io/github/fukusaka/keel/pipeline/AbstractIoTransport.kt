@@ -639,6 +639,14 @@ abstract class AbstractIoTransport(
     private var consecutiveBlockedDrains: Long = 0
 
     /**
+     * Whether this transport answers the blocked-run question at all — set by
+     * the first [recordDrainOutcome]. Subclasses that do not record are not
+     * reporting zero stalls; they are reporting nothing, and the stats line
+     * says so by omitting the field.
+     */
+    private var drainOutcomesRecorded: Boolean = false
+
+    /**
      * Records how a whole drain went, for [maxConsecutiveBlockedDrains].
      *
      * Called once per drain, by the drain itself, with whether it moved any
@@ -649,6 +657,7 @@ abstract class AbstractIoTransport(
      * drained its queue completely never reaches a blocked branch at all.
      */
     protected fun recordDrainOutcome(movedBytes: Boolean) {
+        drainOutcomesRecorded = true
         if (movedBytes) {
             consecutiveBlockedDrains = 0
             return
@@ -679,9 +688,13 @@ abstract class AbstractIoTransport(
         } else {
             0
         }
+        // Only the transports that record it print it. A subclass that never
+        // calls recordDrainOutcome would otherwise print `max_blocked_run=0`,
+        // which reads as "this connection never stalled" when it means "this
+        // transport does not answer that question".
+        val blockedRun = if (drainOutcomesRecorded) " max_blocked_run=$maxConsecutiveBlockedDrains" else ""
         logger.debug {
-            "transport stats: $fdLabel flush=$flushCount partial=$partialWriteCount ratio_bp=$ratioBp " +
-                "max_blocked_run=$maxConsecutiveBlockedDrains"
+            "transport stats: $fdLabel flush=$flushCount partial=$partialWriteCount ratio_bp=$ratioBp" + blockedRun
         }
     }
 
