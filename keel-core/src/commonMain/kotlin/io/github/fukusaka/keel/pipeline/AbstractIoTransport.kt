@@ -477,20 +477,26 @@ abstract class AbstractIoTransport(
      * half-close: [sendFinIfDrained] sees `opened == false` and the teardown
      * releases the buffers, as `close` has always discarded unsent output.
      *
-     * **A refused send is not raised from here**, though draining first means
-     * this call can be the one that meets it. Whether it is depends on where
-     * the drain ran — in place, or on a later tick when the implementation
-     * coalesces — which is not something the caller chose or can read. So the
-     * refusal is contained and left where the drain already delivered it: to
-     * the flush waiter, which [awaitPendingFlush] is how a caller asks. The
-     * connection has ended either way, and no FIN follows bytes the peer
-     * never saw.
+     * **This is a guard over the drain, and it answers for two failures
+     * differently.** What each loses, in the transport fault model's terms:
      *
-     * Anything else a flush throws still propagates, including what rides on
-     * the refusal — a drain that could not release its buffers, or could not
-     * finish winding down, re-raises the refusal carrying that as a
-     * suppressed cause. Those leave work unfinished and nothing else reports
-     * them, so what is contained here is the refusal alone.
+     * - **The refusal: reports and continues.** Nothing is lost by not
+     *   raising it — it has already ended the connection and been offered to
+     *   a parked waiter. Raising it here would answer one caller twice and
+     *   another not at all, depending on where the drain ran.
+     * - **Anything it carried: carried to the caller.** A failed release or
+     *   an unfinished wind-down has no other reporter.
+     *
+     * The refusal is reported on **both** paths, before the split: a carried
+     * cause is attached to the refusal one way only, so rethrowing it leaves
+     * nothing pointing back, and the refusal would go unnamed exactly when
+     * something else had failed alongside it.
+     *
+     * Not raising the refusal is what makes the answer independent of where
+     * the drain ran — in place, or on a later tick when the implementation
+     * coalesces, which the caller neither chose nor can read. The connection
+     * has ended either way, no FIN follows bytes the peer never saw, and
+     * [awaitPendingFlush] is how a caller asks for the reason.
      *
      * Idempotent. Subclasses provide the FIN itself via [sendFin].
      */

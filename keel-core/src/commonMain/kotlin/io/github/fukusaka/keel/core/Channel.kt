@@ -229,8 +229,7 @@ interface Channel : AutoCloseable {
      * later tick under flush coalescing, on by default in the readiness
      * engines — and a caller cannot know which it got. So the answer does not
      * depend on it: the connection ends and no FIN follows the refused bytes.
-     * Ask [awaitFlushComplete] for the reason; a handler is told the
-     * connection went inactive, without it.
+     * [awaitFlushComplete] is where the reason is asked for.
      *
      * A failure that is not the refusal does propagate — a drain that also
      * could not release its buffers, or could not finish winding the

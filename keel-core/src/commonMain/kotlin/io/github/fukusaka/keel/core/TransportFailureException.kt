@@ -11,9 +11,9 @@ package io.github.fukusaka.keel.core
  * only when the drain happened to run in place, which the caller does not
  * choose.
  *
- * A pipelined application sees it on the handler error path where the call
- * goes through the pipeline, which `flush()` does and the half-close does
- * not; the half-close reports only that the connection went inactive.
+ * A pipelined application sees it on the handler error path, the layer's own
+ * way of being told; the half-close, which does not go through the pipeline,
+ * reports that the connection went inactive.
  *
  * **This is not a cancellation, and that distinction is the point.** A
  * caller that closes its own channel gets a `CancellationException`, because
