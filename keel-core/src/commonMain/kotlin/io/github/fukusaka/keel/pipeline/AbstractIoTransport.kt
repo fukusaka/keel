@@ -481,13 +481,16 @@ abstract class AbstractIoTransport(
      * this call can be the one that meets it. Whether it is depends on where
      * the drain ran — in place, or on a later tick when the implementation
      * coalesces — which is not something the caller chose or can read. So the
-     * refusal is contained and delivered where it is delivered on both paths:
-     * to the flush waiter, and to the pipeline's error path. The connection
-     * has ended either way, and no FIN follows bytes the peer never saw.
+     * refusal is contained and left where the drain already delivered it: to
+     * the flush waiter, which [awaitPendingFlush] is how a caller asks. The
+     * connection has ended either way, and no FIN follows bytes the peer
+     * never saw.
      *
-     * Anything else a flush throws still propagates. Those are faults rather
-     * than a peer refusing the write — the connection stays open and nothing
-     * else would report them, so swallowing them here would lose them.
+     * Anything else a flush throws still propagates, including what rides on
+     * the refusal — a drain that could not release its buffers, or could not
+     * finish winding down, re-raises the refusal carrying that as a
+     * suppressed cause. Those leave work unfinished and nothing else reports
+     * them, so what is contained here is the refusal alone.
      *
      * Idempotent. Subclasses provide the FIN itself via [sendFin].
      */
@@ -505,12 +508,26 @@ abstract class AbstractIoTransport(
         // to release the deferred FIN.
         try {
             flush()
-        } catch (@Suppress("SwallowedException") refused: TransportFailureException) {
+        } catch (refused: TransportFailureException) {
             // Contained, not discarded. Before unwinding to here the drain
             // recorded this as the reason the connection ended and answered
             // the flush waiter with it, so the caller that wants it already
             // has it -- and this call's contract is not to be told twice on
             // one path and not at all on the other.
+            //
+            // Only the refusal itself, though. A drain that also failed to
+            // release its buffers, or whose wind-down did not finish, carries
+            // that along as a suppressed cause and re-raises the refusal to
+            // say so. Those are not "the peer refused"; nothing else reports
+            // them, and containing them because of the company they keep
+            // would make a leak silent whenever a dead peer coincided with
+            // one.
+            val alsoIncomplete = refused.suppressedExceptions
+            if (alsoIncomplete.isNotEmpty()) {
+                val first = alsoIncomplete.first()
+                alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
+                throw first
+            }
         } finally {
             // Covers a flush that drained synchronously — engines whose flush
             // completes asynchronously reach sendFinIfDrained from their

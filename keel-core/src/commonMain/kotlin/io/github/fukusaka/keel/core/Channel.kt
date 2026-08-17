@@ -227,9 +227,13 @@ interface Channel : AutoCloseable {
      * Which call meets it depends on where the drain ran — in place, or on a
      * later tick under flush coalescing, on by default in the readiness
      * engines — and a caller cannot know which it got. So the answer does not
-     * depend on it: the connection ends, no FIN follows the refused bytes, and
-     * the failure arrives at [awaitFlushComplete] and at a pipeline handler's
-     * error path. Catch it there, not here.
+     * depend on it: the connection ends and no FIN follows the refused bytes.
+     * Ask [awaitFlushComplete] for the reason; a handler is told the
+     * connection went inactive, without it.
+     *
+     * A failure that is not the refusal does propagate — a drain that also
+     * could not release its buffers, or could not finish winding the
+     * connection down. Nothing else reports those.
      */
     fun shutdownOutput()
 

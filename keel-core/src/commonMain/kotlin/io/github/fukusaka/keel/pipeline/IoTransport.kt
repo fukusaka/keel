@@ -292,9 +292,14 @@ interface IoTransport {
      * but only when the drain runs in place — an implementation that defers
      * it to a later tick, which the readiness engines do by default, meets
      * it there instead. The caller picked neither, so neither is what it
-     * hears: the refusal reaches it through the flush waiter and the
-     * pipeline's error path, on both paths alike. The connection has ended
-     * and no FIN follows the bytes that were refused.
+     * hears: on both paths the connection ends, no FIN follows the refused
+     * bytes, and [awaitPendingFlush] is where the reason is asked for.
+     *
+     * Whatever else the flush throws still propagates — a drain that also
+     * could not release its buffers, or could not finish winding down,
+     * re-raises the refusal carrying that as a suppressed cause, and it is
+     * that cause which comes out of here. Those leave work unfinished and
+     * nothing else reports them.
      */
     fun shutdownOutput()
 
