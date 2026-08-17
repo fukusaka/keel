@@ -106,11 +106,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **BREAKING** (`engine-kqueue`, `engine-epoll`): a definitively refused send ends the connection
   whichever path ran the drain — a direct flush left it open before, so whether a dead write side
   survived depended on a setting the caller does not choose (#1062)
-- **BREAKING** (`engine-kqueue`, `engine-epoll`): a connection is reported inactive once, not once
-  per path that discovers it — an application's read-closed handler no longer fires twice when a
-  loop-driven failure and its containment both end the same connection (#1062)
-- `native-posix`: `ENOBUFS` from a write is now retryable rather than a refusal, so a kernel
-  briefly out of buffer space no longer ends the connection (#1062)
+- **BREAKING** (`core`): a connection is reported inactive once, not once per path that discovers
+  it — an application's read-closed handler no longer fires twice when two of the idle timeout, a
+  peer close, a refused send and its containment end the same connection (#1062)
+- `native-posix`, `engine-kqueue`, `engine-epoll`: `ENOBUFS` from a write is retryable rather than
+  a refusal, so a kernel briefly out of buffer space no longer ends the connection. **A sustained
+  shortage now retries without backoff** — the socket stays writable, so readiness re-fires at once
+  — and only `idleTimeoutMillis` bounds it, which is disabled by default. A deferral is tracked
+  (#1062)
 - `engine-kqueue`, `engine-epoll`: a flush that raises over a queue it did not discard now arms
   write readiness for whatever a resumed producer wrote before the raise — including a completion
   callback that writes and then throws. A refused send discards instead, and ends the
