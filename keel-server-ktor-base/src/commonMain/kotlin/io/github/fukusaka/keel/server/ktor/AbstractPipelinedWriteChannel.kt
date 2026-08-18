@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.server.ktor
 
-import io.github.fukusaka.keel.core.TransportFailureException
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.ktor.utils.io.BufferedByteWriteChannel
 import io.ktor.utils.io.InternalAPI
@@ -123,24 +122,7 @@ abstract class AbstractPipelinedWriteChannel(
         val remaining = if (internalBuffer.exhausted()) null else internalBuffer.readByteArray()
         scope.launch(pipelinedChannel.ioDispatcher) {
             if (remaining != null) emit(remaining)
-            try {
-                terminate()
-            } catch (@Suppress("SwallowedException") alreadyGone: TransportFailureException) {
-                // Contained here rather than inside [terminate], which
-                // [flushAndClose] also calls and which does have a caller to
-                // carry it to. This one does not: `close()` is non-suspending
-                // and this coroutine is fire-and-forget, so letting the
-                // failure out ends it as a failure and, under the supervisor
-                // the connection runs on, becomes an unhandled-exception
-                // report -- for a peer that merely went away mid-stream.
-                //
-                // Nothing is lost by not reporting it here: the transport
-                // named the failure when it happened, and the terminator has
-                // no work left to do on a connection that is already gone.
-                // Only this type is contained; a terminator that failed for
-                // its own reasons still ends this coroutine, because nothing
-                // else would say so.
-            }
+            terminate()
         }
     }
 

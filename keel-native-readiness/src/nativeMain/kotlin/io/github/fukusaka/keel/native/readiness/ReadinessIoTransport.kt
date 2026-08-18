@@ -1698,7 +1698,7 @@ class ReadinessIoTransport(
         // `markClosing()` flips this flag off the loop and the teardown is
         // dispatched, so readiness arriving in between used to drain the queue
         // and resume the flush waiter. It no longer does, and the teardown
-        // cancels that waiter and drops the bytes instead. Deliberate, and the
+        // answers that waiter itself and drops the bytes instead. Deliberate, and the
         // same answer `awaitPendingFlush` gives a caller that arrives one line
         // later: with a close already under way, "the flush completed" is not
         // something either path can honestly report.
