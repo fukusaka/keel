@@ -1224,7 +1224,7 @@ class ReadinessIoTransport(
         failure = runStage(failure) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
-                cont.cancel(closedTransportFlushCause())
+                answerClosedTransportWait(cont)
             }
         }
         // Withdraw the registrations before dropping the fd. The map is keyed by
@@ -1866,7 +1866,7 @@ class ReadinessIoTransport(
                     !opened -> answerFlushWaiter(
                         "cancelling the flush waiter of a closed transport for, while the loop goes on,",
                     ) {
-                        cont.cancel(closedTransportFlushCause())
+                        answerClosedTransportWait(cont)
                     }
                     pendingWrites.isEmpty() -> resumeDrainedWaiter(
                         cont,
@@ -1950,7 +1950,7 @@ class ReadinessIoTransport(
                             answerFlushWaiter(
                                 "cancelling the flush waiter of a closing transport for, while the wind-down goes on,",
                             ) {
-                                cont.cancel(closedTransportFlushCause())
+                                answerClosedTransportWait(cont)
                             }
                             return@Runnable
                         }
@@ -2063,27 +2063,32 @@ class ReadinessIoTransport(
 
     /** The other reason a flush wait ends unsatisfied: the transport itself is gone. */
     /**
-     * Why a wait on this transport's flush ended, for a transport that is
+     * Answers a wait on this transport's flush, for a transport that is
      * closed.
      *
      * A close the caller asked for is a cancellation: ending work it started
      * is what cancellation means. A close the *transport* forced — because a
-     * send was refused — is not, and carrying it as one would make a caller
+     * send was refused — is not, and delivering it as one would make a caller
      * choose between swallowing real cancellations and letting a dead
-     * connection cancel its scope. The recorded reason decides which this is;
-     * it also rides along as the cancellation's cause when there is one, so a
-     * caller that only looks at the cancellation can still see why.
+     * connection cancel its scope. The recorded reason decides which this is.
      *
-     * Delivering the failure *as* a failure, rather than as a cancellation
-     * carrying one, is the next step and not this one — the cancellation
-     * shape stays until the waiter paths change with it.
+     * **A wait gets the same answer whichever side of the drain it began
+     * on.** One already parked is resumed with the refusal by the drain that
+     * met it; one arriving afterwards finds a closed transport and is given
+     * the same refusal here. Which of the two a caller was is not something
+     * it chose or can read, so it cannot be what decides the type.
+     *
+     * The decision lives here rather than at the three sites that answer a
+     * closed transport, so there is one place to be right about.
      */
-    private fun closedTransportFlushCause(): CancellationException {
+    private fun answerClosedTransportWait(cont: CancellableContinuation<Unit>) {
         val why = transportFailure
-        return if (why == null) {
-            CancellationException("transport closed before the pending flush on fd=$fd could drain")
+        if (why != null) {
+            cont.resumeWithException(why)
         } else {
-            CancellationException("the pending flush on fd=$fd ended with the connection: ${why.message}", why)
+            cont.cancel(
+                CancellationException("transport closed before the pending flush on fd=$fd could drain"),
+            )
         }
     }
 

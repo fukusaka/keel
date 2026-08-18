@@ -159,23 +159,21 @@ interface Channel : AutoCloseable {
      *
      * The send's own, whenever a failing drain is still there to be
      * observed: one this call runs itself, one it re-drives because the last
-     * drain threw with the queue left behind, or one that fails elsewhere
-     * while this call is parked — the transport answers a parked waiter with
-     * the failure whatever ran into it.
+     * drain threw with the queue left behind, one that fails elsewhere while
+     * this call is parked, or one that already ended the connection before
+     * this call began. **Whether the wait had started when the send was
+     * refused does not change the answer** — a caller did not choose which
+     * of those it was and cannot read it afterwards.
      *
-     * Or a `CancellationException` naming the connection's end, when this
-     * wait *begins* after the failure has already ended it. What separates
-     * the two is not which drain met the failure but whether this call was
-     * already waiting when it did: a drain answers the waiter it finds
-     * parked, whatever ran it, and there is no one to answer when nobody is
-     * waiting yet. A later wait finds only a closed transport and is told
-     * that. The refusal rides along as the cancellation's cause where one is
-     * known, so the reason is recoverable even on that route.
+     * Or a `CancellationException`, for the two ends that are not a failed
+     * send: the caller closed this channel, or the engine's loop stopped.
+     * Ending work you started is what cancellation means, and the first of
+     * those is exactly that.
      *
-     * **Which of the two you get is still narrower than it should be**: a
-     * loop that ended by throwing is reported the same way as one that was
-     * asked to stop, because nothing records which happened. Converging that
-     * — so a fault the application did not choose arrives as
+     * **The second kind is still wider than it should be**: a loop that
+     * ended by throwing is reported the same way as one that was asked to
+     * stop, because nothing records which happened. Converging that — so a
+     * fault the application did not choose arrives as
      * [EngineFailureException] rather than a cancellation — is tracked.
      *
      * **Whether either arrives depends on there being a failure left to
@@ -186,10 +184,10 @@ interface Channel : AutoCloseable {
      * whether the last flush reached the peer.
      *
      * **A refusal is the exception.** It ends the connection, and that is a
-     * state this call still finds however long afterwards it is asked — so
-     * a wait that arrives late answers as the cancellation above rather
-     * than returning normally. Which call ran the drain does not enter into
-     * it; only that the failure was a refusal.
+     * state this call still finds however long afterwards it is asked — so a
+     * wait that arrives late is told the refusal rather than returning
+     * normally. Which call ran the drain does not enter into it; only that
+     * the failure was a refusal.
      */
     suspend fun awaitFlushComplete() {}
 
