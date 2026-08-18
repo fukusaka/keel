@@ -636,7 +636,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
 
             assertEquals(1, refusing.attempts, "the dispatched register must have reached the cancel")
             assertTrue(
-                eventLoop.errors.any { it.contains("cancelling the flush waiter of a closed transport for") },
+                eventLoop.errors.any { it.contains("answering the flush waiter of a closed transport for") },
                 "the refusal must be reported as the transport's own, got: ${eventLoop.errors}",
             )
             tracker.assertNoLeaks()

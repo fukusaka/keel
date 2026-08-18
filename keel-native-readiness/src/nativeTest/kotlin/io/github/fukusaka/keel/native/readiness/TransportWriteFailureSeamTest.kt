@@ -430,6 +430,33 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a waiter the teardown answers is told the refusal too`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The third site that answers a closed transport, and the only
+            // one outside the register's guard: the teardown's own stage.
+            // It is reached because failFlushWaiter declines once `opened` is
+            // false, so a waiter parked across a close is left for this stage
+            // to answer -- and it must answer the same thing the other two do.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "coalescing defers the drain to the teardown")
+
+            val parked = parkFlushWaiter(transport)
+            transport.close()
+            eventLoop.drainDispatched()
+
+            assertIs<RefusedWriteException>(
+                parked.await().exceptionOrNull(),
+                "the teardown's own answer must name the refusal, like the register's two",
+            )
+            fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a wait is told the same thing whether it began before the refusal or after`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The contract says the type does not depend on setting or order.
