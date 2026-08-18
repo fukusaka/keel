@@ -123,7 +123,24 @@ abstract class AbstractPipelinedWriteChannel(
         val remaining = if (internalBuffer.exhausted()) null else internalBuffer.readByteArray()
         scope.launch(pipelinedChannel.ioDispatcher) {
             if (remaining != null) emit(remaining)
-            terminate()
+            try {
+                terminate()
+            } catch (@Suppress("SwallowedException") alreadyGone: TransportFailureException) {
+                // Contained here rather than inside [terminate], which
+                // [flushAndClose] also calls and which does have a caller to
+                // carry it to. This one does not: `close()` is non-suspending
+                // and this coroutine is fire-and-forget, so letting the
+                // failure out ends it as a failure and, under the supervisor
+                // the connection runs on, becomes an unhandled-exception
+                // report -- for a peer that merely went away mid-stream.
+                //
+                // Nothing is lost by not reporting it here: the transport
+                // named the failure when it happened, and the terminator has
+                // no work left to do on a connection that is already gone.
+                // Only this type is contained; a terminator that failed for
+                // its own reasons still ends this coroutine, because nothing
+                // else would say so.
+            }
         }
     }
 
@@ -219,18 +236,6 @@ abstract class AbstractPipelinedWriteChannel(
                 }
             }
             pipelinedChannel.awaitFlushComplete()
-        } catch (@Suppress("SwallowedException") alreadyGone: TransportFailureException) {
-            // The connection failed while this response was finishing. There
-            // is nothing for a terminator to do about that, and nobody to
-            // tell: the transport named it when it happened, and this call
-            // runs in the coroutine `close()` launched -- non-suspending,
-            // fire-and-forget, with no caller left to catch anything. Letting
-            // it out ends that coroutine as a failure, which on a supervisor
-            // parent means an unhandled-exception report for a peer that
-            // merely went away mid-stream.
-            //
-            // Only this type. A terminator that failed for its own reasons
-            // still propagates, because nothing else would say so.
         } finally {
             terminationDeferred.complete(Unit)
         }
