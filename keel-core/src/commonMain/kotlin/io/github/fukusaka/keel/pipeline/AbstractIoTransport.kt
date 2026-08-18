@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import kotlin.concurrent.Volatile
@@ -476,6 +477,34 @@ abstract class AbstractIoTransport(
      * half-close: [sendFinIfDrained] sees `opened == false` and the teardown
      * releases the buffers, as `close` has always discarded unsent output.
      *
+     * **This is a guard over the drain, and it answers for two failures
+     * differently.** What each loses, in the transport fault model's terms:
+     *
+     * - **The refusal: reports and continues.** Nothing is lost by not
+     *   raising it — it has already ended the connection and been offered to
+     *   a parked waiter. Raising it here would answer one caller twice and
+     *   another not at all, depending on where the drain ran.
+     * - **Anything it carried: carried out of this frame.** A failed release
+     *   or an unfinished wind-down has no other reporter, so it is not
+     *   contained. Where it lands follows the drain: out to the caller when
+     *   the drain ran in this call, and to whatever ran the drain otherwise.
+     *
+     * Both only apply when the drain ran here at all. An implementation that
+     * defers it — which the readiness engines do by default — meets the
+     * refusal on a later turn of its loop, where its own containment reports
+     * it and this guard is never entered.
+     *
+     * The refusal is reported on **both** paths, before the split: a carried
+     * cause is attached to the refusal one way only, so rethrowing it leaves
+     * nothing pointing back, and the refusal would go unnamed exactly when
+     * something else had failed alongside it.
+     *
+     * Not raising the refusal is what makes the answer independent of where
+     * the drain ran — in place, or on a later tick when the implementation
+     * coalesces, which the caller neither chose nor can read. The connection
+     * has ended either way, no FIN follows bytes the peer never saw, and
+     * [awaitPendingFlush] is how a caller asks for the reason.
+     *
      * Idempotent. Subclasses provide the FIN itself via [sendFin].
      */
     protected fun shutdownOutputOwned() {
@@ -492,12 +521,70 @@ abstract class AbstractIoTransport(
         // to release the deferred FIN.
         try {
             flush()
+        } catch (refused: RefusedWriteException) {
+            // Contained, not discarded. Before unwinding to here the drain
+            // recorded this as the reason the connection ended and offered it
+            // to a parked flush waiter, so raising it again would tell one
+            // caller twice on one path and another nothing on the other.
+            //
+            // Only the refusal itself, though. A drain that also failed to
+            // release its buffers, or whose wind-down did not finish, carries
+            // that along as a suppressed cause and re-raises the refusal to
+            // say so. Those are not "the peer refused"; nothing else reports
+            // them, and containing them because of the company they keep
+            // would make a leak silent whenever a dead peer coincided with
+            // one.
+            // Reported before the rider check, not after it: what is rethrown
+            // below is the rider, which carries no way back to the refusal --
+            // so a refusal that happened to arrive with company would
+            // otherwise be the one thing nobody names.
+            val alsoIncomplete = refused.suppressedExceptions
+            reportContainedHalfCloseRefusal(refused, alsoIncomplete.isNotEmpty())
+            if (alsoIncomplete.isNotEmpty()) {
+                val first = alsoIncomplete.first()
+                alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
+                throw first
+            }
         } finally {
             // Covers a flush that drained synchronously — engines whose flush
             // completes asynchronously reach sendFinIfDrained from their
             // completion path instead.
             sendFinIfDrained()
         }
+    }
+
+    /**
+     * Says that a half-close met a refused send and did not raise it.
+     *
+     * Not raising is what makes the answer the same on both drain paths, but
+     * it also means a caller with nothing parked on the flush is told nothing
+     * at all: `write(); shutdownOutput(); close()` would end a dead connection
+     * without exception, log or cause. That is the silence this exists to
+     * break, and the transport that met the refusal is the one holding a
+     * logger, so it is the one asked.
+     *
+     * Called for every refusal the half-close contains, including one that
+     * arrived carrying a suppressed cause. That cause is rethrown, but it
+     * holds no reference back to the refusal, so leaving this to whoever
+     * catches it would lose the refusal exactly when something else had
+     * failed alongside it.
+     *
+     * [cleanupAlsoFailed] says whether it arrived that way, so the report can
+     * say that this is not the whole story. Without it a reader of the log
+     * sees one line about a gone peer and cannot tell that an exception is
+     * also propagating, or that the two came from the same drain.
+     *
+     * The default does nothing, which is correct only while a transport that
+     * does not override this also never raises [RefusedWriteException] — true
+     * of every transport but the readiness ones today. Overriding it is part
+     * of adopting that failure, not an option alongside it.
+     */
+    protected open fun reportContainedHalfCloseRefusal(
+        refused: RefusedWriteException,
+        cleanupAlsoFailed: Boolean,
+    ) {
+        // Overridden where a logger exists; see the KDoc for why the default
+        // is empty rather than this being abstract.
     }
 
     /**

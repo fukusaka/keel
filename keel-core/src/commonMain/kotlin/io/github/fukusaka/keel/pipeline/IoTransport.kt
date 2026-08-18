@@ -287,16 +287,26 @@ interface IoTransport {
      * is disabled by default. A [close] before the drain finishes supersedes
      * the half-close and discards what was still queued.
      *
-     * **May raise, on implementations whose flush does.** The buffered
-     * writes are sent first, so a caller already on the transport's own
-     * context can be told they could not be — though not when the
-     * implementation defers the drain to a later tick, which the readiness
-     * engines do by default: that tick contains the failure instead.
+     * **A refused send is not raised from here.** Sending the buffered
+     * writes first means this call can be the one that meets the refusal,
+     * but only when the drain runs in place — an implementation that defers
+     * it to a later tick, which the readiness engines do by default, meets
+     * it there instead. The caller picked neither, so neither is what it
+     * hears: on both paths the connection ends, no FIN follows the refused
+     * bytes, and [awaitPendingFlush] is where the reason is asked for.
      *
-     * A caller off that context never carries the failure back. It queues
-     * the request, or — on an implementation whose loop has already stopped,
-     * where the buffered writes will never drain — has it refused and
-     * reported there.
+     * Whatever else the flush throws is not contained — a drain that also
+     * could not release its buffers, or could not finish winding down,
+     * re-raises the refusal carrying that as a suppressed cause, and that
+     * cause is what leaves the half-close. Where it goes follows the drain,
+     * exactly as the refusal does: this call receives it only when the drain
+     * ran inside it — not when the implementation defers the drain, which
+     * the readiness engines do by default, and not when the half-close was
+     * handed to the transport's own context and this call has already
+     * returned. The implementation reports it in those cases. Unlike the
+     * refusal, this is a fault rather than an answer to the caller's
+     * question, and the rule for those is to reach whoever can act — never
+     * to be dropped.
      */
     fun shutdownOutput()
 

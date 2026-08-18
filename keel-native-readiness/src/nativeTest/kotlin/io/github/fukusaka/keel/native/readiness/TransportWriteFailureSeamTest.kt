@@ -724,31 +724,6 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a half-close whose flush was refused tells its caller`() = runBlocking {
-        withTimeout(FUNNEL_TIMEOUT_MS) {
-            // The half-close orders its FIN behind the queued bytes, so a
-            // caller on the transport's own context learns the same way a
-            // direct flush's caller does when those bytes cannot go. What
-            // becomes of the deferred FIN afterwards is a separate question,
-            // tracked with the rest of the half-close's contract.
-            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
-            val transport = transport()
-            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
-
-            val failure = assertFailsWith<IllegalStateException> { transport.shutdownOutput() }
-            assertTrue(
-                checkNotNull(failure.message).contains("write() failed"),
-                "the failure names the syscall and its errno, got: ${failure.message}",
-            )
-
-            assertEquals(0, transport.pendingByteCount(), "the unsendable bytes are still dropped")
-            fake.assertAllConsumed()
-            transport.close()
-            tracker.assertNoLeaks()
-        }
-    }
-
-    @Test
     fun `a reentrant flush during the batch loop does not leave it indexing a drained queue`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The canonical backpressure resume, met by a queue that needs

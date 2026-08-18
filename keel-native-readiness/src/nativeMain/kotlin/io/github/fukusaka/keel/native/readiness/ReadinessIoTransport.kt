@@ -752,13 +752,24 @@ class ReadinessIoTransport(
             // connection with only the task guard above it, and under the
             // coalescing opt-out the half-close drains synchronously — a drain
             // failure here used to be swallowed with the connection left open
-            // and its queue poisoned. The inline arm above is different on
-            // purpose: its caller is on the loop, and the pipeline's error
-            // path owns the throw there, like a direct flush().
+            // and its queue poisoned. What reaches this guard is what the
+            // half-close does not contain itself: a refusal travelling alone
+            // is reported by [reportContainedHalfCloseRefusal] and never
+            // arrives, while anything riding on it does.
             else -> eventLoop.dispatch(
                 EmptyCoroutineContext,
                 Runnable { containReadinessFailure(WHAT_HALF_CLOSE) { halfCloseAndReport() } },
             )
+        }
+    }
+
+    override fun reportContainedHalfCloseRefusal(refused: RefusedWriteException, cleanupAlsoFailed: Boolean) {
+        if (cleanupAlsoFailed) {
+            eventLoop.logger.warn(refused) {
+                "the half-close found the peer gone, and did not finish cleaning up: fd=$fd"
+            }
+        } else {
+            eventLoop.logger.warn(refused) { "the half-close found the peer gone: fd=$fd" }
         }
     }
 
@@ -897,10 +908,14 @@ class ReadinessIoTransport(
      * depend on the caller's position, since the write side is finished
      * either way. Every other failure keeps the older division: the
      * loop-driven entries (the coalesced tick, [onWritable], the register's
-     * short-circuit, the dispatched half-close) wrap it in
-     * [containReadinessFailure] and decide, while a direct `flush()` caller —
-     * including an on-loop `shutdownOutput()` — gets the throw and the
-     * pipeline's error path decides instead. The teardown's deferred drain is
+     * short-circuit, and the dispatched half-close for whatever it does not
+     * contain itself) wrap it in [containReadinessFailure] and decide, while
+     * a direct `flush()` caller gets the throw and the pipeline's error path
+     * decides instead. A
+     * half-close is neither **when its own drain runs** — it contains the
+     * refusal and reports it, leaving only what the refusal carried. Under
+     * the default coalescing its drain is deferred, so it contains nothing
+     * and the tick's own entry above handles both. The teardown's deferred drain is
      * the remaining entry: there the stages carry the failure, the waiter is
      * answered by the close's own cancellation (see [failFlushWaiter]), and
      * the refusal does **not** re-enter the wind-down — the connection is

@@ -311,14 +311,33 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * when a line's severity changes.
      */
     protected class RecordingLogger : Logger {
-        val logged = mutableListOf<Pair<LogLevel, String>>()
 
-        val warnings: List<String> get() = logged.filter { it.first == LogLevel.WARN }.map { it.second }
+        /**
+         * Every record with the throwable it carried, so a test can pin that
+         * a report names its cause: a `warn(cause) { ... }` degraded to
+         * `warn { ... }` reads identically in [logged] while the errno and
+         * the cause are gone from the log.
+         *
+         * One list rather than a parallel one — indexing a second list by a
+         * position found in the first is only correct while both are
+         * appended together, which no type enforces and a double with a
+         * thread of its own would break.
+         */
+        val records = mutableListOf<Triple<LogLevel, String, Throwable?>>()
+
+        /** Level and message of every record, for the assertions that do not care about the cause. */
+        val logged: List<Pair<LogLevel, String>> get() = records.map { it.first to it.second }
+
+        val warnings: List<String> get() = records.filter { it.first == LogLevel.WARN }.map { it.second }
+
+        /** The throwable recorded with the first WARN whose message contains [fragment], if any. */
+        fun causeOfWarning(fragment: String): Throwable? =
+            records.firstOrNull { it.first == LogLevel.WARN && fragment in it.second }?.third
 
         override fun isLoggable(level: LogLevel) = true
 
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
-            logged.add(level to message.toString())
+            records.add(Triple(level, message.toString(), throwable))
         }
     }
 

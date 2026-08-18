@@ -54,8 +54,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **BREAKING** (`core`): a send the platform definitively refused is reported as a failure rather
   than a completed flush, so `IoTransport.flush()` may raise where it returned `true`. On the
-  `Channel` surface it surfaces as the connection ending — `awaitFlushComplete()` reports that,
-  and `shutdownOutput()` raises when it drains in place (#1062)
+  `Channel` surface it ends the connection and `awaitFlushComplete()` reports it, while
+  `shutdownOutput()` contains it rather than raising (#1062, #1063)
 - `engine-kqueue`, `engine-epoll`: the two readiness engines now share one implementation, in the new
   `keel-native-readiness` module (#1052)
 - `native-posix`: no longer carries that implementation, so `engine-io-uring`,

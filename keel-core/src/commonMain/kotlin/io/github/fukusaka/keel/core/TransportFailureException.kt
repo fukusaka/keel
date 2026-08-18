@@ -3,9 +3,17 @@ package io.github.fukusaka.keel.core
 /**
  * The transport failed, and what it was carrying did not reach the peer.
  *
- * Raised from the calls that wait for a send to land — [Channel.flush] and
- * [Channel.awaitFlushComplete] — and delivered to pipeline handlers through
- * their error path, which is where a handler-only application sees it.
+ * Raised from the calls that wait for a send to land — [Channel.flush], and
+ * [Channel.awaitFlushComplete] for a wait that was already parked when the
+ * send was refused. A wait begun *after* the connection ended is answered
+ * with a cancellation carrying this as its cause instead; closing that gap is
+ * tracked. [Channel.shutdownOutput] does not raise it at all — it would do so
+ * only when the drain happened to run in place, which the caller does not
+ * choose.
+ *
+ * A pipelined application sees it on the handler error path, the layer's own
+ * way of being told; the half-close, which does not go through the pipeline,
+ * reports that the connection went inactive.
  *
  * **This is not a cancellation, and that distinction is the point.** A
  * caller that closes its own channel gets a `CancellationException`, because
@@ -37,11 +45,11 @@ public sealed class TransportFailureException(
  * blocked is reported as such and retried, so anything that reaches here has
  * already been classified as final. The write side of the connection is over.
  *
- * A half-close whose flush ends this way sends no FIN, because the connection
- * ends with the refusal and the FIN is owed only by a transport still open.
- * Announcing an orderly end over a stream the peer received truncated would
- * be a lie either way; that it is currently avoided as a consequence rather
- * than as a decision is tracked.
+ * A half-close whose flush ends this way sends no FIN: announcing an orderly
+ * end over a stream the peer received truncated would say the exchange
+ * finished when it did not. Nor is it raised from the half-close itself,
+ * which would answer one way when the drain ran in place and another when it
+ * ran on a later tick — a difference the caller neither chose nor can read.
  */
 public class RefusedWriteException(
     message: String,

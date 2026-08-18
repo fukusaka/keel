@@ -163,12 +163,14 @@ interface Channel : AutoCloseable {
      * while this call is parked — the transport answers a parked waiter with
      * the failure whatever ran into it.
      *
-     * Or a `CancellationException` naming the connection's end, when the
-     * drain that hit the failure was one the engine ran on its own — a
-     * scheduled tick, a stopping loop. Those contain the failure and end the
-     * connection, and this call reports *that*, not the send's error. The
-     * refusal rides along as the cancellation's cause where one is known, so
-     * the reason is recoverable even on that route.
+     * Or a `CancellationException` naming the connection's end, when this
+     * wait *begins* after the failure has already ended it. What separates
+     * the two is not which drain met the failure but whether this call was
+     * already waiting when it did: a drain answers the waiter it finds
+     * parked, whatever ran it, and there is no one to answer when nobody is
+     * waiting yet. A later wait finds only a closed transport and is told
+     * that. The refusal rides along as the cancellation's cause where one is
+     * known, so the reason is recoverable even on that route.
      *
      * **Which of the two you get is still narrower than it should be**: a
      * loop that ended by throwing is reported the same way as one that was
@@ -178,10 +180,16 @@ interface Channel : AutoCloseable {
      *
      * **Whether either arrives depends on there being a failure left to
      * report.** A drain that ran inside the request and emptied the queue
-     * leaves this call nothing to find, so it returns normally — the failure
-     * went to the pipeline's error path when it happened, and on a refusal
-     * the connection ended with it. This is therefore not a way to ask, after
-     * the fact, whether the last flush reached the peer.
+     * leaves this call nothing to find, so it returns normally: a [flush]
+     * that met the failure raised it there, and a pipelined one took it to
+     * the error path. This is therefore not a way to ask, after the fact,
+     * whether the last flush reached the peer.
+     *
+     * **A refusal is the exception.** It ends the connection, and that is a
+     * state this call still finds however long afterwards it is asked — so
+     * a wait that arrives late answers as the cancellation above rather
+     * than returning normally. Which call ran the drain does not enter into
+     * it; only that the failure was a refusal.
      */
     suspend fun awaitFlushComplete() {}
 
@@ -222,15 +230,22 @@ interface Channel : AutoCloseable {
      * has to go out regardless — it supersedes a pending half-close and
      * discards what was still queued.
      *
-     * **May raise**, since the buffered writes go first: a caller on the
-     * engine's own thread whose half-close drains in place is told they could
-     * not be sent. Under flush coalescing — on by default in the readiness
-     * engines — the drain runs on a later tick instead, which contains the
-     * failure and ends the connection rather than raising here. A caller off
-     * the engine's thread does not carry the failure back either way: it
-     * queues the request, or — on an engine whose loop has already stopped,
-     * where the buffered writes will never drain — is refused and reported
-     * there.
+     * **Does not raise when the send is refused**, even though the buffered
+     * writes go first and this call may be the one that meets the refusal.
+     * Which call meets it depends on where the drain ran — in place, or on a
+     * later tick under flush coalescing, on by default in the readiness
+     * engines — and a caller cannot know which it got. So the answer does not
+     * depend on it: the connection ends and no FIN follows the refused bytes.
+     * [awaitFlushComplete] is where the reason is asked for.
+     *
+     * A failure that is not the refusal is not contained — a drain that also
+     * could not release its buffers, or could not finish winding the
+     * connection down. It follows the drain, like the refusal does: this
+     * call receives it only when the drain ran inside it, which it does not
+     * under flush coalescing — on by default in the readiness engines — and
+     * does not for a caller off the engine's thread, whose half-close is
+     * handed to that thread and runs after this call has returned. The
+     * engine reports it in both of those.
      */
     fun shutdownOutput()
 
