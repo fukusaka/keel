@@ -917,8 +917,8 @@ class ReadinessIoTransport(
      * the default coalescing its drain is deferred, so it contains nothing
      * and the tick's own entry above handles both. The teardown's deferred drain is
      * the remaining entry: there the stages carry the failure, the waiter is
-     * answered by the close's own cancellation (see [failFlushWaiter]), and
-     * the refusal does **not** re-enter the wind-down — the connection is
+     * left for the teardown's own stage to answer (see [failFlushWaiter]),
+     * and the refusal does **not** re-enter the wind-down — the connection is
      * already ending.
      */
     @Suppress("TooGenericExceptionCaught")
@@ -1023,17 +1023,18 @@ class ReadinessIoTransport(
      * Resumes a parked flush waiter with [drainFailure] — the wait cannot
      * complete, and the failure is the reason. A no-op when nobody is parked.
      *
-     * `resumeWithException` rather than a cancellation: the two lifecycle ends
-     * ([stoppedLoopFlushCause] / the teardown's cancel) say "the world went
-     * away"; this says "the flush you are waiting for failed", and the caller
-     * of `awaitFlushComplete` should see that failure, not a cancellation.
+     * `resumeWithException` rather than a cancellation: a stopped loop
+     * ([stoppedLoopFlushCause]) says "the world went away"; this says "the
+     * flush you are waiting for failed", and the caller of
+     * `awaitFlushComplete` should see that failure, not a cancellation.
      *
      * **Declines once the transport is closing.** Not an enumeration of who
      * drains in that state — a direct `flush()` can also race an off-loop
      * `markClosing` — but an invariant: [opened] false means a `close()` is in
-     * flight, and every close runs a teardown whose own waiter stage delivers
-     * the cancellation the close path has always promised. Answering here
-     * first would replace it with a raw failure.
+     * flight, and every close runs a teardown whose own waiter stage answers
+     * whoever is left. That stage delivers the same refusal this one would,
+     * so answering here as well would only race it; declining leaves one
+     * answer with one owner.
      *
      * **The resume is dispatched, not inline.** The slot is cleared here — so
      * the teardown's cancel stage and the register's identity check see the

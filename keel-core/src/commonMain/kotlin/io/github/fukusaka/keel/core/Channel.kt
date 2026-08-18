@@ -189,9 +189,10 @@ interface Channel : AutoCloseable {
      * drain does not enter into it; only that the failure was a refusal.
      *
      * Until the engine stops, at which point that answer takes over: a wait
-     * arriving after the loop is gone is cancelled for the loop, whatever the
-     * connection had recorded. That is the same carve-out as the second kind
-     * above, and converging it is the same tracked work.
+     * the loop's stop finds parked, and one arriving after it, are both
+     * cancelled for the loop whatever the connection had recorded. That is
+     * the same carve-out as the second kind above, and converging it is the
+     * same tracked work.
      */
     suspend fun awaitFlushComplete() {}
 
