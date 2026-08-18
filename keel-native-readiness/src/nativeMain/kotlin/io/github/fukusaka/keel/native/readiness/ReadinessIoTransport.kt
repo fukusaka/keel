@@ -1864,7 +1864,7 @@ class ReadinessIoTransport(
                 // measured -- and the guard is a free no-op.
                 when {
                     !opened -> answerFlushWaiter(
-                        "cancelling the flush waiter of a closed transport for, while the loop goes on,",
+                        "answering the flush waiter of a closed transport for, while the loop goes on,",
                     ) {
                         answerClosedTransportWait(cont)
                     }
@@ -1943,12 +1943,12 @@ class ReadinessIoTransport(
                         // something this path can honestly report (the same
                         // ranking as the first arm), and the close's dispatched
                         // teardown must not be relied on to answer first — it
-                        // runs after this task. Answer with the close's own
-                        // cause, inline, like the arm above.
+                        // runs after this task. Answer for the close, inline,
+                        // like the arm above.
                         if (!opened) {
                             flushContinuation = null
                             answerFlushWaiter(
-                                "cancelling the flush waiter of a closing transport for, while the wind-down goes on,",
+                                "answering the flush waiter of a closing transport for, while the wind-down goes on,",
                             ) {
                                 answerClosedTransportWait(cont)
                             }
@@ -2061,7 +2061,6 @@ class ReadinessIoTransport(
         }
     }
 
-    /** The other reason a flush wait ends unsatisfied: the transport itself is gone. */
     /**
      * Answers a wait on this transport's flush, for a transport that is
      * closed.

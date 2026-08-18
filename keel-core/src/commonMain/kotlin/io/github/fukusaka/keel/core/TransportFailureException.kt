@@ -7,7 +7,9 @@ package io.github.fukusaka.keel.core
  * [Channel.awaitFlushComplete] — whether the wait was already parked when the
  * send was refused or began after the connection had already ended. Which of
  * those a caller was is not something it chose, so it is not something the
- * type depends on. [Channel.shutdownOutput] does not raise it at all: it
+ * type depends on. (A [Channel.flush] *begun* after the connection ended is
+ * refused before it waits at all, since flushing a closed channel is a
+ * caller error rather than a send that failed.) [Channel.shutdownOutput] does not raise it at all: it
  * would do so only when the drain happened to run in place, which the caller
  * does not choose either.
  *

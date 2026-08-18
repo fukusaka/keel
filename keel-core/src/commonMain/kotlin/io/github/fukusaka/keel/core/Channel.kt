@@ -184,10 +184,14 @@ interface Channel : AutoCloseable {
      * whether the last flush reached the peer.
      *
      * **A refusal is the exception.** It ends the connection, and that is a
-     * state this call still finds however long afterwards it is asked — so a
-     * wait that arrives late is told the refusal rather than returning
-     * normally. Which call ran the drain does not enter into it; only that
-     * the failure was a refusal.
+     * state this call still finds afterwards — so a wait that arrives late is
+     * told the refusal rather than returning normally. Which call ran the
+     * drain does not enter into it; only that the failure was a refusal.
+     *
+     * Until the engine stops, at which point that answer takes over: a wait
+     * arriving after the loop is gone is cancelled for the loop, whatever the
+     * connection had recorded. That is the same carve-out as the second kind
+     * above, and converging it is the same tracked work.
      */
     suspend fun awaitFlushComplete() {}
 
