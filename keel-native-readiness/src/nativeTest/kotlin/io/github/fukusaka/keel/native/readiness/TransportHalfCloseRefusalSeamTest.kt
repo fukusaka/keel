@@ -93,11 +93,10 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
 
             transport.shutdownOutput()
 
-            val ended = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
-            val refusal = ended?.cause
+            val refusal = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
             assertIs<RefusedWriteException>(
                 refusal,
-                "the refusal must still be the reason given, got: $refusal",
+                "a wait that begins after the refusal is told the refusal, not a cancellation carrying it: $refusal",
             )
             assertTrue(
                 checkNotNull(refusal.message).contains("write() failed"),
