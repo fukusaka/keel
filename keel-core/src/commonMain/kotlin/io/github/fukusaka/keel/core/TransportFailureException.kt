@@ -3,13 +3,16 @@ package io.github.fukusaka.keel.core
 /**
  * The transport failed, and what it was carrying did not reach the peer.
  *
- * Raised from the calls that wait for a send to land — [Channel.flush], and
- * [Channel.awaitFlushComplete] for a wait that was already parked when the
- * send was refused. A wait begun *after* the connection ended is answered
- * with a cancellation carrying this as its cause instead; closing that gap is
- * tracked. [Channel.shutdownOutput] does not raise it at all — it would do so
- * only when the drain happened to run in place, which the caller does not
- * choose.
+ * Raised from the calls that wait for a send to land — [Channel.flush] and
+ * [Channel.awaitFlushComplete] — whether the wait was already parked when the
+ * send was refused or began after the connection had already ended. Which of
+ * those a caller was is not something it chose, so it is not something the
+ * type depends on. (A pipelined [Channel.flush] *begun* after the connection
+ * ended is refused before it waits at all, since flushing a closed channel is
+ * a caller error rather than a send that failed. The interface default has no
+ * such check and raises this.) [Channel.shutdownOutput] does not raise it at all: it
+ * would do so only when the drain happened to run in place, which the caller
+ * does not choose either.
  *
  * A pipelined application sees it on the handler error path, the layer's own
  * way of being told; the half-close, which does not go through the pipeline,

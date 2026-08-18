@@ -430,6 +430,64 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a waiter the teardown answers is told the refusal too`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The third site that answers a closed transport, and the only one
+            // outside the register's guard: the teardown's own stage.
+            //
+            // Reaching it takes an order the sibling cases do not have. The
+            // waiter parks *before* anything is scheduled, so the register
+            // stores it and drains nothing; the flush that follows schedules a
+            // tick the close then runs itself; and `failFlushWaiter` declines
+            // by then because the transport is already closing. What is left
+            // parked is this stage's to answer.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            val parked = parkFlushWaiter(transport)
+            assertFalse(transport.flush(), "coalescing schedules the drain the close will run")
+            transport.close()
+            eventLoop.drainDispatched()
+
+            assertIs<RefusedWriteException>(
+                parked.await().exceptionOrNull(),
+                "the teardown's own answer must name the refusal, like the register's two",
+            )
+            fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a wait is told the same thing whether it began before the refusal or after`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The contract says the type does not depend on setting or order.
+            // Order is the half that was still broken: a waiter already parked
+            // is answered by the drain with the refusal, and one that arrives
+            // afterwards used to find only "closed" and be cancelled. Both
+            // callers wrote the same code and neither chose which it was.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            val parked = parkFlushWaiter(transport)
+            transport.onReady(Interest.WRITE)
+            eventLoop.drainDispatched()
+
+            val duringDrain = parked.await().exceptionOrNull()
+            val afterwards = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+
+            assertIs<RefusedWriteException>(duringDrain, "the parked wait is told the refusal")
+            assertIs<RefusedWriteException>(afterwards, "and so is the one that arrived after: $afterwards")
+            fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a refusal during the closing drain is still the reason a later waiter is told`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The teardown's deferred drain hits a gone peer. The connection
@@ -447,8 +505,8 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
 
             val ended = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
             assertIs<RefusedWriteException>(
-                ended?.cause,
-                "the refusal must be the reason given, got: ${ended?.cause}",
+                ended,
+                "the refusal must be the reason given, and given as itself: $ended",
             )
             fake.assertAllConsumed()
             tracker.assertNoLeaks()
