@@ -432,18 +432,22 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     @Test
     fun `a waiter the teardown answers is told the refusal too`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            // The third site that answers a closed transport, and the only
-            // one outside the register's guard: the teardown's own stage.
-            // It is reached because failFlushWaiter declines once `opened` is
-            // false, so a waiter parked across a close is left for this stage
-            // to answer -- and it must answer the same thing the other two do.
+            // The third site that answers a closed transport, and the only one
+            // outside the register's guard: the teardown's own stage.
+            //
+            // Reaching it takes an order the sibling cases do not have. The
+            // waiter parks *before* anything is scheduled, so the register
+            // stores it and drains nothing; the flush that follows schedules a
+            // tick the close then runs itself; and `failFlushWaiter` declines
+            // by then because the transport is already closing. What is left
+            // parked is this stage's to answer.
             rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
             transport.write(tracker.allocate(16).apply { writerIndex = 5 })
-            assertFalse(transport.flush(), "coalescing defers the drain to the teardown")
 
             val parked = parkFlushWaiter(transport)
+            assertFalse(transport.flush(), "coalescing schedules the drain the close will run")
             transport.close()
             eventLoop.drainDispatched()
 
