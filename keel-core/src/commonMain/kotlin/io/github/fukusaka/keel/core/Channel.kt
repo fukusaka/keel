@@ -165,10 +165,13 @@ interface Channel : AutoCloseable {
      * refused does not change the answer** — a caller did not choose which
      * of those it was and cannot read it afterwards.
      *
-     * Or a `CancellationException`, for the two ends that are not a failed
-     * send: the caller closed this channel, or the engine's loop stopped.
-     * Ending work you started is what cancellation means, and the first of
-     * those is exactly that.
+     * Or a `CancellationException`, for the ends that are not a refused
+     * send: the caller closed this channel, the engine's loop stopped, or
+     * some other failure ended the connection before this wait began — only
+     * a refusal is recorded as the reason, so a wait arriving after one of
+     * those finds a closed transport with nothing to name. Ending work you
+     * started is what cancellation means, and the first of those is exactly
+     * that; the last is the one still owed a better answer.
      *
      * **The second kind is still wider than it should be**: a loop that
      * ended by throwing is reported the same way as one that was asked to

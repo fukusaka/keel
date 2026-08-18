@@ -265,9 +265,10 @@ class ReadinessIoTransport(
      * for — the teardown runs its remaining stages and reaches its own
      * `closeFdSafely`. In practice the stages that can fail are the deferred
      * flush, the release of the queue (a syscall wrapper, an allocator, a
-     * pointer) and the waiter's cancel, whose resume goes back through the
+     * pointer) and the waiter's answer, whose resume goes back through the
      * waiter's own dispatcher — the refusal `onLoopStopped` contains for the
-     * same call shape, with the close's own cause. What the flush leaves behind for that release is everything a
+     * same call shape. That answer is the recorded refusal when there is one,
+     * and the close's own cancellation when there is not. What the flush leaves behind for that release is everything a
      * refusal did not consume. An entry leaves the deque only as its bytes are
      * accounted for — removed first, then released, since releasing first would
      * leave a released buffer queued for the next walker to release again — so
@@ -390,7 +391,7 @@ class ReadinessIoTransport(
         // The write side too, not just the read side: a caller parked in
         // awaitPendingFlush is waiting for a flush this loop will never run, and
         // the sweep is the only thing that reaches it while the channel is still
-        // open. close() cancels the same continuation, but a Coroutine-mode
+        // open. close() answers the same continuation, but a Coroutine-mode
         // connection is deliberately not closed here, so without this the waiter
         // is left for a close that may never come. A waiter parked under this
         // loop's own dispatcher is reached: the resume lands on this loop's
@@ -980,8 +981,8 @@ class ReadinessIoTransport(
                 transportFailure = drainFailure
                 // The wind-down is what the gate is for, not the record: a
                 // teardown's own deferred drain arrives with the connection
-                // already ending, and a waiter it cancels still needs to be
-                // told the send was refused rather than that someone closed.
+                // already ending, and a waiter it answers still needs the
+                // refusal as that answer, not that someone closed.
                 if (opened) endConnectionAfterFailure(drainFailure)
             }
             throw drainFailure
@@ -1032,12 +1033,12 @@ class ReadinessIoTransport(
      * drains in that state — a direct `flush()` can also race an off-loop
      * `markClosing` — but an invariant: [opened] false means a `close()` is in
      * flight, and every close runs a teardown whose own waiter stage answers
-     * whoever is left. That stage delivers the same refusal this one would,
-     * so answering here as well would only race it; declining leaves one
-     * answer with one owner.
+     * whoever is left — with the recorded refusal on the loop, and with the
+     * loop's own cancellation once the loop has gone. Answering here as well
+     * would only race that stage; declining leaves one answer with one owner.
      *
      * **The resume is dispatched, not inline.** The slot is cleared here — so
-     * the teardown's cancel stage and the register's identity check see the
+     * the teardown's answer stage and the register's identity check see the
      * answer as taken — but the waiter receives [drainFailure] from a later
      * loop task. The entry point above this funnel may still attach
      * suppressed failures to the same instance during its wind-down, and this
@@ -1292,7 +1293,10 @@ class ReadinessIoTransport(
      * - **No timer cancels**: the per-loop deadline scheduler is not safe for
      *   two closers to mutate concurrently, and a dead loop never fires it —
      *   the armed handles are retention on the dead loop object, not a leak.
-     * - **The flush waiter is cancelled**, as on the loop. That wakes a
+     * - **The flush waiter is cancelled for the loop**, which the on-loop
+     *   teardown no longer always does — with a refusal recorded it answers
+     *   with that instead. Here the loop is what went away, so this is the
+     *   answer whatever the connection had met. That wakes a
      *   waiter whose dispatcher still runs; one parked under a stopped
      *   loop's dispatcher — this one's or a quiescent sibling's — is beyond
      *   anyone's reach, its resume landing on a dead queue (which no longer
@@ -1665,7 +1669,7 @@ class ReadinessIoTransport(
         // that is already released. The teardown's own deferred drain is
         // declined by the same read: markClosing has flipped the flag before
         // any stage runs. Best-effort against an off-loop close — the flag
-        // can flip right after this read — where the teardown's cancel and
+        // can flip right after this read — where the teardown's answer and
         // withdraw stages, which run after this loop task, remain the
         // backstop.
         //
@@ -1742,7 +1746,7 @@ class ReadinessIoTransport(
      * straight back, instead of reporting a completion that would pump
      * again. One emptier is deliberately not special-cased: a teardown run
      * by a drain's own callback clears the queue, and the report then fires
-     * over bytes that were discarded, not sent — the waiter is cancelled
+     * over bytes that were discarded, not sent — the waiter is answered
      * honestly by the teardown itself, and whether the completion callback
      * should stay silent for that emptier is tracked as follow-up work.
      *
@@ -1915,7 +1919,7 @@ class ReadinessIoTransport(
                             flushScheduled = false
                             drainScheduledForWaiter()
                             // Answered by that drain -- resumed, failed by the
-                            // funnel, or cancelled by a containment close?
+                            // funnel, or answered by a containment close?
                             // Then nothing is parked: skip the cancel hook and
                             // its per-await allocation, which the common
                             // drained-inline backpressure path never needs.
@@ -2077,6 +2081,13 @@ class ReadinessIoTransport(
      * met it; one arriving afterwards finds a closed transport and is given
      * the same refusal here. Which of the two a caller was is not something
      * it chose or can read, so it cannot be what decides the type.
+     *
+     * **A refusal recorded during a close the caller asked for still answers
+     * this way**, even though `close()`'s own caller is deliberately not told
+     * about it. The two are asking different questions: `close()` asked to
+     * end the connection and discard what was queued, so a dead peer met
+     * while discarding is the outcome it asked for; a flush wait asked
+     * whether its bytes reached the peer, and they did not.
      *
      * The decision lives here rather than at the three sites that answer a
      * closed transport, so there is one place to be right about.
