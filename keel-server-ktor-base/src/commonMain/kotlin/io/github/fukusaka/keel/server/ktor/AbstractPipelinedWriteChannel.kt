@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.server.ktor
 
+import io.github.fukusaka.keel.core.TransportFailureException
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import io.ktor.utils.io.BufferedByteWriteChannel
 import io.ktor.utils.io.InternalAPI
@@ -218,6 +219,18 @@ abstract class AbstractPipelinedWriteChannel(
                 }
             }
             pipelinedChannel.awaitFlushComplete()
+        } catch (@Suppress("SwallowedException") alreadyGone: TransportFailureException) {
+            // The connection failed while this response was finishing. There
+            // is nothing for a terminator to do about that, and nobody to
+            // tell: the transport named it when it happened, and this call
+            // runs in the coroutine `close()` launched -- non-suspending,
+            // fire-and-forget, with no caller left to catch anything. Letting
+            // it out ends that coroutine as a failure, which on a supervisor
+            // parent means an unhandled-exception report for a peer that
+            // merely went away mid-stream.
+            //
+            // Only this type. A terminator that failed for its own reasons
+            // still propagates, because nothing else would say so.
         } finally {
             terminationDeferred.complete(Unit)
         }
