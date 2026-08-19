@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `IoTransport.onConnectionFailure` — invoked with the failure when the transport ends
+  the connection over one, before the inactive report; the pipelined channel wires it to the
+  pipeline's error path (#1065)
 - **BREAKING** (`core`): `TransportFailureException` — the sealed supertype for a transport failing
   in a way the caller did not ask for, with `RefusedWriteException` and `EngineFailureException`
   under it. `RefusedWriteException` moves here from an engine's internals; nothing raises
@@ -52,6 +55,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `core`, `native-readiness`: a pipeline handler now hears a refused send on `onError` before
+  `onInactive`, exactly once, in both flush configurations — it previously heard it after the
+  inactive or not at all, depending on flush coalescing (#1065)
 - **BREAKING** (`core`): a send the platform definitively refused is reported as a failure rather
   than a completed flush, so `IoTransport.flush()` may raise where it returned `true`. On the
   `Channel` surface it ends the connection and `awaitFlushComplete()` raises `RefusedWriteException`
