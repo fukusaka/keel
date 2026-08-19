@@ -22,9 +22,10 @@ package io.github.fukusaka.keel.core
  * already reported — the peer can end the connection first, and a reason
  * delivered after the end reaches nobody who can act on it — and a second
  * one met while the first is still being reported, since the first is the
- * reason the connection ended. A wait is still answered with the refusal in
- * all three. Whether a subtype added later takes the same route is that
- * subtype's to say.
+ * reason the connection ended. A wait is still answered in all three — with
+ * that same refusal in the first two, and with the first one in the third,
+ * which is the reason the connection ended. Whether a subtype added later
+ * takes the same route is that subtype's to say.
  *
  * **This is not a cancellation, and that distinction is the point.** A
  * caller that closes its own channel gets a `CancellationException`, because

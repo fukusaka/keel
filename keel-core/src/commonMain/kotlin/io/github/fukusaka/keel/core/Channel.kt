@@ -245,7 +245,7 @@ interface Channel : AutoCloseable {
      * depend on it: the connection ends and no FIN follows the refused bytes.
      * The reason reaches [awaitFlushComplete], and a pipeline handler's
      * `onError` ahead of its `onInactive` — the two places a reported
-     * refusal always reaches. The ordering promise is between the two
+     * refusal is delivered to. The ordering promise is between the two
      * handler callbacks; the wait's resume rides its own dispatcher and is
      * not ordered against them. One met while the caller is already closing
      * still answers the wait but is not an error to report.
