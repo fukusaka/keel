@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.pipeline
 
+import io.github.fukusaka.keel.core.EngineFailureException
 import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
@@ -86,9 +87,33 @@ class PipelineTransportFailureTest {
             log.warnings.none { "Unhandled" in it },
             "a peer disappearing mid-write is not an application bug: ${log.warnings}",
         )
-        assertTrue(
-            log.records.any { it.first == LogLevel.DEBUG && "the connection failed" in it.second },
-            "and it is still recorded: ${log.records}",
+        val recorded = log.records.firstOrNull {
+            it.first == LogLevel.DEBUG && "reached the end of the pipeline" in it.second
+        }
+        assertSame(
+            transport.refusal,
+            recorded?.third,
+            "and it is still recorded, carrying what ended the connection: ${log.records}",
+        )
+    }
+
+    @Test
+    fun `a failure that takes every connection with it is not ordinary either`() {
+        // The engine's own end is the sibling failure nothing raises yet.
+        // How it should reach handlers is settled with the work that starts
+        // raising it, so until then it keeps the loud path rather than being
+        // quietened by a rule written for a dead peer.
+        val transport = RefusingTransport()
+        val log = RecordingLogger()
+        val ch = channel(transport, log)
+        ch.pipeline.addLast("inbound-only", object : InboundHandler {})
+
+        ch.pipeline.notifyError(EngineFailureException("the loop stopped"))
+
+        assertEquals(
+            1,
+            log.warnings.count { "Unhandled" in it },
+            "a loop that ended on its own is not an ordinary end: ${log.warnings}",
         )
     }
 

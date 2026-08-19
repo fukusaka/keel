@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import io.ktor.utils.io.ByteChannel
 import io.ktor.utils.io.readByte
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -46,6 +47,27 @@ class UpgradeInboundPumpTest {
             assertIs<InjectedFault>(carried, "the session is told why its inbound ended: $failure")
             assertEquals("peer is gone", carried.message)
         }
+
+    @Test
+    fun `a cancelled inbound is not a reason to explain to the session`() {
+        // Cancellation is how this pump's own scope ends; it says nothing
+        // about the connection, so it is not carried into the session's
+        // input as though the peer had failed.
+        runTest(timeout = 15.seconds) {
+            val (channel, bridge) = bridgeOnChannel()
+            val input = ByteChannel(autoFlush = true)
+            val pump = launch { pumpRawBridgeToInput(bridge, input) }
+
+            channel.pipeline.notifyError(CancellationException("the session is going away"))
+            pump.join()
+
+            val failure = runCatching { input.readByte() }.exceptionOrNull()
+            assertNull(
+                failure?.cause,
+                "a cancellation is not the connection failing: $failure",
+            )
+        }
+    }
 
     @Test
     fun `a peer that finished talking ends the session's input with nothing to explain`() =
