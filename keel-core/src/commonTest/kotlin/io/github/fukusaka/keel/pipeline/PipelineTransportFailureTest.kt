@@ -70,31 +70,34 @@ class PipelineTransportFailureTest {
     }
 
     @Test
-    fun `the suspending bridge takes the reason it hands to its receiver`() {
-        // It closes the receiving channel with the cause, which is the whole
-        // of what it can do about it, so there is nothing left to pass on --
-        // and it is the last handler in the pipelines that install it.
+    fun `a handler nobody wrote an onError for is not told it has a bug`() {
+        // The reason travels until a handler acts on it, and most have
+        // nothing to do with it that the end does not already tell them --
+        // so the end of the pipeline records it as what it is, rather than
+        // as an exception nobody handled.
         val transport = RefusingTransport()
         val log = RecordingLogger()
         val ch = channel(transport, log)
-        ch.pipeline.addLast("bridge", SuspendMessageBridge(String::class))
+        ch.pipeline.addLast("inbound-only", object : InboundHandler {})
 
         runCatching { ch.requestFlush() }
 
         assertTrue(
             log.warnings.none { "Unhandled" in it },
-            "the receiver is being told, so this is not unhandled: ${log.warnings}",
+            "a peer disappearing mid-write is not an application bug: ${log.warnings}",
+        )
+        assertTrue(
+            log.records.any { it.first == LogLevel.DEBUG && "the connection failed" in it.second },
+            "and it is still recorded: ${log.records}",
         )
     }
 
     @Test
-    fun `a handler that does not act on the reason lets it reach the tail`() {
-        // The reason is delivered as a pipeline error, so a pipeline whose
-        // handlers neither handle nor stop it ends at the tail, which says
-        // so. That is the pipeline contract rather than a special case for
-        // this failure: an application that wants the connection's end to be
-        // its own business overrides `onError`, and keel's own bridges do.
-        val transport = RefusingTransport()
+    fun `something that failed alongside the connection is not ordinary`() {
+        // A refusal carries what could not be finished while it was being
+        // contained. The connection ending is routine; a buffer that would
+        // not release is not, and it arrives attached to this one instance.
+        val transport = RefusingTransport(IllegalStateException("release failed"))
         val log = RecordingLogger()
         val ch = channel(transport, log)
         ch.pipeline.addLast("inbound-only", object : InboundHandler {})
@@ -104,7 +107,7 @@ class PipelineTransportFailureTest {
         assertEquals(
             1,
             log.warnings.count { "Unhandled" in it },
-            "nobody acted on it, and the tail says which: ${log.warnings}",
+            "what rode along is named where it arrives: ${log.warnings}",
         )
     }
 

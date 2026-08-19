@@ -48,24 +48,25 @@ internal class HttpServerConnectionFailureTest {
     }
 
     @Test
-    fun `the connection's own failure ends here rather than reaching the tail`() {
-        // The end is what this handler acts on, and it is the last handler
-        // the server installs -- so passing the reason on would report an
-        // ordinary dead peer at the tail, which records what arrives there
-        // as an application bug.
+    fun `an ordinary dead peer is not reported as a bug in the server`() {
+        // Nothing in this stack acts on the reason -- the end is what the
+        // server handler acts on, and it cancels the in-flight call and
+        // leaves the registry whatever the reason was. So the reason
+        // reaches the end of the pipeline, which records it as what it is.
         install()
 
         channel.pipeline.notifyError(RefusedWriteException("peer is gone"))
 
         assertTrue(
             log.warnings.none { "Unhandled" in it },
-            "the connection ending is this handler's business: ${log.warnings}",
+            "a peer disappearing mid-write is not this server's bug: ${log.warnings}",
         )
     }
 
     @Test
-    fun `an error the connection did not cause keeps travelling`() {
-        // Absorbing everything would silence what the tail exists to report.
+    fun `an error the connection did not cause is still reported as one`() {
+        // Recording every failure quietly would silence what the end of the
+        // pipeline exists to report.
         install()
 
         channel.pipeline.notifyError(InjectedFault("a decoder gave up"))
