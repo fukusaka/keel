@@ -2,6 +2,7 @@
 
 package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
@@ -15,6 +16,7 @@ import platform.posix.EPIPE
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -22,7 +24,9 @@ import kotlin.test.assertTrue
  * Pins what a pipeline handler hears when a refused send ends the connection:
  * the refusal on [DuplexHandler.onError] first, the end on
  * [DuplexHandler.onInactive] second, each exactly once — in both flush
- * configurations and from every entry that can meet the refusal.
+ * configurations, from the flush, readiness, and half-close entries. (The
+ * register-time short-circuit shares the same drain funnel and is not
+ * exercised separately here.)
  *
  * The order is the contract's, not the implementation's: `onInactive` is the
  * handler's cue to clean up, and a reason delivered after the cleanup reaches
@@ -33,6 +37,9 @@ import kotlin.test.assertTrue
  * A refusal met while the caller is already closing is deliberately not
  * reported: the caller asked for the connection to end and the queue to be
  * discarded, so a dead peer met while discarding is the outcome it asked for.
+ * Neither is one met after the inactive already went out — the peer can end
+ * the connection first — since reporting there would put the reason after
+ * the end it is contracted to precede.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
@@ -313,6 +320,102 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             assertTrue(
                 plog.warnings.none { "cleanup did not finish" in it },
                 "the reported instance riding along is not a leak: ${plog.warnings}",
+            )
+            fake.assertAllConsumed()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a real rider is still named once when the reported instance rides along`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The previous shape with the outer buffer's release also
+            // failing: the release failure is now the outer refusal's rider,
+            // and the reported nested instance rides suppressed on that
+            // leak rather than on the outer refusal directly -- the ledger
+            // attaches later failures to the first. Filtering out the
+            // reported instance must not silence the genuine leak carrying
+            // it, and one catch frame names it exactly once.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE), WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            val rec = Recorder()
+            ch.pipeline.addLast("rec", rec)
+            val over = HIGH_WATER + 1
+            val failing = FailingReleaseIoBuf(tracker.allocate(over).apply { writerIndex = over })
+            var answered = false
+            transport.onWritabilityChanged = { writable ->
+                if (writable && !answered) {
+                    answered = true
+                    transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+                    transport.flush()
+                }
+            }
+            transport.write(failing)
+
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertEquals(
+                listOf("onError(RefusedWriteException)", "onInactive"),
+                rec.seen,
+                "the nested refusal is the reported one, once, in order",
+            )
+            assertEquals(
+                1,
+                plog.warnings.count { "cleanup did not finish" in it },
+                "the genuine leak is named exactly once: ${plog.warnings}",
+            )
+            fake.assertAllConsumed()
+            failing.releaseUnderlying()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refusal after the peer already ended the connection is not reported`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The inactive can precede the refusal: a peer FIN reports it,
+            // and a handler that answers its own onInactive with a final
+            // flush meets the dead peer afterwards. A reason delivered after
+            // the end reaches nobody who can act on it, so this refusal
+            // answers the wait but is not an error to report -- reporting it
+            // would put onError after the onInactive it is contracted to
+            // precede.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            val seen = mutableListOf<String>()
+            ch.pipeline.addLast(
+                "finisher",
+                object : DuplexHandler {
+                    override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+                        seen += "onError(${cause::class.simpleName})"
+                    }
+
+                    override fun onInactive(ctx: PipelineHandlerContext) {
+                        seen += "onInactive"
+                        transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+                        ch.requestFlush()
+                    }
+                },
+            )
+
+            runCatching { transport.onPeerClosed(Interest.READ) }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertEquals(listOf("onInactive"), seen, "no reason arrives after the end")
+            val awaited = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+            assertIs<RefusedWriteException>(awaited, "the wait is still answered with the refusal")
+            assertTrue(
+                plog.warnings.isEmpty(),
+                "a rider-less quiet refusal has nothing to warn about: ${plog.warnings}",
             )
             fake.assertAllConsumed()
             runCatching { transport.close() }
