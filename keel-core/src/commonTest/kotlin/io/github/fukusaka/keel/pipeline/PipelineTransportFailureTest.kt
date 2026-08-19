@@ -70,6 +70,27 @@ class PipelineTransportFailureTest {
     }
 
     @Test
+    fun `a handler that does not act on the reason lets it reach the tail`() {
+        // The reason is delivered as a pipeline error, so a pipeline whose
+        // handlers neither handle nor stop it ends at the tail, which says
+        // so. That is the pipeline contract rather than a special case for
+        // this failure: an application that wants the connection's end to be
+        // its own business overrides `onError`, and keel's own bridges do.
+        val transport = RefusingTransport()
+        val log = RecordingLogger()
+        val ch = channel(transport, log)
+        ch.pipeline.addLast("inbound-only", object : InboundHandler {})
+
+        runCatching { ch.requestFlush() }
+
+        assertEquals(
+            1,
+            log.warnings.count { "Unhandled" in it },
+            "nobody acted on it, and the tail says which: ${log.warnings}",
+        )
+    }
+
+    @Test
     fun `a bridged channel is left to answer through its own API`() {
         val transport = RefusingTransport()
         val log = RecordingLogger()

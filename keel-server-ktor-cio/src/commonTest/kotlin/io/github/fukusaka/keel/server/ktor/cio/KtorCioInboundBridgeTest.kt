@@ -3,6 +3,8 @@ package io.github.fukusaka.keel.server.ktor.cio
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.logging.LogLevel
+import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.Pipeline
@@ -21,6 +23,15 @@ class KtorCioInboundBridgeTest {
     private val allocator: BufferAllocator = DefaultAllocator
     private val transport = TestIoTransport()
     private val channel = object : AbstractPipelinedChannel(transport, PrintLogger("ktor-cio-bridge-test")) {}
+
+    private class RecordingLogger : Logger {
+        val records = mutableListOf<Pair<LogLevel, String>>()
+        val warnings: List<String> get() = records.filter { it.first == LogLevel.WARN }.map { it.second }
+        override fun isLoggable(level: LogLevel) = true
+        override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
+            records.add(level to message.toString())
+        }
+    }
 
     private fun installBridge(): Pair<Pipeline, KtorCioInboundBridge> {
         val bridge = KtorCioInboundBridge()
@@ -70,6 +81,28 @@ class KtorCioInboundBridgeTest {
         val received = bridge.receiveCatching()
         assertTrue(received.isClosed)
         assertNull(received.exceptionOrNull())
+    }
+
+    @Test
+    fun `onError is handled here and does not travel on as unhandled`() = runTest(timeout = 15.seconds) {
+        // Closing the inbound with the cause is handling it: everything this
+        // bridge feeds is now finished, and the reason went with it. Passing
+        // it on as well would reach the tail of a pipeline whose last handler
+        // this is, which records what arrives there as an application bug --
+        // on the ordinary path where a peer disappears mid-write.
+        val log = RecordingLogger()
+        val ownTransport = TestIoTransport()
+        val ownChannel = object : AbstractPipelinedChannel(ownTransport, log) {}
+        val bridge = KtorCioInboundBridge()
+        ownChannel.pipeline.addLast("bridge", bridge)
+
+        ownChannel.pipeline.notifyError(InjectedFault("peer is gone"))
+
+        assertTrue(bridge.receiveCatching().isClosed, "the inbound is finished, with the reason")
+        assertTrue(
+            log.warnings.none { "Unhandled" in it },
+            "and it is not reported as unhandled: ${log.warnings}",
+        )
     }
 
     @Test
