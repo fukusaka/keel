@@ -36,7 +36,9 @@ abstract class AbstractPipelinedChannel(
     override val localAddress: SocketAddress? = null,
 ) : PipelinedChannel {
 
-    override val pipeline: Pipeline = DefaultPipeline(this, transport, logger)
+    private val defaultPipeline: DefaultPipeline = DefaultPipeline(this, transport, logger)
+
+    override val pipeline: Pipeline get() = defaultPipeline
     override val allocator: BufferAllocator get() = transport.allocator
     override val isActive: Boolean get() = transport.isOpen
     override val isOpen: Boolean get() = transport.isOpen
@@ -67,10 +69,12 @@ abstract class AbstractPipelinedChannel(
         transport.onConnectionFailure = { cause ->
             // The transport invokes this before its inactive report and at
             // most once, so ordering and count are its obligations; this
-            // wiring only chooses the destination. `notifyError` is the
+            // wiring only chooses the destination. The destination is the
             // pipeline's existing error entrance -- the same one a handler
-            // failure reaches -- not a new subscription point.
-            pipeline.notifyError(cause)
+            // failure reaches -- not a new subscription point; it is entered
+            // by the transport-failure route so the head can tell a failure
+            // these handlers heard from one they did not.
+            defaultPipeline.notifyTransportFailure(cause)
         }
         transport.onReadClosed = {
             // Auto-close on peer-FIN only in Pipeline mode — a pipeline

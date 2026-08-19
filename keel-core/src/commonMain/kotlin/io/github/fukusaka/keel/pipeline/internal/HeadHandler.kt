@@ -49,6 +49,9 @@ internal class HeadHandler(
         try {
             transport.flush()
         } catch (refused: RefusedWriteException) {
+            // The refusal only, not its sealed supertype: the sibling
+            // failure is not raised anywhere yet, and how it should reach
+            // handlers is settled with the work that starts raising it.
             // Never converted. A refusal has one construction site and every
             // raise passes through the transport's flush funnel: the first
             // on a live connection is delivered to this pipeline -- riders
@@ -71,8 +74,9 @@ internal class HeadHandler(
             // a nested drain that got reported first unwinds into the outer
             // drain's ledger stage, which carries it on the outer refusal.
             // Already delivered attached, it is not a leak to name.
-            val carriesUnreportedRider = refused !== pipeline.lastNotifiedError &&
-                refused.suppressedExceptions.any { it !== pipeline.lastNotifiedError }
+            val delivered = pipeline.deliveredTransportFailure
+            val carriesUnreportedRider = refused !== delivered &&
+                refused.suppressedExceptions.any { it !== delivered }
             if (carriesUnreportedRider) {
                 pipeline.logger.warn(refused) {
                     "cleanup did not finish while a refused send was being contained"
