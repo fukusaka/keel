@@ -983,7 +983,29 @@ class ReadinessIoTransport(
                 // teardown's own deferred drain arrives with the connection
                 // already ending, and a waiter it answers still needs the
                 // refusal as that answer, not that someone closed.
-                if (opened) endConnectionAfterFailure(drainFailure)
+                if (opened) {
+                    // The reason before the end, per the pipeline contract:
+                    // `onInactive` is the handler's cue to clean up, and a
+                    // reason delivered after the cleanup reaches nobody who
+                    // can act on it. Under the same `opened` gate as the
+                    // wind-down -- a caller-asked close is not an error to
+                    // report, which is also why the teardown's own deferred
+                    // drain never gets here.
+                    //
+                    // The callback is user code -- a seam. What a throw here
+                    // would lose is the report, never the wind-down: it is
+                    // attached to the refusal, which carries it to whichever
+                    // guard catches the rethrow below.
+                    try {
+                        onConnectionFailure?.invoke(drainFailure)
+                    } catch (reportFailure: Throwable) {
+                        eventLoop.logger.warn(reportFailure) {
+                            "reporting the refused send to the pipeline threw: fd=$fd"
+                        }
+                        drainFailure.addSuppressed(reportFailure)
+                    }
+                    endConnectionAfterFailure(drainFailure)
+                }
             }
             throw drainFailure
         }
