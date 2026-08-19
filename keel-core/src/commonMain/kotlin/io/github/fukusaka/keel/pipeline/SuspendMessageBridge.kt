@@ -101,13 +101,9 @@ class SuspendMessageBridge<T : Any>(
     }
 
     override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
-        // Handled here, and not passed on: the suspending receiver is given
-        // the cause with the channel it was waiting on, which is the whole
-        // of what this bridge can do about it. This is the last handler in
-        // the pipelines that install it, so passing it on would reach the
-        // tail, which records what arrives there as an application bug.
         messages.close(cause)
         releaseBuffered()
+        ctx.propagateError(cause)
     }
 
     /**
