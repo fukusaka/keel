@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.DuplexHandler
+import io.github.fukusaka.keel.pipeline.OutboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -464,13 +465,45 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a rider is named when the journal has no replay coming`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The replay is scheduled by the first inbound handler, so a
+            // pipeline whose handlers are all outbound never asks for it and
+            // its journal is handed to nobody. The head cannot leave the
+            // riders to a reporter that will never run.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            ch.pipeline.addLast("outbound-only", object : OutboundHandler {})
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertEquals(
+                1,
+                plog.warnings.count { "cleanup did not finish" in it },
+                "no replay is coming, so the rider is named here: ${plog.warnings}",
+            )
+            fake.assertAllConsumed()
+            failing.releaseUnderlying()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a rider on a report still sitting in the journal is left to the replay`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // Adding a handler schedules the journal replay on the
             // dispatcher rather than running it inline, so a codec stack
             // added back-to-back accumulates first. A refusal met inside
-            // that window has a reporter -- the replay hands it over with
-            // its riders attached -- but the replay runs after the head has
+            // that window has a reporter -- the drain is already scheduled,
+            // and hands it over with its riders attached (or reports it as
+            // discarded) -- but that runs after the head has
             // already swallowed the rethrow. So the head has to count it as
             // reported when the pipeline accepts it: naming it here would
             // report one leak twice, once in the log and once to the
