@@ -372,12 +372,16 @@ internal class DefaultPipeline(
      * vanish with the head's swallow. Identity, not equality: the funnel
      * rethrows the very instance it reported.
      *
-     * Set when the failure is accepted, not when a handler runs, and the
-     * difference is load-bearing: a failure accepted while the journal is
-     * still filling is replayed to the handlers with its riders attached,
-     * but that replay happens *after* the head has already swallowed the
-     * rethrow and decided. Waiting for delivery would therefore never see
-     * it, and the head would name riders the handlers are about to receive.
+     * Set when someone has taken the failure on, not when a handler runs,
+     * and the difference is load-bearing in both directions. Waiting for a
+     * handler to run would never see a journalled failure at all: the replay
+     * happens *after* the head has swallowed the rethrow and decided, so the
+     * head would name riders the handlers are about to receive. But a
+     * journal is not itself a promise — a pipeline whose handlers are all
+     * outbound never asks for the drain, and its journal is handed to
+     * nobody. So the mark follows who has undertaken to name it: the
+     * handlers now, or the scheduled drain, which either replays the cause
+     * to them or reports it as discarded.
      *
      * What it deliberately is not is "the last error seen": only
      * [notifyTransportFailure] moves it, so an application injecting its
@@ -396,7 +400,7 @@ internal class DefaultPipeline(
      * above, which no other entrance may move.
      */
     internal fun notifyTransportFailure(cause: Throwable) {
-        reportedTransportFailure = cause
+        if (preAttachJournalDrained || drainScheduled) reportedTransportFailure = cause
         notifyError(cause)
     }
 
