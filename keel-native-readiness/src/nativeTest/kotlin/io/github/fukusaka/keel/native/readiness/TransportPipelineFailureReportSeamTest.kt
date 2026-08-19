@@ -465,12 +465,48 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a rider is named when the journal has no replay coming`() = runBlocking {
+    fun `a refusal with nothing riding on it is recorded too`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The same shape without a rider. Nothing distinguishes it for a
+            // reader of the log except that it happened, which is the whole
+            // point: the reason a connection ended is not something to drop
+            // because the send that ended it also released cleanly.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            ch.pipeline.addLast("outbound-only", object : OutboundHandler {})
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertEquals(
+                1,
+                plog.warnings.count { "no handler received the reason" in it },
+                "the connection ended for a reason nobody was told: ${plog.warnings}",
+            )
+            assertIs<RefusedWriteException>(
+                plog.causeOfWarning("no handler received the reason"),
+                "and the record carries the refusal itself",
+            )
+            fake.assertAllConsumed()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refusal no handler will receive is recorded where it is accepted`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The replay is scheduled by the first inbound handler, so a
-            // pipeline whose handlers are all outbound never asks for it and
-            // its journal is handed to nobody. The head cannot leave the
-            // riders to a reporter that will never run.
+            // pipeline whose handlers are all outbound never asks for one and
+            // nothing here will hand the reason over. The pipeline records it
+            // as it accepts it -- with its riders along -- because no frame
+            // after this one can: the head stays quiet for a refusal it can
+            // see was taken on, and under the coalescing opt-out the drain
+            // ran inside this flush, so no loop containment saw it either.
             rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
@@ -485,8 +521,13 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
 
             assertEquals(
                 1,
-                plog.warnings.count { "cleanup did not finish" in it },
-                "no replay is coming, so the rider is named here: ${plog.warnings}",
+                plog.warnings.count { "no handler received the reason" in it },
+                "nothing will hand it over, so it is recorded here: ${plog.warnings}",
+            )
+            assertTrue(
+                plog.causeOfWarning("no handler received the reason")
+                    ?.suppressedExceptions?.isNotEmpty() == true,
+                "and the rider rides on the record: ${plog.warnings}",
             )
             fake.assertAllConsumed()
             failing.releaseUnderlying()
