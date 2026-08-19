@@ -13,7 +13,9 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  * The head of the pipeline — connects inbound/outbound to the [IoTransport].
  *
  * **Inbound**: propagates events to the next handler (acts as the entry point).
- * **Outbound**: terminates the chain by delegating to the transport.
+ * **Outbound**: terminates the chain by delegating to the transport — and,
+ * for a refused send, is where that failure stops travelling, so it is also
+ * where one that reached no handler is recorded.
  *
  * HeadHandler implements both [InboundHandler] and [OutboundHandler]
  * so it participates in both directions of the pipeline.

@@ -199,9 +199,11 @@ interface IoTransport {
      * **May raise.** A send the platform definitively refused is a failure,
      * not a completed flush, and reaches the caller as one — as does a
      * failure in the bookkeeping around it (releasing a buffer, resuming a
-     * waiter). Whatever is unfinished stays queued for the close. A caller
-     * on the pipeline route does not see this: `DefaultPipeline` catches and
-     * propagates it as a pipeline error.
+     * waiter). Whatever is unfinished stays queued for the close. A caller on
+     * the pipeline route does not see the raise: the pipeline's head contains
+     * a refused send, having already delivered it to the handlers as a
+     * pipeline error — or recorded it, where they are not the ones being
+     * told.
      */
     fun flush(): Boolean
 

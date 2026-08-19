@@ -911,7 +911,7 @@ class ReadinessIoTransport(
      * loop-driven entries (the coalesced tick, [onWritable], the register's
      * short-circuit, and the dispatched half-close for whatever it does not
      * contain itself) wrap it in [containReadinessFailure] and decide, while
-     * a direct `flush()` caller gets the throw and the pipeline's error path
+     * a direct `flush()` caller gets the throw and the pipeline's head
      * decides instead. A
      * half-close is neither **when its own drain runs** — it contains the
      * refusal and reports it, leaving only what the refusal carried. Under
@@ -1649,10 +1649,11 @@ class ReadinessIoTransport(
      *
      * Raising is how the failure reaches them instead: [performFlush]'s
      * funnel answers the waiter with it, the loop-driven entries end the
-     * connection through their containment, and a direct `flush()` caller
-     * gets it on the pipeline's error path — which is what the read path has
-     * always done with its own `Failed` (it reports the connection inactive
-     * rather than pretending the read succeeded).
+     * connection through their containment, and a caller flushing through a
+     * pipeline reaches its handlers as an error — or its log, where they are
+     * not the ones being told. This is what the read path has always done
+     * with its own `Failed` (it reports the connection inactive rather than
+     * pretending the read succeeded).
      *
      * A refused release is carried to the end of the walk and attached to the
      * write failure, which is the cause the caller asked about.
