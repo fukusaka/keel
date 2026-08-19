@@ -9,8 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `core`: `IoTransport.onConnectionFailure` — invoked with the refusal when the transport ends
-  the connection over a refused send, before the inactive report; the pipelined channel wires it
-  to the pipeline's error path (#1065)
+  the connection over a refused send, before the inactive report; a Pipeline-mode channel forwards
+  it to the pipeline's error path (#1065)
 - **BREAKING** (`core`): `TransportFailureException` — the sealed supertype for a transport failing
   in a way the caller did not ask for, with `RefusedWriteException` and `EngineFailureException`
   under it. `RefusedWriteException` moves here from an engine's internals; nothing raises

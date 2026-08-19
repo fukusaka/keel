@@ -74,7 +74,14 @@ abstract class AbstractPipelinedChannel(
             // failure reaches -- not a new subscription point; it is entered
             // by the transport-failure route so the head can tell a failure
             // these handlers heard from one they did not.
-            defaultPipeline.notifyTransportFailure(cause)
+            //
+            // Only in Pipeline mode, by the same reading of "mode" the
+            // peer-close wiring below uses. A Coroutine-mode channel has no
+            // handler to act on the reason and learns the refusal from the
+            // suspending wait it already makes; injecting it here would walk
+            // an answered failure to the tail, which records what reaches it
+            // as unhandled -- an application bug reported on every dead peer.
+            if (!pipeline.isEmpty && bridge == null) defaultPipeline.notifyTransportFailure(cause)
         }
         transport.onReadClosed = {
             // Auto-close on peer-FIN only in Pipeline mode — a pipeline
