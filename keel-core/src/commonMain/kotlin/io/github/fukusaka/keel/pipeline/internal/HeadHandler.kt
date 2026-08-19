@@ -67,7 +67,13 @@ internal class HeadHandler(
             // doomed write mints a fresh rider each time -- and the reported
             // refusal's riders were already delivered attached, where a
             // second delivery would land after the inactive they precede.
-            if (refused !== pipeline.lastNotifiedError && refused.suppressedExceptions.isNotEmpty()) {
+            // The reported instance can itself ride as a suppressed cause:
+            // a nested drain that got reported first unwinds into the outer
+            // drain's ledger stage, which carries it on the outer refusal.
+            // Already delivered attached, it is not a leak to name.
+            val unreported = refused !== pipeline.lastNotifiedError &&
+                refused.suppressedExceptions.any { it !== pipeline.lastNotifiedError }
+            if (unreported) {
                 pipeline.logger.warn(refused) {
                     "cleanup did not finish while a refused send was being contained"
                 }

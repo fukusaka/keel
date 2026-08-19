@@ -1023,9 +1023,9 @@ class ReadinessIoTransport(
                 // Every frame that can catch it names the riders itself: the
                 // teardown's and the half-close's catches re-raise them, the
                 // loop containment warns with the refusal attached, and the
-                // head's swallow -- the one frame that silences -- checks for
-                // riders and hands them to the pipeline's error path. Naming
-                // them here as well reported one leak twice.
+                // head's swallow -- the one frame that silences -- warns for
+                // an unreported rider, in the log and never by re-entering
+                // handlers. Naming them here as well reported one leak twice.
             }
             throw drainFailure
         }

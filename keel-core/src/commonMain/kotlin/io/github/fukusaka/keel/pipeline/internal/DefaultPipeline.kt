@@ -371,8 +371,9 @@ internal class DefaultPipeline(
      * delivered to these handlers — riders attached — from one it stayed
      * quiet about, whose riders would otherwise vanish with the head's
      * swallow. Identity, not equality: the funnel rethrows the same
-     * instance it reported. `notifyError` has no other production caller,
-     * so nothing else writes here.
+     * instance it reported. `notifyError` has no other production caller
+     * in this tree -- the interface is public, so a caller that injects
+     * its own errors weakens the head's distinction to a heuristic.
      */
     internal var lastNotifiedError: Throwable? = null
 
