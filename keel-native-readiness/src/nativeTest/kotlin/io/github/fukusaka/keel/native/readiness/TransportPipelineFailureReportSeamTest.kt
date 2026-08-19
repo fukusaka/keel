@@ -525,10 +525,10 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
                 "the replay is the reporter, so the head does not name it too: ${plog.warnings}",
             )
             runCatching { eventLoop.drainDispatched() }
-            assertTrue(
-                rec.seen.any { it.startsWith("onError") },
-                "and the replay does deliver the reason: ${rec.seen}",
-            )
+            // Order, not just arrival: the head handed the reporting over,
+            // so the contract it stayed quiet for has to hold on the other
+            // side of the handover too.
+            assertEquals(expected, rec.seen, "the replay delivers the reason, still before the end")
             fake.assertAllConsumed()
             failing.releaseUnderlying()
             runCatching { transport.close() }

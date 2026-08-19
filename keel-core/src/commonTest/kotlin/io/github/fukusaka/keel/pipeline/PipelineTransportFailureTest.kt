@@ -85,6 +85,21 @@ class PipelineTransportFailureTest {
     }
 
     @Test
+    fun `a channel with nothing installed keeps nothing to hand a later handler`() {
+        // Not offered rather than journalled: a handler that attaches after
+        // the connection is over would otherwise be told a reason for an
+        // exchange it never took part in.
+        val transport = RefusingTransport()
+        val ch = channel(transport, RecordingLogger())
+
+        runCatching { ch.requestFlush() }
+        val rec = Recorder()
+        ch.pipeline.addLast("late", rec)
+
+        assertEquals(emptyList(), rec.seen, "nothing was kept for it")
+    }
+
+    @Test
     fun `a rider on a refusal nobody was told about is named in the log`() {
         val rider = IllegalStateException("release failed")
         val transport = RefusingTransport(rider)
