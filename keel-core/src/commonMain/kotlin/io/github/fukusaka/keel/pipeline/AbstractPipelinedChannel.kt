@@ -64,6 +64,14 @@ abstract class AbstractPipelinedChannel(
         transport.onRead = { buf ->
             pipeline.notifyRead(buf)
         }
+        transport.onConnectionFailure = { cause ->
+            // The transport invokes this before its inactive report and at
+            // most once, so ordering and count are its obligations; this
+            // wiring only chooses the destination. `notifyError` is the
+            // pipeline's existing error entrance -- the same one a handler
+            // failure reaches -- not a new subscription point.
+            pipeline.notifyError(cause)
+        }
         transport.onReadClosed = {
             // Auto-close on peer-FIN only in Pipeline mode — a pipeline
             // with user handlers and no [SuspendBridgeHandler]. There keel

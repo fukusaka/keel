@@ -99,6 +99,15 @@ abstract class AbstractIoTransport(
     override var onRead: ((IoBuf) -> Unit)? = null
     override var onReadClosed: (() -> Unit)? = null
 
+    /**
+     * Real storage for [IoTransport.onConnectionFailure], whose interface
+     * default discards the value. Held here so every transport in this tree
+     * can be wired by the channel; invoking it — before the inactive report,
+     * at most once, never for a caller-asked close — is the adopting
+     * transport's obligation.
+     */
+    override var onConnectionFailure: ((Throwable) -> Unit)? = null
+
     // --- Idle (no-progress) timeout — time-axis defence (see EventLoopTimer) ---
 
     /**

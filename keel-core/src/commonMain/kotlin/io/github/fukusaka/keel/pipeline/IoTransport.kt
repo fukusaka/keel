@@ -103,6 +103,25 @@ interface IoTransport {
     var onReadClosed: (() -> Unit)?
 
     /**
+     * Callback invoked when this transport ends the connection over a
+     * failure, with that failure — before [onReadClosed], so a listener
+     * hears the reason while it can still act on it, and at most once.
+     *
+     * Only for an end the transport forced. A close the caller asked for is
+     * not reported here even when the closing drain meets a dead peer: the
+     * caller asked for the queue to be discarded, and a peer found gone
+     * while discarding is the outcome it asked for.
+     *
+     * The default accessors store nothing, so a transport that never raises
+     * [io.github.fukusaka.keel.core.RefusedWriteException] is not obliged to
+     * carry a field for it. Overriding with real storage is part of adopting
+     * that failure, not an option alongside it.
+     */
+    var onConnectionFailure: ((Throwable) -> Unit)?
+        get() = null
+        set(@Suppress("UNUSED_PARAMETER") value) {}
+
+    /**
      * Hook invoked by [io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel]
      * after [onRead], [onReadClosed], and [onWritabilityChanged] have all
      * been wired up. Engines that pre-arm their read primitive when the

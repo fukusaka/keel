@@ -15,8 +15,8 @@ package io.github.fukusaka.keel.core
  * does not choose either.
  *
  * A pipelined application sees it on the handler error path, the layer's own
- * way of being told; the half-close, which does not go through the pipeline,
- * reports that the connection went inactive.
+ * way of being told — before the inactive report, whatever entry met the
+ * refusal, so the reason arrives while a handler can still act on it.
  *
  * **This is not a cancellation, and that distinction is the point.** A
  * caller that closes its own channel gets a `CancellationException`, because
