@@ -380,8 +380,17 @@ internal class DefaultPipeline(
      * journal is not itself a promise — a pipeline whose handlers are all
      * outbound never asks for the drain, and its journal is handed to
      * nobody. So the mark follows who has undertaken to name it: the
-     * handlers now, or the scheduled drain, which either replays the cause
-     * to them or reports it as discarded.
+     * handlers now, or a scheduled drain, which replays the cause to them or
+     * reports it discarded.
+     *
+     * It answers for the moment it is read, which is all the head can act
+     * on. Two consequences are accepted rather than solved. A handler
+     * attached *after* the head has already named the riders gets the replay
+     * as well, so that leak is named twice — chosen over the alternative,
+     * which names it nowhere when no handler ever arrives. And a scheduled
+     * drain whose dispatcher never runs again neither replays nor discards,
+     * so nothing names it; that window is the same one in which the journal
+     * itself is stranded, and closing it belongs to the journal, not here.
      *
      * What it deliberately is not is "the last error seen": only
      * [notifyTransportFailure] moves it, so an application injecting its

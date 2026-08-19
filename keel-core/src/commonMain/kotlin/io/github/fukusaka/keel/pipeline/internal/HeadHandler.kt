@@ -67,9 +67,10 @@ internal class HeadHandler(
             // silent. Named in the log, deliberately not handed back to the
             // handlers: re-entering them from here opened an unbounded
             // recursion -- a handler that answers every error with another
-            // doomed write mints a fresh rider each time -- and the reported
-            // refusal's riders were already delivered attached, where a
-            // second delivery would land after the inactive they precede.
+            // doomed write mints a fresh rider each time -- and a reported
+            // refusal's riders reach the handlers attached to it, either
+            // already or by the replay that took it on, where a second
+            // delivery would land after the inactive they precede.
             // The reported instance can itself ride as a suppressed cause:
             // a nested drain that got reported first unwinds into the outer
             // drain's ledger stage, which carries it on the outer refusal.
