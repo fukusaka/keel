@@ -44,6 +44,9 @@ kotlin {
             dependencies {
                 implementation(kotlin("test"))
                 implementation(libs.kotlinx.coroutines.test)
+                // Shared test fixtures (`TestIoTransport`, `InjectedFault`) for
+                // the pipeline-level handler tests, which run on every target.
+                implementation(project(":keel-testing-internal"))
             }
         }
         jvmTest {
