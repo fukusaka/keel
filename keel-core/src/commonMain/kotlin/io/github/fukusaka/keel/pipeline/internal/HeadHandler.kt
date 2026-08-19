@@ -49,38 +49,28 @@ internal class HeadHandler(
         try {
             transport.flush()
         } catch (refused: RefusedWriteException) {
-            // The refusal only, not its sealed supertype: the sibling
-            // failure is not raised anywhere yet, and how it should reach
-            // handlers is settled with the work that starts raising it.
-            // Never converted. A refusal has one construction site and every
-            // raise passes through the transport's flush funnel: the first
-            // on a live connection is delivered to this pipeline -- riders
-            // included, as suppressed causes -- before the connection ends,
-            // so converting the rethrow would tell the same handlers the
-            // same instance twice, and one the funnel stays quiet about
-            // (the caller was closing, the reason is an earlier refusal, or
-            // the inactive already went out) is quiet by design.
+            // The one frame that silences a refusal, so it records what these
+            // handlers are not getting. Never converted into an error for
+            // them: the transport delivers the one it reports, riders
+            // attached as suppressed causes, before the connection ends --
+            // converting the rethrow would tell them the same instance twice,
+            // and re-entering them from here is unbounded recursion, since a
+            // handler that answers every error with another doomed write
+            // mints a fresh refusal each time.
             //
-            // But this is the one frame that *silences*, so it checks what
-            // it silences: a failed release riding on a refusal the funnel
-            // stayed quiet about has no other reporter, and a leak is never
-            // silent. Named in the log, deliberately not handed back to the
-            // handlers: re-entering them from here opened an unbounded
-            // recursion -- a handler that answers every error with another
-            // doomed write mints a fresh rider each time -- and a reported
-            // refusal's riders reach the handlers attached to it, either
-            // already or by the replay that took it on, where a second
-            // delivery would land after the inactive they precede.
-            // The reported instance can itself ride as a suppressed cause:
-            // a nested drain that got reported first unwinds into the outer
-            // drain's ledger stage, which carries it on the outer refusal.
-            // Already delivered attached, it is not a leak to name.
-            val reported = pipeline.reportedTransportFailure
-            val carriesUnreportedRider = refused !== reported &&
-                refused.suppressedExceptions.any { it !== reported }
-            if (carriesUnreportedRider) {
+            // Reaching here at all means the drain ran inside this call, so
+            // no loop containment saw it and no other frame will name it. The
+            // refusal these handlers are getting is the one exception: they
+            // have it, or a scheduled replay is bringing it, and naming it
+            // here would report the same thing twice. Everything else is
+            // recorded -- one line, carrying the refusal, so whatever rode
+            // along on it is named with it. Only the refusal, not its sealed
+            // supertype: the sibling failure is not raised anywhere yet, and
+            // how it should reach handlers is settled with the work that
+            // starts raising it.
+            if (refused !== pipeline.reportedTransportFailure) {
                 pipeline.logger.warn(refused) {
-                    "cleanup did not finish while a refused send was being contained"
+                    "a refused send was contained without reaching these handlers"
                 }
             }
         }

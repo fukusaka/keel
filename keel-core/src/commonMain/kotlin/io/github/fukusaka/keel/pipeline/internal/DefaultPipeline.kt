@@ -372,26 +372,18 @@ internal class DefaultPipeline(
      * vanish with the head's swallow. Identity, not equality: the funnel
      * rethrows the very instance it reported.
      *
-     * Set when someone has taken the failure on, not when a handler runs,
-     * and the difference is load-bearing in both directions. Waiting for a
-     * handler to run would never see a journalled failure at all: the replay
-     * happens *after* the head has swallowed the rethrow and decided, so the
-     * head would name riders the handlers are about to receive. But a
-     * journal is not itself a promise — a pipeline whose handlers are all
-     * outbound never asks for the drain, and its journal is handed to
-     * nobody. So the mark follows who has undertaken to name it: the
-     * handlers now, a scheduled drain, which replays the cause to them or
-     * reports it discarded, or — when neither is on its way — the record
-     * [notifyTransportFailure] writes itself before accepting it.
+     * Set when these handlers are getting it — now, or by a replay already
+     * scheduled — and not when one of them runs. Waiting for a handler to
+     * run would never see a journalled failure at all: the replay happens
+     * *after* the head has swallowed the rethrow and decided. A journal with
+     * no replay on its way is not that: a pipeline whose handlers are all
+     * outbound never asks for the drain, and nothing there will hand the
+     * cause over, so the head is left to record what it silences.
      *
      * It answers for the moment it is read, which is all the head can act
-     * on. Two consequences are accepted rather than solved. A handler
-     * attached *after* the head has already named the riders gets the replay
-     * as well, so that leak is named twice — chosen over the alternative,
-     * which names it nowhere when no handler ever arrives. And a scheduled
-     * drain whose dispatcher never runs again neither replays nor discards,
-     * so nothing names it; that window is the same one in which the journal
-     * itself is stranded, and closing it belongs to the journal, not here.
+     * on. A handler attached *after* the head has recorded the refusal gets
+     * the replay as well, so it is named twice — chosen over the
+     * alternative, which names it nowhere when no handler ever arrives.
      *
      * What it deliberately is not is "the last error seen": only
      * [notifyTransportFailure] moves it, so an application injecting its
@@ -410,17 +402,7 @@ internal class DefaultPipeline(
      * above, which no other entrance may move.
      */
     internal fun notifyTransportFailure(cause: Throwable) {
-        if (!preAttachJournalDrained && !drainScheduled) {
-            // Accepted with nothing on its way to hand it over: the replay is
-            // scheduled by the first inbound handler, and a pipeline whose
-            // handlers are all outbound never asks for one. Nobody here will
-            // see this, and the head stays quiet for a refusal it can see was
-            // taken on -- so this is the last place it can be recorded, and
-            // the reason a connection ended is not something to drop. It is
-            // still journalled: a handler attached later is owed it too.
-            logger.warn(cause) { "no handler received the reason this connection ended" }
-        }
-        reportedTransportFailure = cause
+        if (preAttachJournalDrained || drainScheduled) reportedTransportFailure = cause
         notifyError(cause)
     }
 
