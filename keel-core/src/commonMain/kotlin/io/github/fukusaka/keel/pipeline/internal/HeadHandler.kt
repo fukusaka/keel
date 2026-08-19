@@ -71,9 +71,9 @@ internal class HeadHandler(
             // a nested drain that got reported first unwinds into the outer
             // drain's ledger stage, which carries it on the outer refusal.
             // Already delivered attached, it is not a leak to name.
-            val unreported = refused !== pipeline.lastNotifiedError &&
+            val carriesUnreportedRider = refused !== pipeline.lastNotifiedError &&
                 refused.suppressedExceptions.any { it !== pipeline.lastNotifiedError }
-            if (unreported) {
+            if (carriesUnreportedRider) {
                 pipeline.logger.warn(refused) {
                     "cleanup did not finish while a refused send was being contained"
                 }
