@@ -40,6 +40,11 @@ import kotlin.test.assertTrue
  * Neither is one met after the inactive already went out — the peer can end
  * the connection first — since reporting there would put the reason after
  * the end it is contracted to precede.
+ *
+ * The report is for handlers, so it is offered only where there are any: a
+ * Coroutine-mode channel learns the refusal from the suspending wait it
+ * already makes, and a channel with nothing installed has nobody to tell.
+ * Where nobody heard it, a rider still gets its name in the log.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
@@ -418,6 +423,150 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
                 "a rider-less quiet refusal has nothing to warn about: ${plog.warnings}",
             )
             fake.assertAllConsumed()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a rider on a refusal no handler has heard yet is named in the log`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // A channel with no handlers is not offered the report at all,
+            // so nobody has heard the riders -- and a failed release riding
+            // along has no other reporter. Silence here would break the rule
+            // the check exists for: a leak is never silent.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertEquals(
+                1,
+                plog.warnings.count { "cleanup did not finish" in it },
+                "the rider is named once even with nobody attached: ${plog.warnings}",
+            )
+            fake.assertAllConsumed()
+            failing.releaseUnderlying()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a rider is named while the report still sits in the journal`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Adding a handler schedules the journal replay on the
+            // dispatcher rather than running it inline, so a codec stack
+            // added back-to-back accumulates first. A refusal met inside
+            // that window is accepted but delivered to nobody yet, and its
+            // rider still needs a name.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            val rec = Recorder()
+            ch.pipeline.addLast("rec", rec)
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            runCatching { ch.requestFlush() }
+
+            assertEquals(
+                1,
+                plog.warnings.count { "cleanup did not finish" in it },
+                "nobody has heard it yet, so the rider is named: ${plog.warnings}",
+            )
+            runCatching { eventLoop.drainDispatched() }
+            assertTrue(
+                rec.seen.any { it.startsWith("onError") },
+                "and the replay still delivers the reason: ${rec.seen}",
+            )
+            fake.assertAllConsumed()
+            failing.releaseUnderlying()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a bridged channel is not told an error it already answers through its own API`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // A Coroutine-mode channel has no handler to act on the reason:
+            // its caller learns the refusal from the suspending wait. Walking
+            // it through the pipeline anyway ends at the tail, which records
+            // it as an unhandled exception -- a handled failure reported as
+            // an application bug on every dead peer.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            ch.ensureBridge()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertTrue(
+                plog.warnings.none { "Unhandled" in it },
+                "the bridged channel's own API answers this: ${plog.warnings}",
+            )
+            val awaited = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+            assertIs<RefusedWriteException>(awaited, "and that API still answers with the refusal")
+            fake.assertAllConsumed()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `an error a handler injects itself does not turn delivered riders into a leak report`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The head tells a delivered refusal from a silenced one by
+            // identity. If a handler's own injected error moved that mark,
+            // the refusal it already heard -- riders attached -- would come
+            // back as a leak nobody reported.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            val seen = mutableListOf<String>()
+            ch.pipeline.addLast(
+                "injector",
+                object : DuplexHandler {
+                    override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+                        seen += "onError(${cause::class.simpleName})"
+                        if (cause is RefusedWriteException) {
+                            ch.pipeline.notifyError(IllegalStateException("a diagnostic of my own"))
+                        }
+                    }
+                },
+            )
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertTrue(
+                plog.warnings.none { "cleanup did not finish" in it },
+                "the riders arrived attached to the delivered refusal: ${plog.warnings}",
+            )
+            assertEquals(
+                listOf("onError(RefusedWriteException)", "onError(IllegalStateException)"),
+                seen,
+                "both errors reached the handler",
+            )
+            fake.assertAllConsumed()
+            failing.releaseUnderlying()
             runCatching { transport.close() }
             tracker.assertNoLeaks()
         }
