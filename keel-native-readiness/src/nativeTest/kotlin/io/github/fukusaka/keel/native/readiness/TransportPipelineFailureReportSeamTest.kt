@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.DuplexHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -14,6 +15,7 @@ import platform.posix.EPIPE
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -96,6 +98,86 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     @Test
     fun `a refused half-close reports the same under the opt-out`() {
         assertEquals(expected, refusedScenario(coalescing = false) { ch, _ -> ch.shutdownOutput() })
+    }
+
+    @Test
+    fun `a handler that writes and flushes from onError is not re-entered`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The report runs while the transport still accepts writes -- the
+            // wind-down is deliberately after it. A handler answering the
+            // error by sending something (the ordinary error-response shape)
+            // re-enters the drain synchronously under the coalescing opt-out
+            // and meets the same dead peer. That second refusal must not
+            // become a second report: the first is the connection's reason.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE), WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val ch = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
+            val seen = mutableListOf<String>()
+            var firstCause: Throwable? = null
+            ch.pipeline.addLast(
+                "responder",
+                object : DuplexHandler {
+                    override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+                        seen += "onError"
+                        if (firstCause == null) {
+                            firstCause = cause
+                            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+                            ch.requestFlush()
+                        }
+                    }
+
+                    override fun onInactive(ctx: PipelineHandlerContext) {
+                        seen += "onInactive"
+                    }
+                },
+            )
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertEquals(listOf("onError", "onInactive"), seen, "the nested refusal is not a second report")
+            val awaited = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+            assertSame(
+                firstCause,
+                awaited,
+                "the recorded reason is the first refusal, not the nested one",
+            )
+            fake.assertAllConsumed()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a rider on a refusal the close race silences is still named in the log`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The refusal itself going quiet is the caller-close design; the
+            // release failure riding on it is a leak, and a leak is never
+            // silent. Deterministic route: dropping the refused queue crosses
+            // the low-water mark, the writability callback closes the
+            // transport, and the catch skips both report and wind-down --
+            // the head then swallows the rethrow.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val ch = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
+            val over = HIGH_WATER + 1
+            val failing = FailingReleaseIoBuf(tracker.allocate(over).apply { writerIndex = over })
+            transport.onWritabilityChanged = { writable -> if (writable) transport.close() }
+            transport.write(failing)
+
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertTrue(
+                eventLoop.warnings.any { "cleanup did not finish" in it },
+                "the rider must be named somewhere: ${eventLoop.warnings}",
+            )
+            fake.assertAllConsumed()
+            failing.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
     }
 
     @Test
