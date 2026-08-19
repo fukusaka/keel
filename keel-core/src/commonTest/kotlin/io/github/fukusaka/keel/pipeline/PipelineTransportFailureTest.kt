@@ -70,6 +70,24 @@ class PipelineTransportFailureTest {
     }
 
     @Test
+    fun `the suspending bridge takes the reason it hands to its receiver`() {
+        // It closes the receiving channel with the cause, which is the whole
+        // of what it can do about it, so there is nothing left to pass on --
+        // and it is the last handler in the pipelines that install it.
+        val transport = RefusingTransport()
+        val log = RecordingLogger()
+        val ch = channel(transport, log)
+        ch.pipeline.addLast("bridge", SuspendMessageBridge(String::class))
+
+        runCatching { ch.requestFlush() }
+
+        assertTrue(
+            log.warnings.none { "Unhandled" in it },
+            "the receiver is being told, so this is not unhandled: ${log.warnings}",
+        )
+    }
+
+    @Test
     fun `a handler that does not act on the reason lets it reach the tail`() {
         // The reason is delivered as a pipeline error, so a pipeline whose
         // handlers neither handle nor stop it ends at the tail, which says
