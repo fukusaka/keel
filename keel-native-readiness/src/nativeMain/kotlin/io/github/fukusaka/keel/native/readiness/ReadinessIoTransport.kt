@@ -1004,9 +1004,10 @@ class ReadinessIoTransport(
                     // The callback is user code -- a seam. What a throw here
                     // would lose is the report, never the wind-down: it is
                     // named by its own warning, with the throw attached. Not
-                    // appended to the refusal -- failFlushWaiter published
-                    // that instance to the waiter above, and the funnel's
-                    // rule is that a published instance is never appended to.
+                    // appended to the refusal -- a handler failing to hear
+                    // the report is neither the connection's failure nor
+                    // teardown incompleteness, and the catches downstream
+                    // re-raise what the refusal carries as exactly that.
                     try {
                         onConnectionFailure?.invoke(drainFailure)
                     } catch (reportFailure: Throwable) {
@@ -1015,21 +1016,16 @@ class ReadinessIoTransport(
                         }
                     }
                     endConnectionAfterFailure(drainFailure)
-                } else if (draining && drainFailure.suppressedExceptions.isNotEmpty()) {
-                    // A refusal this branch stays quiet about -- the caller
-                    // is closing, or the connection's reason is already the
-                    // earlier refusal -- can still be carrying a failed
-                    // release. The refusal going quiet is the design; the
-                    // leak riding on it is not, and on the flush frames
-                    // (`draining`) the rethrow can land in the head's
-                    // swallow, where nothing else would name it. The
-                    // teardown's own drain runs outside a flush frame and
-                    // its catch already names and re-raises what rode along
-                    // -- warning here too would report one leak twice.
-                    eventLoop.logger.warn(drainFailure) {
-                        "cleanup did not finish while the connection was ending: fd=$fd"
-                    }
                 }
+                // A refusal this branch stays quiet about -- the caller is
+                // closing, or the connection's reason is already the earlier
+                // refusal -- rethrows below carrying whatever rode along.
+                // Every frame that can catch it names the riders itself: the
+                // teardown's and the half-close's catches re-raise them, the
+                // loop containment warns with the refusal attached, and the
+                // head's swallow -- the one frame that silences -- checks for
+                // riders and hands them to the pipeline's error path. Naming
+                // them here as well reported one leak twice.
             }
             throw drainFailure
         }

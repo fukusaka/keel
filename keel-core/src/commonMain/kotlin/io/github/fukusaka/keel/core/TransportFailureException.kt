@@ -14,9 +14,10 @@ package io.github.fukusaka.keel.core
  * would do so only when the drain happened to run in place, which the caller
  * does not choose either.
  *
- * A pipelined application sees it on the handler error path, the layer's own
- * way of being told — before the inactive report, whatever entry met the
- * refusal, so the reason arrives while a handler can still act on it.
+ * A pipelined application sees a refusal on the handler error path, the
+ * layer's own way of being told — before the inactive report, whatever entry
+ * met it, so the reason arrives while a handler can still act on it. Whether
+ * a subtype added later takes the same route is that subtype's to say.
  *
  * **This is not a cancellation, and that distinction is the point.** A
  * caller that closes its own channel gets a `CancellationException`, because

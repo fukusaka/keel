@@ -46,19 +46,28 @@ internal class HeadHandler(
     override fun onFlush(ctx: PipelineHandlerContext) {
         try {
             transport.flush()
-        } catch (@Suppress("SwallowedException") refused: RefusedWriteException) {
-            // Reported or named, never converted. A refusal has one
-            // construction site and every raise passes through the
-            // transport's flush funnel: the first on a live connection is
-            // delivered to this pipeline -- riders included, as suppressed
-            // causes -- before the connection ends, so converting the
-            // rethrow would tell the same handlers the same instance twice.
-            // One the funnel stays quiet about (the caller was closing, or
-            // the connection's reason is an earlier refusal) is warn-logged
-            // there when it carries a failed cleanup, so swallowing it here
-            // silences nothing unnamed. Anything else a flush throws still
-            // propagates to the generic catch, which is where a transport
-            // fault becomes a pipeline error.
+        } catch (refused: RefusedWriteException) {
+            // Never converted. A refusal has one construction site and every
+            // raise passes through the transport's flush funnel: the first
+            // on a live connection is delivered to this pipeline -- riders
+            // included, as suppressed causes -- before the connection ends,
+            // so converting the rethrow would tell the same handlers the
+            // same instance twice, and one the funnel stays quiet about
+            // (the caller was closing, or the reason is an earlier refusal)
+            // is quiet by design.
+            //
+            // But this is the one frame that *silences*, so it checks what
+            // it silences: a failed release riding on the refusal has no
+            // other reporter here, and a leak is never silent. The riders go
+            // to the error path as themselves -- they are faults, not the
+            // refusal -- exactly as the teardown's and the half-close's
+            // catches re-raise them to their own callers.
+            val alsoIncomplete = refused.suppressedExceptions
+            if (alsoIncomplete.isNotEmpty()) {
+                val first = alsoIncomplete.first()
+                alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
+                ctx.propagateError(first)
+            }
         }
     }
 
