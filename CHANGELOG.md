@@ -55,8 +55,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `core`, `native-readiness`: a pipeline handler now hears a refused send on `onError` before
-  `onInactive`, exactly once, in both flush configurations — it previously heard it after the
+- `core`, `native-readiness`: a pipeline handler now hears a reported refused send on `onError`
+  before `onInactive`, once, in both flush configurations — it previously heard it after the
   inactive or not at all, depending on flush coalescing (#1065)
 - **BREAKING** (`core`): a send the platform definitively refused is reported as a failure rather
   than a completed flush, so `IoTransport.flush()` may raise where it returned `true`. On the

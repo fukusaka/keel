@@ -17,11 +17,14 @@ package io.github.fukusaka.keel.core
  * A pipelined application sees a reported refusal on the handler error
  * path, the layer's own way of being told — before the inactive report,
  * whatever entry met it, so the reason arrives while a handler can still act
- * on it. One met while the caller is already closing is deliberately not
- * reported there, and neither is one met after the connection's end was
+ * on it. Three are deliberately not reported there: one met while the
+ * caller is already closing, one met after the connection's end was
  * already reported — the peer can end the connection first, and a reason
- * delivered after the end reaches nobody who can act on it. Whether a
- * subtype added later takes the same route is that subtype's to say.
+ * delivered after the end reaches nobody who can act on it — and a second
+ * one met while the first is still being reported, since the first is the
+ * reason the connection ended. A wait is still answered with the refusal in
+ * all three. Whether a subtype added later takes the same route is that
+ * subtype's to say.
  *
  * **This is not a cancellation, and that distinction is the point.** A
  * caller that closes its own channel gets a `CancellationException`, because
