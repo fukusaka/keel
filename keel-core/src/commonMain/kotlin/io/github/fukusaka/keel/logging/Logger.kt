@@ -36,6 +36,14 @@ public inline fun Logger.debug(message: () -> Any?) {
     if (isLoggable(LogLevel.DEBUG)) rawLog(LogLevel.DEBUG, null, message())
 }
 
+/**
+ * Logs at [LogLevel.DEBUG] with a [throwable], for an outcome worth keeping
+ * the cause of without asking a reader to look into it.
+ */
+public inline fun Logger.debug(throwable: Throwable?, message: () -> Any?) {
+    if (isLoggable(LogLevel.DEBUG)) rawLog(LogLevel.DEBUG, throwable, message())
+}
+
 /** Logs at [LogLevel.INFO]. The [message] lambda is not evaluated when INFO is disabled. */
 public inline fun Logger.info(message: () -> Any?) {
     if (isLoggable(LogLevel.INFO)) rawLog(LogLevel.INFO, null, message())
