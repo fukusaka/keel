@@ -365,44 +365,38 @@ internal class DefaultPipeline(
     }
 
     /**
-     * The transport failure these handlers have actually been told about.
+     * The transport failure this pipeline is reporting to its handlers.
      *
-     * [HeadHandler] reads it to tell a refusal already delivered here —
-     * riders attached — from one nobody has heard, whose riders would
-     * otherwise vanish with the head's swallow. Identity, not equality: the
-     * funnel rethrows the very instance it reported.
+     * [HeadHandler] reads it to tell a refusal these handlers get — riders
+     * attached — from one that reached nobody, whose riders would otherwise
+     * vanish with the head's swallow. Identity, not equality: the funnel
+     * rethrows the very instance it reported.
      *
-     * Two things it deliberately is not. Not "the last error seen": only
-     * [notifyTransportFailure] moves it, so an application injecting its own
-     * cause through the public [notifyError] cannot make a delivered
-     * refusal look unheard. And not "the last error accepted": a failure
-     * journalled before any handler attached has told nobody, so it counts
-     * only once the journal replays it.
+     * Set when the failure is accepted, not when a handler runs, and the
+     * difference is load-bearing: a failure accepted while the journal is
+     * still filling is replayed to the handlers with its riders attached,
+     * but that replay happens *after* the head has already swallowed the
+     * rethrow and decided. Waiting for delivery would therefore never see
+     * it, and the head would name riders the handlers are about to receive.
+     *
+     * What it deliberately is not is "the last error seen": only
+     * [notifyTransportFailure] moves it, so an application injecting its
+     * own cause through the public [notifyError] cannot make a refusal
+     * these handlers are being told about look unreported.
      */
-    internal var deliveredTransportFailure: Throwable? = null
+    internal var reportedTransportFailure: Throwable? = null
         private set
-
-    /**
-     * The transport failure sitting in the pre-attach journal, if any —
-     * remembered so the replay can mark it delivered without re-deriving
-     * which journalled cause came from the transport.
-     */
-    private var journalledTransportFailure: Throwable? = null
 
     /**
      * Entry for the failure a transport reports as it ends the connection,
      * as opposed to one this pipeline's own handlers raised.
      *
      * Routes exactly like [notifyError] — delivered now, or journalled until
-     * handlers attach — and additionally records delivery for the head's
-     * check above.
+     * handlers attach — and additionally records it for the head's check
+     * above, which no other entrance may move.
      */
     internal fun notifyTransportFailure(cause: Throwable) {
-        if (preAttachJournalDrained) {
-            deliveredTransportFailure = cause
-        } else {
-            journalledTransportFailure = cause
-        }
+        reportedTransportFailure = cause
         notifyError(cause)
     }
 
@@ -1010,15 +1004,7 @@ internal class DefaultPipeline(
             head.invokeOnUserEvent(pendingUserEvents.removeFirst())
         }
         while (pendingErrors.isNotEmpty()) {
-            val cause = pendingErrors.removeFirst()
-            // Delivery is what the head's check asks about, so the mark is
-            // set here rather than when the failure was accepted: until this
-            // replay it had told nobody.
-            if (cause === journalledTransportFailure) {
-                journalledTransportFailure = null
-                deliveredTransportFailure = cause
-            }
-            head.invokeOnError(cause)
+            head.invokeOnError(pendingErrors.removeFirst())
         }
         if (inactiveObserved) {
             // Replay the inactivation through the head so the entire
@@ -1093,7 +1079,6 @@ internal class DefaultPipeline(
         // Errors are reported individually, with their cause, the way the
         // journal's own overflow path reports them. Dropping the only record of
         // why a connection failed is the silent failure this codebase forbids.
-        journalledTransportFailure = null
         while (pendingErrors.isNotEmpty()) {
             val cause = pendingErrors.removeFirst()
             logger.warn(cause) { "Discarded a journalled error — this connection's owning context has stopped" }
