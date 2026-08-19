@@ -103,6 +103,11 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a refusal met by write readiness reports the same under the opt-out`() {
+        assertEquals(expected, refusedScenario(coalescing = false) { _, t -> t.onReady(Interest.WRITE) })
+    }
+
+    @Test
     fun `a refused half-close reports the same on the shipping default`() {
         assertEquals(expected, refusedScenario(coalescing = true) { ch, _ -> ch.shutdownOutput() })
     }
@@ -459,13 +464,17 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a rider is named while the report still sits in the journal`() = runBlocking {
+    fun `a rider on a report still sitting in the journal is left to the replay`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // Adding a handler schedules the journal replay on the
             // dispatcher rather than running it inline, so a codec stack
             // added back-to-back accumulates first. A refusal met inside
-            // that window is accepted but delivered to nobody yet, and its
-            // rider still needs a name.
+            // that window has a reporter -- the replay hands it over with
+            // its riders attached -- but the replay runs after the head has
+            // already swallowed the rethrow. So the head has to count it as
+            // reported when the pipeline accepts it: naming it here would
+            // report one leak twice, once in the log and once to the
+            // handler about to receive it.
             rebuildLoop(onLoopThread = true, runDispatchedInline = false, flushCoalescing = false)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
@@ -478,15 +487,14 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
 
             runCatching { ch.requestFlush() }
 
-            assertEquals(
-                1,
-                plog.warnings.count { "cleanup did not finish" in it },
-                "nobody has heard it yet, so the rider is named: ${plog.warnings}",
+            assertTrue(
+                plog.warnings.none { "cleanup did not finish" in it },
+                "the replay is the reporter, so the head does not name it too: ${plog.warnings}",
             )
             runCatching { eventLoop.drainDispatched() }
             assertTrue(
                 rec.seen.any { it.startsWith("onError") },
-                "and the replay still delivers the reason: ${rec.seen}",
+                "and the replay does deliver the reason: ${rec.seen}",
             )
             fake.assertAllConsumed()
             failing.releaseUnderlying()
@@ -639,6 +647,11 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             assertTrue(
                 rec.seen.none { it.startsWith("onError") },
                 "the caller's own close is not an error to report: ${rec.seen}",
+            )
+            val awaited = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+            assertIs<RefusedWriteException>(
+                awaited,
+                "and a wait still asks a different question, answered with the refusal",
             )
             fake.assertAllConsumed()
             tracker.assertNoLeaks()
