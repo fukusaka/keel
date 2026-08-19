@@ -1003,25 +1003,29 @@ class ReadinessIoTransport(
                     //
                     // The callback is user code -- a seam. What a throw here
                     // would lose is the report, never the wind-down: it is
-                    // attached to the refusal, which carries it to whichever
-                    // guard catches the rethrow below.
+                    // named by its own warning, with the throw attached. Not
+                    // appended to the refusal -- failFlushWaiter published
+                    // that instance to the waiter above, and the funnel's
+                    // rule is that a published instance is never appended to.
                     try {
                         onConnectionFailure?.invoke(drainFailure)
                     } catch (reportFailure: Throwable) {
                         eventLoop.logger.warn(reportFailure) {
                             "reporting the refused send to the pipeline threw: fd=$fd"
                         }
-                        drainFailure.addSuppressed(reportFailure)
                     }
                     endConnectionAfterFailure(drainFailure)
-                } else if (drainFailure.suppressedExceptions.isNotEmpty()) {
+                } else if (draining && drainFailure.suppressedExceptions.isNotEmpty()) {
                     // A refusal this branch stays quiet about -- the caller
                     // is closing, or the connection's reason is already the
                     // earlier refusal -- can still be carrying a failed
                     // release. The refusal going quiet is the design; the
-                    // leak riding on it is not, and below this frame the
-                    // head swallows the rethrow, so this is where it gets
-                    // its name.
+                    // leak riding on it is not, and on the flush frames
+                    // (`draining`) the rethrow can land in the head's
+                    // swallow, where nothing else would name it. The
+                    // teardown's own drain runs outside a flush frame and
+                    // its catch already names and re-raises what rode along
+                    // -- warning here too would report one leak twice.
                     eventLoop.logger.warn(drainFailure) {
                         "cleanup did not finish while the connection was ending: fd=$fd"
                     }

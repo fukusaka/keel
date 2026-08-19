@@ -244,8 +244,9 @@ interface Channel : AutoCloseable {
      * engines — and a caller cannot know which it got. So the answer does not
      * depend on it: the connection ends and no FIN follows the refused bytes.
      * The reason reaches [awaitFlushComplete], and a pipeline handler's
-     * `onError` ahead of its `onInactive` — the same two places every
-     * refused send reports to, in the same order.
+     * `onError` ahead of its `onInactive` — the two places a reported
+     * refusal always reaches, in that order. One met while the caller is
+     * already closing still answers the wait but is not an error to report.
      *
      * A failure that is not the refusal is not contained — a drain that also
      * could not release its buffers, or could not finish winding the
