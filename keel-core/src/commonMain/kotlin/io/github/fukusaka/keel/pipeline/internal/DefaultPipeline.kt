@@ -43,7 +43,7 @@ internal class DefaultPipeline(
     private val transport: IoTransport = transport
 
     private val head: DefaultContext = DefaultContext(this, "HEAD", HeadHandler(transport, this))
-    private val tail: DefaultContext = DefaultContext(this, "TAIL", TailHandler(logger))
+    private val tail: DefaultContext = DefaultContext(this, "TAIL", TailHandler(logger, this))
 
     /**
      * Dispatcher captured from the underlying [IoTransport]. Used by the

@@ -1,6 +1,5 @@
 package io.github.fukusaka.keel.pipeline.internal
 
-import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
@@ -20,6 +19,7 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  */
 internal class TailHandler(
     private val logger: Logger,
+    private val pipeline: DefaultPipeline,
 ) : InboundHandler {
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
@@ -28,28 +28,33 @@ internal class TailHandler(
     }
 
     override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
-        // A refused send is not an application bug, and reaching here is not
-        // evidence of one: the reason is delivered to the handlers ahead of
-        // the end they clean up on, and most have nothing to do with it that
-        // the end does not already tell them. What reaching here means is
-        // that nothing stopped it on the way, which is ordinary -- so it is
-        // recorded at the level that says so rather than reported as an
-        // exception nobody handled. On a coalescing default the engine's own
-        // containment writes its warning for the same send, so what this
-        // spares a reader is the second, misleading line.
+        // The refused send this pipeline was told about is not an
+        // application bug, and reaching here is not evidence of one: the
+        // reason is delivered ahead of the end the handlers clean up on, and
+        // most have nothing to do with it that the end does not already tell
+        // them. What reaching here means is that nothing stopped it on the
+        // way, which is ordinary -- so it is recorded at the level that says
+        // so. On a coalescing default the engine's own containment writes a
+        // warning for the same send, so what this spares a reader is the
+        // second, misleading line.
         //
-        // The refusal only, not its sealed supertype: a loop that ended
-        // without being asked to takes every connection it served with it,
-        // which is not ordinary at all, and how that failure should reach
-        // handlers is settled with the work that starts raising it.
+        // By identity, not by type: the transport reports one instance and
+        // this is it. A refusal a handler threw, or one an application
+        // injected through the public error entrance, is not that -- and a
+        // handler throwing anything is the case this frame exists to report.
+        // The head tells the same two apart the same way.
         //
         // And not when something failed alongside it. A refusal carries what
         // could not be finished while it was being contained -- a buffer
         // that would not release, a wind-down step that threw -- as
-        // suppressed causes. Those arrive attached to this one instance, so
-        // this is where they are named.
-        if (cause is RefusedWriteException && cause.suppressedExceptions.isEmpty()) {
-            logger.debug(cause) { "a refused send reached the end of the pipeline" }
+        // suppressed causes, which are named here because they arrive
+        // attached to this one instance and nothing else will name them.
+        if (cause === pipeline.reportedTransportFailure) {
+            if (cause.suppressedExceptions.isEmpty()) {
+                logger.debug(cause) { "a refused send reached the end of the pipeline" }
+            } else {
+                logger.warn(cause) { "a refused send reached the end of the pipeline, and something failed with it" }
+            }
             return
         }
         logger.warn(cause) { "Unhandled exception reached TAIL" }
