@@ -269,6 +269,58 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a reported refusal riding on an outer one is not mistaken for a leak`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The writability crossing runs handler code inside the outer
+            // drain's ledger update, before the outer catch. A handler that
+            // answers writability with a doomed write makes the *nested*
+            // drain the first -- reported -- refusal; its rethrow is carried
+            // as a suppressed cause on the outer one, which the head then
+            // sees as an unreported refusal with a rider. That rider is the
+            // reported instance itself, already delivered attached, not a
+            // leak to name.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE), WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            val rec = Recorder()
+            ch.pipeline.addLast("rec", rec)
+            val over = HIGH_WATER + 1
+            var answered = false
+            transport.onWritabilityChanged = { writable ->
+                if (writable && !answered) {
+                    answered = true
+                    transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+                    // Direct flush, not requestFlush: through the head the
+                    // nested throw is consumed by the head's own catch; the
+                    // direct call lets it unwind into the outer drain's
+                    // ledger stage, which carries it as a suppressed cause
+                    // on the outer refusal -- the shape under test.
+                    transport.flush()
+                }
+            }
+            transport.write(tracker.allocate(over).apply { writerIndex = over })
+
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertEquals(
+                listOf("onError(RefusedWriteException)", "onInactive"),
+                rec.seen,
+                "the nested refusal is the reported one, once, in order",
+            )
+            assertTrue(
+                plog.warnings.none { "cleanup did not finish" in it },
+                "the reported instance riding along is not a leak: ${plog.warnings}",
+            )
+            fake.assertAllConsumed()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a refusal met while the caller is closing is not reported`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The close's own teardown runs the scheduled drain and meets the
@@ -300,8 +352,9 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     fun `a handler that throws in onError is still told the end`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The report runs user code before the wind-down, so a throwing
-            // handler is the seam case: the report is lost for that handler,
-            // the wind-down must not be.
+            // handler is the seam case: it heard the report and failed while
+            // handling it -- the pipeline contains that -- and the wind-down
+            // must still run.
             rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = true)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
