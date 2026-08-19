@@ -687,6 +687,10 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
                 eventLoop.warnings.any { it.contains("did not finish cleaning up") },
                 "the gone peer is still reported alongside, got: ${eventLoop.warnings}",
             )
+            assertFalse(
+                eventLoop.warnings.any { it.contains("cleanup did not finish while the connection") },
+                "the teardown names its own riders; the funnel must not name them again: ${eventLoop.warnings}",
+            )
             fake.assertAllConsumed()
 
             failing.releaseUnderlying()

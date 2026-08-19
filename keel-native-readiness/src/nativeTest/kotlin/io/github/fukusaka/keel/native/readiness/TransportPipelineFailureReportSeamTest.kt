@@ -181,6 +181,46 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a rider on a nested refusal is named too`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The other arm of the skip-warn: the nested refusal is quiet
+            // because the connection's reason is already the first one, and
+            // the head swallows its rethrow -- but the handler's buffer
+            // failed to release on the way, and that leak still gets a name.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE), WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val ch = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            var acted = false
+            ch.pipeline.addLast(
+                "responder",
+                object : DuplexHandler {
+                    override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+                        if (!acted) {
+                            acted = true
+                            transport.write(failing)
+                            ch.requestFlush()
+                        }
+                    }
+                },
+            )
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertTrue(
+                eventLoop.warnings.any { "cleanup did not finish" in it },
+                "the nested rider must be named: ${eventLoop.warnings}",
+            )
+            fake.assertAllConsumed()
+            failing.releaseUnderlying()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a refusal met while the caller is closing is not reported`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The close's own teardown runs the scheduled drain and meets the
