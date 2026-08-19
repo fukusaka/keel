@@ -424,6 +424,51 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a rider on a refusal met after a peer-first end is still named in the log`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The third quiet arm carrying a rider: the refusal met after the
+            // inactive went out stays quiet by design, but the failed release
+            // riding on it is a leak with no other reporter -- the head names
+            // it once, in the log, with no handler entered after the end.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            val seen = mutableListOf<String>()
+            ch.pipeline.addLast(
+                "finisher",
+                object : DuplexHandler {
+                    override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+                        seen += "onError(${cause::class.simpleName})"
+                    }
+
+                    override fun onInactive(ctx: PipelineHandlerContext) {
+                        seen += "onInactive"
+                        transport.write(failing)
+                        ch.requestFlush()
+                    }
+                },
+            )
+
+            runCatching { transport.onPeerClosed(Interest.READ) }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertEquals(listOf("onInactive"), seen, "the quiet arm enters no handler")
+            assertEquals(
+                1,
+                plog.warnings.count { "cleanup did not finish" in it },
+                "the rider is named exactly once: ${plog.warnings}",
+            )
+            fake.assertAllConsumed()
+            failing.releaseUnderlying()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a refusal met while the caller is closing is not reported`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The close's own teardown runs the scheduled drain and meets the
