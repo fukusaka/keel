@@ -110,8 +110,28 @@ class PipelineTransportFailureTest {
 
         assertEquals(
             1,
-            log.warnings.count { "cleanup did not finish" in it },
+            log.warnings.count { "contained without reaching" in it },
             "nothing is installed, so the head is the only reporter: ${log.warnings}",
+        )
+    }
+
+    @Test
+    fun `a refusal no installed handler will receive is recorded as well`() {
+        // Handlers, but none that can be told: the replay a journalled cause
+        // waits for is scheduled by the first inbound handler, so an
+        // outbound-only pipeline never asks for one. The head is the last
+        // frame that can record it.
+        val transport = RefusingTransport()
+        val log = RecordingLogger()
+        val ch = channel(transport, log)
+        ch.pipeline.addLast("outbound-only", object : OutboundHandler {})
+
+        runCatching { ch.requestFlush() }
+
+        assertEquals(
+            1,
+            log.warnings.count { "contained without reaching" in it },
+            "nothing installed can receive it: ${log.warnings}",
         )
     }
 
@@ -126,7 +146,7 @@ class PipelineTransportFailureTest {
 
         runCatching { ch.requestFlush() }
 
-        val carried = log.causeOf("cleanup did not finish")
+        val carried = log.causeOf("contained without reaching")
         assertSame(transport.refusal, carried, "the warning carries the refusal itself")
         assertTrue(
             carried?.suppressedExceptions?.any { it === rider } == true,
@@ -154,7 +174,7 @@ class PipelineTransportFailureTest {
         runCatching { ch.requestFlush() }
 
         assertTrue(
-            log.warnings.none { "cleanup did not finish" in it },
+            log.warnings.none { "contained without reaching" in it },
             "the rider arrived attached to the reported refusal: ${log.warnings}",
         )
     }

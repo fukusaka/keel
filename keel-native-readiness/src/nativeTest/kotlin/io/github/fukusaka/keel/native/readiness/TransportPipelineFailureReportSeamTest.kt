@@ -191,7 +191,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             runCatching { eventLoop.drainDispatched() }
 
             assertTrue(
-                plog.warnings.any { "cleanup did not finish" in it },
+                plog.warnings.any { "contained without reaching" in it },
                 "the rider must be named: ${plog.warnings}",
             )
             assertEquals(emptyList(), rec.seen, "the refusal stays quiet and no handler is re-entered")
@@ -240,7 +240,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
                 "an always-answering handler is entered once, not recursed into",
             )
             assertTrue(
-                plog.warnings.any { "cleanup did not finish" in it },
+                plog.warnings.any { "contained without reaching" in it },
                 "and its rider is still named: ${plog.warnings}",
             )
             fake.assertAllConsumed()
@@ -276,7 +276,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
                 "the riders came attached to the reported refusal, nothing arrives after the end",
             )
             assertTrue(
-                plog.warnings.none { "cleanup did not finish" in it },
+                plog.warnings.none { "contained without reaching" in it },
                 "and the head does not name them a second time: ${plog.warnings}",
             )
             fake.assertAllConsumed()
@@ -328,9 +328,10 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
                 rec.seen,
                 "the nested refusal is the reported one, once, in order",
             )
-            assertTrue(
-                plog.warnings.none { "cleanup did not finish" in it },
-                "the reported instance riding along is not a leak: ${plog.warnings}",
+            assertEquals(
+                1,
+                plog.warnings.count { "contained without reaching" in it },
+                "the outer refusal reached nobody, so it is recorded once: ${plog.warnings}",
             )
             fake.assertAllConsumed()
             runCatching { transport.close() }
@@ -377,7 +378,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             )
             assertEquals(
                 1,
-                plog.warnings.count { "cleanup did not finish" in it },
+                plog.warnings.count { "contained without reaching" in it },
                 "the genuine leak is named exactly once: ${plog.warnings}",
             )
             fake.assertAllConsumed()
@@ -396,7 +397,8 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             // the end reaches nobody who can act on it, so this refusal
             // answers the wait but is not an error to report -- reporting it
             // would put onError after the onInactive it is contracted to
-            // precede.
+            // precede. Not reported is not the same as not recorded: these
+            // handlers never hear this refusal, so the head keeps it.
             rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
@@ -424,9 +426,10 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             assertEquals(listOf("onInactive"), seen, "no reason arrives after the end")
             val awaited = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
             assertIs<RefusedWriteException>(awaited, "the wait is still answered with the refusal")
-            assertTrue(
-                plog.warnings.isEmpty(),
-                "a rider-less quiet refusal has nothing to warn about: ${plog.warnings}",
+            assertEquals(
+                1,
+                plog.warnings.count { "contained without reaching" in it },
+                "the handler was told the end, never this refusal, so it is recorded: ${plog.warnings}",
             )
             fake.assertAllConsumed()
             runCatching { transport.close() }
@@ -454,7 +457,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
 
             assertEquals(
                 1,
-                plog.warnings.count { "cleanup did not finish" in it },
+                plog.warnings.count { "contained without reaching" in it },
                 "the rider is named once even with nobody attached: ${plog.warnings}",
             )
             fake.assertAllConsumed()
@@ -484,12 +487,45 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
 
             assertEquals(
                 1,
-                plog.warnings.count { "no handler received the reason" in it },
+                plog.warnings.count { "contained without reaching" in it },
                 "the connection ended for a reason nobody was told: ${plog.warnings}",
             )
             assertIs<RefusedWriteException>(
-                plog.causeOfWarning("no handler received the reason"),
+                plog.causeOfWarning("contained without reaching"),
                 "and the record carries the refusal itself",
+            )
+            fake.assertAllConsumed()
+            runCatching { transport.close() }
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `on the shipping default the record is left to the loop`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The same pipeline that has nobody to tell, with coalescing on:
+            // the flush schedules the drain instead of running it, so the
+            // refusal is met on a later tick inside the loop's containment,
+            // which names it there. The head is never handed the rethrow and
+            // must not record a second line for the same send.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val plog = RecordingLogger()
+            val ch = object : AbstractPipelinedChannel(transport, plog) {}
+            ch.pipeline.addLast("outbound-only", object : OutboundHandler {})
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            runCatching { ch.requestFlush() }
+            runCatching { eventLoop.drainDispatched() }
+
+            assertTrue(
+                plog.warnings.none { "contained without reaching" in it },
+                "the loop names this one, so the pipeline stays out of it: ${plog.warnings}",
+            )
+            assertTrue(
+                eventLoop.logger.warnings.any { "ending the connection" in it },
+                "and the loop does name it: ${eventLoop.logger.warnings}",
             )
             fake.assertAllConsumed()
             runCatching { transport.close() }
@@ -521,11 +557,11 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
 
             assertEquals(
                 1,
-                plog.warnings.count { "no handler received the reason" in it },
+                plog.warnings.count { "contained without reaching" in it },
                 "nothing will hand it over, so it is recorded here: ${plog.warnings}",
             )
             assertTrue(
-                plog.causeOfWarning("no handler received the reason")
+                plog.causeOfWarning("contained without reaching")
                     ?.suppressedExceptions?.isNotEmpty() == true,
                 "and the rider rides on the record: ${plog.warnings}",
             )
@@ -562,7 +598,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             runCatching { ch.requestFlush() }
 
             assertTrue(
-                plog.warnings.none { "cleanup did not finish" in it },
+                plog.warnings.none { "contained without reaching" in it },
                 "the replay is the reporter, so the head does not name it too: ${plog.warnings}",
             )
             runCatching { eventLoop.drainDispatched() }
@@ -639,7 +675,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             runCatching { eventLoop.drainDispatched() }
 
             assertTrue(
-                plog.warnings.none { "cleanup did not finish" in it },
+                plog.warnings.none { "contained without reaching" in it },
                 "the riders arrived attached to the delivered refusal: ${plog.warnings}",
             )
             assertEquals(
@@ -689,7 +725,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             assertEquals(listOf("onInactive"), seen, "the quiet arm enters no handler")
             assertEquals(
                 1,
-                plog.warnings.count { "cleanup did not finish" in it },
+                plog.warnings.count { "contained without reaching" in it },
                 "the rider is named exactly once: ${plog.warnings}",
             )
             fake.assertAllConsumed()
