@@ -295,10 +295,18 @@ internal class KeelApplicationResponse(
         output: ByteWriteChannel,
     ) {
         val tmp = ByteArray(UPGRADE_PUMP_BUFFER_SIZE)
+        // Why the session's inbound ended, when the bridge was closed with a
+        // reason: a connection the transport gave up on is not the same
+        // thing as a peer that finished talking, and the session reads the
+        // difference off this channel.
+        var closeCause: Throwable? = null
         try {
             while (!output.isClosedForWrite) {
                 val received = bridge.receiveCatching()
-                if (received.isClosed) break
+                if (received.isClosed) {
+                    closeCause = received.exceptionOrNull()?.takeIf { it !is CancellationException }
+                    break
+                }
                 val buf = received.getOrThrow()
                 try {
                     while (buf.readableBytes > 0) {
@@ -315,7 +323,7 @@ internal class KeelApplicationResponse(
         } catch (_: Exception) {
             // I/O error — let the session observe EOF on the next read
         } finally {
-            runCatching { output.cancel(null) }
+            runCatching { output.cancel(closeCause) }
         }
     }
 
