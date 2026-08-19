@@ -614,13 +614,13 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a bridged channel is not told an error it already answers through its own API`() = runBlocking {
+    fun `a bridged channel is answered by its own API and told quietly`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            // A Coroutine-mode channel has no handler to act on the reason:
-            // its caller learns the refusal from the suspending wait. Walking
-            // it through the pipeline anyway ends at the tail, which records
-            // it as an unhandled exception -- a handled failure reported as
-            // an application bug on every dead peer.
+            // A Coroutine-mode channel's caller learns the refusal from the
+            // suspending wait it already makes, so the reason travelling the
+            // pipeline has nobody to inform -- and nothing to complain about
+            // either: the end of the pipeline knows the send the transport
+            // reported from an exception nobody handled.
             rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = true)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
@@ -633,8 +633,8 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             runCatching { eventLoop.drainDispatched() }
 
             assertTrue(
-                plog.warnings.none { "Unhandled" in it },
-                "the bridged channel's own API answers this: ${plog.warnings}",
+                plog.warnings.isEmpty(),
+                "nothing here is worth a reader's attention: ${plog.warnings}",
             )
             val awaited = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
             assertIs<RefusedWriteException>(awaited, "and that API still answers with the refusal")

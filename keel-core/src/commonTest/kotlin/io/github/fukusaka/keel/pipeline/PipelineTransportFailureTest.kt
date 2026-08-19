@@ -102,7 +102,9 @@ class PipelineTransportFailureTest {
         // The engine's own end is the sibling failure nothing raises yet.
         // How it should reach handlers is settled with the work that starts
         // raising it, so until then it keeps the loud path rather than being
-        // quietened by a rule written for a dead peer.
+        // quietened by a rule written for a dead peer -- which the end of
+        // the pipeline gets right by asking whether this is the instance the
+        // transport reported, rather than what type it is.
         val transport = RefusingTransport()
         val log = RecordingLogger()
         val ch = channel(transport, log)
@@ -131,13 +133,17 @@ class PipelineTransportFailureTest {
 
         assertEquals(
             1,
-            log.warnings.count { "Unhandled" in it },
-            "what rode along is named where it arrives: ${log.warnings}",
+            log.warnings.count { "something failed with it" in it },
+            "what rode along is named where it arrives, and says why: ${log.warnings}",
         )
     }
 
     @Test
-    fun `a bridged channel is left to answer through its own API`() {
+    fun `a bridged channel is answered by its own API and told quietly`() {
+        // Its caller learns the refusal from the suspending wait it already
+        // makes, so the reason travelling the pipeline has nobody to inform
+        // -- and nothing to complain about either, now that the end of the
+        // pipeline knows this send from a bug.
         val transport = RefusingTransport()
         val log = RecordingLogger()
         val ch = channel(transport, log)
@@ -146,8 +152,34 @@ class PipelineTransportFailureTest {
         runCatching { ch.requestFlush() }
 
         assertTrue(
-            log.warnings.none { "Unhandled" in it },
-            "the suspending caller is the one being answered: ${log.warnings}",
+            log.warnings.isEmpty(),
+            "nothing here is worth a reader's attention: ${log.warnings}",
+        )
+    }
+
+    @Test
+    fun `a refusal a handler threw is not the one the transport reported`() {
+        // The end of the pipeline tells them apart by identity, because a
+        // handler throwing anything is the case it exists to report -- and
+        // the type alone cannot say who raised it.
+        val transport = RefusingTransport()
+        val log = RecordingLogger()
+        val ch = channel(transport, log)
+        ch.pipeline.addLast(
+            "thrower",
+            object : InboundHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                    throw RefusedWriteException("hand-made by a handler")
+                }
+            },
+        )
+
+        ch.pipeline.notifyRead("anything")
+
+        assertEquals(
+            1,
+            log.warnings.count { "Unhandled" in it },
+            "a handler that throws is reported, whatever it threw: ${log.warnings}",
         )
     }
 

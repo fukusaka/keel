@@ -28,7 +28,15 @@ internal class HttpServerConnectionFailureTest {
     }
 
     private val scope = CoroutineScope(Dispatchers.Unconfined)
-    private val transport = TestIoTransport()
+    private class RefusingTransport : TestIoTransport() {
+        val refusal = RefusedWriteException("peer is gone")
+        override fun flush(): Boolean {
+            onConnectionFailure?.invoke(refusal)
+            throw refusal
+        }
+    }
+
+    private val transport = RefusingTransport()
     private val log = RecordingLogger()
     private val channel = object : AbstractPipelinedChannel(transport, log) {}
 
@@ -55,7 +63,7 @@ internal class HttpServerConnectionFailureTest {
         // reaches the end of the pipeline, which records it as what it is.
         install()
 
-        channel.pipeline.notifyError(RefusedWriteException("peer is gone"))
+        runCatching { channel.requestFlush() }
 
         assertTrue(
             log.warnings.none { "Unhandled" in it },
