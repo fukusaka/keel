@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `Logger.debug(throwable) { ... }` — the `debug` counterpart of the `warn` / `error`
+  overloads, for an outcome worth keeping the cause of (#1065)
 - `core`: `IoTransport.onConnectionFailure` — the refusal that ended the connection, reported
   before the inactive; a Pipeline-mode channel forwards it to the pipeline's error path (#1065)
 - **BREAKING** (`core`): `TransportFailureException` — the sealed supertype for a transport failing
@@ -56,10 +58,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `core`, `native-readiness`: a pipeline handler now hears a reported refused send on `onError`
   before `onInactive`, once, in both flush configurations (#1065)
-- `core`: a refused send that reaches no handler is recorded by the pipeline head; one a
-  handler neither acts on nor stops reaches the tail, which logs it as unhandled (#1065)
-- `server-ktor`, `server-ktor-cio`: the inbound bridges finish their inbound with the failure
-  and no longer pass it on, so it is not reported as unhandled at the tail (#1065)
+- `core`: a refused send that reaches no handler is recorded by the pipeline head; one no
+  handler acted on is recorded at the end of the pipeline as a connection failure rather than
+  as an unhandled exception, unless something failed alongside it (#1065)
+- `server-ktor`: an upgraded session's inbound is now cancelled with the reason the connection
+  ended, where it previously ended with none (#1065)
 - **BREAKING** (`core`): a send the platform definitively refused is reported as a failure rather
   than a completed flush, so `IoTransport.flush()` may raise where it returned `true`. On the
   `Channel` surface it ends the connection and `awaitFlushComplete()` raises `RefusedWriteException`
