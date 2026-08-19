@@ -47,8 +47,13 @@ internal class RawInboundBridge : InboundHandler {
     }
 
     override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+        // Handled here, and not passed on: everything this bridge feeds is
+        // finished and the reason went with it, so there is nothing left for
+        // a later handler to do about it. This is the last handler in the
+        // pipelines that install it, and passing it on would reach the tail,
+        // which records what arrives there as an application bug -- on the
+        // ordinary path where a peer disappears mid-write.
         inbound.close(cause)
-        ctx.propagateError(cause)
     }
 
     /** Suspends until the next [IoBuf] arrives or the bridge is closed. */
