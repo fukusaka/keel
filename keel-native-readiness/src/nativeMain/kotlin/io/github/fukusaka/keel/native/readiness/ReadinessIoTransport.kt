@@ -978,19 +978,28 @@ class ReadinessIoTransport(
                 // Recorded first: a later waiter has no queue left to inspect
                 // -- the refusal discarded it -- so the reason is the only
                 // thing that can tell it what happened.
-                transportFailure = drainFailure
-                // The wind-down is what the gate is for, not the record: a
+                val firstRefusal = transportFailure == null
+                // The record is gated on being first, not on `opened`: a
                 // teardown's own deferred drain arrives with the connection
-                // already ending, and a waiter it answers still needs the
-                // refusal as that answer, not that someone closed.
-                if (opened) {
+                // already ending and still owes the late waiter this reason
+                // -- while a refusal met *inside* the report below (a handler
+                // answering the error by writing to the same dead peer) must
+                // not overwrite the reason the connection actually ended for.
+                if (firstRefusal) transportFailure = drainFailure
+                if (opened && firstRefusal) {
                     // The reason before the end, per the pipeline contract:
                     // `onInactive` is the handler's cue to clean up, and a
                     // reason delivered after the cleanup reaches nobody who
-                    // can act on it. Under the same `opened` gate as the
-                    // wind-down -- a caller-asked close is not an error to
-                    // report, which is also why the teardown's own deferred
-                    // drain never gets here.
+                    // can act on it. Gated on `opened` -- a caller-asked
+                    // close is not an error to report -- and on being the
+                    // first refusal, which is what makes the report
+                    // at-most-once: the handler runs while this transport
+                    // still accepts writes, and one that answers the error
+                    // by sending re-enters this drain synchronously under
+                    // the coalescing opt-out. Without the gate that nested
+                    // refusal would re-enter the handler too, and a handler
+                    // that always answers would recurse until the loop's
+                    // stack ran out.
                     //
                     // The callback is user code -- a seam. What a throw here
                     // would lose is the report, never the wind-down: it is
@@ -1005,6 +1014,17 @@ class ReadinessIoTransport(
                         drainFailure.addSuppressed(reportFailure)
                     }
                     endConnectionAfterFailure(drainFailure)
+                } else if (drainFailure.suppressedExceptions.isNotEmpty()) {
+                    // A refusal this branch stays quiet about -- the caller
+                    // is closing, or the connection's reason is already the
+                    // earlier refusal -- can still be carrying a failed
+                    // release. The refusal going quiet is the design; the
+                    // leak riding on it is not, and below this frame the
+                    // head swallows the rethrow, so this is where it gets
+                    // its name.
+                    eventLoop.logger.warn(drainFailure) {
+                        "cleanup did not finish while the connection was ending: fd=$fd"
+                    }
                 }
             }
             throw drainFailure

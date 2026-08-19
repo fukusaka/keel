@@ -47,18 +47,18 @@ internal class HeadHandler(
         try {
             transport.flush()
         } catch (@Suppress("SwallowedException") refused: RefusedWriteException) {
-            // Reported, not converted. A refusal has one construction site
-            // and every raise passes through the transport's flush funnel,
-            // which delivered it to this pipeline -- riders included, as its
-            // suppressed causes -- before ending the connection and
-            // rethrowing. Letting the generic catch above convert the
+            // Reported or named, never converted. A refusal has one
+            // construction site and every raise passes through the
+            // transport's flush funnel: the first on a live connection is
+            // delivered to this pipeline -- riders included, as suppressed
+            // causes -- before the connection ends, so converting the
             // rethrow would tell the same handlers the same instance twice.
-            //
-            // Only when the transport reported: a refusal met while the
-            // caller is already closing is not reported and not rethrown
-            // past the teardown, so it does not reach here. Anything else a
-            // flush throws still propagates to that generic catch, which is
-            // where a transport fault becomes a pipeline error.
+            // One the funnel stays quiet about (the caller was closing, or
+            // the connection's reason is an earlier refusal) is warn-logged
+            // there when it carries a failed cleanup, so swallowing it here
+            // silences nothing unnamed. Anything else a flush throws still
+            // propagates to the generic catch, which is where a transport
+            // fault becomes a pipeline error.
         }
     }
 
