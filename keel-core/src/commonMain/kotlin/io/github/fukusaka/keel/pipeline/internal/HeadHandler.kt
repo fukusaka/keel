@@ -55,8 +55,8 @@ internal class HeadHandler(
             // included, as suppressed causes -- before the connection ends,
             // so converting the rethrow would tell the same handlers the
             // same instance twice, and one the funnel stays quiet about
-            // (the caller was closing, or the reason is an earlier refusal)
-            // is quiet by design.
+            // (the caller was closing, the reason is an earlier refusal, or
+            // the inactive already went out) is quiet by design.
             //
             // But this is the one frame that *silences*, so it checks what
             // it silences: a failed release riding on a refusal the funnel

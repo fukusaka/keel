@@ -211,6 +211,17 @@ abstract class AbstractIoTransport(
 
     private var inactiveReported = false
 
+    /**
+     * Whether [reportInactiveOnce] has already told the listener the
+     * connection is over. A transport reporting a failure consults it: a
+     * reason delivered after the end reaches nobody who can act on it, so a
+     * refusal met on a connection whose inactive already went out — a peer
+     * FIN first, then a handler's flush from its own `onInactive` — stays
+     * quiet toward the pipeline. The wait is still answered with it, and a
+     * rider still reaches the head's check.
+     */
+    protected val inactiveAlreadyReported: Boolean get() = inactiveReported
+
     private var writeIdleHandle: TimerHandle? = null
 
     /**

@@ -112,7 +112,10 @@ interface IoTransport {
      * Only for an end the transport forced. A close the caller asked for is
      * not reported here even when the closing drain meets a dead peer: the
      * caller asked for the queue to be discarded, and a peer found gone
-     * while discarding is the outcome it asked for.
+     * while discarding is the outcome it asked for. Nor is a refusal met
+     * after [onReadClosed] already went out — the peer can end the
+     * connection first — since a reason delivered after the end reaches
+     * nobody who can act on it; the flush wait is still answered with it.
      *
      * The default accessors store nothing, so a transport that never raises
      * [io.github.fukusaka.keel.core.RefusedWriteException] is not obliged to

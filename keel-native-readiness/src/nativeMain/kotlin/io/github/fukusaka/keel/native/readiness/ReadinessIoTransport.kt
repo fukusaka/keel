@@ -999,27 +999,26 @@ class ReadinessIoTransport(
                     // the coalescing opt-out. Without the gate that nested
                     // refusal would re-enter the handler too, and a handler
                     // that always answers would recurse until the loop's
-                    // stack ran out.
+                    // stack ran out. (The callback is user code -- a seam;
+                    // its containment lives with the helper.)
                     //
-                    // The callback is user code -- a seam. What a throw here
-                    // would lose is the report, never the wind-down: it is
-                    // named by its own warning, with the throw attached. Not
-                    // appended to the refusal -- a handler failing to hear
-                    // the report is neither the connection's failure nor
-                    // teardown incompleteness, and the catches downstream
-                    // re-raise what the refusal carries as exactly that.
-                    try {
-                        onConnectionFailure?.invoke(drainFailure)
-                    } catch (reportFailure: Throwable) {
-                        eventLoop.logger.warn(reportFailure) {
-                            "reporting the refused send to the pipeline threw: fd=$fd"
-                        }
-                    }
+                    // The end can also precede the refusal: a peer FIN
+                    // reports the inactive first, and a handler that answers
+                    // its own `onInactive` with a final flush meets the dead
+                    // peer afterwards, with `opened` still true because the
+                    // channel's auto-close runs after the inactive report
+                    // returns. Reporting there would put the reason after the
+                    // end it is contracted to precede -- so a refusal met
+                    // once the inactive has gone out stays quiet toward the
+                    // pipeline. The wait is still answered with it above, and
+                    // a rider still reaches the head's check.
+                    if (!inactiveAlreadyReported) reportRefusalToPipeline(drainFailure)
                     endConnectionAfterFailure(drainFailure)
                 }
                 // A refusal this branch stays quiet about -- the caller is
-                // closing, or the connection's reason is already the earlier
-                // refusal -- rethrows below carrying whatever rode along.
+                // closing, the connection's reason is already the earlier
+                // refusal, or the inactive already went out -- rethrows
+                // below carrying whatever rode along.
                 // Every frame that can catch it names the riders itself: the
                 // teardown's and the half-close's catches re-raise them, the
                 // loop containment warns with the refusal attached, and the
@@ -1028,6 +1027,23 @@ class ReadinessIoTransport(
                 // handlers. Naming them here as well reported one leak twice.
             }
             throw drainFailure
+        }
+    }
+
+    /**
+     * Hands the refusal to [onConnectionFailure], containing a throw from the
+     * listener: what a throw here would lose is the report, never the
+     * wind-down. Named by its own warning with the throw attached, not
+     * appended to the refusal — a handler failing to hear the report is
+     * neither the connection's failure nor teardown incompleteness.
+     */
+    private fun reportRefusalToPipeline(drainFailure: RefusedWriteException) {
+        try {
+            onConnectionFailure?.invoke(drainFailure)
+        } catch (reportFailure: Throwable) {
+            eventLoop.logger.warn(reportFailure) {
+                "reporting the refused send to the pipeline threw: fd=$fd"
+            }
         }
     }
 
