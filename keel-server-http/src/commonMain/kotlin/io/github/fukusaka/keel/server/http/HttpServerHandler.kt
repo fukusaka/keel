@@ -16,6 +16,7 @@ import io.github.fukusaka.keel.codec.http.HttpResponse
 import io.github.fukusaka.keel.codec.http.HttpResponseHead
 import io.github.fukusaka.keel.codec.http.HttpStatus
 import io.github.fukusaka.keel.codec.http.addHttp1ServerCodec
+import io.github.fukusaka.keel.core.TransportFailureException
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
@@ -286,6 +287,23 @@ internal class HttpServerHandler(
             }
             else -> ctx.propagateRead(msg)
         }
+    }
+
+    /**
+     * Takes the connection's own failure, and passes on everything else.
+     *
+     * A transport that gives up on the connection reports why before it
+     * reports the end, and the end is what this handler acts on — the
+     * [onInactive] below cancels the in-flight call and leaves the registry,
+     * whatever the reason was. So there is nothing left for a later handler
+     * to do with it, and this is the last handler in the pipelines that
+     * install it: passing it on would reach the tail, which records what
+     * arrives there as an application bug — on the ordinary path where a
+     * peer disappears mid-write. Anything else keeps travelling, since an
+     * error this connection did not cause is not this handler's to absorb.
+     */
+    override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+        if (cause !is TransportFailureException) ctx.propagateError(cause)
     }
 
     /** Cancels any in-flight handler when the connection goes away. */
