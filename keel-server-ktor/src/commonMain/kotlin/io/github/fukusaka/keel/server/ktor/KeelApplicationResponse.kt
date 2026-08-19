@@ -322,15 +322,10 @@ internal class KeelApplicationResponse(
             // Write failure — connection likely closed by the peer
         }
     }
-
-    private companion object {
-        /** Buffer size for upgrade session inbound/outbound pumps. */
-        private const val UPGRADE_PUMP_BUFFER_SIZE = 8192
-    }
 }
 
-/** Buffer size for the upgrade session's inbound pump. */
-private const val UPGRADE_PUMP_BUFFER_SIZE_SHARED = 8192
+/** Buffer size for the upgrade session's pumps, inbound and outbound. */
+private const val UPGRADE_PUMP_BUFFER_SIZE = 8192
 
 /**
  * Drains [IoBuf]s from [bridge] and copies their bytes into [output] until
@@ -346,7 +341,7 @@ internal suspend fun pumpRawBridgeToInput(
     bridge: RawInboundBridge,
     output: ByteWriteChannel,
 ) {
-    val tmp = ByteArray(UPGRADE_PUMP_BUFFER_SIZE_SHARED)
+    val tmp = ByteArray(UPGRADE_PUMP_BUFFER_SIZE)
     // Why the session's inbound ended, when the bridge was closed with a
     // reason: a connection the transport gave up on is not the same
     // thing as a peer that finished talking, and the session reads the
