@@ -150,18 +150,21 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a rider on a refusal the close race silences is still named in the log`() = runBlocking {
+    fun `a rider on a refusal the close race silences still reaches the error path`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The refusal itself going quiet is the caller-close design; the
-            // release failure riding on it is a leak, and a leak is never
-            // silent. Deterministic route: dropping the refused queue crosses
-            // the low-water mark, the writability callback closes the
-            // transport, and the catch skips both report and wind-down --
-            // the head then swallows the rethrow.
+            // release failure riding on it is a leak, and the head -- the one
+            // frame that silences -- checks what it silences and hands the
+            // rider to the error path as itself. Deterministic route:
+            // dropping the refused queue crosses the low-water mark, the
+            // writability callback closes the transport, and the catch skips
+            // both report and wind-down.
             rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
             val ch = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
+            val rec = Recorder()
+            ch.pipeline.addLast("rec", rec)
             val over = HIGH_WATER + 1
             val failing = FailingReleaseIoBuf(tracker.allocate(over).apply { writerIndex = over })
             transport.onWritabilityChanged = { writable -> if (writable) transport.close() }
@@ -170,9 +173,10 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             runCatching { ch.requestFlush() }
             runCatching { eventLoop.drainDispatched() }
 
-            assertTrue(
-                eventLoop.warnings.any { "cleanup did not finish" in it },
-                "the rider must be named somewhere: ${eventLoop.warnings}",
+            assertEquals(
+                listOf("onError(InjectedFault)"),
+                rec.seen,
+                "the rider reaches the handler as itself; the refusal stays quiet",
             )
             fake.assertAllConsumed()
             failing.releaseUnderlying()
@@ -181,27 +185,31 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a rider on a nested refusal is named too`() = runBlocking {
+    fun `a rider on a nested refusal reaches the error path too`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            // The other arm of the skip-warn: the nested refusal is quiet
-            // because the connection's reason is already the first one, and
-            // the head swallows its rethrow -- but the handler's buffer
-            // failed to release on the way, and that leak still gets a name.
+            // The other silenced arm: the nested refusal is quiet because
+            // the connection's reason is already the first one -- but the
+            // handler's buffer failed to release on the way, and the head
+            // hands that leak to the error path before the wind-down runs.
             rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE), WriteResult.Failed(EPIPE))
             val transport = transport()
             val ch = object : AbstractPipelinedChannel(transport, PrintLogger("test")) {}
             val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
-            var acted = false
+            val seen = mutableListOf<String>()
             ch.pipeline.addLast(
                 "responder",
                 object : DuplexHandler {
                     override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
-                        if (!acted) {
-                            acted = true
+                        seen += "onError(${cause::class.simpleName})"
+                        if (seen.size == 1) {
                             transport.write(failing)
                             ch.requestFlush()
                         }
+                    }
+
+                    override fun onInactive(ctx: PipelineHandlerContext) {
+                        seen += "onInactive"
                     }
                 },
             )
@@ -209,9 +217,10 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             runCatching { ch.requestFlush() }
             runCatching { eventLoop.drainDispatched() }
 
-            assertTrue(
-                eventLoop.warnings.any { "cleanup did not finish" in it },
-                "the nested rider must be named: ${eventLoop.warnings}",
+            assertEquals(
+                listOf("onError(RefusedWriteException)", "onError(InjectedFault)", "onInactive"),
+                seen,
+                "the leak is named as itself, between the reason and the end",
             )
             fake.assertAllConsumed()
             failing.releaseUnderlying()
