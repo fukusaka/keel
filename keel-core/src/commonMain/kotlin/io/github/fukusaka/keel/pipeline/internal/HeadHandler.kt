@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.pipeline.internal
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.RefusedWriteException
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.DuplexHandler
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.IoTransport
@@ -19,6 +20,7 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  */
 internal class HeadHandler(
     private val transport: IoTransport,
+    private val pipeline: DefaultPipeline,
 ) : DuplexHandler {
 
     // --- Inbound: pass through to next handler ---
@@ -57,16 +59,18 @@ internal class HeadHandler(
             // is quiet by design.
             //
             // But this is the one frame that *silences*, so it checks what
-            // it silences: a failed release riding on the refusal has no
-            // other reporter here, and a leak is never silent. The riders go
-            // to the error path as themselves -- they are faults, not the
-            // refusal -- exactly as the teardown's and the half-close's
-            // catches re-raise them to their own callers.
-            val alsoIncomplete = refused.suppressedExceptions
-            if (alsoIncomplete.isNotEmpty()) {
-                val first = alsoIncomplete.first()
-                alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
-                ctx.propagateError(first)
+            // it silences: a failed release riding on a refusal the funnel
+            // stayed quiet about has no other reporter, and a leak is never
+            // silent. Named in the log, deliberately not handed back to the
+            // handlers: re-entering them from here opened an unbounded
+            // recursion -- a handler that answers every error with another
+            // doomed write mints a fresh rider each time -- and the reported
+            // refusal's riders were already delivered attached, where a
+            // second delivery would land after the inactive they precede.
+            if (refused !== pipeline.lastNotifiedError && refused.suppressedExceptions.isNotEmpty()) {
+                pipeline.logger.warn(refused) {
+                    "cleanup did not finish while a refused send was being contained"
+                }
             }
         }
     }

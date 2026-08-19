@@ -37,12 +37,12 @@ import kotlin.coroutines.EmptyCoroutineContext
 internal class DefaultPipeline(
     override val channel: PipelinedChannel,
     transport: IoTransport,
-    private val logger: Logger,
+    internal val logger: Logger,
 ) : Pipeline {
 
     private val transport: IoTransport = transport
 
-    private val head: DefaultContext = DefaultContext(this, "HEAD", HeadHandler(transport))
+    private val head: DefaultContext = DefaultContext(this, "HEAD", HeadHandler(transport, this))
     private val tail: DefaultContext = DefaultContext(this, "TAIL", TailHandler(logger))
 
     /**
@@ -364,7 +364,20 @@ internal class DefaultPipeline(
         return this
     }
 
+    /**
+     * The cause the transport most recently injected through [notifyError].
+     *
+     * [HeadHandler] reads it to tell a refusal the transport already
+     * delivered to these handlers — riders attached — from one it stayed
+     * quiet about, whose riders would otherwise vanish with the head's
+     * swallow. Identity, not equality: the funnel rethrows the same
+     * instance it reported. `notifyError` has no other production caller,
+     * so nothing else writes here.
+     */
+    internal var lastNotifiedError: Throwable? = null
+
     override fun notifyError(cause: Throwable): Pipeline {
+        lastNotifiedError = cause
         if (preAttachJournalDrained) {
             head.invokeOnError(cause)
         } else {
