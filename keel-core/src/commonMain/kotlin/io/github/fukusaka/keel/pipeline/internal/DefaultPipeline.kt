@@ -380,8 +380,9 @@ internal class DefaultPipeline(
      * journal is not itself a promise — a pipeline whose handlers are all
      * outbound never asks for the drain, and its journal is handed to
      * nobody. So the mark follows who has undertaken to name it: the
-     * handlers now, or a scheduled drain, which replays the cause to them or
-     * reports it discarded.
+     * handlers now, a scheduled drain, which replays the cause to them or
+     * reports it discarded, or — when neither is on its way — the record
+     * [notifyTransportFailure] writes itself before accepting it.
      *
      * It answers for the moment it is read, which is all the head can act
      * on. Two consequences are accepted rather than solved. A handler
@@ -409,7 +410,17 @@ internal class DefaultPipeline(
      * above, which no other entrance may move.
      */
     internal fun notifyTransportFailure(cause: Throwable) {
-        if (preAttachJournalDrained || drainScheduled) reportedTransportFailure = cause
+        if (!preAttachJournalDrained && !drainScheduled) {
+            // Accepted with nothing on its way to hand it over: the replay is
+            // scheduled by the first inbound handler, and a pipeline whose
+            // handlers are all outbound never asks for one. Nobody here will
+            // see this, and the head stays quiet for a refusal it can see was
+            // taken on -- so this is the last place it can be recorded, and
+            // the reason a connection ended is not something to drop. It is
+            // still journalled: a handler attached later is owed it too.
+            logger.warn(cause) { "no handler received the reason this connection ended" }
+        }
+        reportedTransportFailure = cause
         notifyError(cause)
     }
 
