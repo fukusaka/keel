@@ -53,6 +53,7 @@ internal class AbstractPipelinedChannelTest {
         var readWiredAtAttach: Boolean? = null
         var readClosedWiredAtAttach: Boolean? = null
         var writabilityWiredAtAttach: Boolean? = null
+        var connectionFailureWiredAtAttach: Boolean? = null
 
         override fun onChannelAttached() {
             attachCount++
@@ -60,6 +61,7 @@ internal class AbstractPipelinedChannelTest {
             readWiredAtAttach = onRead != null
             readClosedWiredAtAttach = onReadClosed != null
             writabilityWiredAtAttach = onWritabilityChanged != null
+            connectionFailureWiredAtAttach = onConnectionFailure != null
         }
     }
 
@@ -91,6 +93,11 @@ internal class AbstractPipelinedChannelTest {
             true,
             transport.writabilityWiredAtAttach,
             "onWritabilityChanged must be wired before the attach hook",
+        )
+        assertEquals(
+            true,
+            transport.connectionFailureWiredAtAttach,
+            "onConnectionFailure must be wired before the attach hook",
         )
     }
 
