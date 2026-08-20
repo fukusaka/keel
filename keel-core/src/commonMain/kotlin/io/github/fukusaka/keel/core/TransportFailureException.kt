@@ -82,13 +82,15 @@ public class RefusedWriteException(
  * case, and the message names it. [EngineFailureException] is the other
  * scale, where the loop itself is gone and every connection with it.
  *
- * **A wait is how a caller hears about it, not a handler.** The failure has
- * already been through whatever handler chain was serving this connection —
- * often it started there — so it is not sent back down that chain as an
- * error, which would hand a handler its own throw and invite an answer that
- * throws again. It is logged where it was contained, the connection is
- * reported inactive as any ending connection is, and a flush still owed an
- * answer is given this.
+ * **A wait is how a caller hears about it, not a handler.** Where the failure
+ * threw, it has already been through whatever handler chain was serving this
+ * connection — often it started there — so sending it back down as an error
+ * would hand a handler its own throw and invite an answer that throws again.
+ * Where nothing threw, the inactive report is what a handler hears, and a
+ * second notification saying the same thing is not something it can act on.
+ * Either way it is logged where it happened, the connection is reported
+ * inactive as any ending connection is, and a flush still owed an answer is
+ * given this.
  */
 public class ConnectionFailureException(
     message: String,
@@ -117,10 +119,14 @@ public class ConnectionFailureException(
  * throw that gets past them has no owner left. That is the rare shape. The
  * ordinary one does not throw at all — a poll the kernel refuses for good, a
  * lock whose exclusion is gone — and those record the same thing on their way
- * out while the process carries on. Either way the flush waits are
- * ended by the terminal sequence the loop runs before it goes, so a caller
- * does hear this. A wait for readiness rather than for a flush — a connect,
- * an accept — is still ended as a cancellation whichever way the loop went.
+ * out while the process carries on. Either way the flush waits are ended by
+ * the terminal sequence the loop runs before it goes. On the ordinary route
+ * that is the whole story. On the throwing one, a wait parked on the loop's
+ * own dispatcher is delivered by the sequence's last drain and does hear
+ * this, and one parked elsewhere has its answer handed off and then races the
+ * process ending — which is the same race anything else on that connection
+ * would be in. A wait for readiness rather than for a flush — a connect, an
+ * accept — is still ended as a cancellation whichever way the loop went.
  */
 public class EngineFailureException(
     message: String,

@@ -170,14 +170,17 @@ interface Channel : AutoCloseable {
      * read the platform refused for good — arrives as
      * [ConnectionFailureException]; a loop that ended without being asked to
      * arrives as [EngineFailureException]. Each is recorded where it happens,
-     * so a wait already parked and one arriving afterwards are told the same
-     * thing.
+     * so a wait arriving after one of them is told what a wait already parked
+     * was told — for a refused send, the same object. A drain that fails some
+     * other way answers the parked wait with what it caught and the later one
+     * with the record made from it, so the two agree about the connection and
+     * not about the type.
      *
      * **Engines differ in how far they have taken this**, the same divergence
      * [flush] states about a refused send: the two POSIX readiness engines
-     * record every one of these and answer with it, and the rest still end
-     * such a wait as a cancellation. This is the contract they are converging
-     * on rather than one they all meet.
+     * record these and answer with them, and the rest still end such a wait as
+     * a cancellation. This is the contract they are converging on rather than
+     * one they all meet.
      *
      * **A `CancellationException` is what remains**, and it means nothing was
      * recorded as having ended the connection: the caller closed this channel,
@@ -188,11 +191,14 @@ interface Channel : AutoCloseable {
      * started is what cancellation means, and the first of those is exactly
      * that; the rest are ends nobody asked this caller about.
      *
-     * That last one makes a distinction worth knowing: a peer that closes
-     * gracefully leaves nothing recorded, and a peer that resets is a read the
-     * platform refuses and does. So the same connection dying two ways answers
-     * a wait two ways, even though what became of the queued bytes is the same
-     * either way.
+     * That last one makes a distinction worth knowing, and it turns on
+     * something the caller does control. A reset is told apart from an orderly
+     * close by the read that refuses; a connection with reads disabled issues
+     * none, so both arrive as the same event and neither is recorded. With
+     * reads enabled the reset is recorded and the orderly close is not. So the
+     * same connection dying two ways can answer a wait two ways, or the same
+     * way, depending on whether anything was reading — even though what became
+     * of the queued bytes is the same throughout.
      *
      * **Whether any of them arrives depends on there being something left to
      * report.** A drain that ran inside the request and emptied the queue
