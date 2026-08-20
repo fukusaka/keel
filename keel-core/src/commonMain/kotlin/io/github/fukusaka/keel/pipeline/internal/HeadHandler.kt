@@ -84,7 +84,10 @@ internal class HeadHandler(
             // as routine with a bridge installed and as a problem without
             // one; the engine's own containment still warns for the deferred
             // drain on the shipping default, which is where a reader who
-            // watches warnings sees it.
+            // watches warnings sees it. Under the coalescing opt-out the
+            // drain runs here instead, so this record is the only one, and a
+            // reader who wants those goes looking for them -- which is the
+            // trade for not reporting an ordinary end as a fault.
             //
             // Only the refusal, not its sealed supertype: the sibling
             // failure is not raised anywhere yet, and how it should reach

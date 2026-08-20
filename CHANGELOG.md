@@ -58,8 +58,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `core`, `native-readiness`: a pipeline handler now hears a reported refused send on `onError`
   before `onInactive`, once, in both flush configurations (#1065)
 - `core`: a refused send no handler is getting is recorded by the pipeline head; one that
-  reaches the end of the pipeline, whenever it gets there, is recorded as the connection's own
-  end rather than as an unhandled exception (#1065)
+  reaches the end of the pipeline is recorded as the connection's own end rather than as an
+  unhandled exception, and at `DEBUG` unless something failed with it (#1065)
 - `server-ktor`: an upgraded session's inbound is now cancelled with the reason the connection
   ended, where it previously ended with none (#1065)
 - **BREAKING** (`core`): a send the platform definitively refused is reported as a failure rather
