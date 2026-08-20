@@ -378,8 +378,18 @@ internal class KqueueEventLoop(
         while (running.value != 0) {
             // The registration lock failing means the ledgers stopped being
             // exclusive; end the loop the same way a poll fatal does rather
-            // than keep arming from state nothing is guarding.
-            if (regLockBroken()) break
+            // than keep arming from state nothing is guarding -- recorded the
+            // same way too. Here rather than where the failure is reported,
+            // because that runs on whichever thread was taking the lock, at a
+            // moment that says nothing about whether this loop is ending or
+            // was already asked to. Reaching this check means the body is
+            // running and the lock is what ends it.
+            if (regLockBroken()) {
+                recordLoopFault(
+                    IllegalStateException("the registration lock stopped being exclusive; this EventLoop is stopping"),
+                )
+                break
+            }
             drainTasks()
 
             // Non-blocking poll if tasks arrived during drainTasks(), else block

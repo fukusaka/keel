@@ -761,25 +761,6 @@ abstract class AbstractReadinessEventLoop :
     @InternalReadinessEngineApi
     fun reportRegLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
         regLockFailed.value = 1
-        // The exclusion this loop's ledgers rest on went away, and nobody
-        // asked for that -- so it is why the loop is about to stop, and its
-        // waiters are owed the reason. Recorded here rather than where each
-        // engine breaks out of its body, so both reach it, and so does a
-        // failure met off the loop thread entirely.
-        //
-        // Unless the loop had already published that it is finishing, in which
-        // case its ending was decided before this and this is not why. That
-        // window is real and unbounded: the lock outlives the loop on purpose,
-        // because cancellations keep arriving and taking it long after the
-        // sweep, and one of those failing must not turn a shutdown somebody
-        // asked for into a fault its late waiters are told about.
-        if (!handoff.isFinished()) {
-            recordLoopFault(
-                IllegalStateException(
-                    "pthread_mutex_$operation() failed on the registration lock: ${errnoMessage(errno)}",
-                ),
-            )
-        }
         // A failed release leaves this thread holding the mutex; a failed
         // acquire does not. The teardown has to tell them apart: it can still
         // run its sweep in the second case, but re-taking a mutex this thread
@@ -1553,8 +1534,7 @@ abstract class AbstractReadinessEventLoop :
         // isDispatchNeeded, so a resume lands on this loop's queue even though
         // the sweep already runs on its thread -- and a listener told the loop
         // stopped can queue as readily as a cancelled waiter can: teardown
-        // cancels the flush continuation of a handler parked on this very
-        // dispatcher. Unconditional, deliberately: every predicate written
+        // ends the flush wait of a handler parked on this very dispatcher. Unconditional, deliberately: every predicate written
         // here so far under-delivered somewhere (gating on `stranded` alone
         // missed the write-only client this sweep exists for; gating on the
         // participants told skips a boss loop, which has none), and the drain
@@ -1618,10 +1598,11 @@ abstract class AbstractReadinessEventLoop :
      *
      * Call it **before** leaving the body, so the record precedes the shutdown
      * flags [terminate] publishes and every reader that synchronises on one of
-     * them sees it. A caller that is late does not race those readers so much
-     * as contradict them: by then the loop's ending is decided and this is not
-     * it, which is why the one path that can arrive late — a registration lock
-     * failing long after the sweep — checks before it records.
+     * them sees it. Which is also why every caller is a body that is on its way
+     * out rather than whatever detected the fault: a registration lock stops
+     * being exclusive on whichever thread was taking it, at a moment that says
+     * nothing about whether this loop is ending or was already asked to. The
+     * body's own check answers that, and answers it in the right order.
      */
     protected fun recordLoopFault(cause: Throwable) {
         handoff.recordLoopFailure(cause)

@@ -199,10 +199,10 @@ interface Channel : AutoCloseable {
      * bytes queued: nothing will drain them now, and what is gone is bigger
      * than this connection. Once the loop has gone quiet this is the whole
      * answer — a connection that had recorded a failure of its own is not
-     * consulted, so a wait arriving then hears about the loop even though the
-     * connection knew why its bytes never left. What a wait arriving in that
-     * order should be told is not settled; what it will not be told is that it
-     * asked for any of this.
+     * consulted. So a connection that failed, on an engine later asked to
+     * stop, answers a wait arriving afterwards with the cancellation the stop
+     * earns, even though the connection knew why those bytes never left.
+     * Which of the two such a wait should hear is not settled.
      */
     suspend fun awaitFlushComplete() {}
 

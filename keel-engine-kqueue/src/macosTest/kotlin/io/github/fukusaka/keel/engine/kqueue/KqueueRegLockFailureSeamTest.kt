@@ -114,6 +114,31 @@ class KqueueRegLockFailureSeamTest {
     }
 
     @Test
+    fun `a lock that fails while a stop is already under way is not why it ended`() {
+        // The window between "asked to stop" and the loop noticing: the flag
+        // the body reads is already down, and a lock somebody else was holding
+        // fails in the meantime. The stop is what ends this loop, and its
+        // waiters asked for that -- so the fault that arrives alongside must
+        // not turn their cancellation into a report.
+        //
+        // A check on "has the loop published that it is finishing" does not
+        // cover this: that comes later still. What covers it is where the
+        // record is written -- the body's own check, which this ending never
+        // reaches, because the condition above it goes false first.
+        val fake = FakeKqueueSyscallOps()
+        val el = KqueueEventLoop(errorRecordingLogger(mutableListOf()), syscallOps = fake)
+        fake.onWait = {
+            el.close()
+            el.reportRegLockFailure("unlock", EINVAL, stillHeld = false)
+        }
+
+        el.loop()
+
+        assertEquals(1, fake.waitCalls, "the body must have run and ended through its own condition")
+        assertNull(el.loopFailure(), "a stop that was asked for is not a fault, whatever failed alongside it")
+    }
+
+    @Test
     fun `a loop whose lock release failed does not poll again`() {
         // The other way the lock breaks: the release failed, so this thread
         // still holds it. The loop's decision is the same one — what differs is

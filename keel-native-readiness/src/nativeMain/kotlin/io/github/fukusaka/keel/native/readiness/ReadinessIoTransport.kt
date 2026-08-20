@@ -1348,7 +1348,8 @@ class ReadinessIoTransport(
         failure = runStage(failure) { releaseAllPendingWrites() }
         // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
         // The transport's own cause, not the stopped-loop one -- this teardown
-        // runs on a live loop, and the wait ends because the transport closed.
+        // is one the loop still runs (its own final drain included), and the
+        // wait ends because the transport closed.
         failure = runStage(failure) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
