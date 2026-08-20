@@ -372,6 +372,15 @@ class ReadinessIoTransport(
      * the dead peer. Answering a waiter with one of those would name the
      * consequence and lose the cause.
      *
+     * **What is recorded carries the failure as its cause, and that failure is
+     * still being written to.** The wind-down below appends to it whatever
+     * fails alongside, while a teardown stage may already have handed this
+     * record to a waiter on another thread, inline — and a `Throwable`'s
+     * suppressed list is unsynchronised here. The same hazard the drain's own
+     * answer defers its resume to avoid; this path does not, and the widening
+     * from refusals to every contained failure widens it. Worth naming, since
+     * what it costs is a reader of the suppressed list, not the reason itself.
+     *
      * An end the transport decides on without a failure — the idle timeout
      * reclaiming a connection nobody is using — is deliberately not recorded:
      * it is a policy the application configured, so it is nearer to a close

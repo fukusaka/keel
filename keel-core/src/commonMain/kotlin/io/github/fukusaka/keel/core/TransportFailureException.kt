@@ -124,11 +124,12 @@ public class ConnectionFailureException(
  * dispatcher is delivered by the sequence's last drain and does hear this, and
  * one parked elsewhere has its answer handed off and then races the process
  * ending — the same race anything else on that connection would be in. And on
- * one route it reaches none of them: a lock whose *release* failed leaves the
- * loop holding it, so the sequence refuses to sweep rather than walk ledgers
- * it cannot guard, and the waits parked on that loop stay parked. What that
- * loop can still answer is a wait arriving after it, which finds the record
- * and is told this. A wait for readiness rather than for a flush — a connect, an
+ * one route it reaches none of them: a lock whose *release* failed stays held
+ * by whichever thread failed to give it back, so the sequence refuses to sweep
+ * rather than walk ledgers it cannot guard, and the waits parked on that loop
+ * stay parked. A wait arriving afterwards is not reliably told either, since
+ * that loop may never publish that it stopped. This type is recorded on that
+ * route, and who receives it is what the route cannot promise. A wait for readiness rather than for a flush — a connect, an
  * accept — is still ended as a cancellation whichever way the loop went.
  */
 public class EngineFailureException(

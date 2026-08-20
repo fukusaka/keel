@@ -183,14 +183,16 @@ interface Channel : AutoCloseable {
      * a cancellation. This is the contract they are converging on rather than
      * one they all meet.
      *
-     * **A `CancellationException` is what remains**, and it means nothing was
-     * recorded as having ended the connection: the caller closed this channel,
-     * or the engine was asked to stop, or the transport ended it on a policy
-     * the application configured, such as an idle timeout reclaiming a
-     * connection nobody is using — or the peer ended the exchange in an
-     * orderly way, which is not this transport failing at all. Ending work you
-     * started is what cancellation means, and the first of those is exactly
-     * that; the rest are ends nobody asked this caller about.
+     * **A `CancellationException` is what remains**, and it means nothing that
+     * ended this connection was recorded *and consulted*: the caller closed
+     * this channel, or the engine was asked to stop, or the transport ended it
+     * on a policy the application configured, such as an idle timeout
+     * reclaiming a connection nobody is using — or the peer ended the exchange
+     * in an orderly way, which is not this transport failing at all. Ending
+     * work you started is what cancellation means, and the first of those is
+     * exactly that; the rest are ends nobody asked this caller about. The
+     * second can also arrive over a connection that *had* recorded a failure,
+     * which the paragraph on a gone loop describes.
      *
      * That last one makes a distinction worth knowing, and it turns on
      * something the caller does control. A reset is told apart from an orderly
@@ -229,11 +231,15 @@ interface Channel : AutoCloseable {
      * of the two such a wait should hear is not settled, and the moment that
      * currently decides it is not one a caller can see.
      *
-     * **A loop that cannot sweep answers nobody it had.** Its registration
-     * lock failing to *release* leaves it holding the lock, so the terminal
-     * sequence declines to walk ledgers it can no longer guard: waits already
-     * parked on that loop stay parked, and only ones arriving afterwards find
-     * the record and are told.
+     * **A loop whose registration lock failed to *release* answers nobody.**
+     * The lock stays held by whichever thread failed to give it back, and the
+     * terminal sequence declines to walk ledgers it can no longer guard, so
+     * waits already parked on that loop stay parked. Nor is a wait arriving
+     * afterwards reliably told: the sequence's last drain runs ahead of that
+     * decision, and anything queued there that needs the lock does not return,
+     * which leaves the loop never publishing that it stopped. That is an
+     * ending this contract does not cover, and the code that stops there says
+     * so.
      */
     suspend fun awaitFlushComplete() {}
 
