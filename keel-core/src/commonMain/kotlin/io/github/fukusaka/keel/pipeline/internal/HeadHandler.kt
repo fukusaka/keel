@@ -73,15 +73,18 @@ internal class HeadHandler(
             // pipeline for that.
             //
             // At the level the end of the pipeline uses, and for the same
-            // reason: a connection ending because its peer went away is
-            // ordinary, and the caller waiting on the flush is answered with
-            // it either way, so the record is there to be found rather than
-            // to be investigated. What rode along on it is not ordinary --
-            // a buffer that would not release, a wind-down step that threw
-            // -- and nothing else will name those, so they make the record
-            // loud and are carried by it. Without this the same connection
-            // read as routine with a bridge installed and as a problem
-            // without one.
+            // reason: a connection the transport gave up on is an outcome,
+            // not a fault to look into -- the send that ended it is named in
+            // the record's cause, errno and all, for a reader who goes
+            // looking, and a caller that waits on the flush is answered with
+            // the same instance. What rode along on it is not an outcome --
+            // a buffer that would not release, a wind-down step that threw --
+            // and nothing else will name those, so they make the record loud
+            // and are carried by it. Without this the same connection read
+            // as routine with a bridge installed and as a problem without
+            // one; the engine's own containment still warns for the deferred
+            // drain on the shipping default, which is where a reader who
+            // watches warnings sees it.
             //
             // Only the refusal, not its sealed supertype: the sibling
             // failure is not raised anywhere yet, and how it should reach
