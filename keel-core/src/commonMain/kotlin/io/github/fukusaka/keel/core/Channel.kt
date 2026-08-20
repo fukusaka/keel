@@ -176,6 +176,10 @@ interface Channel : AutoCloseable {
      * with the record made from it, so the two agree about the connection and
      * not about the type. Unless the caller was already closing, in which case
      * the drain answers no parked wait at all and leaves both to the close.
+     * The types can also differ the other way: a refused send met while the
+     * connection already has a reason answers the parked wait with the refusal
+     * and the later one with that earlier reason, since a connection ends once
+     * and the first failure is what ended it.
      *
      * **Engines differ in how far they have taken this**, the same divergence
      * [flush] states about a refused send: the two POSIX readiness engines
