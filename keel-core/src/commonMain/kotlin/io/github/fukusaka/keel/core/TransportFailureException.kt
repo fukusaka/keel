@@ -17,15 +17,14 @@ package io.github.fukusaka.keel.core
  * A pipelined application sees a reported refusal on the handler error
  * path, the layer's own way of being told — before the inactive report,
  * whatever entry met it, so the reason arrives while a handler can still act
- * on it. Three are deliberately not reported there: one met while the
- * caller is already closing, one met after the connection's end was
- * already reported — the peer can end the connection first, and a reason
- * delivered after the end reaches nobody who can act on it — and a second
- * one met while the first is still being reported, since the first is the
- * reason the connection ended. A wait is still answered in all three — with
- * that same refusal in the first two, and with the first one in the third,
- * which is the reason the connection ended. Whether a subtype added later
- * takes the same route is that subtype's to say.
+ * on it. Not every refusal is reported there. One met while the caller is
+ * already closing is not, nor one met after the connection's end was already
+ * reported — the peer can end the connection first, and a reason delivered
+ * after the end reaches nobody who can act on it — nor one met while the
+ * connection already has a reason, since that reason is why it is ending. A
+ * wait is answered in all of them, with whichever reason ended the
+ * connection. The other subtypes do not take this route at all: each says
+ * why on its own page.
  *
  * **This is not a cancellation, and that distinction is the point.** A
  * caller that closes its own channel gets a `CancellationException`, because
@@ -74,12 +73,14 @@ public class RefusedWriteException(
  * Handling this connection failed, and it was ended so the failure went no
  * further.
  *
- * What threw is in the cause: work the engine was running on this
- * connection's behalf — a readiness event, a step of its wind-down, a
- * deferred flush. The engine answers such a throw by ending the one
- * connection it belongs to, which is what keeps the rest of them running;
- * [EngineFailureException] is the other scale, where the loop itself is gone
- * and every connection with it.
+ * Two shapes reach this. Work the engine was running on this connection's
+ * behalf threw — a readiness event, a step of its wind-down, a deferred flush
+ * — and the cause carries what it was; the engine answers such a throw by
+ * ending the one connection it belongs to, which is what keeps the rest of
+ * them running. Or something the connection needed failed definitively
+ * without throwing at all, a read the platform refused being the ordinary
+ * case, and the message names it. [EngineFailureException] is the other
+ * scale, where the loop itself is gone and every connection with it.
  *
  * **A wait is how a caller hears about it, not a handler.** The failure has
  * already been through whatever handler chain was serving this connection —
@@ -104,19 +105,22 @@ public class ConnectionFailureException(
  * gone with it, not just this one. Treat it as a fault to report rather than
  * a connection to retry.
  *
- * A loop that ends by throwing records that on its way out, before it
- * publishes that it has stopped — so a wait ended by the terminal sequence,
- * and one arriving after it, are told the same thing. Without that record the
- * two ways a loop can be gone are indistinguishable, and both used to be
- * delivered as the cancellation that only one of them is.
+ * A loop that ends on its own records why on its way out, before it publishes
+ * that it has stopped — so a wait ended by the terminal sequence, and one
+ * arriving after it, are told the same thing. Without that record the two ways
+ * a loop can be gone are indistinguishable, and both used to be delivered as
+ * the cancellation that only one of them is.
  *
- * **A loop ending this way usually takes the process with it.** The engines
- * run it as a thread entry point with nothing above it to catch, which is why
- * the readiness dispatch and the task drain guard what they run: a throw that
- * gets past them has no owner left. The waits are ended before that, by the
- * terminal sequence the loop runs on its way out, so a caller does hear this
- * — and an embedding that drives the loop on its own thread hears it for as
- * long as it keeps running.
+ * **A loop that ends this way by throwing takes the process with it.** The
+ * engines run it as a thread entry point with nothing above it to catch, which
+ * is why the readiness dispatch and the task drain guard what they run: a
+ * throw that gets past them has no owner left. That is the rare shape. The
+ * ordinary one does not throw at all — a poll the kernel refuses for good, a
+ * lock whose exclusion is gone — and those record the same thing on their way
+ * out while the process carries on. Either way the flush waits are
+ * ended by the terminal sequence the loop runs before it goes, so a caller
+ * does hear this. A wait for readiness rather than for a flush — a connect,
+ * an accept — is still ended as a cancellation whichever way the loop went.
  */
 public class EngineFailureException(
     message: String,

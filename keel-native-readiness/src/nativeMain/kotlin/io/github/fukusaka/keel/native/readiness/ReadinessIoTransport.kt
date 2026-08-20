@@ -274,8 +274,9 @@ class ReadinessIoTransport(
      * pointer) and the waiter's answer, whose resume goes back through the
      * waiter's own dispatcher — the refusal `onLoopStopped` contains for the
      * same call shape. That answer is the recorded refusal when there is one,
-     * and the close's own cancellation when there is neither that nor a loop
-     * that ended on its own. What the flush leaves behind for that release is everything a
+     * and the close's own cancellation when there is not — this teardown runs
+     * on a live loop, so what the loop did is not part of the answer here.
+     * What the flush leaves behind for that release is everything a
      * refusal did not consume. An entry leaves the deque only as its bytes are
      * accounted for — removed first, then released, since releasing first would
      * leave a released buffer queued for the next walker to release again — so
@@ -312,7 +313,7 @@ class ReadinessIoTransport(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun endConnectionAfterFailure(readinessFailure: Throwable) {
-        recordConnectionEnd(readinessFailure)
+        recordConnectionEnd("handling this connection failed and it was ended: fd=$fd", readinessFailure)
         // Gated on the sticky record, not on the notification's own flag: on a
         // second entry the first wind-down has already failed, and calling the
         // callback again would be the very thing [notifyInactive] says means
@@ -344,12 +345,13 @@ class ReadinessIoTransport(
      * Keeps why this connection ended, for the wait that arrives too late to
      * see it happen.
      *
-     * Every failure that ends a connection passes through
-     * [endConnectionAfterFailure], so recording here rather than at each
-     * containment is what gives all of them the same answer. Before, one of
-     * them — the refusal — was named, and every other left a closed transport
-     * and an empty queue for the waiter to read, which is what an orderly
-     * close leaves too.
+     * Called from the containment funnel [endConnectionAfterFailure], which is
+     * where a failure that threw ends a connection, and from the one end that
+     * does not throw at all — a read the platform refused definitively, which
+     * reports the connection inactive directly. Before, one failure — the
+     * refusal — was named, and every other left a closed transport and an
+     * empty queue for the waiter to read, which is what an orderly close
+     * leaves too.
      *
      * **Only while the connection is still open**, which is what makes this
      * failure the reason it ended rather than something that failed during an
@@ -377,10 +379,9 @@ class ReadinessIoTransport(
      * all. What a wait is told about the ends that are neither a failure nor
      * the caller's own close is that path's to decide, not this one's.
      */
-    private fun recordConnectionEnd(readinessFailure: Throwable) {
+    private fun recordConnectionEnd(reason: String, cause: Throwable? = null) {
         if (!opened || transportFailure != null) return
-        transportFailure =
-            ConnectionFailureException("handling this connection failed and it was ended: fd=$fd", readinessFailure)
+        transportFailure = ConnectionFailureException(reason, cause)
     }
 
     /**
@@ -452,7 +453,7 @@ class ReadinessIoTransport(
         flushContinuation?.let { cont ->
             flushContinuation = null
             // Guarded like the sweep guards each waiter it ends, and for the
-            // sweep's real reason: the cancel goes back through the waiter's
+            // sweep's real reason: the answer goes back through the waiter's
             // dispatcher, which can refuse it -- a cancellation handler that
             // throws is taken by the coroutine machinery before this frame
             // ever sees it. The refusal must not take the read-side
@@ -740,6 +741,16 @@ class ReadinessIoTransport(
                     eventLoop.logger.warn { "read failed: fd=$fd ${errnoMessage(result.errno)}" }
                     unreleased = null
                     buf.release()
+                    // Recorded before the notification, which is what ends the
+                    // connection here: this path does not go through the
+                    // containment funnel -- nothing threw, the read simply
+                    // cannot be retried -- and without a record a caller
+                    // waiting on a flush would be told the connection closed,
+                    // which is what it is told when it closed the connection
+                    // itself. A peer that resets is the ordinary way this
+                    // arrives, and it is the ordinary way a queued write never
+                    // reaches anyone.
+                    recordConnectionEnd("read() failed and the connection was ended: fd=$fd ${errnoMessage(result.errno)}")
                     notifyInactive()
                 }
             }
@@ -1136,10 +1147,11 @@ class ReadinessIoTransport(
      * Resumes a parked flush waiter with [drainFailure] — the wait cannot
      * complete, and the failure is the reason. A no-op when nobody is parked.
      *
-     * `resumeWithException` rather than a cancellation: a stopped loop
-     * ([endWaitForStoppedLoop]) says "the world went away"; this says "the
-     * flush you are waiting for failed", and the caller of
-     * `awaitFlushComplete` should see that failure, not a cancellation.
+     * `resumeWithException` rather than a cancellation: this says "the flush
+     * you are waiting for failed", and the caller of `awaitFlushComplete`
+     * should see that failure. What a wait ended by the loop being gone is
+     * told is [endWaitForStoppedLoop]'s to decide -- a different reason, and
+     * one that can still be a cancellation.
      *
      * **Declines once the transport is closing.** Not an enumeration of who
      * drains in that state — a direct `flush()` can also race an off-loop
@@ -1405,10 +1417,11 @@ class ReadinessIoTransport(
      * - **No timer cancels**: the per-loop deadline scheduler is not safe for
      *   two closers to mutate concurrently, and a dead loop never fires it —
      *   the armed handles are retention on the dead loop object, not a leak.
-     * - **The flush waiter is cancelled for the loop**, which the on-loop
-     *   teardown no longer always does — with a refusal recorded it answers
-     *   with that instead. Here the loop is what went away, so this is the
-     *   answer whatever the connection had met. That wakes a
+     * - **The flush waiter is answered for the loop**, not for the
+     *   connection as the on-loop teardown answers it — a cancellation when
+     *   the loop was asked to stop, the loop's own failure when it was not.
+     *   Here the loop is what went away, so that is the answer whatever the
+     *   connection had met. That wakes a
      *   waiter whose dispatcher still runs; one parked under a stopped
      *   loop's dispatcher — this one's or a quiescent sibling's — is beyond
      *   anyone's reach, its resume landing on a dead queue (which no longer

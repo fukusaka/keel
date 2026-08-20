@@ -4,7 +4,7 @@ package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.core.ConnectionFailureException
 import io.github.fukusaka.keel.core.EngineFailureException
-import io.github.fukusaka.keel.core.TransportFailureException
+import io.github.fukusaka.keel.native.posix.ReadResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import platform.posix.ECONNRESET
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -81,6 +82,61 @@ internal class TransportWaitReasonSeamTest : TransportSeamFixture() {
             val told = parked.await().exceptionOrNull()
             assertIs<ConnectionFailureException>(told, "the parked wait must be told the connection failed, got: $told")
             assertIs<InjectedFault>(told.cause, "and what failed must ride along, got: ${told.cause}")
+            fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a wait beginning after a refused read is told what ended the connection`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The ordinary way a connection fails: the peer resets, the read
+            // comes back refused, and the transport reports the connection
+            // inactive. Nothing throws, so no containment sees it -- and a
+            // wait arriving afterwards used to be cancelled, which is what it
+            // is told when it closed the connection itself.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueRead(fd, ReadResult.Failed(ECONNRESET))
+            val transport = transport()
+            transport.onReadClosed = { transport.close() }
+            transport.readEnabled = true
+
+            transport.onReady(Interest.READ)
+            assertFalse(transport.isOpen, "the refused read ends the connection")
+
+            val told = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+
+            assertIs<ConnectionFailureException>(told, "the wait must be told the connection failed, got: $told")
+            assertTrue(
+                checkNotNull(told.message).contains("read()"),
+                "and the message must name what failed, got: ${told.message}",
+            )
+            fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a wait parked when a refused read ends the connection is told the same thing`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The parked side of the same moment, answered by the teardown
+            // the inactive report runs.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.WouldBlock)
+            fake.enqueueRead(fd, ReadResult.Failed(ECONNRESET))
+            val transport = transport()
+            transport.onReadClosed = { transport.close() }
+            transport.readEnabled = true
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "the unwritable socket leaves the queue for a later drain")
+
+            val parked = parkFlushWaiter(transport)
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the read fails")
+
+            transport.onReady(Interest.READ)
+
+            val told = parked.await().exceptionOrNull()
+            assertIs<ConnectionFailureException>(told, "the parked wait must be told the connection failed, got: $told")
             fake.assertAllConsumed()
             tracker.assertNoLeaks()
         }
@@ -192,7 +248,10 @@ internal class TransportWaitReasonSeamTest : TransportSeamFixture() {
             val told = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
 
             assertIs<CancellationException>(told, "a loop asked to stop cancels its waits, got: $told")
-            assertFalse(told is TransportFailureException, "and does not report a fault: $told")
+            assertTrue(
+                checkNotNull(told.message).contains("EventLoop stopped"),
+                "and names the loop rather than the connection, got: ${told.message}",
+            )
             transport.close()
             tracker.assertNoLeaks()
         }
