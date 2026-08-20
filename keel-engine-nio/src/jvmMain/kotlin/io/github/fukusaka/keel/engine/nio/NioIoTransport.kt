@@ -109,7 +109,7 @@ internal class NioIoTransport(
     // Slots beyond `count` may hold stale ByteBuffer references between flushes;
     // they are never read (the write call is bounded by `count`) and are
     // overwritten when needed. Counterpart of the readiness engines'
-    // `writevBases` / `writevLens` primitive-array cache.
+    // gather scratch, which holds the same two arrays for a `writev`.
     private var bbArray: Array<ByteBuffer?> = arrayOfNulls(INITIAL_BB_ARRAY_CAPACITY)
 
     private fun ensureBbArrayCapacity(n: Int) {

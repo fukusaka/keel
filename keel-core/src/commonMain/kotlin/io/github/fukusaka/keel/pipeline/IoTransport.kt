@@ -106,8 +106,10 @@ interface IoTransport {
      * Callback invoked when this transport ends the connection over a
      * refused send, with that refusal — before [onReadClosed], so a listener
      * hears the reason while it can still act on it, and at most once. Other
-     * failures the transport contains end the connection without it; widening
-     * what is reported is tracked with recording why a connection ended.
+     * failures the transport contains end the connection without it, and
+     * deliberately: such a failure has usually just come from the handler
+     * chain, so sending it back down invites an answer that throws again. A
+     * caller waiting on a flush is told about those instead.
      *
      * Only for an end the transport forced. A close the caller asked for is
      * not reported here even when the closing drain meets a dead peer: the

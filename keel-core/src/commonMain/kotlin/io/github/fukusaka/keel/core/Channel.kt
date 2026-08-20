@@ -165,38 +165,40 @@ interface Channel : AutoCloseable {
      * refused does not change the answer** — a caller did not choose which
      * of those it was and cannot read it afterwards.
      *
-     * Or a `CancellationException`, for the ends that are not a refused
-     * send: the caller closed this channel, the engine's loop stopped, or
-     * some other failure ended the connection before this wait began — only
-     * a refusal is recorded as the reason, so a wait arriving after one of
-     * those finds a closed transport with nothing to name. Ending work you
-     * started is what cancellation means, and the first of those is exactly
-     * that; the last is the one still owed a better answer.
+     * Or the connection's, for the other ways it can end without the bytes
+     * going out. A failure that ended it — work on its behalf that threw, a
+     * read the platform refused for good — arrives as
+     * [ConnectionFailureException]; a loop that ended without being asked to
+     * arrives as [EngineFailureException]. Each is recorded where it happens,
+     * so a wait already parked and one arriving afterwards are told the same
+     * thing.
      *
-     * **The second kind is still wider than it should be**: a loop that
-     * ended by throwing is reported the same way as one that was asked to
-     * stop, because nothing records which happened. Converging that — so a
-     * fault the application did not choose arrives as
-     * [EngineFailureException] rather than a cancellation — is tracked.
+     * **A `CancellationException` is what remains**, and it means no failure
+     * ended the connection: the caller closed this channel, or the engine was
+     * asked to stop, or the transport ended it on a policy the application
+     * configured, such as an idle timeout reclaiming a connection nobody is
+     * using. Ending work you started is what cancellation means.
      *
-     * **Whether either arrives depends on there being a failure left to
+     * **Whether any of them arrives depends on there being something left to
      * report.** A drain that ran inside the request and emptied the queue
      * leaves this call nothing to find, so it returns normally: a [flush]
      * that met the failure raised it there, and a pipelined one took it to
      * the error path. This is therefore not a way to ask, after the fact,
      * whether the last flush reached the peer.
      *
-     * **A refusal is the exception.** It ends the connection, and that is a
-     * state this call still finds afterwards — so a wait that arrives late is
-     * told the refusal rather than returning normally. Which call ran the
-     * drain does not enter into it; only that the failure was a refusal.
+     * **A failure that ended the connection is the exception.** The
+     * connection stays ended, and that is a state this call still finds
+     * afterwards — so a wait arriving late is told what ended it rather than
+     * returning normally. Which call ran the drain does not enter into it.
      *
-     * Until the engine stops, at which point that answer largely takes over:
-     * a wait the stop finds parked, and one arriving once the loop has gone
-     * quiet, are cancelled for the loop rather than told what the connection
-     * had recorded. A wait arriving while the loop is still winding down
-     * still hears the connection's own answer. That is the same carve-out as
-     * the second kind above, and converging it is the same tracked work.
+     * **A loop that is gone answers for a connection still open.** A wait the
+     * stop finds parked, and one arriving once the loop has gone quiet, hear
+     * about the loop — a cancellation when it was asked to stop,
+     * [EngineFailureException] when it was not. So does one arriving while the
+     * loop is still winding down over a connection that is still open with
+     * bytes queued: nothing will drain them now, and what is gone is bigger
+     * than this connection. A wait that finds the connection already closed
+     * hears what closed it, whichever way the loop went.
      */
     suspend fun awaitFlushComplete() {}
 
