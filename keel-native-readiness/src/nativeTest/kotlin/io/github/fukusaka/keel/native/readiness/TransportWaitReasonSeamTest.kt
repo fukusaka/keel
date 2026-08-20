@@ -5,8 +5,8 @@ package io.github.fukusaka.keel.native.readiness
 import io.github.fukusaka.keel.core.ConnectionFailureException
 import io.github.fukusaka.keel.core.EngineFailureException
 import io.github.fukusaka.keel.native.posix.ReadResult
-import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
