@@ -365,44 +365,41 @@ internal class DefaultPipeline(
     }
 
     /**
-     * The transport failure this pipeline is reporting to its handlers.
+     * The failure a transport reported for this connection, whatever became
+     * of it afterwards.
      *
-     * [HeadHandler] reads it to tell a refusal these handlers get — riders
-     * attached — from one that reached nobody, whose riders would otherwise
-     * vanish with the head's swallow. Identity, not equality: the funnel
-     * rethrows the very instance it reported.
+     * Two frames ask about it, and they ask different things. The end of the
+     * pipeline asks *whose* failure this is: a refusal a handler threw, or
+     * one an application injected through the public error entrance, is not
+     * the connection's own end, and a handler throwing anything is the case
+     * that frame exists to report. Identity answers that, and answers it the
+     * same whether the cause arrives now or by a replay later — which is why
+     * this is set whenever the transport reports, and not only when the
+     * handlers are getting it.
      *
-     * Set when these handlers are getting it — now, or by a replay already
-     * scheduled — and not when one of them runs. Waiting for a handler to
-     * run would never see a journalled failure at all: the replay happens
-     * *after* the head has swallowed the rethrow and decided. A journal with
-     * no replay on its way is not that: a pipeline whose handlers are all
-     * outbound never asks for the drain, and nothing there will hand the
-     * cause over, so the head is left to record what it silences.
+     * The head asks the other question — whether anyone will receive it —
+     * through [handlersAreGettingTransportFailure].
      *
-     * It answers for the moment it is read, which is all the head can act
-     * on. A handler attached *after* the head has recorded the refusal gets
-     * the replay as well, so it is named twice — chosen over the
-     * alternative, which names it nowhere when no handler ever arrives.
-     *
-     * What it deliberately is not is "the last error seen": only
-     * [notifyTransportFailure] moves it, so an application injecting its
-     * own cause through the public [notifyError] cannot make a refusal
-     * these handlers are being told about look unreported.
+     * Only [notifyTransportFailure] moves it, so an application injecting a
+     * cause of its own cannot make its exception look like the connection's.
      */
     internal var reportedTransportFailure: Throwable? = null
         private set
 
     /**
-     * Entry for the failure a transport reports as it ends the connection,
-     * as opposed to one this pipeline's own handlers raised.
+     * Whether [cause] is the reported failure *and* these handlers are
+     * getting it — now, or by a replay already scheduled.
      *
-     * Routes exactly like [notifyError] — delivered now, or journalled until
-     * handlers attach — and additionally records it for the head's check
-     * above, which no other entrance may move.
+     * The head reads it to decide whether to record what it silences: a
+     * failure on its way to the handlers has a reporter, and one journalled
+     * with no replay scheduled — a pipeline whose handlers are all outbound
+     * never asks for one — does not.
      */
+    internal fun handlersAreGettingTransportFailure(cause: Throwable): Boolean =
+        cause === reportedTransportFailure && (preAttachJournalDrained || drainScheduled)
+
     internal fun notifyTransportFailure(cause: Throwable) {
-        if (preAttachJournalDrained || drainScheduled) reportedTransportFailure = cause
+        reportedTransportFailure = cause
         notifyError(cause)
     }
 

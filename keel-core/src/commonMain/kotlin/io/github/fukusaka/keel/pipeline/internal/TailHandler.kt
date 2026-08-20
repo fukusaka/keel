@@ -39,10 +39,16 @@ internal class TailHandler(
         // second, misleading line.
         //
         // By identity, not by type: the transport reports one instance and
-        // this is it. A refusal a handler threw, or one an application
-        // injected through the public error entrance, is not that -- and a
-        // handler throwing anything is the case this frame exists to report.
-        // The head tells the same two apart the same way.
+        // this is it, whether it arrived now or by a replay later. A refusal
+        // a handler threw, or one an application injected through the public
+        // error entrance, is not that -- and a handler throwing anything is
+        // the case this frame exists to report.
+        //
+        // The head asks a different question of the same mark -- whether the
+        // handlers are getting it -- because it decides before they do.
+        // Standing here, that has already happened, so the two questions
+        // cannot be told apart from this frame; the one asked is the one
+        // this frame means.
         //
         // And not when something failed alongside it. A refusal carries what
         // could not be finished while it was being contained -- a buffer
