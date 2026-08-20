@@ -621,7 +621,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             // pipeline has nobody to inform -- and nothing to complain about
             // either: the end of the pipeline knows the send the transport
             // reported from an exception nobody handled.
-            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = true)
+            rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
             val plog = RecordingLogger()

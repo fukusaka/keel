@@ -158,6 +158,50 @@ class PipelineTransportFailureTest {
     }
 
     @Test
+    fun `a replayed report is still the connection's own end`() {
+        // A pipeline whose handlers are all outbound journals the report,
+        // and a handler attaching later gets it by replay -- arriving at the
+        // end of the pipeline long after it was reported. Whose failure it is
+        // does not change on the way, so neither does how it is recorded.
+        val transport = RefusingTransport()
+        val log = RecordingLogger()
+        val ch = channel(transport, log)
+        ch.pipeline.addLast("outbound-only", object : OutboundHandler {})
+
+        runCatching { ch.requestFlush() }
+        ch.pipeline.addLast("late-inbound", object : InboundHandler {})
+
+        assertTrue(
+            log.warnings.none { "Unhandled" in it },
+            "the replay carries the connection's own end, not a bug: ${log.warnings}",
+        )
+    }
+
+    @Test
+    fun `the rider named at the end of the pipeline is reachable from the warning`() {
+        // The loud line there is loud because of what rode along, so the
+        // record has to carry it -- a `warn(cause) { }` degraded to
+        // `warn { }` reads the same in the message while the leak it names
+        // is gone.
+        val rider = IllegalStateException("release failed")
+        val transport = RefusingTransport(rider)
+        val log = RecordingLogger()
+        val ch = channel(transport, log)
+        ch.pipeline.addLast("inbound-only", object : InboundHandler {})
+
+        runCatching { ch.requestFlush() }
+
+        val carried = log.records.firstOrNull {
+            it.first == LogLevel.WARN && "something failed with it" in it.second
+        }?.third
+        assertSame(transport.refusal, carried, "the warning carries the refusal: ${log.records}")
+        assertTrue(
+            carried?.suppressedExceptions?.any { it === rider } == true,
+            "and the rider rides on it: ${carried?.suppressedExceptions}",
+        )
+    }
+
+    @Test
     fun `a refusal a handler threw is not the one the transport reported`() {
         // The end of the pipeline tells them apart by identity, because a
         // handler throwing anything is the case it exists to report -- and
