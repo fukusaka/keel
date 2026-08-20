@@ -9,6 +9,8 @@ import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -130,6 +132,45 @@ internal class TransportWaitReasonSeamTest : TransportSeamFixture() {
             val told = parked.await().exceptionOrNull()
             assertIs<EngineFailureException>(told, "the parked wait must be told the engine failed, got: $told")
             assertIs<InjectedFault>(told.cause, "and what the loop threw must ride along, got: ${told.cause}")
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a wait beginning inside the wind-down of a failed loop is told the engine failed`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The third moment: not before the loop ended and not after it is
+            // quiet, but during the sweep, where a wait is refused rather than
+            // parked because nothing is left to wake it. A wait arriving here
+            // reads the record through a different flag than the two above,
+            // and the record is published before both.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.WouldBlock)
+            val transport = transport()
+            transport.onChannelAttached()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "the unwritable socket leaves the queue for a later drain")
+
+            // Told after the transport, so its wait begins once the sweep has
+            // already been past the connection it waits on.
+            var told: Throwable? = null
+            eventLoop.addParticipant(
+                object : LoopParticipant {
+                    override fun onLoopStopped() {
+                        launch(start = CoroutineStart.UNDISPATCHED) {
+                            told = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+                        }
+                    }
+                },
+            )
+
+            eventLoop.loopBodyFailure = InjectedFault("the loop body threw")
+            runCatching { eventLoop.loop() }
+
+            val outcome = told
+            assertIs<EngineFailureException>(outcome, "the wait must be told the engine failed, got: $outcome")
+            assertIs<InjectedFault>(outcome.cause, "and what the loop threw must ride along, got: ${outcome.cause}")
             transport.close()
             tracker.assertNoLeaks()
         }
