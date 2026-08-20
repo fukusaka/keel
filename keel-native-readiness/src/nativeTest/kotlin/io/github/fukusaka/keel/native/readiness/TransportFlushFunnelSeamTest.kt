@@ -548,7 +548,7 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             assertFalse(transport.hasFlushWaiter(), "the sweep must take the answer even when refused")
             assertTrue(readClosed, "the read-side notification must survive the refusal")
             assertTrue(
-                eventLoop.errors.any { it.contains("cancelling the flush waiter for") },
+                eventLoop.errors.any { it.contains("ending the flush waiter for") },
                 "the refusal must be reported as the loop's own, got: ${eventLoop.errors}",
             )
             transport.close()

@@ -89,9 +89,13 @@ internal class HeadHandler(
             // reader who wants those goes looking for them -- which is the
             // trade for not reporting an ordinary end as a fault.
             //
-            // Only the refusal, not its sealed supertype: the sibling
-            // failure is not raised anywhere yet, and how it should reach
-            // handlers is settled with the work that starts raising it.
+            // Only the refusal, not its sealed supertype: the siblings do
+            // not take this route at all. One is the loop itself being gone,
+            // which no handler on it can act on. The other ends the
+            // connection, and the inactive report is how a handler hears
+            // that -- it arrives either way, and where the failure came from
+            // this chain, handing a handler its own throw would invite an
+            // answer that throws again.
             if (!pipeline.handlersAreGettingTransportFailure(refused)) {
                 if (refused.suppressedExceptions.isEmpty()) {
                     pipeline.logger.debug(refused) {

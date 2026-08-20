@@ -11,14 +11,8 @@ import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.free
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
@@ -34,6 +28,7 @@ import platform.posix.pthread_mutex_unlock
 import platform.posix.pthread_self
 import platform.posix.pthread_t
 import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
@@ -235,15 +230,34 @@ abstract class AbstractReadinessEventLoop :
     private var ledgersClosed: Boolean = false
 
     /**
-     * Set once the registration lock has failed to acquire or release. Read by
-     * each engine's `loopBody` through [regLockBroken] so the loop ends the way
-     * a poll fatal ends it.
+     * How the registration lock failed to acquire or release, or `null` while
+     * it has not. Read by each engine's `loopBody` through [regLockBroken] so
+     * the loop ends the way a poll fatal ends it, and again through
+     * [regLockFailureDetail] for the record that says so.
+     *
+     * One value rather than a flag beside a description, because two would
+     * have to be written in an order — the description first, since the flag
+     * is what a reader synchronises on — and an order stated is an order that
+     * can be got wrong. It was, while this was two values. Here the question
+     * "has it failed" and the answer "with what" are the same value, so there
+     * is no order left to keep.
      */
-    private val regLockFailed = AtomicInt(0)
+    private val regLockFailure = AtomicReference<String?>(null)
+
+    /**
+     * How the registration lock failed — for the body writing the record that
+     * says this is why the loop is ending.
+     *
+     * The stand-in is unreachable: a caller reaches this only behind
+     * [regLockBroken], which is true of exactly the states in which this is
+     * non-null. It is here because a getter cannot say that in its type.
+     */
+    protected fun regLockFailureDetail(): String =
+        regLockFailure.value ?: "the registration lock stopped being exclusive"
 
     /**
      * Set when a *release* failed, so the mutex is still held by the thread
-     * that reported it. Distinct from [regLockFailed] because only this case
+     * that reported it. Distinct from [regLockFailure] because only this case
      * makes re-taking the lock a deadlock rather than merely unguarded.
      */
     private val regLockStuck = AtomicInt(0)
@@ -459,115 +473,23 @@ abstract class AbstractReadinessEventLoop :
     val deadlineScheduler: DeadlineScheduler by lazy { DeadlineScheduler(::nowMillis, logger) }
 
     /**
-     * Base pointers for a gather write's `iovec` array, reused across flushes.
+     * The `iovec` scratch a gather write on this loop fills in.
      *
-     * Per loop rather than per transport: only the loop's own thread builds a
-     * gather, so one scratch serves every transport on it, and the alternative
-     * is an allocation on each multi-buffer flush.
+     * Held here because it is shared by every transport the loop serves, and
+     * built with the loop so an ordinary gather finds it ready rather than
+     * allocating one. What owns it, and what makes releasing it safe, is
+     * written on the type.
      */
-    internal var writevBases: CPointer<CPointerVar<ByteVar>>
-        private set
-
-    /** Byte lengths (`size_t`) paired with [writevBases]. */
-    internal var writevLens: CPointer<ULongVar>
-        private set
-
-    init {
-        // Paired here rather than left as two initialisers, so a refused second
-        // allocation gives the first one back. The engines accept that failure
-        // in their own initialisers, on the grounds that a `nativeHeap`
-        // allocation of a few dozen bytes failing is not a condition the
-        // process continues past — but that stance is stated about theirs, and
-        // these are not theirs any more. A base initialiser that throws leaves
-        // no reference for anyone to clean up: the engines' recovery is a `try`
-        // in their own `init`, which a throw from here never reaches.
-        val bases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
-        writevLens = try {
-            nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
-        } catch (allocationFailure: Throwable) {
-            nativeHeap.free(bases)
-            throw allocationFailure
-        }
-        writevBases = bases
-    }
-
-    private var writevCapacity = INITIAL_WRITEV_CAPACITY
-
-    /**
-     * Whether [writevBases] / [writevLens] are ours to free.
-     *
-     * A plain `var`, and not because the loop thread owns it — the thread that
-     * frees is whichever one is tearing the loop down: the caller of `close()`,
-     * or the constructing thread when construction fails. The engines' CAS on
-     * `close()` settles which caller reaches the release, but a single caller
-     * is not the
-     * same as no concurrency. What supplies that is quiescence, established
-     * differently on each route: `pthread_join` where a thread was started; the
-     * loop reporting itself stopped where one was not (and where the terminal
-     * sequence throws, `terminate` publishes quiescence from a `finally`, so
-     * the `catch` that releases is covered too); and nothing to be concurrent
-     * with when construction fails or when a test double closes.
-     *
-     * A stopped-loop teardown does reach a transport on another thread while
-     * this runs, which is why it does not flush — see the transport's
-     * `teardownAfterLoopStopped`. So a release never runs beside a gather.
-     */
-    internal var ownsWritevScratch = true
-        private set
-
-    /**
-     * Grows [writevBases] / [writevLens] (1.5x, at least [n]) so a gather of
-     * [n] buffers fits. Called on this loop's thread only.
-     */
-    internal fun ensureWritevCapacity(n: Int) {
-        if (n <= writevCapacity) return
-        val grown = maxOf(writevCapacity + (writevCapacity shr 1), n)
-        // Give up the old scratch before freeing it, not after: an allocation
-        // that throws below would otherwise leave the loop still claiming
-        // pointers it no longer holds, at a capacity that says they are big
-        // enough to gather through. Disowned first, the failure leaves nothing
-        // to double-free and nothing a later gather can reach.
-        if (ownsWritevScratch) {
-            ownsWritevScratch = false
-            writevCapacity = 0
-            nativeHeap.free(writevBases)
-            nativeHeap.free(writevLens)
-        }
-        // Into locals, and the second allocation guarded: a throw between the
-        // two would otherwise strand the first array with no owner — this
-        // method skips its free block while disowned, and the release path
-        // returns early for the same reason.
-        val bases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(grown)
-        val lens: CPointer<ULongVar> = try {
-            nativeHeap.allocArray(grown)
-        } catch (allocationFailure: Throwable) {
-            nativeHeap.free(bases)
-            throw allocationFailure
-        }
-        writevBases = bases
-        writevLens = lens
-        writevCapacity = grown
-        ownsWritevScratch = true
-    }
+    internal val writevScratch = WritevScratch()
 
     /**
      * Releases the gather scratch. Called from each engine's teardown.
      *
-     * Idempotent: the two teardown paths that reach it are mutually exclusive
-     * today, but `close()` is a public obligation on every loop — including the
-     * test doubles, which own the scratch without owning a thread — and a
-     * second `nativeHeap.free` of the same pointer is not a no-op.
+     * The engines cannot name [WritevScratch] — it is this module's — so the
+     * obligation reaches them through here.
      */
     protected fun freeWritevScratch() {
-        if (!ownsWritevScratch) return
-        ownsWritevScratch = false
-        // Capacity goes with the memory. Left at its old value, the early
-        // return in ensureWritevCapacity would hand a gather the pointers this
-        // just freed for every request that fits the capacity we no longer
-        // have.
-        writevCapacity = 0
-        nativeHeap.free(writevBases)
-        nativeHeap.free(writevLens)
+        writevScratch.free()
     }
 
     /**
@@ -858,7 +780,17 @@ abstract class AbstractReadinessEventLoop :
      */
     @InternalReadinessEngineApi
     fun reportRegLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
-        regLockFailed.value = 1
+        // Stored rather than recorded here: which call failed and with what
+        // errno is known only at this point, and whether it is the reason the
+        // loop is stopping is knowable only in the body, which reads this and
+        // decides. Storing it is also what tells the body to stop, so there is
+        // no second write to order against this one. First writer wins, for
+        // the same reason the record does -- a second failure is what follows
+        // from the ledgers no longer being exclusive.
+        regLockFailure.compareAndSet(
+            null,
+            "pthread_mutex_$operation() failed on the registration lock: ${errnoMessage(errno)}",
+        )
         // A failed release leaves this thread holding the mutex; a failed
         // acquire does not. The teardown has to tell them apart: it can still
         // run its sweep in the second case, but re-taking a mutex this thread
@@ -880,7 +812,7 @@ abstract class AbstractReadinessEventLoop :
      * Whether the registration lock has failed, in which case the loop must
      * stop. Read by each engine's `loopBody` beside its own poll fatal.
      */
-    protected fun regLockBroken(): Boolean = regLockFailed.value != 0
+    protected fun regLockBroken(): Boolean = regLockFailure.value != null
 
     /**
      * Whether the registration lock can be acquired right now — it takes it and
@@ -1632,8 +1564,8 @@ abstract class AbstractReadinessEventLoop :
         // isDispatchNeeded, so a resume lands on this loop's queue even though
         // the sweep already runs on its thread -- and a listener told the loop
         // stopped can queue as readily as a cancelled waiter can: teardown
-        // cancels the flush continuation of a handler parked on this very
-        // dispatcher. Unconditional, deliberately: every predicate written
+        // ends the flush wait of a handler parked on this very dispatcher.
+        // Unconditional, deliberately: every predicate written
         // here so far under-delivered somewhere (gating on `stranded` alone
         // missed the write-only client this sweep exists for; gating on the
         // participants told skips a boss loop, which has none), and the drain
@@ -1665,10 +1597,58 @@ abstract class AbstractReadinessEventLoop :
         eventLoopThread = pthread_self()
         try {
             loopBody()
+        } catch (loopFailure: Throwable) {
+            // Recorded, then re-raised as before. Every way out of the body
+            // is indistinguishable from here on -- they all reach the same
+            // terminal sequence, which ends every wait it finds -- and only a
+            // stop that was asked for is a cancellation. This covers the body
+            // that throws; the ones that break out and return normally record
+            // through [recordLoopFault] before they do.
+            //
+            // Before the terminal sequence rather than inside it: that is what
+            // publishes the shutdown flags a reader synchronises on, so a
+            // record made after them could be missed by the very readers it
+            // exists for.
+            handoff.recordLoopFailure(loopFailure)
+            throw loopFailure
         } finally {
             terminate()
         }
     }
+
+    /**
+     * Records that this loop is ending for a reason nobody asked for.
+     *
+     * The `catch` in [loop] covers a body that throws. It is not the only way a
+     * loop ends on its own, and on these engines it is the rarest: a body
+     * running as a `pthread` entry point cannot usefully throw — there is
+     * nothing above it to catch — so both engines answer a fatal poll errno,
+     * and a registration lock that stopped being exclusive, by breaking out and
+     * returning normally. That return is indistinguishable from the one a stop
+     * request produces unless the reason is written down here first.
+     *
+     * Call it **before** leaving the body, so the record precedes the shutdown
+     * flags [terminate] publishes and every reader that synchronises on one of
+     * them sees it. Which is also why every caller is a body that is on its way
+     * out rather than whatever detected the fault: a registration lock stops
+     * being exclusive on whichever thread was taking it, at a moment that says
+     * nothing about whether this loop is ending or was already asked to. The
+     * body's own check answers that, and answers it in the right order.
+     */
+    protected fun recordLoopFault(cause: Throwable) {
+        handoff.recordLoopFailure(cause)
+    }
+
+    /**
+     * What ended this loop when nothing asked it to, or `null` if it ended
+     * because it was asked to.
+     *
+     * For a transport deciding what to tell a caller whose flush this loop
+     * will never run. Only meaningful once the loop is known to be gone —
+     * [isStopped] and [isFinishing] are how that is known, and the record is
+     * published before either of them.
+     */
+    fun loopFailure(): Throwable? = handoff.loopFailure()
 
     /**
      * Takes the claim that says who runs the terminal sequence.
@@ -2367,16 +2347,5 @@ abstract class AbstractReadinessEventLoop :
 
         /** The fd half of a [registrationKey]: the low 32 bits, without sign extension. */
         private const val FD_MASK = 0xFFFFFFFFL
-
-        /**
-         * Initial gather capacity; grows on demand via [ensureWritevCapacity].
-         *
-         * What both engines used before they shared this. It briefly became 16
-         * when the scratch moved here, with nothing recorded and nothing
-         * measured — and the neighbouring engine documents 8 as covering the
-         * same `pendingWrites` depth, so the two would have disagreed about one
-         * deque. Changing it is a separate question from moving it.
-         */
-        private const val INITIAL_WRITEV_CAPACITY = 8
     }
 }

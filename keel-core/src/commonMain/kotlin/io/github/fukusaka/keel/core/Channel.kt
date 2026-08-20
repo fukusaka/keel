@@ -165,38 +165,85 @@ interface Channel : AutoCloseable {
      * refused does not change the answer** — a caller did not choose which
      * of those it was and cannot read it afterwards.
      *
-     * Or a `CancellationException`, for the ends that are not a refused
-     * send: the caller closed this channel, the engine's loop stopped, or
-     * some other failure ended the connection before this wait began — only
-     * a refusal is recorded as the reason, so a wait arriving after one of
-     * those finds a closed transport with nothing to name. Ending work you
-     * started is what cancellation means, and the first of those is exactly
-     * that; the last is the one still owed a better answer.
+     * Or the connection's, for the other ways it can end without the bytes
+     * going out. A failure that ended it — work on its behalf that threw, a
+     * read the platform refused for good — arrives as
+     * [ConnectionFailureException]; a loop that ended without being asked to
+     * arrives as [EngineFailureException]. Each is recorded where it happens,
+     * so a wait arriving after one of them is told what a wait already parked
+     * was told — for a refused send, the same object. A drain that fails some
+     * other way answers the parked wait with what it caught and the later one
+     * with the record made from it, so the two agree about the connection and
+     * not about the type. Unless the caller was already closing, in which case
+     * the drain answers no parked wait at all and leaves both to the close.
+     * The types can also differ the other way: a refused send met while the
+     * connection already has a reason answers the parked wait with the refusal
+     * and the later one with that earlier reason, since a connection ends once
+     * and the first failure is what ended it.
      *
-     * **The second kind is still wider than it should be**: a loop that
-     * ended by throwing is reported the same way as one that was asked to
-     * stop, because nothing records which happened. Converging that — so a
-     * fault the application did not choose arrives as
-     * [EngineFailureException] rather than a cancellation — is tracked.
+     * **Engines differ in how far they have taken this**, the same divergence
+     * [flush] states about a refused send: the two POSIX readiness engines
+     * record these and answer with them, and the rest still end such a wait as
+     * a cancellation. This is the contract they are converging on rather than
+     * one they all meet.
      *
-     * **Whether either arrives depends on there being a failure left to
+     * **A `CancellationException` is what remains**, and it means nothing that
+     * ended this connection was recorded *and consulted*: the caller closed
+     * this channel, or the engine was asked to stop, or the transport ended it
+     * on a policy the application configured, such as an idle timeout
+     * reclaiming a connection nobody is using — or the peer ended the exchange
+     * in an orderly way, which is not this transport failing at all. Ending
+     * work you started is what cancellation means, and the first of those is
+     * exactly that; the rest are ends nobody asked this caller about. The
+     * second can also arrive over a connection that *had* recorded a failure,
+     * which the paragraph on a gone loop describes.
+     *
+     * That last one makes a distinction worth knowing, and it turns on
+     * something the caller does control. A reset is told apart from an orderly
+     * close by the read that refuses; a connection with reads disabled issues
+     * none, so both arrive as the same event and neither is recorded. With
+     * reads enabled the reset is recorded and the orderly close is not. So the
+     * same connection dying two ways can answer a wait two ways, or the same
+     * way, depending on whether anything was reading — even though what became
+     * of the queued bytes is the same throughout.
+     *
+     * **Whether any of them arrives depends on there being something left to
      * report.** A drain that ran inside the request and emptied the queue
      * leaves this call nothing to find, so it returns normally: a [flush]
      * that met the failure raised it there, and a pipelined one took it to
      * the error path. This is therefore not a way to ask, after the fact,
      * whether the last flush reached the peer.
      *
-     * **A refusal is the exception.** It ends the connection, and that is a
-     * state this call still finds afterwards — so a wait that arrives late is
-     * told the refusal rather than returning normally. Which call ran the
-     * drain does not enter into it; only that the failure was a refusal.
+     * **A failure that ended the connection is the exception.** The
+     * connection stays ended, and that is a state this call still finds
+     * afterwards — so a wait arriving late is told what ended it rather than
+     * returning normally. Which call ran the drain does not enter into it.
      *
-     * Until the engine stops, at which point that answer largely takes over:
-     * a wait the stop finds parked, and one arriving once the loop has gone
-     * quiet, are cancelled for the loop rather than told what the connection
-     * had recorded. A wait arriving while the loop is still winding down
-     * still hears the connection's own answer. That is the same carve-out as
-     * the second kind above, and converging it is the same tracked work.
+     * **A loop that is gone answers for a connection still open.** A wait the
+     * stop finds parked, and one arriving once the loop has gone quiet, hear
+     * about the loop — a cancellation when it was asked to stop,
+     * [EngineFailureException] when it was not. So does one arriving while the
+     * loop is still winding down over a connection that is still open with
+     * bytes queued: nothing will drain them now, and what is gone is bigger
+     * than this connection. Once the loop has gone quiet this is the whole
+     * answer — the connection's own state is not consulted at all. So a
+     * connection that failed, on an engine later asked to stop, answers a wait
+     * arriving afterwards with the cancellation the stop earns, even though
+     * the connection knew why those bytes never left; and a connection its
+     * caller closed answers with the loop's failure rather than the close,
+     * where a wait arriving a moment earlier would have heard the close. Which
+     * of the two such a wait should hear is not settled, and the moment that
+     * currently decides it is not one a caller can see.
+     *
+     * **A loop whose registration lock failed to *release* answers nobody.**
+     * The lock stays held by whichever thread failed to give it back, and the
+     * terminal sequence declines to walk ledgers it can no longer guard, so
+     * waits already parked on that loop stay parked. Nor is a wait arriving
+     * afterwards reliably told: the sequence's last drain runs ahead of that
+     * decision, and anything queued there that needs the lock does not return,
+     * which leaves the loop never publishing that it stopped. That is an
+     * ending this contract does not cover, and the code that stops there says
+     * so.
      */
     suspend fun awaitFlushComplete() {}
 

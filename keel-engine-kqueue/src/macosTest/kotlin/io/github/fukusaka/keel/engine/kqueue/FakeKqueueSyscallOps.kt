@@ -209,6 +209,14 @@ internal class FakeKqueueSyscallOps(
     var waitCalls: Int = 0
         private set
 
+    /**
+     * Run at the top of each [waitEvents], before the scripted result is
+     * consumed. For a test that needs the loop to leave its body the way a
+     * stop request makes it leave — `close()` from inside the wait, so the
+     * body's own condition is what ends it — rather than by never entering it.
+     */
+    var onWait: (() -> Unit)? = null
+
     fun scriptWaitOk(vararg events: Triple<Int, Int, Int>) {
         waitResults.addLast(ScriptedWait.Ok(events.toList()))
     }
@@ -220,6 +228,7 @@ internal class FakeKqueueSyscallOps(
 
     override fun waitEvents(kqFd: Int, eventsOut: Array<KqEvent>, timeoutMillis: Long): Int {
         waitCalls++
+        onWait?.invoke()
         if (waitResults.isEmpty()) {
             // Empty-default path. In live mode (funnel test), poll-sleep so
             // a real loop() on a spawned EventLoop thread drains dispatched

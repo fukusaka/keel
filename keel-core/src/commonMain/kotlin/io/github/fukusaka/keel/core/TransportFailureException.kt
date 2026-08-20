@@ -17,28 +17,29 @@ package io.github.fukusaka.keel.core
  * A pipelined application sees a reported refusal on the handler error
  * path, the layer's own way of being told — before the inactive report,
  * whatever entry met it, so the reason arrives while a handler can still act
- * on it. Three are deliberately not reported there: one met while the
- * caller is already closing, one met after the connection's end was
- * already reported — the peer can end the connection first, and a reason
- * delivered after the end reaches nobody who can act on it — and a second
- * one met while the first is still being reported, since the first is the
- * reason the connection ended. A wait is still answered in all three — with
- * that same refusal in the first two, and with the first one in the third,
- * which is the reason the connection ended. Whether a subtype added later
- * takes the same route is that subtype's to say.
+ * on it. Not every refusal is reported there. One met while the caller is
+ * already closing is not, nor one met after the connection's end was already
+ * reported — the peer can end the connection first, and a reason delivered
+ * after the end reaches nobody who can act on it — nor one met while the
+ * connection already has a reason, since that reason is why it is ending. A
+ * wait is answered in all of them, with whichever reason ended the
+ * connection. The other subtypes do not take this route at all: each says
+ * why on its own page.
  *
  * **This is not a cancellation, and that distinction is the point.** A
  * caller that closes its own channel gets a `CancellationException`, because
  * ending work it started is exactly what cancellation means and structured
  * concurrency should treat it as such. This type is for the cases the caller
- * did not ask for: the platform refused the send, or the engine stopped
- * without being told to. Those are failures to handle, not cancellations to
- * propagate.
+ * did not ask for: the platform refused the send, the engine stopped without
+ * being told to, or handling the connection failed and it was ended to
+ * contain that. Those are failures to handle, not cancellations to propagate.
  *
- * **Retrying the same operation does not help.** Both subtypes mean the
+ * **Retrying the same operation does not help.** Every subtype means the
  * connection is finished — the bytes are gone and no later attempt on this
  * transport will reach the peer. Catch this type to end the exchange; catch a
- * subtype only when the two need different handling.
+ * subtype only when they need different handling. What differs between them
+ * is what failed and how far it reaches: one send, this connection, or the
+ * engine and every connection on it.
  *
  * Subtypes are exhaustive and stay that way: a new way for a transport to
  * fail belongs here as another subtype, so a caller's `when` keeps compiling
@@ -69,6 +70,34 @@ public class RefusedWriteException(
 ) : TransportFailureException(message, cause)
 
 /**
+ * Handling this connection failed, and it was ended so the failure went no
+ * further.
+ *
+ * Two shapes reach this. Work the engine was running on this connection's
+ * behalf threw — a readiness event, a step of its wind-down, a deferred flush
+ * — and the cause carries what it was; the engine answers such a throw by
+ * ending the one connection it belongs to, which is what keeps the rest of
+ * them running. Or something the connection needed failed definitively
+ * without throwing at all, a read the platform refused being the ordinary
+ * case, and the message names it. [EngineFailureException] is the other
+ * scale, where the loop itself is gone and every connection with it.
+ *
+ * **A wait is how a caller hears about it, not a handler.** Where the failure
+ * threw, it has already been through whatever handler chain was serving this
+ * connection — often it started there — so sending it back down as an error
+ * would hand a handler its own throw and invite an answer that throws again.
+ * Where nothing threw, the inactive report is what a handler hears, and a
+ * second notification saying the same thing is not something it can act on.
+ * Either way it is logged where it happened, the connection is reported
+ * inactive as any ending connection is, and a flush still owed an answer is
+ * given this.
+ */
+public class ConnectionFailureException(
+    message: String,
+    cause: Throwable? = null,
+) : TransportFailureException(message, cause)
+
+/**
  * The engine's event loop ended while this flush was still owed an answer,
  * without having been asked to stop.
  *
@@ -78,12 +107,30 @@ public class RefusedWriteException(
  * gone with it, not just this one. Treat it as a fault to report rather than
  * a connection to retry.
  *
- * **No transport raises this yet.** A loop that ends by throwing currently
- * ends its waits the same way one that was asked to stop does — as a
- * cancellation — because nothing records which happened. This type is
- * declared now so the sealed set is complete from the start: adding a subtype
- * later would break an exhaustive `when` that a caller had already written
- * against it. Making it reachable is tracked separately.
+ * A loop that ends on its own records why on its way out, before it publishes
+ * that it has stopped — so a wait ended by the terminal sequence, and one
+ * arriving after it, are told the same thing. Without that record the two ways
+ * a loop can be gone are indistinguishable, and both used to be delivered as
+ * the cancellation that only one of them is.
+ *
+ * **A loop that ends this way by throwing takes the process with it.** The
+ * engines run it as a thread entry point with nothing above it to catch, which
+ * is why the readiness dispatch and the task drain guard what they run: a
+ * throw that gets past them has no owner left. That is the rare shape. The
+ * ordinary one does not throw at all — a poll the kernel refuses for good, a
+ * lock whose exclusion is gone — and those record the same thing on their way
+ * out while the process carries on. The terminal sequence then ends the flush
+ * waits it can reach. On the throwing route, a wait parked on the loop's own
+ * dispatcher is delivered by the sequence's last drain and does hear this, and
+ * one parked elsewhere has its answer handed off and then races the process
+ * ending — the same race anything else on that connection would be in. And on
+ * one route it reaches none of them: a lock whose *release* failed stays held
+ * by whichever thread failed to give it back, so the sequence refuses to sweep
+ * rather than walk ledgers it cannot guard, and the waits parked on that loop
+ * stay parked. A wait arriving afterwards is not reliably told either, since
+ * that loop may never publish that it stopped. This type is recorded on that
+ * route, and who receives it is what the route cannot promise. A wait for readiness rather than for a flush — a connect, an
+ * accept — is still ended as a cancellation whichever way the loop went.
  */
 public class EngineFailureException(
     message: String,

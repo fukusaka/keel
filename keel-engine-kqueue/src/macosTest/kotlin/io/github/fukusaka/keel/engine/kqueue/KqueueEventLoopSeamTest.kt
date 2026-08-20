@@ -39,6 +39,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
@@ -294,6 +296,56 @@ class KqueueEventLoopSeamTest {
         assertEquals(1, fake.waitCalls, "fatal errno on first call should not retry")
         assertEquals(1, errors.size)
         assertTrue(errors.first().contains("kevent()"))
+    }
+
+    @Test
+    fun `a loop that ends on a fatal wait errno records why`() {
+        // This is how this engine ends on its own -- not by throwing, which a
+        // pthread entry point cannot usefully do, but by breaking out of its
+        // body. That return is the same shape as the one a stop request
+        // produces, so a flush waiter is told the loop was asked to stop
+        // unless the reason is written down before the loop goes.
+        val fake = FakeKqueueSyscallOps().apply { scriptWaitFailure(EBADF) }
+        val el = KqueueEventLoop(logger = logger, syscallOps = fake)
+
+        el.loop()
+
+        val fault = el.loopFailure()
+        assertNotNull(fault, "a loop nobody asked to stop must record why it stopped")
+        assertTrue(
+            checkNotNull(fault.message).contains("kevent()"),
+            "and name what failed, got: ${fault.message}",
+        )
+    }
+
+    @Test
+    fun `a loop asked to stop records nothing`() {
+        // The other arm: without this, a record that was never conditional --
+        // or one written unconditionally at the top of the body -- would turn
+        // every ordinary shutdown into a reported fault.
+        //
+        // The stop has to arrive while the body is running. Closing first and
+        // then calling loop() looks like the same thing and is not: the close
+        // takes the termination claim, so loop() returns at its guard and the
+        // body -- the code under test -- never runs. Closing from inside the
+        // wait leaves the body to exit through its own condition, which is
+        // what an ordinary shutdown does.
+        val fake = FakeKqueueSyscallOps()
+        val el = KqueueEventLoop(logger = logger, syscallOps = fake)
+        // Bounded: nothing else ends this loop, so a close that stopped taking
+        // the running flag down -- or a body that stopped reading it -- would
+        // spin here rather than fail. A scripted fatal cannot serve instead;
+        // it would end the loop for the wrong reason and decide the assertion.
+        var waits = 0
+        fake.onWait = {
+            check(++waits <= MAX_WAITS) { "the loop did not end when it was asked to" }
+            el.close()
+        }
+
+        el.loop()
+
+        assertEquals(1, fake.waitCalls, "the body must have run and ended through its own condition")
+        assertNull(el.loopFailure(), "an ordinary stop is not a fault")
     }
 
     @Test
@@ -615,6 +667,13 @@ class KqueueEventLoopSeamTest {
     }
 
     private companion object {
+        /**
+         * How many waits the case that ends the loop by closing may take
+         * before it is a hang. One is what it produces; the rest is slack
+         * rather than a second path anything takes.
+         */
+        const val MAX_WAITS = 8
+
         /** Poll step while waiting for the loop to perform a claimed release. */
         const val FD_CLOSE_POLL_US = 2_000u
 

@@ -3,13 +3,15 @@ package io.github.fukusaka.keel.native.readiness
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.usleep
 import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
 import kotlin.time.TimeSource
 
 /**
  * Off-loop → EventLoop hand-off for the POSIX readiness engines (epoll,
  * kqueue). A caller that must run work on the loop thread — or, once the loop
  * has stopped, run a fallback itself — drives it through [runOnLoop]. The loop
- * publishes its shutdown progress through [markFinished] / [markQuiescent].
+ * publishes its shutdown progress through [markFinished] / [markQuiescent], and
+ * how it ended through [recordLoopFailure].
  *
  * Extracted so the two engines share one implementation: the hand-off has a
  * narrow correctness window (a dispatched task racing the loop's final drain,
@@ -48,6 +50,36 @@ internal class LoopHandoff(
     // know the loop is quiet — closing an fd the loop could still arm — must
     // gate on this instead.
     private val loopQuiescent = AtomicInt(0)
+
+    // What ended the loop, when it was not a request to stop -- a body that
+    // threw, a poll the kernel refused for good, a lock that stopped being
+    // exclusive. Null covers both "still running" and "stopped as asked":
+    // neither is a fault, and a reader only ever asks this about a loop it has
+    // already established is gone.
+    private val loopFailure = AtomicReference<Throwable?>(null)
+
+    /**
+     * Records that the loop is ending for a reason nobody asked for. Publish
+     * this **before**
+     * [markFinished], so anything that reads a shutdown flag as 1 and then
+     * asks [loopFailure] sees it — the flags are what a reader synchronises
+     * on, and the record has to be on the far side of that edge to be seen.
+     *
+     * First writer wins: the loop ends once, and a throw from the terminal
+     * sequence reacting to it is not why it ended.
+     */
+    fun recordLoopFailure(cause: Throwable) {
+        loopFailure.compareAndSet(null, cause)
+    }
+
+    /**
+     * What ended the loop when nothing asked it to, or `null` if it stopped
+     * because it was asked to.
+     *
+     * Only meaningful once the loop is known to be gone — before that, `null`
+     * says nothing more than "not yet".
+     */
+    fun loopFailure(): Throwable? = loopFailure.value
 
     /**
      * Marks that the loop has stopped polling and is about to run its final

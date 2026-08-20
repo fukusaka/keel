@@ -412,8 +412,24 @@ internal class EpollEventLoop(
         while (running.value != 0) {
             // The registration lock failing means the ledgers stopped being
             // exclusive; end the loop the same way a poll fatal does rather
-            // than keep arming from state nothing is guarding.
-            if (regLockBroken()) break
+            // than keep arming from state nothing is guarding -- recorded the
+            // same way too. Here rather than where the failure is reported,
+            // because that runs on whichever thread was taking the lock, at a
+            // moment that says nothing about whether this loop is ending or
+            // was already asked to; reaching this check means the body is
+            // running and the lock is ending it.
+            //
+            // Not that the two can always be told apart: a close landing
+            // between the condition above and this check leaves both true,
+            // and the fault is what gets recorded. Narrowing it further would
+            // mean reading the stop flag again here and still racing it one
+            // instruction later, so the choice is which answer a caller in an
+            // ambiguous moment is given, and a broken ledger is the more
+            // useful of the two.
+            if (regLockBroken()) {
+                recordLoopFault(IllegalStateException(regLockFailureDetail()))
+                break
+            }
             drainTasks()
 
             // Non-blocking poll if tasks arrived during drainTasks(), else block
@@ -428,7 +444,11 @@ internal class EpollEventLoop(
                 if (err == EINTR || err == EAGAIN) continue
                 // Fatal error — log and terminate the EventLoop thread.
                 // Cannot throw from a pthread; logger is the only output path.
+                // Recorded before breaking out, so a caller waiting on a flush
+                // this loop will never run is told the loop failed rather than
+                // that it was asked to stop.
                 logger.error { "epoll_wait() fatal error: ${errnoMessage(err)}" }
+                recordLoopFault(IllegalStateException("epoll_wait() failed: ${errnoMessage(err)}"))
                 break
             }
             for (i in 0 until n) {

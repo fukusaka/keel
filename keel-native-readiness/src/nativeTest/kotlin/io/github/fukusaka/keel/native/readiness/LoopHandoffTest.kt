@@ -11,6 +11,8 @@ import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
@@ -66,6 +68,24 @@ class LoopHandoffTest {
             tasks.value = emptyList()
             pending.forEach { it() }
         }
+    }
+
+    @Test
+    fun `the first reason a loop ended is the one it keeps`() {
+        // A loop ends once. What follows is the terminal sequence reacting to
+        // that -- a sweep whose participant throws, a drain that fails -- and
+        // a waiter told one of those would be told the consequence instead of
+        // the cause.
+        val loop = FakeLoop()
+        val handoff = loop.handoff()
+        val why = IllegalStateException("the loop body threw")
+
+        assertNull(handoff.loopFailure(), "a loop that has not failed has nothing to report")
+
+        handoff.recordLoopFailure(why)
+        handoff.recordLoopFailure(IllegalStateException("and then the wind-down did too"))
+
+        assertSame(why, handoff.loopFailure(), "the reason it ended must survive what happened next")
     }
 
     @Test

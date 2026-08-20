@@ -2,12 +2,15 @@ package io.github.fukusaka.keel.engine.epoll
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.EBADF
 import platform.posix.EINVAL
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -32,12 +35,18 @@ import kotlin.test.assertTrue
  * defines, and it returns zero. What a test can do is call the reporting entry
  * point the failing syscall would have called, which is why that function is
  * public under the opt-in. So the arrow from "the syscall returned non-zero" to
- * "report it" is a guard, and the arrow from "it was reported" to "this loop
- * stops" is what these cases hold.
+ * "report it" is a guard, and the arrows from "it was reported" to "this loop
+ * stops" and to "this is the reason its waiters are given" are what these
+ * cases hold.
  *
  * No timeout, matching the sibling cases that drive `loop()` on the test
- * thread: the fatal `waitEvents` result scripted below ends the loop even if
- * the check under test is gone, so a regression fails rather than hangs.
+ * thread. The cases that report before running it script a fatal `waitEvents`,
+ * which ends the loop even when the check under test is gone. The two that
+ * stage a stop cannot use that net — a scripted fatal would end the loop for
+ * the wrong reason and decide the assertion — and their own ending is what
+ * the check under test does not affect, so what they bound is the other
+ * hazard: a close that stops taking the running flag down, or a body that
+ * stops reading it, would otherwise spin here rather than fail.
  */
 @OptIn(ExperimentalForeignApi::class, InternalReadinessEngineApi::class)
 class EpollRegLockFailureSeamTest {
@@ -64,6 +73,96 @@ class EpollRegLockFailureSeamTest {
         } finally {
             el.close()
         }
+    }
+
+    @Test
+    fun `a lock that stopped being exclusive is recorded as why the loop ended`() {
+        // The loop stopping is half of it. The other half is what a caller
+        // waiting on a flush this loop will never run is told: nobody asked
+        // for this, so it must not read as the caller's own doing.
+        //
+        // The loop is run, not just told: what is being pinned is the reason
+        // an ending carries, so there has to be an ending. The scripted fatal
+        // is the same safety net the cases above use, and goes unused when the
+        // check under test holds.
+        val fake = FakeEpollSyscallOps().apply { scriptWaitFailure(EBADF) }
+        val el = EpollEventLoop(errorRecordingLogger(mutableListOf()), syscallOps = fake)
+        try {
+            el.reportRegLockFailure("lock", EINVAL, stillHeld = false)
+
+            el.loop()
+
+            assertEquals(0, fake.waitCalls, "the loop must end without arming anything else")
+            val fault = el.loopFailure()
+            assertNotNull(fault, "the lock failure is why this loop ended")
+            assertTrue(
+                checkNotNull(fault.message).contains("pthread_mutex_lock()"),
+                "the record must name the call that failed, got: ${fault.message}",
+            )
+            assertTrue(
+                checkNotNull(fault.message).contains(errnoMessage(EINVAL)),
+                "and the errno it failed with, got: ${fault.message}",
+            )
+        } finally {
+            el.close()
+        }
+    }
+
+    @Test
+    fun `a lock that fails after the loop has finished is not why it ended`() {
+        // The lock outlives the loop deliberately -- cancellations keep
+        // arriving and taking it long after the sweep -- so a failure here can
+        // land on a loop that stopped because somebody asked. Recording it
+        // would tell that loop's late waiters they had suffered a fault.
+        val fake = FakeEpollSyscallOps()
+        val el = EpollEventLoop(errorRecordingLogger(mutableListOf()), syscallOps = fake)
+        var waits = 0
+        fake.onWait = {
+            check(++waits <= MAX_WAITS) { "the loop did not end when it was asked to" }
+            el.close()
+        }
+        el.loop()
+
+        el.reportRegLockFailure("unlock", EINVAL, stillHeld = false)
+
+        assertNull(el.loopFailure(), "the loop had already ended, and not for this")
+        // No close in a `finally`: the one above already took the running flag
+        // down, so a second is a no-op. The first was refused the release
+        // because it ran from inside the wait, before quiescence -- the
+        // sibling cases close after `loop()` returns and do get it, so the
+        // claim `loop()` holds is not what decides this. What goes unreleased
+        // is real: the arena behind the thread handle and the gather scratch's
+        // two native arrays, leaked for the process. Accepted because the
+        // alternative staging -- closing from another thread -- is not
+        // something this seam has, and the descriptors are synthetic, so the
+        // release this misses would hand fabricated numbers to `close(2)`.
+    }
+
+    @Test
+    fun `a lock that fails while a stop is already under way is not why it ended`() {
+        // The window between "asked to stop" and the loop noticing: the flag
+        // the body reads is already down, and a lock somebody else was holding
+        // fails in the meantime. The stop is what ends this loop, and its
+        // waiters asked for that -- so the fault that arrives alongside must
+        // not turn their cancellation into a report.
+        //
+        // A check on "has the loop published that it is finishing" does not
+        // cover this: that comes later still. What covers it is where the
+        // record is written -- the body's own check, which this ending never
+        // reaches, because the condition above it goes false first.
+        val fake = FakeEpollSyscallOps()
+        val el = EpollEventLoop(errorRecordingLogger(mutableListOf()), syscallOps = fake)
+        var waits = 0
+        fake.onWait = {
+            check(++waits <= MAX_WAITS) { "the loop did not end when it was asked to" }
+            el.close()
+            el.reportRegLockFailure("unlock", EINVAL, stillHeld = false)
+        }
+
+        el.loop()
+
+        assertEquals(1, fake.waitCalls, "the body must have run and ended through its own condition")
+        assertNull(el.loopFailure(), "a stop that was asked for is not a fault, whatever failed alongside it")
     }
 
     @Test
@@ -118,5 +217,13 @@ class EpollRegLockFailureSeamTest {
     private companion object {
         /** Fragment of the message `loop()` logs when the claim is already taken. */
         const val ALREADY_CLAIMED = "found the loop already claimed"
+
+        /**
+         * How many waits a case that ends the loop by closing may take before
+         * it is a hang. One is what those cases produce; the rest is slack
+         * rather than a second path anything takes, because what this bounds
+         * is a loop that never ends, not one that waits twice.
+         */
+        const val MAX_WAITS = 8
     }
 }
