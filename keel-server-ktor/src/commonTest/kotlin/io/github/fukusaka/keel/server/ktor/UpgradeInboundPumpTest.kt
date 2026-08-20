@@ -49,10 +49,9 @@ class UpgradeInboundPumpTest {
         }
 
     @Test
-    fun `a cancelled inbound is not a reason to explain to the session`() {
-        // Cancellation is how this pump's own scope ends; it says nothing
-        // about the connection, so it is not carried into the session's
-        // input as though the peer had failed.
+    fun `a cancelled inbound is not a reason to explain to the session`() =
+        // Cancellation says nothing about the connection, so it is not
+        // carried into the session's input as though the peer had failed.
         runTest(timeout = 15.seconds) {
             val (channel, bridge) = bridgeOnChannel()
             val input = ByteChannel(autoFlush = true)
@@ -67,7 +66,6 @@ class UpgradeInboundPumpTest {
                 "a cancellation is not the connection failing: $failure",
             )
         }
-    }
 
     @Test
     fun `a peer that finished talking ends the session's input with nothing to explain`() =
