@@ -456,8 +456,9 @@ abstract class AbstractReadinessEventLoop :
      * The `iovec` scratch a gather write on this loop fills in.
      *
      * Held here because it is shared by every transport the loop serves, and
-     * built with the loop because a gather must never allocate. What owns it,
-     * and what makes releasing it safe, is written on the type.
+     * built with the loop so an ordinary gather finds it ready rather than
+     * allocating one. What owns it, and what makes releasing it safe, is
+     * written on the type.
      */
     internal val writevScratch = WritevScratch()
 
@@ -760,6 +761,15 @@ abstract class AbstractReadinessEventLoop :
     @InternalReadinessEngineApi
     fun reportRegLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
         regLockFailed.value = 1
+        // Nobody asked this loop to stop; the exclusion its ledgers rest on
+        // went away. Recorded here rather than where each engine breaks out of
+        // its body, so both reach it, and so does a failure met off the loop
+        // thread entirely.
+        recordLoopFault(
+            IllegalStateException(
+                "pthread_mutex_$operation() failed on the registration lock: ${errnoMessage(errno)}",
+            ),
+        )
         // A failed release leaves this thread holding the mutex; a failed
         // acquire does not. The teardown has to tell them apart: it can still
         // run its sweep in the second case, but re-taking a mutex this thread
@@ -1567,13 +1577,12 @@ abstract class AbstractReadinessEventLoop :
         try {
             loopBody()
         } catch (loopFailure: Throwable) {
-            // Recorded, then re-raised as before. The two ways out of the body
-            // are indistinguishable from here on -- both reach the same
-            // terminal sequence, which ends every wait it finds -- and only
-            // one of them is a fault. A wait ended by a loop that was asked to
-            // stop is a cancellation; one ended by this is not, and nothing
-            // downstream can tell them apart unless the difference is written
-            // down while it is still known.
+            // Recorded, then re-raised as before. Every way out of the body
+            // is indistinguishable from here on -- they all reach the same
+            // terminal sequence, which ends every wait it finds -- and only a
+            // stop that was asked for is a cancellation. This covers the body
+            // that throws; the ones that break out and return normally record
+            // through [recordLoopFault] before they do.
             //
             // Before the terminal sequence rather than inside it: that is what
             // publishes the shutdown flags a reader synchronises on, so a
@@ -1587,8 +1596,27 @@ abstract class AbstractReadinessEventLoop :
     }
 
     /**
-     * What the loop threw on its way out, or `null` if it ended because it was
-     * asked to.
+     * Records that this loop is ending for a reason nobody asked for.
+     *
+     * The `catch` in [loop] covers a body that throws. It is not the only way a
+     * loop ends on its own, and on these engines it is the rarest: a body
+     * running as a `pthread` entry point cannot usefully throw — there is
+     * nothing above it to catch — so both engines answer a fatal poll errno,
+     * and a registration lock that stopped being exclusive, by breaking out and
+     * returning normally. That return is indistinguishable from the one a stop
+     * request produces unless the reason is written down here first.
+     *
+     * Call it **before** leaving the body, so the record precedes the shutdown
+     * flags [terminate] publishes and every reader that synchronises on one of
+     * them sees it.
+     */
+    protected fun recordLoopFault(cause: Throwable) {
+        handoff.recordLoopFailure(cause)
+    }
+
+    /**
+     * What ended this loop when nothing asked it to, or `null` if it ended
+     * because it was asked to.
      *
      * For a transport deciding what to tell a caller whose flush this loop
      * will never run. Only meaningful once the loop is known to be gone —

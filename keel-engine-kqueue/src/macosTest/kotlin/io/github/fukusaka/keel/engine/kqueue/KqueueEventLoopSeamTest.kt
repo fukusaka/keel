@@ -39,6 +39,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
@@ -294,6 +296,40 @@ class KqueueEventLoopSeamTest {
         assertEquals(1, fake.waitCalls, "fatal errno on first call should not retry")
         assertEquals(1, errors.size)
         assertTrue(errors.first().contains("kevent()"))
+    }
+
+    @Test
+    fun `a loop that ends on a fatal wait errno records why`() {
+        // This is how this engine ends on its own -- not by throwing, which a
+        // pthread entry point cannot usefully do, but by breaking out of its
+        // body. That return is the same shape as the one a stop request
+        // produces, so a flush waiter is told the loop was asked to stop
+        // unless the reason is written down before the loop goes.
+        val fake = FakeKqueueSyscallOps().apply { scriptWaitFailure(EBADF) }
+        val el = KqueueEventLoop(logger = logger, syscallOps = fake)
+
+        el.loop()
+
+        val fault = el.loopFailure()
+        assertNotNull(fault, "a loop nobody asked to stop must record why it stopped")
+        assertTrue(
+            checkNotNull(fault.message).contains("kevent()"),
+            "and name what failed, got: ${fault.message}",
+        )
+    }
+
+    @Test
+    fun `a loop asked to stop records nothing`() {
+        // The other arm: without this, a record that was never conditional --
+        // or one written unconditionally in the terminal sequence -- would
+        // turn every ordinary shutdown into a reported fault.
+        val fake = FakeKqueueSyscallOps()
+        val el = KqueueEventLoop(logger = logger, syscallOps = fake)
+        el.close()
+
+        el.loop()
+
+        assertNull(el.loopFailure(), "an ordinary stop is not a fault")
     }
 
     @Test

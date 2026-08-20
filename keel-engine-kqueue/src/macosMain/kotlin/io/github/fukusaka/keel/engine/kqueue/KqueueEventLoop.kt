@@ -394,7 +394,11 @@ internal class KqueueEventLoop(
                 if (err == EINTR || err == EAGAIN) continue
                 // Fatal error — log and terminate the EventLoop thread.
                 // Cannot throw from a pthread; logger is the only output path.
+                // Recorded before breaking out, so a caller waiting on a flush
+                // this loop will never run is told the loop failed rather than
+                // that it was asked to stop.
                 logger.error { "kevent() fatal error: ${errnoMessage(err)}" }
+                recordLoopFault(IllegalStateException("kevent() failed: ${errnoMessage(err)}"))
                 break
             }
             for (i in 0 until n) {

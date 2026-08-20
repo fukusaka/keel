@@ -8,6 +8,7 @@ import platform.posix.EBADF
 import platform.posix.EINVAL
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -60,6 +61,28 @@ class KqueueRegLockFailureSeamTest {
                 0,
                 fake.waitCalls,
                 "the ledgers stopped being exclusive, so the loop must end before arming anything else",
+            )
+        } finally {
+            el.close()
+        }
+    }
+
+    @Test
+    fun `a lock that stopped being exclusive is recorded as why the loop ended`() {
+        // The loop stopping is half of it. The other half is what a caller
+        // waiting on a flush this loop will never run is told: nobody asked
+        // for this, so it must not read as the caller's own doing.
+        val fake = FakeKqueueSyscallOps().apply { scriptWaitFailure(EBADF) }
+        val el = KqueueEventLoop(errorRecordingLogger(mutableListOf()), syscallOps = fake)
+        try {
+            el.reportRegLockFailure("lock", EINVAL, stillHeld = false)
+
+            val fault = el.loopFailure()
+
+            assertNotNull(fault, "the lock failure is why this loop is ending")
+            assertTrue(
+                checkNotNull(fault.message).contains("registration lock"),
+                "and the record must name it, got: ${fault.message}",
             )
         } finally {
             el.close()
