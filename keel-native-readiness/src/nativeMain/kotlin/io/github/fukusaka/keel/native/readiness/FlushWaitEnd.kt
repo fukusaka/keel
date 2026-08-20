@@ -64,14 +64,16 @@ internal fun endWaitForClosedTransport(
 }
 
 /**
- * Ends [cont] for a loop that will never run its flush, given what that loop
- * threw on its way out — or `null` if it stopped because it was asked to.
+ * Ends [cont] for a loop that will never run its flush, given what ended that
+ * loop — or `null` if it stopped because it was asked to.
  *
  * **Two ways a loop can be gone, and only one of them is the caller's doing.**
  * A loop that was asked to stop ends the work its callers started. A loop that
- * ended by throwing was asked for nothing: every connection it served is gone,
+ * ended on its own was asked for nothing: every connection it served is gone,
  * this caller's included, so what it gets is a fault to report rather than a
- * cancellation to propagate.
+ * cancellation to propagate. Throwing is only the rarest of the ways it can
+ * happen — a poll the kernel refuses for good, or a lock that stopped being
+ * exclusive, ends a loop just as finally and records the same thing.
  *
  * Reading the loop's record is safe from the states a caller reaches this
  * through — quiescent, and finishing — because the loop publishes the record

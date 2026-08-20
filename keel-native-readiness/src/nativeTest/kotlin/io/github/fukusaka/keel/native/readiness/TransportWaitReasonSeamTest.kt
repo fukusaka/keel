@@ -137,6 +137,10 @@ internal class TransportWaitReasonSeamTest : TransportSeamFixture() {
 
             val told = parked.await().exceptionOrNull()
             assertIs<ConnectionFailureException>(told, "the parked wait must be told the connection failed, got: $told")
+            assertTrue(
+                checkNotNull(told.message).contains("read()"),
+                "and told which failure, like the wait that arrived later, got: ${told.message}",
+            )
             fake.assertAllConsumed()
             tracker.assertNoLeaks()
         }

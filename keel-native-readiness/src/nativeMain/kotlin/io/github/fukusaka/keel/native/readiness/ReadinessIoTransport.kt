@@ -273,8 +273,8 @@ class ReadinessIoTransport(
      * flush, the release of the queue (a syscall wrapper, an allocator, a
      * pointer) and the waiter's answer, whose resume goes back through the
      * waiter's own dispatcher — the refusal `onLoopStopped` contains for the
-     * same call shape. That answer is the recorded refusal when there is one,
-     * and the close's own cancellation when there is not — this teardown runs
+     * same call shape. That answer is whatever ended the connection when
+     * something did, and the close's own cancellation when nothing did — this teardown runs
      * on a live loop, so what the loop did is not part of the answer here.
      * What the flush leaves behind for that release is everything a
      * refusal did not consume. An entry leaves the deque only as its bytes are

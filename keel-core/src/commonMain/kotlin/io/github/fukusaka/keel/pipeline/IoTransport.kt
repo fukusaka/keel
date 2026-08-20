@@ -105,11 +105,13 @@ interface IoTransport {
     /**
      * Callback invoked when this transport ends the connection over a
      * refused send, with that refusal — before [onReadClosed], so a listener
-     * hears the reason while it can still act on it, and at most once. Other
-     * failures the transport contains end the connection without it, and
-     * deliberately: such a failure has usually just come from the handler
-     * chain, so sending it back down invites an answer that throws again. A
-     * caller waiting on a flush is told about those instead.
+     * hears the reason while it can still act on it, and at most once. The
+     * other failures that end a connection do so without it, and deliberately.
+     * One kind has usually just come from the handler chain, so sending it
+     * back down invites an answer that throws again. The other -- a read the
+     * platform refuses -- is what the inactive report itself is for, and a
+     * second notification saying the same thing is not a reason a handler can
+     * act on. A caller waiting on a flush is told about both.
      *
      * Only for an end the transport forced. A close the caller asked for is
      * not reported here even when the closing drain meets a dead peer: the

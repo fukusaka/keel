@@ -51,14 +51,16 @@ internal class LoopHandoff(
     // gate on this instead.
     private val loopQuiescent = AtomicInt(0)
 
-    // What ended the loop, when what ended it was a throw rather than a
-    // request to stop. Null covers both "still running" and "stopped as
-    // asked": neither is a fault, and a reader only ever asks this about a
-    // loop it has already established is gone.
+    // What ended the loop, when it was not a request to stop -- a body that
+    // threw, a poll the kernel refused for good, a lock that stopped being
+    // exclusive. Null covers both "still running" and "stopped as asked":
+    // neither is a fault, and a reader only ever asks this about a loop it has
+    // already established is gone.
     private val loopFailure = AtomicReference<Throwable?>(null)
 
     /**
-     * Records that the loop ended by throwing. Publish this **before**
+     * Records that the loop is ending for a reason nobody asked for. Publish
+     * this **before**
      * [markFinished], so anything that reads a shutdown flag as 1 and then
      * asks [loopFailure] sees it — the flags are what a reader synchronises
      * on, and the record has to be on the far side of that edge to be seen.
@@ -71,8 +73,8 @@ internal class LoopHandoff(
     }
 
     /**
-     * What the loop threw on its way out, or `null` if it stopped because it
-     * was asked to.
+     * What ended the loop when nothing asked it to, or `null` if it stopped
+     * because it was asked to.
      *
      * Only meaningful once the loop is known to be gone — before that, `null`
      * says nothing more than "not yet".

@@ -197,8 +197,12 @@ interface Channel : AutoCloseable {
      * [EngineFailureException] when it was not. So does one arriving while the
      * loop is still winding down over a connection that is still open with
      * bytes queued: nothing will drain them now, and what is gone is bigger
-     * than this connection. A wait that finds the connection already closed
-     * hears what closed it, whichever way the loop went.
+     * than this connection. Once the loop has gone quiet this is the whole
+     * answer — a connection that had recorded a failure of its own is not
+     * consulted, so a wait arriving then hears about the loop even though the
+     * connection knew why its bytes never left. What a wait arriving in that
+     * order should be told is not settled; what it will not be told is that it
+     * asked for any of this.
      */
     suspend fun awaitFlushComplete() {}
 
