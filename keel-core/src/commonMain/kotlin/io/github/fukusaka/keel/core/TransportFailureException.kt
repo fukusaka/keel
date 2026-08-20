@@ -104,12 +104,19 @@ public class ConnectionFailureException(
  * gone with it, not just this one. Treat it as a fault to report rather than
  * a connection to retry.
  *
- * **No transport raises this yet.** A loop that ends by throwing currently
- * ends its waits the same way one that was asked to stop does — as a
- * cancellation — because nothing records which happened. This type is
- * declared now so the sealed set is complete from the start: adding a subtype
- * later would break an exhaustive `when` that a caller had already written
- * against it. Making it reachable is tracked separately.
+ * A loop that ends by throwing records that on its way out, before it
+ * publishes that it has stopped — so a wait ended by the terminal sequence,
+ * and one arriving after it, are told the same thing. Without that record the
+ * two ways a loop can be gone are indistinguishable, and both used to be
+ * delivered as the cancellation that only one of them is.
+ *
+ * **A loop ending this way usually takes the process with it.** The engines
+ * run it as a thread entry point with nothing above it to catch, which is why
+ * the readiness dispatch and the task drain guard what they run: a throw that
+ * gets past them has no owner left. The waits are ended before that, by the
+ * terminal sequence the loop runs on its way out, so a caller does hear this
+ * — and an embedding that drives the loop on its own thread hears it for as
+ * long as it keeps running.
  */
 public class EngineFailureException(
     message: String,

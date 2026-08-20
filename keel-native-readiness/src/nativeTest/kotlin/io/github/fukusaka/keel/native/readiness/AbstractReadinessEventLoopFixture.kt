@@ -143,8 +143,22 @@ internal abstract class AbstractReadinessEventLoopFixture {
 
         override fun inEventLoop(): Boolean = onLoopThread
 
+        /**
+         * Thrown by [loopBody] instead of returning, for the tests that need
+         * a loop which ended on its own rather than because it was asked to.
+         *
+         * The real bodies cannot be made to do this on demand: both engines
+         * guard every listener and every task they run, which is the point of
+         * those guards -- what gets past them is whatever nobody anticipated.
+         * Staging it here is staging the *shape*, which is all the terminal
+         * sequence and its readers can see.
+         */
+        var loopBodyFailure: Throwable? = null
+
         /** No kernel to wait on: the loop body and its wakeup are inert here. */
-        override fun loopBody() = Unit
+        override fun loopBody() {
+            loopBodyFailure?.let { throw it }
+        }
 
         override fun wakeup() = Unit
 

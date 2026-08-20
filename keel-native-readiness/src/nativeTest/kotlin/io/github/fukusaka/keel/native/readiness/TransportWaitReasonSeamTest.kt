@@ -3,9 +3,12 @@
 package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.core.ConnectionFailureException
+import io.github.fukusaka.keel.core.EngineFailureException
+import io.github.fukusaka.keel.core.TransportFailureException
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -77,6 +80,79 @@ internal class TransportWaitReasonSeamTest : TransportSeamFixture() {
             assertIs<ConnectionFailureException>(told, "the parked wait must be told the connection failed, got: $told")
             assertIs<InjectedFault>(told.cause, "and what failed must ride along, got: ${told.cause}")
             fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a wait beginning after the loop ended on its own is told the engine failed`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Nobody asked this loop to stop. Every connection it served is
+            // gone, this caller's included, and a cancellation would say the
+            // caller had asked to end work it never started ending.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = false)
+            val transport = transport()
+            eventLoop.loopBodyFailure = InjectedFault("the loop body threw")
+
+            val escaped = runCatching { eventLoop.loop() }.exceptionOrNull()
+            assertIs<InjectedFault>(escaped, "the loop re-raises what it could not handle: $escaped")
+            assertTrue(eventLoop.isStopped(), "and takes itself apart on the way out")
+
+            val told = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+
+            assertIs<EngineFailureException>(told, "the wait must be told the engine failed, got: $told")
+            assertIs<InjectedFault>(told.cause, "and what the loop threw must ride along, got: ${told.cause}")
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a wait parked when the loop ends on its own is told the same thing`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The stop sweep answers this one, on its way out of the same
+            // failure. Both sides of that moment, again -- and the record is
+            // written before the sweep runs, which is what lets the sweep
+            // read it.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.WouldBlock)
+            val transport = transport()
+            transport.onChannelAttached()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "the unwritable socket leaves the queue for a later drain")
+
+            val parked = parkFlushWaiter(transport)
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the loop ends")
+
+            eventLoop.loopBodyFailure = InjectedFault("the loop body threw")
+            runCatching { eventLoop.loop() }
+
+            val told = parked.await().exceptionOrNull()
+            assertIs<EngineFailureException>(told, "the parked wait must be told the engine failed, got: $told")
+            assertIs<InjectedFault>(told.cause, "and what the loop threw must ride along, got: ${told.cause}")
+            transport.close()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a wait on a loop that was asked to stop is still a cancellation`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The other arm of the same decision, and the one the contract
+            // reserves cancellation for. Without it, a record that was never
+            // cleared -- or a helper that stopped reading it -- would answer
+            // every stopped loop as a fault and nothing here would notice.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = false)
+            val transport = transport()
+
+            eventLoop.loop()
+            assertTrue(eventLoop.isStopped(), "the loop ran to completion and published quiescence")
+
+            val told = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+
+            assertIs<CancellationException>(told, "a loop asked to stop cancels its waits, got: $told")
+            assertFalse(told is TransportFailureException, "and does not report a fault: $told")
+            transport.close()
             tracker.assertNoLeaks()
         }
     }

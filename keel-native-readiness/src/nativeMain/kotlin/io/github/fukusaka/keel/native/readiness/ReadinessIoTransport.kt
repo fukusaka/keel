@@ -7,6 +7,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
 import io.github.fukusaka.keel.core.ConnectionFailureException
+import io.github.fukusaka.keel.core.EngineFailureException
 import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.core.TransportFailureException
 import io.github.fukusaka.keel.logging.error
@@ -275,7 +276,8 @@ class ReadinessIoTransport(
      * pointer) and the waiter's answer, whose resume goes back through the
      * waiter's own dispatcher — the refusal `onLoopStopped` contains for the
      * same call shape. That answer is the recorded refusal when there is one,
-     * and the close's own cancellation when there is not. What the flush leaves behind for that release is everything a
+     * and the close's own cancellation when there is neither that nor a loop
+     * that ended on its own. What the flush leaves behind for that release is everything a
      * refusal did not consume. An entry leaves the deque only as its bytes are
      * accounted for — removed first, then released, since releasing first would
      * leave a released buffer queued for the next walker to release again — so
@@ -457,8 +459,8 @@ class ReadinessIoTransport(
             // notification below with it; before the write side was ended
             // here, onReadClosed was the only statement and could not be
             // skipped.
-            answerFlushWaiter("cancelling the flush waiter for, while the stop notification goes on,") {
-                cont.cancel(stoppedLoopFlushCause())
+            answerFlushWaiter("ending the flush waiter for, while the stop notification goes on,") {
+                answerStoppedLoopWait(cont)
             }
         }
         // A FIN deferred while the loop was still running, whose drain never
@@ -1135,7 +1137,7 @@ class ReadinessIoTransport(
      * complete, and the failure is the reason. A no-op when nobody is parked.
      *
      * `resumeWithException` rather than a cancellation: a stopped loop
-     * ([stoppedLoopFlushCause]) says "the world went away"; this says "the
+     * ([answerStoppedLoopWait]) says "the world went away"; this says "the
      * flush you are waiting for failed", and the caller of
      * `awaitFlushComplete` should see that failure, not a cancellation.
      *
@@ -1143,8 +1145,8 @@ class ReadinessIoTransport(
      * drains in that state — a direct `flush()` can also race an off-loop
      * `markClosing` — but an invariant: [opened] false means a `close()` is in
      * flight, and every close runs a teardown whose own waiter stage answers
-     * whoever is left — with the recorded refusal on the loop, and with the
-     * loop's own cancellation once the loop has gone. Answering here as well
+     * whoever is left — with the recorded refusal on the loop, and with what
+     * the loop left behind once the loop has gone. Answering here as well
      * would only race that stage; declining leaves one answer with one owner.
      *
      * **The resume is dispatched, not inline.** The slot is cleared here — so
@@ -1435,7 +1437,7 @@ class ReadinessIoTransport(
         failure = runStage(failure) {
             flushContinuation?.let { cont ->
                 flushContinuation = null
-                cont.cancel(stoppedLoopFlushCause())
+                answerStoppedLoopWait(cont)
             }
         }
         closeFdSafely(fd, eventLoop.logger, "transport teardown (loop stopped)")
@@ -1999,14 +2001,16 @@ class ReadinessIoTransport(
                         // Storing here would reproduce the exact hang this
                         // change exists to remove. Checked ahead of the
                         // short-circuit too, which a still-queued tick may yet
-                        // drain in the sweep's final pass: cancellation is the
-                        // honest answer for a wait racing the wind-down, even
-                        // when those bytes go out moments later.
+                        // drain in the sweep's final pass: ending the wait is
+                        // the honest answer for one racing the wind-down, even
+                        // when those bytes go out moments later. Whether that
+                        // ending is a cancellation depends on why the loop is
+                        // winding down, which is the answer helper's to say.
                         if (eventLoop.isFinishing()) {
                             answerFlushWaiter(
-                                "cancelling the flush waiter of a finishing loop for, while the wind-down goes on,",
+                                "ending the flush waiter of a finishing loop for, while the wind-down goes on,",
                             ) {
-                                cont.cancel(stoppedLoopFlushCause())
+                                answerStoppedLoopWait(cont)
                             }
                             return@Runnable
                         }
@@ -2101,7 +2105,7 @@ class ReadinessIoTransport(
                 // wait: the middle arm is unreachable there for that same
                 // reason, and the arm below states what dispatching instead
                 // would cost.
-                eventLoop.isStopped() -> cont.cancel(stoppedLoopFlushCause())
+                eventLoop.isStopped() -> answerStoppedLoopWait(cont)
                 eventLoop.inEventLoop() -> register.run()
                 // Still running, or shutting down. Nothing else drains the
                 // queue once the loop is gone, so dispatching after quiescence
@@ -2120,12 +2124,40 @@ class ReadinessIoTransport(
     }
 
     /**
-     * Names why a flush wait ended, so the caller sees a reason rather than a
-     * bare cancellation — the same objection this class raises against a
-     * `shutdownOutput()` that vanished without a word.
+     * Answers a wait the loop will never run, and names why — the same
+     * objection this class raises against a `shutdownOutput()` that vanished
+     * without a word.
+     *
+     * **Two ways a loop can be gone, and only one of them is the caller's
+     * doing.** A loop that was asked to stop ends the work its callers
+     * started, which is what a cancellation means. A loop that ended by
+     * throwing was asked for nothing: every connection it served is gone, this
+     * caller included, and calling that a cancellation would leave an
+     * application choosing between swallowing real cancellations and letting a
+     * dead engine cancel its scope. The record the loop leaves on its way out
+     * is what tells the two apart; without it, both looked like the first.
+     *
+     * Reading that record is safe from here because both flags a caller
+     * reaches this through — quiescent, and finishing — are published after
+     * it.
+     *
+     * The decision lives here rather than at the four sites that end a wait on
+     * a stopped loop, so there is one place to be right about; the same reason
+     * [answerClosedTransportWait] exists one state along.
      */
-    private fun stoppedLoopFlushCause() =
-        CancellationException("EventLoop stopped before the pending flush on fd=$fd could drain")
+    private fun answerStoppedLoopWait(cont: CancellableContinuation<Unit>) {
+        val loopFailure = eventLoop.loopFailure()
+        if (loopFailure != null) {
+            cont.resumeWithException(
+                EngineFailureException(
+                    "the EventLoop ended on its own before the pending flush on fd=$fd could drain",
+                    loopFailure,
+                ),
+            )
+        } else {
+            cont.cancel(CancellationException("EventLoop stopped before the pending flush on fd=$fd could drain"))
+        }
+    }
 
     /**
      * The half-close, plus the report the deferral may need.
