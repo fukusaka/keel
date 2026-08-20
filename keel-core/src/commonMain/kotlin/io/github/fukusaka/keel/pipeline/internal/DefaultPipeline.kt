@@ -37,13 +37,13 @@ import kotlin.coroutines.EmptyCoroutineContext
 internal class DefaultPipeline(
     override val channel: PipelinedChannel,
     transport: IoTransport,
-    private val logger: Logger,
+    internal val logger: Logger,
 ) : Pipeline {
 
     private val transport: IoTransport = transport
 
-    private val head: DefaultContext = DefaultContext(this, "HEAD", HeadHandler(transport))
-    private val tail: DefaultContext = DefaultContext(this, "TAIL", TailHandler(logger))
+    private val head: DefaultContext = DefaultContext(this, "HEAD", HeadHandler(transport, this))
+    private val tail: DefaultContext = DefaultContext(this, "TAIL", TailHandler(logger, this))
 
     /**
      * Dispatcher captured from the underlying [IoTransport]. Used by the
@@ -362,6 +362,45 @@ internal class DefaultPipeline(
         // it via head.invokeOnInactive at drain time and sets
         // [inactiveFired].
         return this
+    }
+
+    /**
+     * The failure a transport reported for this connection, whatever became
+     * of it afterwards.
+     *
+     * Two frames ask about it, and they ask different things. The end of the
+     * pipeline asks *whose* failure this is: a refusal a handler threw, or
+     * one an application injected through the public error entrance, is not
+     * the connection's own end, and a handler throwing anything is the case
+     * that frame exists to report. Identity answers that, and answers it the
+     * same whether the cause arrives now or by a replay later — which is why
+     * this is set whenever the transport reports, and not only when the
+     * handlers are getting it.
+     *
+     * The head asks the other question — whether anyone will receive it —
+     * through [handlersAreGettingTransportFailure].
+     *
+     * Only [notifyTransportFailure] moves it, so an application injecting a
+     * cause of its own cannot make its exception look like the connection's.
+     */
+    internal var reportedTransportFailure: Throwable? = null
+        private set
+
+    /**
+     * Whether [cause] is the reported failure *and* these handlers are
+     * getting it — now, or by a replay already scheduled.
+     *
+     * The head reads it to decide whether to record what it silences: a
+     * failure on its way to the handlers has a reporter, and one journalled
+     * with no replay scheduled — a pipeline whose handlers are all outbound
+     * never asks for one — does not.
+     */
+    internal fun handlersAreGettingTransportFailure(cause: Throwable): Boolean =
+        cause === reportedTransportFailure && (preAttachJournalDrained || drainScheduled)
+
+    internal fun notifyTransportFailure(cause: Throwable) {
+        reportedTransportFailure = cause
+        notifyError(cause)
     }
 
     override fun notifyError(cause: Throwable): Pipeline {

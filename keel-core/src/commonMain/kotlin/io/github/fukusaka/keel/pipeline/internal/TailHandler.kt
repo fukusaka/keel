@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.pipeline.internal
 
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.OutboundHandler
@@ -18,6 +19,7 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
  */
 internal class TailHandler(
     private val logger: Logger,
+    private val pipeline: DefaultPipeline,
 ) : InboundHandler {
 
     override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
@@ -26,6 +28,43 @@ internal class TailHandler(
     }
 
     override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+        // The refused send this pipeline was told about is not an
+        // application bug, and reaching here is not evidence of one: the
+        // reason is delivered ahead of the end the handlers clean up on, and
+        // most have nothing to do with it that the end does not already tell
+        // them. What reaching here means is that nothing stopped it on the
+        // way, which is ordinary -- so it is recorded at the level that says
+        // so. On a coalescing default the engine's own containment writes a
+        // warning for the same send, so what this spares a reader is the
+        // second, misleading line.
+        //
+        // By identity, not by type: the transport reports one instance and
+        // this is it, whether it arrived now or by a replay later. A refusal
+        // a handler threw, or one an application injected through the public
+        // error entrance, is not that -- and a handler throwing anything is
+        // the case this frame exists to report.
+        //
+        // The head asks a different question of the same mark -- whether the
+        // handlers are getting it -- because it decides before they do.
+        // Standing here, that has already happened, so the two questions
+        // cannot be told apart from this frame; the one asked is the one
+        // this frame means.
+        //
+        // And not when something failed alongside it. A refusal carries what
+        // could not be finished while it was being contained -- a buffer
+        // that would not release, a wind-down step that threw -- as
+        // suppressed causes, and they are named here because they arrive
+        // attached to this one instance. A handler that takes the error and
+        // does not pass it on takes those with it, which is the same trade
+        // the pipeline has always made for anything it absorbs.
+        if (cause === pipeline.reportedTransportFailure) {
+            if (cause.suppressedExceptions.isEmpty()) {
+                logger.debug(cause) { "a refused send reached the end of the pipeline" }
+            } else {
+                logger.warn(cause) { "a refused send reached the end of the pipeline, and something failed with it" }
+            }
+            return
+        }
         logger.warn(cause) { "Unhandled exception reached TAIL" }
     }
 

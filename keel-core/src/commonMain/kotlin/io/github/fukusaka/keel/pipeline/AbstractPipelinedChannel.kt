@@ -36,7 +36,9 @@ abstract class AbstractPipelinedChannel(
     override val localAddress: SocketAddress? = null,
 ) : PipelinedChannel {
 
-    override val pipeline: Pipeline = DefaultPipeline(this, transport, logger)
+    private val defaultPipeline: DefaultPipeline = DefaultPipeline(this, transport, logger)
+
+    override val pipeline: Pipeline get() = defaultPipeline
     override val allocator: BufferAllocator get() = transport.allocator
     override val isActive: Boolean get() = transport.isOpen
     override val isOpen: Boolean get() = transport.isOpen
@@ -63,6 +65,25 @@ abstract class AbstractPipelinedChannel(
         }
         transport.onRead = { buf ->
             pipeline.notifyRead(buf)
+        }
+        transport.onConnectionFailure = { cause ->
+            // The transport invokes this before its inactive report and at
+            // most once, so ordering and count are its obligations; this
+            // wiring only chooses the destination. The destination is the
+            // pipeline's existing error entrance -- the same one a handler
+            // failure reaches -- not a new subscription point; it is entered
+            // by the transport-failure route so the head can tell a failure
+            // these handlers heard from one they did not.
+            //
+            // Offered wherever there is a pipeline to offer it to. A
+            // Coroutine-mode channel is included: its caller is answered by
+            // the suspending wait, and the reason travelling to the end
+            // costs nothing now that the end knows this send from a bug --
+            // where excluding it left the head recording that the reason had
+            // reached no handler, on a channel whose caller was being told.
+            // An empty pipeline is not, since a failure journalled with
+            // nobody to replay it to is one the head must record instead.
+            if (!pipeline.isEmpty) defaultPipeline.notifyTransportFailure(cause)
         }
         transport.onReadClosed = {
             // Auto-close on peer-FIN only in Pipeline mode — a pipeline

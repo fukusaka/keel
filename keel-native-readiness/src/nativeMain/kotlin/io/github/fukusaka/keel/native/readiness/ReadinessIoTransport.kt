@@ -911,7 +911,7 @@ class ReadinessIoTransport(
      * loop-driven entries (the coalesced tick, [onWritable], the register's
      * short-circuit, and the dispatched half-close for whatever it does not
      * contain itself) wrap it in [containReadinessFailure] and decide, while
-     * a direct `flush()` caller gets the throw and the pipeline's error path
+     * a direct `flush()` caller gets the throw and the pipeline's head
      * decides instead. A
      * half-close is neither **when its own drain runs** — it contains the
      * refusal and reports it, leaving only what the refusal carried. Under
@@ -978,14 +978,72 @@ class ReadinessIoTransport(
                 // Recorded first: a later waiter has no queue left to inspect
                 // -- the refusal discarded it -- so the reason is the only
                 // thing that can tell it what happened.
-                transportFailure = drainFailure
-                // The wind-down is what the gate is for, not the record: a
+                val firstRefusal = transportFailure == null
+                // The record is gated on being first, not on `opened`: a
                 // teardown's own deferred drain arrives with the connection
-                // already ending, and a waiter it answers still needs the
-                // refusal as that answer, not that someone closed.
-                if (opened) endConnectionAfterFailure(drainFailure)
+                // already ending and still owes the late waiter this reason
+                // -- while a refusal met *inside* the report below (a handler
+                // answering the error by writing to the same dead peer) must
+                // not overwrite the reason the connection actually ended for.
+                if (firstRefusal) transportFailure = drainFailure
+                if (opened && firstRefusal) {
+                    // The reason before the end, per the pipeline contract:
+                    // `onInactive` is the handler's cue to clean up, and a
+                    // reason delivered after the cleanup reaches nobody who
+                    // can act on it. Gated on `opened` -- a caller-asked
+                    // close is not an error to report -- and on being the
+                    // first refusal, which is what makes the report
+                    // at-most-once: the handler runs while this transport
+                    // still accepts writes, and one that answers the error
+                    // by sending re-enters this drain synchronously under
+                    // the coalescing opt-out. Without the gate that nested
+                    // refusal would re-enter the handler too, and a handler
+                    // that always answers would recurse until the loop's
+                    // stack ran out. (The callback is user code -- a seam;
+                    // its containment lives with the helper.)
+                    //
+                    // The end can also precede the refusal: a peer FIN
+                    // reports the inactive first, and a handler that answers
+                    // its own `onInactive` with a final flush meets the dead
+                    // peer afterwards, with `opened` still true because the
+                    // channel's auto-close runs after the inactive report
+                    // returns. Reporting there would put the reason after the
+                    // end it is contracted to precede -- so a refusal met
+                    // once the inactive has gone out stays quiet toward the
+                    // pipeline. The wait is still answered with it above, and
+                    // a rider still reaches the head's check.
+                    if (!inactiveAlreadyReported) reportRefusalToPipeline(drainFailure)
+                    endConnectionAfterFailure(drainFailure)
+                }
+                // A refusal this branch stays quiet about -- the caller is
+                // closing, the connection's reason is already the earlier
+                // refusal, or the inactive already went out -- rethrows
+                // below carrying whatever rode along.
+                // Every frame that can catch it names the riders itself: the
+                // teardown's and the half-close's catches re-raise them, the
+                // loop containment warns with the refusal attached, and the
+                // head's swallow -- the one frame that silences -- warns for
+                // an unreported rider, in the log and never by re-entering
+                // handlers. Naming them here as well reported one leak twice.
             }
             throw drainFailure
+        }
+    }
+
+    /**
+     * Hands the refusal to [onConnectionFailure], containing a throw from the
+     * listener: what a throw here would lose is the report, never the
+     * wind-down. Named by its own warning with the throw attached, not
+     * appended to the refusal — a handler failing to hear the report is
+     * neither the connection's failure nor teardown incompleteness.
+     */
+    private fun reportRefusalToPipeline(drainFailure: RefusedWriteException) {
+        try {
+            onConnectionFailure?.invoke(drainFailure)
+        } catch (reportFailure: Throwable) {
+            eventLoop.logger.warn(reportFailure) {
+                "reporting the refused send to the pipeline threw: fd=$fd"
+            }
         }
     }
 
@@ -1591,10 +1649,11 @@ class ReadinessIoTransport(
      *
      * Raising is how the failure reaches them instead: [performFlush]'s
      * funnel answers the waiter with it, the loop-driven entries end the
-     * connection through their containment, and a direct `flush()` caller
-     * gets it on the pipeline's error path — which is what the read path has
-     * always done with its own `Failed` (it reports the connection inactive
-     * rather than pretending the read succeeded).
+     * connection through their containment, and a caller flushing through a
+     * pipeline reaches its handlers as an error — or its log, where they are
+     * not the ones being told. This is what the read path has always done
+     * with its own `Failed` (it reports the connection inactive rather than
+     * pretending the read succeeded).
      *
      * A refused release is carried to the end of the walk and attached to the
      * write failure, which is the cause the caller asked about.

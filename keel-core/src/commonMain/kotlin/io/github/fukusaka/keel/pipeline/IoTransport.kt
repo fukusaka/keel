@@ -103,6 +103,30 @@ interface IoTransport {
     var onReadClosed: (() -> Unit)?
 
     /**
+     * Callback invoked when this transport ends the connection over a
+     * refused send, with that refusal — before [onReadClosed], so a listener
+     * hears the reason while it can still act on it, and at most once. Other
+     * failures the transport contains end the connection without it; widening
+     * what is reported is tracked with recording why a connection ended.
+     *
+     * Only for an end the transport forced. A close the caller asked for is
+     * not reported here even when the closing drain meets a dead peer: the
+     * caller asked for the queue to be discarded, and a peer found gone
+     * while discarding is the outcome it asked for. Nor is a refusal met
+     * after [onReadClosed] already went out — the peer can end the
+     * connection first — since a reason delivered after the end reaches
+     * nobody who can act on it; the flush wait is still answered with it.
+     *
+     * The default accessors store nothing, so a transport that never raises
+     * [io.github.fukusaka.keel.core.RefusedWriteException] is not obliged to
+     * carry a field for it. Overriding with real storage is part of adopting
+     * that failure, not an option alongside it.
+     */
+    var onConnectionFailure: ((Throwable) -> Unit)?
+        get() = null
+        set(@Suppress("UNUSED_PARAMETER") value) {}
+
+    /**
      * Hook invoked by [io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel]
      * after [onRead], [onReadClosed], and [onWritabilityChanged] have all
      * been wired up. Engines that pre-arm their read primitive when the
@@ -175,9 +199,11 @@ interface IoTransport {
      * **May raise.** A send the platform definitively refused is a failure,
      * not a completed flush, and reaches the caller as one — as does a
      * failure in the bookkeeping around it (releasing a buffer, resuming a
-     * waiter). Whatever is unfinished stays queued for the close. A caller
-     * on the pipeline route does not see this: `DefaultPipeline` catches and
-     * propagates it as a pipeline error.
+     * waiter). Whatever is unfinished stays queued for the close. A caller on
+     * the pipeline route does not see the raise: the pipeline's head contains
+     * a refused send, having already delivered it to the handlers as a
+     * pipeline error — or recorded it, where they are not the ones being
+     * told.
      */
     fun flush(): Boolean
 

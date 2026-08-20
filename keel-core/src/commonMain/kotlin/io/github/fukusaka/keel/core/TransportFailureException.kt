@@ -14,9 +14,18 @@ package io.github.fukusaka.keel.core
  * would do so only when the drain happened to run in place, which the caller
  * does not choose either.
  *
- * A pipelined application sees it on the handler error path, the layer's own
- * way of being told; the half-close, which does not go through the pipeline,
- * reports that the connection went inactive.
+ * A pipelined application sees a reported refusal on the handler error
+ * path, the layer's own way of being told — before the inactive report,
+ * whatever entry met it, so the reason arrives while a handler can still act
+ * on it. Three are deliberately not reported there: one met while the
+ * caller is already closing, one met after the connection's end was
+ * already reported — the peer can end the connection first, and a reason
+ * delivered after the end reaches nobody who can act on it — and a second
+ * one met while the first is still being reported, since the first is the
+ * reason the connection ended. A wait is still answered in all three — with
+ * that same refusal in the first two, and with the first one in the third,
+ * which is the reason the connection ended. Whether a subtype added later
+ * takes the same route is that subtype's to say.
  *
  * **This is not a cancellation, and that distinction is the point.** A
  * caller that closes its own channel gets a `CancellationException`, because

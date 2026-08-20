@@ -243,7 +243,12 @@ interface Channel : AutoCloseable {
      * later tick under flush coalescing, on by default in the readiness
      * engines — and a caller cannot know which it got. So the answer does not
      * depend on it: the connection ends and no FIN follows the refused bytes.
-     * [awaitFlushComplete] is where the reason is asked for.
+     * The reason reaches [awaitFlushComplete], and a pipeline handler's
+     * `onError` ahead of its `onInactive` — the two places a reported
+     * refusal is delivered to. The ordering promise is between the two
+     * handler callbacks; the wait's resume rides its own dispatcher and is
+     * not ordered against them. One met while the caller is already closing
+     * still answers the wait but is not an error to report.
      *
      * A failure that is not the refusal is not contained — a drain that also
      * could not release its buffers, or could not finish winding the

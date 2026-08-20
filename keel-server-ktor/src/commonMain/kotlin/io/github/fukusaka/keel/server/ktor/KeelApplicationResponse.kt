@@ -287,39 +287,6 @@ internal class KeelApplicationResponse(
     }
 
     /**
-     * Drains [IoBuf]s from [bridge] and copies their bytes into [output] until
-     * the bridge closes (peer EOF or connection teardown) or [output] closes.
-     */
-    private suspend fun pumpRawBridgeToInput(
-        bridge: RawInboundBridge,
-        output: ByteWriteChannel,
-    ) {
-        val tmp = ByteArray(UPGRADE_PUMP_BUFFER_SIZE)
-        try {
-            while (!output.isClosedForWrite) {
-                val received = bridge.receiveCatching()
-                if (received.isClosed) break
-                val buf = received.getOrThrow()
-                try {
-                    while (buf.readableBytes > 0) {
-                        val n = minOf(buf.readableBytes, tmp.size)
-                        buf.readByteArray(tmp, 0, n)
-                        output.writeFully(tmp, 0, n)
-                    }
-                } finally {
-                    buf.release()
-                }
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // I/O error — let the session observe EOF on the next read
-        } finally {
-            runCatching { output.cancel(null) }
-        }
-    }
-
-    /**
      * Reads bytes from [input] (written by the upgrade session's outbound codec) and
      * forwards them as raw [IoBuf]s to the pipeline. Runs on [pipelinedChannel.ioDispatcher]
      * so that [pipelinedChannel.pipeline.requestWrite] is always called on the EventLoop thread.
@@ -355,9 +322,54 @@ internal class KeelApplicationResponse(
             // Write failure — connection likely closed by the peer
         }
     }
+}
 
-    private companion object {
-        /** Buffer size for upgrade session inbound/outbound pumps. */
-        private const val UPGRADE_PUMP_BUFFER_SIZE = 8192
+/** Buffer size for the upgrade session's pumps, inbound and outbound. */
+private const val UPGRADE_PUMP_BUFFER_SIZE = 8192
+
+/**
+ * Drains [IoBuf]s from [bridge] and copies their bytes into [output] until
+ * the bridge closes (peer EOF or connection teardown) or [output] closes.
+ *
+ * The reason the bridge was closed with, when there is one, is the reason
+ * [output] is cancelled with: a connection the transport gave up on is not
+ * the same thing as a peer that finished talking, and the session reads that
+ * difference off this channel. Top-level so it can be driven on its own —
+ * the pump is a function of the two channels it joins and nothing else.
+ */
+internal suspend fun pumpRawBridgeToInput(
+    bridge: RawInboundBridge,
+    output: ByteWriteChannel,
+) {
+    val tmp = ByteArray(UPGRADE_PUMP_BUFFER_SIZE)
+    // Why the session's inbound ended, when the bridge was closed with a
+    // reason: a connection the transport gave up on is not the same
+    // thing as a peer that finished talking, and the session reads the
+    // difference off this channel.
+    var closeCause: Throwable? = null
+    try {
+        while (!output.isClosedForWrite) {
+            val received = bridge.receiveCatching()
+            if (received.isClosed) {
+                closeCause = received.exceptionOrNull()?.takeIf { it !is CancellationException }
+                break
+            }
+            val buf = received.getOrThrow()
+            try {
+                while (buf.readableBytes > 0) {
+                    val n = minOf(buf.readableBytes, tmp.size)
+                    buf.readByteArray(tmp, 0, n)
+                    output.writeFully(tmp, 0, n)
+                }
+            } finally {
+                buf.release()
+            }
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        // I/O error — let the session observe EOF on the next read
+    } finally {
+        runCatching { output.cancel(closeCause) }
     }
 }

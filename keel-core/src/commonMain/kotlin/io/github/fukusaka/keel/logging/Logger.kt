@@ -31,9 +31,13 @@ public inline fun Logger.trace(message: () -> Any?) {
     if (isLoggable(LogLevel.TRACE)) rawLog(LogLevel.TRACE, null, message())
 }
 
-/** Logs at [LogLevel.DEBUG]. The [message] lambda is not evaluated when DEBUG is disabled. */
-public inline fun Logger.debug(message: () -> Any?) {
-    if (isLoggable(LogLevel.DEBUG)) rawLog(LogLevel.DEBUG, null, message())
+/**
+ * Logs at [LogLevel.DEBUG] with an optional [throwable] — for an outcome
+ * worth keeping the cause of without asking a reader to look into it. The
+ * [message] lambda is not evaluated when DEBUG is disabled.
+ */
+public inline fun Logger.debug(throwable: Throwable? = null, message: () -> Any?) {
+    if (isLoggable(LogLevel.DEBUG)) rawLog(LogLevel.DEBUG, throwable, message())
 }
 
 /** Logs at [LogLevel.INFO]. The [message] lambda is not evaluated when INFO is disabled. */
