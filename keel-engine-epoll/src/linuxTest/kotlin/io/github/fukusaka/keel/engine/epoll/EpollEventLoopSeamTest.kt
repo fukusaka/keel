@@ -478,7 +478,15 @@ class EpollEventLoopSeamTest {
         // what an ordinary shutdown does.
         val fake = FakeEpollSyscallOps()
         val el = EpollEventLoop(logger = recordingLogger(mutableListOf()), syscallOps = fake)
-        fake.onWait = { el.close() }
+        // Bounded: nothing else ends this loop, so a close that stopped taking
+        // the running flag down -- or a body that stopped reading it -- would
+        // spin here rather than fail. A scripted fatal cannot serve instead;
+        // it would end the loop for the wrong reason and decide the assertion.
+        var waits = 0
+        fake.onWait = {
+            check(++waits <= MAX_WAITS) { "the loop did not end when it was asked to" }
+            el.close()
+        }
 
         el.loop()
 
@@ -1006,6 +1014,13 @@ class EpollEventLoopSeamTest {
     }
 
     private companion object {
+        /**
+         * How many waits the case that ends the loop by closing may take
+         * before it is a hang. One is what it produces; the rest is slack
+         * rather than a second path anything takes.
+         */
+        const val MAX_WAITS = 8
+
         /** Poll step while waiting for the loop to drain a queued registration. */
         const val POLL_US = 2_000u
 

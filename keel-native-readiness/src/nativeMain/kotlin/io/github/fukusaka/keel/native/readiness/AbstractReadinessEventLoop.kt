@@ -241,9 +241,13 @@ abstract class AbstractReadinessEventLoop :
     private val regLockFailureText = AtomicReference<String?>(null)
 
     /**
-     * How the registration lock failed, or a stand-in if the failure has not
-     * been described — for the body writing the record that says this is why
-     * the loop is ending.
+     * How the registration lock failed — for the body writing the record that
+     * says this is why the loop is ending.
+     *
+     * The stand-in should be unreachable: every path that raises the flag this
+     * is read behind stores a description first. It is here because a getter
+     * cannot prove that, and a waiter told nothing at all would be worse than
+     * one told the shape of what happened.
      */
     protected fun regLockFailureDetail(): String =
         regLockFailureText.value ?: "the registration lock stopped being exclusive"
@@ -773,8 +777,13 @@ abstract class AbstractReadinessEventLoop :
      */
     @InternalReadinessEngineApi
     fun reportRegLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
-        regLockFailed.value = 1
-        // Kept for the record the body writes if this is what ends the loop.
+        // The description first, the flag second. The flag is what the loop
+        // synchronises on -- it reads that, then asks for this -- so a
+        // description stored after it can be missed by the very read it exists
+        // for, and the body would record a stand-in for a failure that had
+        // already been described. The same ordering the loop's own record
+        // keeps against the shutdown flags.
+        //
         // Stored rather than recorded here: which call failed and with what
         // errno is known only at this point, and whether it is the reason the
         // loop is stopping is knowable only in the body. First writer wins,
@@ -784,6 +793,7 @@ abstract class AbstractReadinessEventLoop :
             null,
             "pthread_mutex_$operation() failed on the registration lock: ${errnoMessage(errno)}",
         )
+        regLockFailed.value = 1
         // A failed release leaves this thread holding the mutex; a failed
         // acquire does not. The teardown has to tell them apart: it can still
         // run its sweep in the second case, but re-taking a mutex this thread

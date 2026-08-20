@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.engine.kqueue
 
 import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.EBADF
@@ -39,11 +40,13 @@ import kotlin.test.assertTrue
  * cases hold.
  *
  * No timeout, matching the sibling cases that drive `loop()` on the test
- * thread. What ends the loop when the check under test is gone differs by
- * case: the ones that report before running it script a fatal `waitEvents`,
- * and the ones that stage a stop bound the number of waits themselves, since
- * a scripted fatal there would end the loop for the wrong reason and decide
- * the assertion. Either way a regression fails rather than hangs.
+ * thread. The cases that report before running it script a fatal `waitEvents`,
+ * which ends the loop even when the check under test is gone. The two that
+ * stage a stop cannot use that net — a scripted fatal would end the loop for
+ * the wrong reason and decide the assertion — and their own ending is what
+ * the check under test does not affect, so what they bound is the other
+ * hazard: a close that stops taking the running flag down, or a body that
+ * stops reading it, would otherwise spin here rather than fail.
  */
 @OptIn(ExperimentalForeignApi::class, InternalReadinessEngineApi::class)
 class KqueueRegLockFailureSeamTest {
@@ -93,8 +96,12 @@ class KqueueRegLockFailureSeamTest {
             val fault = el.loopFailure()
             assertNotNull(fault, "the lock failure is why this loop ended")
             assertTrue(
-                checkNotNull(fault.message).contains("registration lock"),
-                "and the record must name it, got: ${fault.message}",
+                checkNotNull(fault.message).contains("pthread_mutex_lock()"),
+                "the record must name the call that failed, got: ${fault.message}",
+            )
+            assertTrue(
+                checkNotNull(fault.message).contains(errnoMessage(EINVAL)),
+                "and the errno it failed with, got: ${fault.message}",
             )
         } finally {
             el.close()
@@ -120,11 +127,15 @@ class KqueueRegLockFailureSeamTest {
 
         assertNull(el.loopFailure(), "the loop had already ended, and not for this")
         // No close in a `finally`: the one above already took the running flag
-        // down, so a second is a no-op, and the first was refused the release
-        // because `loop()` holds the termination claim. What the loop opened is
-        // this fake's synthetic descriptors, so there is nothing real to give
-        // back -- the alternative staging, closing from another thread, is not
-        // something this seam has.
+        // down, so a second is a no-op. The first was refused the release
+        // because it ran from inside the wait, before quiescence -- the
+        // sibling cases close after `loop()` returns and do get it, so the
+        // claim `loop()` holds is not what decides this. What goes unreleased
+        // is real: the arena behind the thread handle and the gather scratch's
+        // two native arrays, leaked for the process. Accepted because the
+        // alternative staging -- closing from another thread -- is not
+        // something this seam has, and the descriptors are synthetic, so the
+        // release this misses would hand fabricated numbers to `close(2)`.
     }
 
     @Test
@@ -209,8 +220,9 @@ class KqueueRegLockFailureSeamTest {
 
         /**
          * How many waits a case that ends the loop by closing may take before
-         * it is a hang. One is expected; the slack is for a body that drains
-         * tasks first.
+         * it is a hang. One is what those cases produce; the rest is slack
+         * rather than a second path anything takes, because what this bounds
+         * is a loop that never ends, not one that waits twice.
          */
         const val MAX_WAITS = 8
     }
