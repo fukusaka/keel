@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafePointer
+import io.github.fukusaka.keel.core.ConnectionFailureException
 import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.core.TransportFailureException
 import io.github.fukusaka.keel.logging.error
@@ -187,8 +188,14 @@ class ReadinessIoTransport(
      *
      * A refusal discards the queue on its way out, so a caller that arrives
      * afterwards finds an empty queue and a closed transport — indistinguishable
-     * from an orderly close unless the reason is kept. Set once, by the drain
-     * that hit it.
+     * from an orderly close unless the reason is kept. The same holds for a
+     * failure the loop contained: it closes this transport too, and a wait that
+     * begins afterwards can read nothing from the wreckage that says why.
+     *
+     * Set once, by whichever failure ended the connection first — a later one
+     * is a consequence of the wind-down, not the reason. A refusal records
+     * itself; anything else is wrapped where it is contained, since the type a
+     * waiter is answered with says what failed.
      */
     private var transportFailure: TransportFailureException? = null
 
@@ -305,6 +312,7 @@ class ReadinessIoTransport(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun endConnectionAfterFailure(readinessFailure: Throwable) {
+        recordConnectionEnd(readinessFailure)
         // Gated on the sticky record, not on the notification's own flag: on a
         // second entry the first wind-down has already failed, and calling the
         // callback again would be the very thing [notifyInactive] says means
@@ -330,6 +338,47 @@ class ReadinessIoTransport(
             windDownFailed = true
         }
         if (windDownFailed) throw readinessFailure
+    }
+
+    /**
+     * Keeps why this connection ended, for the wait that arrives too late to
+     * see it happen.
+     *
+     * Every failure that ends a connection passes through
+     * [endConnectionAfterFailure], so recording here rather than at each
+     * containment is what makes "a wait is answered with a bare cancellation
+     * only when its own caller closed" true of all of them, instead of true of
+     * refusals and false of everything else.
+     *
+     * **Only while the connection is still open**, which is what makes this
+     * failure the reason it ended rather than something that failed during an
+     * ending the caller asked for. A close already under way has its own
+     * answer for a waiter — the caller ended the work it started, which is
+     * what a cancellation means — and a release that throws on the way out
+     * does not change who ended it. A refusal is the exception, and is
+     * recorded by the drain before it reaches here: it answers the question
+     * the waiter actually asked, which is whether its bytes reached the peer.
+     * (Nothing else that arrives here can answer that, which is why what is
+     * recorded below is wrapped rather than passed through — the type a
+     * waiter is given states what failed, and everything reaching this line is
+     * this connection's handling.)
+     *
+     * **First writer wins, and that is the reason rather than the earliest.**
+     * A connection ends once; what follows is the wind-down reacting to it — a
+     * release that fails, a notification that throws, a deferred flush meeting
+     * the dead peer. Answering a waiter with one of those would name the
+     * consequence and lose the cause.
+     *
+     * An end the transport decides on without a failure — the idle timeout
+     * reclaiming a connection nobody is using — is deliberately not recorded
+     * here: it is a policy the application configured, so it is nearer to a
+     * close asked for than to a failure, and it does not pass through this
+     * funnel at all.
+     */
+    private fun recordConnectionEnd(readinessFailure: Throwable) {
+        if (!opened || transportFailure != null) return
+        transportFailure =
+            ConnectionFailureException("handling this connection failed and it was ended: fd=$fd", readinessFailure)
     }
 
     /**
@@ -978,21 +1027,24 @@ class ReadinessIoTransport(
                 // Recorded first: a later waiter has no queue left to inspect
                 // -- the refusal discarded it -- so the reason is the only
                 // thing that can tell it what happened.
-                val firstRefusal = transportFailure == null
+                val firstFailure = transportFailure == null
                 // The record is gated on being first, not on `opened`: a
                 // teardown's own deferred drain arrives with the connection
                 // already ending and still owes the late waiter this reason
-                // -- while a refusal met *inside* the report below (a handler
-                // answering the error by writing to the same dead peer) must
-                // not overwrite the reason the connection actually ended for.
-                if (firstRefusal) transportFailure = drainFailure
-                if (opened && firstRefusal) {
+                // -- while a refusal met after the connection already had a
+                // reason must not overwrite it. Two arrive that way: one met
+                // *inside* the report below, where a handler answers the
+                // error by writing to the same dead peer, and one met by a
+                // wind-down the loop's containment started, where the reason
+                // is what it contained.
+                if (firstFailure) transportFailure = drainFailure
+                if (opened && firstFailure) {
                     // The reason before the end, per the pipeline contract:
                     // `onInactive` is the handler's cue to clean up, and a
                     // reason delivered after the cleanup reaches nobody who
                     // can act on it. Gated on `opened` -- a caller-asked
                     // close is not an error to report -- and on being the
-                    // first refusal, which is what makes the report
+                    // first failure, which is what makes the report
                     // at-most-once: the handler runs while this transport
                     // still accepts writes, and one that answers the error
                     // by sending re-enters this drain synchronously under
@@ -2132,9 +2184,13 @@ class ReadinessIoTransport(
      *
      * A close the caller asked for is a cancellation: ending work it started
      * is what cancellation means. A close the *transport* forced — because a
-     * send was refused — is not, and delivering it as one would make a caller
+     * send was refused, or because handling the connection failed and the
+     * engine ended it — is not, and delivering it as one would make a caller
      * choose between swallowing real cancellations and letting a dead
-     * connection cancel its scope. The recorded reason decides which this is.
+     * connection cancel its scope. The recorded reason decides which this is,
+     * and it is recorded on every path that forces a close, so the bare
+     * cancellation below is left for exactly one thing: a close the caller
+     * asked for.
      *
      * **A wait gets the same answer whichever side of the drain it began
      * on.** One already parked is resumed with the refusal by the drain that
