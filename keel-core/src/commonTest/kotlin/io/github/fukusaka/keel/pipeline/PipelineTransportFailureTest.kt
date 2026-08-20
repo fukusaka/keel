@@ -178,6 +178,10 @@ class PipelineTransportFailureTest {
             log.warnings.isEmpty(),
             "nothing here is worth a reader's attention: ${log.warnings}",
         )
+        assertTrue(
+            log.records.any { it.first == LogLevel.DEBUG && "reached the end of the pipeline" in it.second },
+            "and the reason was offered to it, rather than kept from it: ${log.records}",
+        )
     }
 
     @Test

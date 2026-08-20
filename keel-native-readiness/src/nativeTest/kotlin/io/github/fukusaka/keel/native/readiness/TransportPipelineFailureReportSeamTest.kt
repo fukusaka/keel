@@ -43,10 +43,12 @@ import kotlin.test.assertTrue
  * the connection first — since reporting there would put the reason after
  * the end it is contracted to precede.
  *
- * The report is for handlers, so it is offered only where there are any: a
- * Coroutine-mode channel learns the refusal from the suspending wait it
- * already makes, and a channel with nothing installed has nobody to tell.
- * Where nobody heard it, a rider still gets its name in the log.
+ * The report is offered wherever there is a pipeline to offer it to,
+ * including a Coroutine-mode one whose caller is answered by the suspending
+ * wait it already makes. A channel with nothing installed is the exception:
+ * there is nobody to tell, so the head keeps the record instead — quietly
+ * when the send is all that failed, loudly when something failed with it,
+ * which is the level the end of the pipeline uses for the same reason.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
@@ -471,10 +473,10 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
     @Test
     fun `a refusal with nothing riding on it is recorded too`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            // The same shape without a rider. Nothing distinguishes it for a
-            // reader of the log except that it happened, which is the whole
-            // point: the reason a connection ended is not something to drop
-            // because the send that ended it also released cleanly.
+            // The same shape without a rider. Nothing rode along, so nothing
+            // here asks to be looked into -- but the reason the connection
+            // ended is still kept, at the level a reader goes looking for
+            // rather than the one that comes to them.
             rebuildLoop(onLoopThread = true, runDispatchedInline = true, flushCoalescing = false)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
@@ -638,6 +640,12 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             assertTrue(
                 plog.warnings.isEmpty(),
                 "nothing here is worth a reader's attention: ${plog.warnings}",
+            )
+            assertTrue(
+                plog.records.any {
+                    it.first == LogLevel.DEBUG && "reached the end of the pipeline" in it.second
+                },
+                "and the reason was offered to it, rather than kept from it: ${plog.records}",
             )
             val awaited = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
             assertIs<RefusedWriteException>(awaited, "and that API still answers with the refusal")
