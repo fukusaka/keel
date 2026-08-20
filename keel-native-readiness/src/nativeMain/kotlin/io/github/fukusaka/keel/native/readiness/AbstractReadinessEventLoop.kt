@@ -238,8 +238,9 @@ abstract class AbstractReadinessEventLoop :
      * One value rather than a flag beside a description, because two would
      * have to be written in an order — the description first, since the flag
      * is what a reader synchronises on — and an order stated is an order that
-     * can be got wrong. It was, in the revision before this one. Here the
-     * question "has it failed" and the answer "with what" are the same read.
+     * can be got wrong. It was, while this was two values. Here the question
+     * "has it failed" and the answer "with what" are the same value, so there
+     * is no order left to keep.
      */
     private val regLockFailure = AtomicReference<String?>(null)
 

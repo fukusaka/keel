@@ -119,13 +119,16 @@ public class ConnectionFailureException(
  * throw that gets past them has no owner left. That is the rare shape. The
  * ordinary one does not throw at all — a poll the kernel refuses for good, a
  * lock whose exclusion is gone — and those record the same thing on their way
- * out while the process carries on. Either way the flush waits are ended by
- * the terminal sequence the loop runs before it goes. On the ordinary route
- * that is the whole story. On the throwing one, a wait parked on the loop's
- * own dispatcher is delivered by the sequence's last drain and does hear
- * this, and one parked elsewhere has its answer handed off and then races the
- * process ending — which is the same race anything else on that connection
- * would be in. A wait for readiness rather than for a flush — a connect, an
+ * out while the process carries on. The terminal sequence then ends the flush
+ * waits it can reach. On the throwing route, a wait parked on the loop's own
+ * dispatcher is delivered by the sequence's last drain and does hear this, and
+ * one parked elsewhere has its answer handed off and then races the process
+ * ending — the same race anything else on that connection would be in. And on
+ * one route it reaches none of them: a lock whose *release* failed leaves the
+ * loop holding it, so the sequence refuses to sweep rather than walk ledgers
+ * it cannot guard, and the waits parked on that loop stay parked. What that
+ * loop can still answer is a wait arriving after it, which finds the record
+ * and is told this. A wait for readiness rather than for a flush — a connect, an
  * accept — is still ended as a cancellation whichever way the loop went.
  */
 public class EngineFailureException(

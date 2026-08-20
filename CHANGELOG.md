@@ -111,9 +111,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-kqueue`, `engine-epoll`: a flush wait ended by a failure is told which one — the
-  connection's, or an EventLoop that ended without being asked to — instead of being cancelled as
-  if its caller had closed the channel (#1066)
+- `engine-kqueue`, `engine-epoll`: a flush wait ended by a failure is told which one instead of
+  being cancelled as if its caller had closed the channel (#1066)
 - `engine-kqueue`, `engine-epoll`: a gather write no longer offers the kernel more regions than
   it accepts — over `IOV_MAX` it wrote nothing, and the queue was dropped as if sent (#1062)
 - `engine-kqueue`, `engine-epoll`: a write the kernel definitively refused now reports the

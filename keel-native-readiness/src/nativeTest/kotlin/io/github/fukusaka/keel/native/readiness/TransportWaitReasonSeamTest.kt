@@ -5,6 +5,7 @@ package io.github.fukusaka.keel.native.readiness
 import io.github.fukusaka.keel.core.ConnectionFailureException
 import io.github.fukusaka.keel.core.EngineFailureException
 import io.github.fukusaka.keel.native.posix.ReadResult
+import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -111,6 +112,10 @@ internal class TransportWaitReasonSeamTest : TransportSeamFixture() {
                 checkNotNull(told.message).contains("read()"),
                 "and the message must name what failed, got: ${told.message}",
             )
+            assertTrue(
+                checkNotNull(told.message).contains(errnoMessage(ECONNRESET)),
+                "and how it failed, got: ${told.message}",
+            )
             fake.assertAllConsumed()
             tracker.assertNoLeaks()
         }
@@ -138,7 +143,7 @@ internal class TransportWaitReasonSeamTest : TransportSeamFixture() {
             val told = parked.await().exceptionOrNull()
             assertIs<ConnectionFailureException>(told, "the parked wait must be told the connection failed, got: $told")
             assertTrue(
-                checkNotNull(told.message).contains("read()"),
+                checkNotNull(told.message).contains(errnoMessage(ECONNRESET)),
                 "and told which failure, like the wait that arrived later, got: ${told.message}",
             )
             fake.assertAllConsumed()

@@ -174,7 +174,8 @@ interface Channel : AutoCloseable {
      * was told — for a refused send, the same object. A drain that fails some
      * other way answers the parked wait with what it caught and the later one
      * with the record made from it, so the two agree about the connection and
-     * not about the type.
+     * not about the type. Unless the caller was already closing, in which case
+     * the drain answers no parked wait at all and leaves both to the close.
      *
      * **Engines differ in how far they have taken this**, the same divergence
      * [flush] states about a refused send: the two POSIX readiness engines
@@ -219,11 +220,20 @@ interface Channel : AutoCloseable {
      * loop is still winding down over a connection that is still open with
      * bytes queued: nothing will drain them now, and what is gone is bigger
      * than this connection. Once the loop has gone quiet this is the whole
-     * answer — a connection that had recorded a failure of its own is not
-     * consulted. So a connection that failed, on an engine later asked to
-     * stop, answers a wait arriving afterwards with the cancellation the stop
-     * earns, even though the connection knew why those bytes never left.
-     * Which of the two such a wait should hear is not settled.
+     * answer — the connection's own state is not consulted at all. So a
+     * connection that failed, on an engine later asked to stop, answers a wait
+     * arriving afterwards with the cancellation the stop earns, even though
+     * the connection knew why those bytes never left; and a connection its
+     * caller closed answers with the loop's failure rather than the close,
+     * where a wait arriving a moment earlier would have heard the close. Which
+     * of the two such a wait should hear is not settled, and the moment that
+     * currently decides it is not one a caller can see.
+     *
+     * **A loop that cannot sweep answers nobody it had.** Its registration
+     * lock failing to *release* leaves it holding the lock, so the terminal
+     * sequence declines to walk ledgers it can no longer guard: waits already
+     * parked on that loop stay parked, and only ones arriving afterwards find
+     * the record and are told.
      */
     suspend fun awaitFlushComplete() {}
 
