@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.pipeline.internal
 
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.RefusedWriteException
+import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.DuplexHandler
 import io.github.fukusaka.keel.pipeline.InboundHandler
@@ -66,18 +67,34 @@ internal class HeadHandler(
             // have it, or a scheduled replay is bringing it, and naming it
             // here would report the same thing twice. A journal with no
             // replay scheduled is not that, and neither is a refusal raised
-            // by anything but the transport. Nor is a channel with nothing
-            // installed: its caller is answered by the wait, but no frame
-            // below keeps a record, so this one does -- where a channel with
-            // handlers has the end of the pipeline for that. Everything else is
-            // recorded -- one line, carrying the refusal, so whatever rode
-            // along on it is named with it. Only the refusal, not its sealed
-            // supertype: the sibling failure is not raised anywhere yet, and
-            // how it should reach handlers is settled with the work that
-            // starts raising it.
+            // by anything but the transport, nor a channel with nothing
+            // installed -- there no frame below keeps a record, so this one
+            // does, where a channel with handlers has the end of the
+            // pipeline for that.
+            //
+            // At the level the end of the pipeline uses, and for the same
+            // reason: a connection ending because its peer went away is
+            // ordinary, and the caller waiting on the flush is answered with
+            // it either way, so the record is there to be found rather than
+            // to be investigated. What rode along on it is not ordinary --
+            // a buffer that would not release, a wind-down step that threw
+            // -- and nothing else will name those, so they make the record
+            // loud and are carried by it. Without this the same connection
+            // read as routine with a bridge installed and as a problem
+            // without one.
+            //
+            // Only the refusal, not its sealed supertype: the sibling
+            // failure is not raised anywhere yet, and how it should reach
+            // handlers is settled with the work that starts raising it.
             if (!pipeline.handlersAreGettingTransportFailure(refused)) {
-                pipeline.logger.warn(refused) {
-                    "a refused send was contained without reaching these handlers"
+                if (refused.suppressedExceptions.isEmpty()) {
+                    pipeline.logger.debug(refused) {
+                        "a refused send was contained before any handler had it"
+                    }
+                } else {
+                    pipeline.logger.warn(refused) {
+                        "a refused send was contained before any handler had it, and something failed with it"
+                    }
                 }
             }
         }
