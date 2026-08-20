@@ -230,31 +230,33 @@ abstract class AbstractReadinessEventLoop :
     private var ledgersClosed: Boolean = false
 
     /**
-     * Set once the registration lock has failed to acquire or release. Read by
-     * each engine's `loopBody` through [regLockBroken] so the loop ends the way
-     * a poll fatal ends it.
+     * How the registration lock failed to acquire or release, or `null` while
+     * it has not. Read by each engine's `loopBody` through [regLockBroken] so
+     * the loop ends the way a poll fatal ends it, and again through
+     * [regLockFailureDetail] for the record that says so.
+     *
+     * One value rather than a flag beside a description, because two would
+     * have to be written in an order — the description first, since the flag
+     * is what a reader synchronises on — and an order stated is an order that
+     * can be got wrong. It was, in the revision before this one. Here the
+     * question "has it failed" and the answer "with what" are the same read.
      */
-    private val regLockFailed = AtomicInt(0)
-
-    // What that failure was, for the waiter that is told about it. See
-    // [reportRegLockFailure].
-    private val regLockFailureText = AtomicReference<String?>(null)
+    private val regLockFailure = AtomicReference<String?>(null)
 
     /**
      * How the registration lock failed — for the body writing the record that
      * says this is why the loop is ending.
      *
-     * The stand-in should be unreachable: every path that raises the flag this
-     * is read behind stores a description first. It is here because a getter
-     * cannot prove that, and a waiter told nothing at all would be worse than
-     * one told the shape of what happened.
+     * The stand-in is unreachable: a caller reaches this only behind
+     * [regLockBroken], which is true of exactly the states in which this is
+     * non-null. It is here because a getter cannot say that in its type.
      */
     protected fun regLockFailureDetail(): String =
-        regLockFailureText.value ?: "the registration lock stopped being exclusive"
+        regLockFailure.value ?: "the registration lock stopped being exclusive"
 
     /**
      * Set when a *release* failed, so the mutex is still held by the thread
-     * that reported it. Distinct from [regLockFailed] because only this case
+     * that reported it. Distinct from [regLockFailure] because only this case
      * makes re-taking the lock a deadlock rather than merely unguarded.
      */
     private val regLockStuck = AtomicInt(0)
@@ -777,23 +779,17 @@ abstract class AbstractReadinessEventLoop :
      */
     @InternalReadinessEngineApi
     fun reportRegLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
-        // The description first, the flag second. The flag is what the loop
-        // synchronises on -- it reads that, then asks for this -- so a
-        // description stored after it can be missed by the very read it exists
-        // for, and the body would record a stand-in for a failure that had
-        // already been described. The same ordering the loop's own record
-        // keeps against the shutdown flags.
-        //
         // Stored rather than recorded here: which call failed and with what
         // errno is known only at this point, and whether it is the reason the
-        // loop is stopping is knowable only in the body. First writer wins,
-        // for the same reason the record does -- a second failure is what
-        // follows from the ledgers no longer being exclusive.
-        regLockFailureText.compareAndSet(
+        // loop is stopping is knowable only in the body, which reads this and
+        // decides. Storing it is also what tells the body to stop, so there is
+        // no second write to order against this one. First writer wins, for
+        // the same reason the record does -- a second failure is what follows
+        // from the ledgers no longer being exclusive.
+        regLockFailure.compareAndSet(
             null,
             "pthread_mutex_$operation() failed on the registration lock: ${errnoMessage(errno)}",
         )
-        regLockFailed.value = 1
         // A failed release leaves this thread holding the mutex; a failed
         // acquire does not. The teardown has to tell them apart: it can still
         // run its sweep in the second case, but re-taking a mutex this thread
@@ -815,7 +811,7 @@ abstract class AbstractReadinessEventLoop :
      * Whether the registration lock has failed, in which case the loop must
      * stop. Read by each engine's `loopBody` beside its own poll fatal.
      */
-    protected fun regLockBroken(): Boolean = regLockFailed.value != 0
+    protected fun regLockBroken(): Boolean = regLockFailure.value != null
 
     /**
      * Whether the registration lock can be acquired right now — it takes it and
