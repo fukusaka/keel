@@ -31,14 +31,16 @@ package io.github.fukusaka.keel.core
  * caller that closes its own channel gets a `CancellationException`, because
  * ending work it started is exactly what cancellation means and structured
  * concurrency should treat it as such. This type is for the cases the caller
- * did not ask for: the platform refused the send, or the engine stopped
- * without being told to. Those are failures to handle, not cancellations to
- * propagate.
+ * did not ask for: the platform refused the send, the engine stopped without
+ * being told to, or handling the connection failed and it was ended to
+ * contain that. Those are failures to handle, not cancellations to propagate.
  *
- * **Retrying the same operation does not help.** Both subtypes mean the
+ * **Retrying the same operation does not help.** Every subtype means the
  * connection is finished — the bytes are gone and no later attempt on this
  * transport will reach the peer. Catch this type to end the exchange; catch a
- * subtype only when the two need different handling.
+ * subtype only when they need different handling. What differs between them
+ * is what failed and how far it reaches: one send, this connection, or the
+ * engine and every connection on it.
  *
  * Subtypes are exhaustive and stay that way: a new way for a transport to
  * fail belongs here as another subtype, so a caller's `when` keeps compiling
@@ -64,6 +66,30 @@ public sealed class TransportFailureException(
  * ran on a later tick — a difference the caller neither chose nor can read.
  */
 public class RefusedWriteException(
+    message: String,
+    cause: Throwable? = null,
+) : TransportFailureException(message, cause)
+
+/**
+ * Handling this connection failed, and it was ended so the failure went no
+ * further.
+ *
+ * What threw is in the cause: work the engine was running on this
+ * connection's behalf — a readiness event, a step of its wind-down, a
+ * deferred flush. The engine answers such a throw by ending the one
+ * connection it belongs to, which is what keeps the rest of them running;
+ * [EngineFailureException] is the other scale, where the loop itself is gone
+ * and every connection with it.
+ *
+ * **A wait is how a caller hears about it, not a handler.** The failure has
+ * already been through whatever handler chain was serving this connection —
+ * often it started there — so it is not sent back down that chain as an
+ * error, which would hand a handler its own throw and invite an answer that
+ * throws again. It is logged where it was contained, the connection is
+ * reported inactive as any ending connection is, and a flush still owed an
+ * answer is given this.
+ */
+public class ConnectionFailureException(
     message: String,
     cause: Throwable? = null,
 ) : TransportFailureException(message, cause)
