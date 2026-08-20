@@ -173,6 +173,12 @@ interface Channel : AutoCloseable {
      * so a wait already parked and one arriving afterwards are told the same
      * thing.
      *
+     * **Engines differ in how far they have taken this**, the same divergence
+     * [flush] states about a refused send: the two POSIX readiness engines
+     * record every one of these and answer with it, and the rest still end
+     * such a wait as a cancellation. This is the contract they are converging
+     * on rather than one they all meet.
+     *
      * **A `CancellationException` is what remains**, and it means nothing was
      * recorded as having ended the connection: the caller closed this channel,
      * or the engine was asked to stop, or the transport ended it on a policy

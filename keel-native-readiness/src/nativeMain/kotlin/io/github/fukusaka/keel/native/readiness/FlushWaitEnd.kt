@@ -35,11 +35,13 @@ import kotlin.coroutines.resumeWithException
  * A close the caller asked for records nothing, and gets the cancellation. A
  * close the *transport* forced — because a send was refused, or because
  * handling the connection failed and the engine ended it — records why, and
- * that is what the wait is told. A failure met once a close is already under
- * way records nothing, deliberately: the caller ended the connection, and
- * something failing while it did is not what ended it. So a cancellation from
- * here means nothing was recorded as ending this connection — which is not
- * quite the same as nothing having gone wrong.
+ * that is what the wait is told. Which failures record during a close the
+ * caller asked for is not uniform, and deliberately: a refused send records
+ * whenever it is the first failure, because a waiter asked whether its bytes
+ * reached the peer and they did not; everything else defers to the close,
+ * because the caller ended the connection and something failing while it did
+ * is not what ended it. So a cancellation from here means nothing was
+ * recorded as ending this connection — not that nothing went wrong.
  *
  * **A wait gets the same answer whichever side of the drain it began on.**
  * One already parked is resumed with the refusal by the drain that met it;
