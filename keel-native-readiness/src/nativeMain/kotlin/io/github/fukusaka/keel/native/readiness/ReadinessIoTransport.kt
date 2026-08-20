@@ -750,7 +750,9 @@ class ReadinessIoTransport(
                     // itself. A peer that resets is the ordinary way this
                     // arrives, and it is the ordinary way a queued write never
                     // reaches anyone.
-                    recordConnectionEnd("read() failed and the connection was ended: fd=$fd ${errnoMessage(result.errno)}")
+                    recordConnectionEnd(
+                        "read() failed and the connection was ended: fd=$fd ${errnoMessage(result.errno)}",
+                    )
                     notifyInactive()
                 }
             }
