@@ -9,6 +9,7 @@ import platform.posix.EINVAL
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -72,14 +73,21 @@ class EpollRegLockFailureSeamTest {
         // The loop stopping is half of it. The other half is what a caller
         // waiting on a flush this loop will never run is told: nobody asked
         // for this, so it must not read as the caller's own doing.
+        //
+        // The loop is run, not just told: what is being pinned is the reason
+        // an ending carries, so there has to be an ending. The scripted fatal
+        // is the same safety net the cases above use, and goes unused when the
+        // check under test holds.
         val fake = FakeEpollSyscallOps().apply { scriptWaitFailure(EBADF) }
         val el = EpollEventLoop(errorRecordingLogger(mutableListOf()), syscallOps = fake)
         try {
             el.reportRegLockFailure("lock", EINVAL, stillHeld = false)
 
-            val fault = el.loopFailure()
+            el.loop()
 
-            assertNotNull(fault, "the lock failure is why this loop is ending")
+            assertEquals(0, fake.waitCalls, "the loop must end without arming anything else")
+            val fault = el.loopFailure()
+            assertNotNull(fault, "the lock failure is why this loop ended")
             assertTrue(
                 checkNotNull(fault.message).contains("registration lock"),
                 "and the record must name it, got: ${fault.message}",
@@ -87,6 +95,22 @@ class EpollRegLockFailureSeamTest {
         } finally {
             el.close()
         }
+    }
+
+    @Test
+    fun `a lock that fails after the loop has finished is not why it ended`() {
+        // The lock outlives the loop deliberately -- cancellations keep
+        // arriving and taking it long after the sweep -- so a failure here can
+        // land on a loop that stopped because somebody asked. Recording it
+        // would tell that loop's late waiters they had suffered a fault.
+        val fake = FakeEpollSyscallOps()
+        val el = EpollEventLoop(errorRecordingLogger(mutableListOf()), syscallOps = fake)
+        fake.onWait = { el.close() }
+        el.loop()
+
+        el.reportRegLockFailure("unlock", EINVAL, stillHeld = false)
+
+        assertNull(el.loopFailure(), "the loop had already ended, and not for this")
     }
 
     @Test

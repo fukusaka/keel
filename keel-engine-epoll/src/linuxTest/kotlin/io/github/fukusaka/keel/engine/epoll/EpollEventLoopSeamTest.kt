@@ -467,14 +467,22 @@ class EpollEventLoopSeamTest {
     @Test
     fun `a loop asked to stop records nothing`() {
         // The other arm: without this, a record that was never conditional --
-        // or one written unconditionally in the terminal sequence -- would
-        // turn every ordinary shutdown into a reported fault.
+        // or one written unconditionally at the top of the body -- would turn
+        // every ordinary shutdown into a reported fault.
+        //
+        // The stop has to arrive while the body is running. Closing first and
+        // then calling loop() looks like the same thing and is not: the close
+        // takes the termination claim, so loop() returns at its guard and the
+        // body -- the code under test -- never runs. Closing from inside the
+        // wait leaves the body to exit through its own condition, which is
+        // what an ordinary shutdown does.
         val fake = FakeEpollSyscallOps()
         val el = EpollEventLoop(logger = recordingLogger(mutableListOf()), syscallOps = fake)
-        el.close()
+        fake.onWait = { el.close() }
 
         el.loop()
 
+        assertEquals(1, fake.waitCalls, "the body must have run and ended through its own condition")
         assertNull(el.loopFailure(), "an ordinary stop is not a fault")
     }
 

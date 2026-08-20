@@ -181,6 +181,14 @@ internal class FakeEpollSyscallOps(
     var waitCalls: Int = 0
         private set
 
+    /**
+     * Run at the top of each [waitEvents], before the scripted result is
+     * consumed. For a test that needs the loop to leave its body the way a
+     * stop request makes it leave — `close()` from inside the wait, so the
+     * body's own condition is what ends it — rather than by never entering it.
+     */
+    var onWait: (() -> Unit)? = null
+
     fun scriptWaitOk(vararg events: Pair<Int, Int>) {
         waitResults.addLast(ScriptedWait.Ok(events.toList()))
     }
@@ -192,6 +200,7 @@ internal class FakeEpollSyscallOps(
 
     override fun waitEvents(epFd: Int, eventsOut: Array<EpEvent>, timeoutMs: Int): Int {
         waitCalls++
+        onWait?.invoke()
         if (waitResults.isEmpty()) {
             // Empty-default path. In live mode (funnel test), poll-sleep so
             // a real loop() on a spawned EventLoop thread drains dispatched
