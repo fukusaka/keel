@@ -1566,10 +1566,36 @@ abstract class AbstractReadinessEventLoop :
         eventLoopThread = pthread_self()
         try {
             loopBody()
+        } catch (loopFailure: Throwable) {
+            // Recorded, then re-raised as before. The two ways out of the body
+            // are indistinguishable from here on -- both reach the same
+            // terminal sequence, which ends every wait it finds -- and only
+            // one of them is a fault. A wait ended by a loop that was asked to
+            // stop is a cancellation; one ended by this is not, and nothing
+            // downstream can tell them apart unless the difference is written
+            // down while it is still known.
+            //
+            // Before the terminal sequence rather than inside it: that is what
+            // publishes the shutdown flags a reader synchronises on, so a
+            // record made after them could be missed by the very readers it
+            // exists for.
+            handoff.recordLoopFailure(loopFailure)
+            throw loopFailure
         } finally {
             terminate()
         }
     }
+
+    /**
+     * What the loop threw on its way out, or `null` if it ended because it was
+     * asked to.
+     *
+     * For a transport deciding what to tell a caller whose flush this loop
+     * will never run. Only meaningful once the loop is known to be gone —
+     * [isStopped] and [isFinishing] are how that is known, and the record is
+     * published before either of them.
+     */
+    fun loopFailure(): Throwable? = handoff.loopFailure()
 
     /**
      * Takes the claim that says who runs the terminal sequence.
