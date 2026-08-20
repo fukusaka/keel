@@ -53,8 +53,10 @@ internal class TailHandler(
         // And not when something failed alongside it. A refusal carries what
         // could not be finished while it was being contained -- a buffer
         // that would not release, a wind-down step that threw -- as
-        // suppressed causes, which are named here because they arrive
-        // attached to this one instance and nothing else will name them.
+        // suppressed causes, and they are named here because they arrive
+        // attached to this one instance. A handler that takes the error and
+        // does not pass it on takes those with it, which is the same trade
+        // the pipeline has always made for anything it absorbs.
         if (cause === pipeline.reportedTransportFailure) {
             if (cause.suppressedExceptions.isEmpty()) {
                 logger.debug(cause) { "a refused send reached the end of the pipeline" }
