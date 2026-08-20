@@ -139,6 +139,29 @@ class PipelineTransportFailureTest {
     }
 
     @Test
+    fun `a caller that has not read yet is told as quietly as one that has`() {
+        // The bridge arrives with the first read, so a channel that only
+        // writes has no pipeline to be told through. Its caller is answered
+        // by the same wait as a bridged one's, and a connection ending
+        // because its peer went away reads the same either way -- the record
+        // is there to be found, not to be investigated.
+        val transport = RefusingTransport()
+        val log = RecordingLogger()
+        val ch = channel(transport, log)
+
+        runCatching { ch.requestFlush() }
+
+        assertTrue(
+            log.warnings.isEmpty(),
+            "nothing here is worth a reader's attention: ${log.warnings}",
+        )
+        assertTrue(
+            log.records.any { it.first == LogLevel.DEBUG },
+            "and it is still there to be found: ${log.records}",
+        )
+    }
+
+    @Test
     fun `a bridged channel is answered by its own API and told quietly`() {
         // Its caller learns the refusal from the suspending wait it already
         // makes, so the reason travelling the pipeline has nobody to inform
@@ -253,7 +276,7 @@ class PipelineTransportFailureTest {
 
         assertEquals(
             1,
-            log.warnings.count { "contained without reaching" in it },
+            log.warnings.count { "contained before any handler had it" in it },
             "nothing is installed, so the head is the only reporter: ${log.warnings}",
         )
     }
@@ -273,8 +296,8 @@ class PipelineTransportFailureTest {
 
         assertEquals(
             1,
-            log.warnings.count { "contained without reaching" in it },
-            "nothing installed can receive it: ${log.warnings}",
+            log.records.count { it.first == LogLevel.DEBUG && "contained before any handler had it" in it.second },
+            "nothing installed can receive it, and it is there to be found: ${log.records}",
         )
     }
 
@@ -289,7 +312,7 @@ class PipelineTransportFailureTest {
 
         runCatching { ch.requestFlush() }
 
-        val carried = log.causeOf("contained without reaching")
+        val carried = log.causeOf("contained before any handler had it")
         assertSame(transport.refusal, carried, "the warning carries the refusal itself")
         assertTrue(
             carried?.suppressedExceptions?.any { it === rider } == true,
@@ -317,7 +340,7 @@ class PipelineTransportFailureTest {
         runCatching { ch.requestFlush() }
 
         assertTrue(
-            log.warnings.none { "contained without reaching" in it },
+            log.warnings.none { "contained before any handler had it" in it },
             "the rider arrived attached to the reported refusal: ${log.warnings}",
         )
     }

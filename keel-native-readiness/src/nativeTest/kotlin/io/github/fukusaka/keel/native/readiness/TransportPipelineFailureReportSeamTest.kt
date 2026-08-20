@@ -3,6 +3,7 @@
 package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.core.RefusedWriteException
+import io.github.fukusaka.keel.logging.LogLevel
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
@@ -191,7 +192,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             runCatching { eventLoop.drainDispatched() }
 
             assertTrue(
-                plog.warnings.any { "contained without reaching" in it },
+                plog.warnings.any { "contained before any handler had it" in it },
                 "the rider must be named: ${plog.warnings}",
             )
             assertEquals(emptyList(), rec.seen, "the refusal stays quiet and no handler is re-entered")
@@ -240,7 +241,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
                 "an always-answering handler is entered once, not recursed into",
             )
             assertTrue(
-                plog.warnings.any { "contained without reaching" in it },
+                plog.warnings.any { "contained before any handler had it" in it },
                 "and its rider is still named: ${plog.warnings}",
             )
             fake.assertAllConsumed()
@@ -276,7 +277,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
                 "the riders came attached to the reported refusal, nothing arrives after the end",
             )
             assertTrue(
-                plog.warnings.none { "contained without reaching" in it },
+                plog.warnings.none { "contained before any handler had it" in it },
                 "and the head does not name them a second time: ${plog.warnings}",
             )
             fake.assertAllConsumed()
@@ -330,7 +331,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             )
             assertEquals(
                 1,
-                plog.warnings.count { "contained without reaching" in it },
+                plog.warnings.count { "contained before any handler had it" in it },
                 "the outer refusal reached nobody, so it is recorded once: ${plog.warnings}",
             )
             fake.assertAllConsumed()
@@ -378,7 +379,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             )
             assertEquals(
                 1,
-                plog.warnings.count { "contained without reaching" in it },
+                plog.warnings.count { "contained before any handler had it" in it },
                 "the genuine leak is named exactly once: ${plog.warnings}",
             )
             fake.assertAllConsumed()
@@ -428,8 +429,8 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             assertIs<RefusedWriteException>(awaited, "the wait is still answered with the refusal")
             assertEquals(
                 1,
-                plog.warnings.count { "contained without reaching" in it },
-                "the handler was told the end, never this refusal, so it is recorded: ${plog.warnings}",
+                plog.records.count { it.first == LogLevel.DEBUG && "contained before any handler had it" in it.second },
+                "the handler was told the end, never this refusal, so it is recorded: ${plog.records}",
             )
             fake.assertAllConsumed()
             runCatching { transport.close() }
@@ -457,7 +458,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
 
             assertEquals(
                 1,
-                plog.warnings.count { "contained without reaching" in it },
+                plog.warnings.count { "contained before any handler had it" in it },
                 "the rider is named once even with nobody attached: ${plog.warnings}",
             )
             fake.assertAllConsumed()
@@ -487,12 +488,14 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
 
             assertEquals(
                 1,
-                plog.warnings.count { "contained without reaching" in it },
-                "the connection ended for a reason nobody was told: ${plog.warnings}",
+                plog.records.count { it.first == LogLevel.DEBUG && "contained before any handler had it" in it.second },
+                "the connection ended for a reason nobody was told: ${plog.records}",
             )
             assertIs<RefusedWriteException>(
-                plog.causeOfWarning("contained without reaching"),
-                "and the record carries the refusal itself",
+                plog.records.firstOrNull {
+                    it.first == LogLevel.DEBUG && "contained before any handler had it" in it.second
+                }?.third,
+                "and the record carries the refusal itself: ${plog.records}",
             )
             fake.assertAllConsumed()
             runCatching { transport.close() }
@@ -520,7 +523,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             runCatching { eventLoop.drainDispatched() }
 
             assertTrue(
-                plog.warnings.none { "contained without reaching" in it },
+                plog.warnings.none { "contained before any handler had it" in it },
                 "the loop names this one, so the pipeline stays out of it: ${plog.warnings}",
             )
             assertTrue(
@@ -557,11 +560,11 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
 
             assertEquals(
                 1,
-                plog.warnings.count { "contained without reaching" in it },
+                plog.warnings.count { "contained before any handler had it" in it },
                 "nothing will hand it over, so it is recorded here: ${plog.warnings}",
             )
             assertTrue(
-                plog.causeOfWarning("contained without reaching")
+                plog.causeOfWarning("contained before any handler had it")
                     ?.suppressedExceptions?.isNotEmpty() == true,
                 "and the rider rides on the record: ${plog.warnings}",
             )
@@ -598,7 +601,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             runCatching { ch.requestFlush() }
 
             assertTrue(
-                plog.warnings.none { "contained without reaching" in it },
+                plog.warnings.none { "contained before any handler had it" in it },
                 "the replay is the reporter, so the head does not name it too: ${plog.warnings}",
             )
             runCatching { eventLoop.drainDispatched() }
@@ -675,7 +678,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             runCatching { eventLoop.drainDispatched() }
 
             assertTrue(
-                plog.warnings.none { "contained without reaching" in it },
+                plog.warnings.none { "contained before any handler had it" in it },
                 "the riders arrived attached to the delivered refusal: ${plog.warnings}",
             )
             assertEquals(
@@ -725,7 +728,7 @@ internal class TransportPipelineFailureReportSeamTest : TransportSeamFixture() {
             assertEquals(listOf("onInactive"), seen, "the quiet arm enters no handler")
             assertEquals(
                 1,
-                plog.warnings.count { "contained without reaching" in it },
+                plog.warnings.count { "contained before any handler had it" in it },
                 "the rider is named exactly once: ${plog.warnings}",
             )
             fake.assertAllConsumed()
