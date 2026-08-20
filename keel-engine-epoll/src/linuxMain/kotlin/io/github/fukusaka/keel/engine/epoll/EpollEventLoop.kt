@@ -416,12 +416,18 @@ internal class EpollEventLoop(
             // same way too. Here rather than where the failure is reported,
             // because that runs on whichever thread was taking the lock, at a
             // moment that says nothing about whether this loop is ending or
-            // was already asked to. Reaching this check means the body is
-            // running and the lock is what ends it.
+            // was already asked to; reaching this check means the body is
+            // running and the lock is ending it.
+            //
+            // Not that the two can always be told apart: a close landing
+            // between the condition above and this check leaves both true,
+            // and the fault is what gets recorded. Narrowing it further would
+            // mean reading the stop flag again here and still racing it one
+            // instruction later, so the choice is which answer a caller in an
+            // ambiguous moment is given, and a broken ledger is the more
+            // useful of the two.
             if (regLockBroken()) {
-                recordLoopFault(
-                    IllegalStateException("the registration lock stopped being exclusive; this EventLoop is stopping"),
-                )
+                recordLoopFault(IllegalStateException(regLockFailureDetail()))
                 break
             }
             drainTasks()

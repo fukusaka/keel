@@ -28,6 +28,7 @@ import platform.posix.pthread_mutex_unlock
 import platform.posix.pthread_self
 import platform.posix.pthread_t
 import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.AtomicReference
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
@@ -234,6 +235,18 @@ abstract class AbstractReadinessEventLoop :
      * a poll fatal ends it.
      */
     private val regLockFailed = AtomicInt(0)
+
+    // What that failure was, for the waiter that is told about it. See
+    // [reportRegLockFailure].
+    private val regLockFailureText = AtomicReference<String?>(null)
+
+    /**
+     * How the registration lock failed, or a stand-in if the failure has not
+     * been described — for the body writing the record that says this is why
+     * the loop is ending.
+     */
+    protected fun regLockFailureDetail(): String =
+        regLockFailureText.value ?: "the registration lock stopped being exclusive"
 
     /**
      * Set when a *release* failed, so the mutex is still held by the thread
@@ -761,6 +774,16 @@ abstract class AbstractReadinessEventLoop :
     @InternalReadinessEngineApi
     fun reportRegLockFailure(operation: String, errno: Int, stillHeld: Boolean) {
         regLockFailed.value = 1
+        // Kept for the record the body writes if this is what ends the loop.
+        // Stored rather than recorded here: which call failed and with what
+        // errno is known only at this point, and whether it is the reason the
+        // loop is stopping is knowable only in the body. First writer wins,
+        // for the same reason the record does -- a second failure is what
+        // follows from the ledgers no longer being exclusive.
+        regLockFailureText.compareAndSet(
+            null,
+            "pthread_mutex_$operation() failed on the registration lock: ${errnoMessage(errno)}",
+        )
         // A failed release leaves this thread holding the mutex; a failed
         // acquire does not. The teardown has to tell them apart: it can still
         // run its sweep in the second case, but re-taking a mutex this thread
@@ -1534,7 +1557,8 @@ abstract class AbstractReadinessEventLoop :
         // isDispatchNeeded, so a resume lands on this loop's queue even though
         // the sweep already runs on its thread -- and a listener told the loop
         // stopped can queue as readily as a cancelled waiter can: teardown
-        // ends the flush wait of a handler parked on this very dispatcher. Unconditional, deliberately: every predicate written
+        // ends the flush wait of a handler parked on this very dispatcher.
+        // Unconditional, deliberately: every predicate written
         // here so far under-delivered somewhere (gating on `stranded` alone
         // missed the write-only client this sweep exists for; gating on the
         // participants told skips a boss loop, which has none), and the drain

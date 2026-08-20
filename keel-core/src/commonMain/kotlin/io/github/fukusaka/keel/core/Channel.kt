@@ -173,11 +173,20 @@ interface Channel : AutoCloseable {
      * so a wait already parked and one arriving afterwards are told the same
      * thing.
      *
-     * **A `CancellationException` is what remains**, and it means no failure
-     * ended the connection: the caller closed this channel, or the engine was
-     * asked to stop, or the transport ended it on a policy the application
-     * configured, such as an idle timeout reclaiming a connection nobody is
-     * using. Ending work you started is what cancellation means.
+     * **A `CancellationException` is what remains**, and it means nothing was
+     * recorded as having ended the connection: the caller closed this channel,
+     * or the engine was asked to stop, or the transport ended it on a policy
+     * the application configured, such as an idle timeout reclaiming a
+     * connection nobody is using — or the peer ended the exchange in an
+     * orderly way, which is not this transport failing at all. Ending work you
+     * started is what cancellation means, and the first of those is exactly
+     * that; the rest are ends nobody asked this caller about.
+     *
+     * That last one makes a distinction worth knowing: a peer that closes
+     * gracefully leaves nothing recorded, and a peer that resets is a read the
+     * platform refuses and does. So the same connection dying two ways answers
+     * a wait two ways, even though what became of the queued bytes is the same
+     * either way.
      *
      * **Whether any of them arrives depends on there being something left to
      * report.** A drain that ran inside the request and emptied the queue
