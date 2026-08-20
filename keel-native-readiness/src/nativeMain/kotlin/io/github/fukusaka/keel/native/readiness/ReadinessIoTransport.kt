@@ -1519,9 +1519,10 @@ class ReadinessIoTransport(
             owed = minOf(owed, pendingWrites.size)
             if (owed == 0) break
             val count = minOf(owed, IOV_MAX)
-            eventLoop.ensureWritevCapacity(count)
-            val bases = eventLoop.writevBases
-            val lens = eventLoop.writevLens
+            val scratch = eventLoop.writevScratch
+            scratch.ensure(count)
+            val bases = scratch.bases
+            val lens = scratch.lens
             var offeredBytes = 0
             for (i in 0 until count) {
                 val pw = pendingWrites[i]

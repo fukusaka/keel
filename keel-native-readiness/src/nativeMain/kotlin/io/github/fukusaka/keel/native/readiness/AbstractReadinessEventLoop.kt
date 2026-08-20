@@ -11,14 +11,8 @@ import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.DeadlineScheduler
 import io.github.fukusaka.keel.pipeline.IoTransport
-import kotlinx.cinterop.ByteVar
-import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.free
 import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.ptr
 import kotlinx.coroutines.CancellableContinuation
@@ -459,115 +453,22 @@ abstract class AbstractReadinessEventLoop :
     val deadlineScheduler: DeadlineScheduler by lazy { DeadlineScheduler(::nowMillis, logger) }
 
     /**
-     * Base pointers for a gather write's `iovec` array, reused across flushes.
+     * The `iovec` scratch a gather write on this loop fills in.
      *
-     * Per loop rather than per transport: only the loop's own thread builds a
-     * gather, so one scratch serves every transport on it, and the alternative
-     * is an allocation on each multi-buffer flush.
+     * Held here because it is shared by every transport the loop serves, and
+     * built with the loop because a gather must never allocate. What owns it,
+     * and what makes releasing it safe, is written on the type.
      */
-    internal var writevBases: CPointer<CPointerVar<ByteVar>>
-        private set
-
-    /** Byte lengths (`size_t`) paired with [writevBases]. */
-    internal var writevLens: CPointer<ULongVar>
-        private set
-
-    init {
-        // Paired here rather than left as two initialisers, so a refused second
-        // allocation gives the first one back. The engines accept that failure
-        // in their own initialisers, on the grounds that a `nativeHeap`
-        // allocation of a few dozen bytes failing is not a condition the
-        // process continues past — but that stance is stated about theirs, and
-        // these are not theirs any more. A base initialiser that throws leaves
-        // no reference for anyone to clean up: the engines' recovery is a `try`
-        // in their own `init`, which a throw from here never reaches.
-        val bases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
-        writevLens = try {
-            nativeHeap.allocArray(INITIAL_WRITEV_CAPACITY)
-        } catch (allocationFailure: Throwable) {
-            nativeHeap.free(bases)
-            throw allocationFailure
-        }
-        writevBases = bases
-    }
-
-    private var writevCapacity = INITIAL_WRITEV_CAPACITY
-
-    /**
-     * Whether [writevBases] / [writevLens] are ours to free.
-     *
-     * A plain `var`, and not because the loop thread owns it — the thread that
-     * frees is whichever one is tearing the loop down: the caller of `close()`,
-     * or the constructing thread when construction fails. The engines' CAS on
-     * `close()` settles which caller reaches the release, but a single caller
-     * is not the
-     * same as no concurrency. What supplies that is quiescence, established
-     * differently on each route: `pthread_join` where a thread was started; the
-     * loop reporting itself stopped where one was not (and where the terminal
-     * sequence throws, `terminate` publishes quiescence from a `finally`, so
-     * the `catch` that releases is covered too); and nothing to be concurrent
-     * with when construction fails or when a test double closes.
-     *
-     * A stopped-loop teardown does reach a transport on another thread while
-     * this runs, which is why it does not flush — see the transport's
-     * `teardownAfterLoopStopped`. So a release never runs beside a gather.
-     */
-    internal var ownsWritevScratch = true
-        private set
-
-    /**
-     * Grows [writevBases] / [writevLens] (1.5x, at least [n]) so a gather of
-     * [n] buffers fits. Called on this loop's thread only.
-     */
-    internal fun ensureWritevCapacity(n: Int) {
-        if (n <= writevCapacity) return
-        val grown = maxOf(writevCapacity + (writevCapacity shr 1), n)
-        // Give up the old scratch before freeing it, not after: an allocation
-        // that throws below would otherwise leave the loop still claiming
-        // pointers it no longer holds, at a capacity that says they are big
-        // enough to gather through. Disowned first, the failure leaves nothing
-        // to double-free and nothing a later gather can reach.
-        if (ownsWritevScratch) {
-            ownsWritevScratch = false
-            writevCapacity = 0
-            nativeHeap.free(writevBases)
-            nativeHeap.free(writevLens)
-        }
-        // Into locals, and the second allocation guarded: a throw between the
-        // two would otherwise strand the first array with no owner — this
-        // method skips its free block while disowned, and the release path
-        // returns early for the same reason.
-        val bases: CPointer<CPointerVar<ByteVar>> = nativeHeap.allocArray(grown)
-        val lens: CPointer<ULongVar> = try {
-            nativeHeap.allocArray(grown)
-        } catch (allocationFailure: Throwable) {
-            nativeHeap.free(bases)
-            throw allocationFailure
-        }
-        writevBases = bases
-        writevLens = lens
-        writevCapacity = grown
-        ownsWritevScratch = true
-    }
+    internal val writevScratch = WritevScratch()
 
     /**
      * Releases the gather scratch. Called from each engine's teardown.
      *
-     * Idempotent: the two teardown paths that reach it are mutually exclusive
-     * today, but `close()` is a public obligation on every loop — including the
-     * test doubles, which own the scratch without owning a thread — and a
-     * second `nativeHeap.free` of the same pointer is not a no-op.
+     * The engines cannot name [WritevScratch] — it is this module's — so the
+     * obligation reaches them through here.
      */
     protected fun freeWritevScratch() {
-        if (!ownsWritevScratch) return
-        ownsWritevScratch = false
-        // Capacity goes with the memory. Left at its old value, the early
-        // return in ensureWritevCapacity would hand a gather the pointers this
-        // just freed for every request that fits the capacity we no longer
-        // have.
-        writevCapacity = 0
-        nativeHeap.free(writevBases)
-        nativeHeap.free(writevLens)
+        writevScratch.free()
     }
 
     /**
@@ -2367,16 +2268,5 @@ abstract class AbstractReadinessEventLoop :
 
         /** The fd half of a [registrationKey]: the low 32 bits, without sign extension. */
         private const val FD_MASK = 0xFFFFFFFFL
-
-        /**
-         * Initial gather capacity; grows on demand via [ensureWritevCapacity].
-         *
-         * What both engines used before they shared this. It briefly became 16
-         * when the scratch moved here, with nothing recorded and nothing
-         * measured — and the neighbouring engine documents 8 as covering the
-         * same `pendingWrites` depth, so the two would have disagreed about one
-         * deque. Changing it is a separate question from moving it.
-         */
-        private const val INITIAL_WRITEV_CAPACITY = 8
     }
 }
