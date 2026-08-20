@@ -6,24 +6,27 @@ import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CancellationException
 import kotlin.coroutines.resumeWithException
 
-/**
- * What a caller waiting on a flush is told when the flush will never be
- * answered.
- *
- * Three things can end such a wait without the bytes going out, and the
- * contract turns on which: the caller closed its own channel, the connection
- * ended for a reason the caller did not ask for, or the loop that would have
- * drained the queue is gone. Only the first is a cancellation — ending work
- * it started is exactly what cancellation means, and delivering the other two
- * that way makes an application choose between swallowing real cancellations
- * and letting a dead connection or a dead engine cancel its scope.
- *
- * Here rather than in the transport because these are decisions, not steps: no
- * queue, no continuation slot, no readiness state — the reason that was
- * recorded goes in, the answer comes out. Which also means the two can be read
- * side by side, and they have to be: they say the same thing about the same
- * contract, one state apart.
- */
+// What a caller waiting on a flush is told when the flush will never be
+// answered.
+//
+// Two of the ways it can end are failures: the connection ended for a reason
+// nobody asked for, or the loop that would have drained the queue is gone.
+// Each is delivered as itself, because delivering a failure as a cancellation
+// makes an application choose between swallowing real cancellations and
+// letting a dead connection or a dead engine cancel its scope.
+//
+// The cancellation is what remains when no failure was recorded: the caller
+// closed its own channel, which is work it started and asked to end. What a
+// wait is told about an ending that is neither — one the application's own
+// configuration brought about, such as an idle timeout reclaiming a connection
+// nobody is using — is decided where that ending happens, by whether it
+// records anything here.
+//
+// Here rather than in the transport because these are decisions, not steps: no
+// queue, no continuation slot, no readiness state — the reason that was
+// recorded goes in, the answer comes out. Which also means the two can be read
+// side by side, and they have to be: they say the same thing about the same
+// contract, one state apart.
 
 /**
  * Ends [cont] for a transport that is closed, given the reason that was
@@ -32,9 +35,8 @@ import kotlin.coroutines.resumeWithException
  * A close the caller asked for records nothing, and gets the cancellation. A
  * close the *transport* forced — because a send was refused, or because
  * handling the connection failed and the engine ended it — records why, and
- * that is what the wait is told. Every path that forces a close records, so
- * the cancellation is left for exactly one thing: a close the caller asked
- * for.
+ * that is what the wait is told. Every failure that ends a connection records,
+ * so a cancellation from here means no failure ended it.
  *
  * **A wait gets the same answer whichever side of the drain it began on.**
  * One already parked is resumed with the refusal by the drain that met it;

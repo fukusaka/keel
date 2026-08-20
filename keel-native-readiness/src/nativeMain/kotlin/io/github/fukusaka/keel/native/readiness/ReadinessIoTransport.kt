@@ -346,9 +346,10 @@ class ReadinessIoTransport(
      *
      * Every failure that ends a connection passes through
      * [endConnectionAfterFailure], so recording here rather than at each
-     * containment is what makes "a wait is answered with a bare cancellation
-     * only when its own caller closed" true of all of them, instead of true of
-     * refusals and false of everything else.
+     * containment is what gives all of them the same answer. Before, one of
+     * them — the refusal — was named, and every other left a closed transport
+     * and an empty queue for the waiter to read, which is what an orderly
+     * close leaves too.
      *
      * **Only while the connection is still open**, which is what makes this
      * failure the reason it ended rather than something that failed during an
@@ -370,10 +371,11 @@ class ReadinessIoTransport(
      * consequence and lose the cause.
      *
      * An end the transport decides on without a failure — the idle timeout
-     * reclaiming a connection nobody is using — is deliberately not recorded
-     * here: it is a policy the application configured, so it is nearer to a
-     * close asked for than to a failure, and it does not pass through this
-     * funnel at all.
+     * reclaiming a connection nobody is using — is deliberately not recorded:
+     * it is a policy the application configured, so it is nearer to a close
+     * asked for than to a failure, and it does not pass through this funnel at
+     * all. What a wait is told about the ends that are neither a failure nor
+     * the caller's own close is that path's to decide, not this one's.
      */
     private fun recordConnectionEnd(readinessFailure: Throwable) {
         if (!opened || transportFailure != null) return
