@@ -8,15 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **BREAKING** (`core`): `ConnectionFailureException` — a third `TransportFailureException`
-  subtype, for a connection the engine ended because handling it failed. Adding a subtype breaks
-  an exhaustive `when` over the sealed set (#1066)
 - `core`: `IoTransport.onConnectionFailure` — the refusal that ended the connection, reported
   before the inactive; a channel with handlers forwards it to the pipeline's error path (#1065)
 - **BREAKING** (`core`): `TransportFailureException` — the sealed supertype for a transport failing
-  in a way the caller did not ask for, with `RefusedWriteException` and `EngineFailureException`
-  under it. `RefusedWriteException` moves here from an engine's internals; nothing raises
-  `EngineFailureException` yet (#1062)
+  in a way the caller did not ask for, with `RefusedWriteException`, `ConnectionFailureException`
+  and `EngineFailureException` under it. `RefusedWriteException` moves here from an engine's
+  internals (#1062, #1066)
 - `core`: transport teardown stats report the longest run of consecutive drains that moved no
   bytes, so a socket that stays unwritable is visible (#1062)
 - `native-posix`: `IOV_MAX` is published so gather callers can bound their batches (#1062)
@@ -114,9 +111,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `engine-kqueue`, `engine-epoll`: a flush wait is no longer cancelled when the caller did not
-  close — it is told the connection failed, or that the EventLoop ended on its own, whichever
-  ended it (#1066)
+- `engine-kqueue`, `engine-epoll`: a flush wait ended by a failure is told which one — the
+  connection's, or an EventLoop that ended without being asked to — instead of being cancelled as
+  if its caller had closed the channel (#1066)
 - `engine-kqueue`, `engine-epoll`: a gather write no longer offers the kernel more regions than
   it accepts — over `IOV_MAX` it wrote nothing, and the queue was dropped as if sent (#1062)
 - `engine-kqueue`, `engine-epoll`: a write the kernel definitively refused now reports the
