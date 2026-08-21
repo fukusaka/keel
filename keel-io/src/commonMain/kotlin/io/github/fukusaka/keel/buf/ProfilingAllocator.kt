@@ -106,9 +106,6 @@ class AllocationProfile {
  *
  * **Thread safety**: the shared [profile] is thread-safe; the decorator
  * itself holds no mutable state.
- *
- * @param delegate The underlying allocator to delegate to.
- * @param profile The shared histogram; defaults to a fresh instance.
  */
 class ProfilingAllocator private constructor(
     private val delegate: BufferAllocator,
@@ -129,6 +126,16 @@ class ProfilingAllocator private constructor(
     private val closesDelegate: Boolean,
 ) : BufferAllocator {
 
+    /**
+     * Wraps [delegate], recording every allocate request size into [profile].
+     *
+     * Closing what this returns closes [delegate] too: a caller who builds a
+     * chain holds no other reference to what is inside it. Children this
+     * derives follow the rule on [closesDelegate].
+     *
+     * @param delegate The underlying allocator to delegate to.
+     * @param profile The shared histogram; defaults to a fresh instance.
+     */
     constructor(
         delegate: BufferAllocator,
         profile: AllocationProfile = AllocationProfile(),

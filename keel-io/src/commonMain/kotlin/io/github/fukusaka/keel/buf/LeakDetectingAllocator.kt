@@ -122,12 +122,6 @@ package io.github.fukusaka.keel.buf
  * leakDetector.reportOutstandingLeaks()
  * ```
  *
- * @param delegate The underlying allocator to delegate to in decorator mode.
- *   Pass [DefaultAllocator] when only listener mode is in use — the delegate
- *   then sees no traffic.
- * @param onLeak Callback invoked when a leaked buffer is detected.
- *   The message includes the allocation site stack trace.
- *   Default: prints to stdout.
  */
 class LeakDetectingAllocator private constructor(
     private val delegate: BufferAllocator,
@@ -148,6 +142,20 @@ class LeakDetectingAllocator private constructor(
     private val closesDelegate: Boolean,
 ) : BufferAllocator, BufferAllocatorLifecycleListener {
 
+    /**
+     * Wraps [delegate] in decorator mode, reporting leaks through [onLeak].
+     *
+     * Closing what this returns closes [delegate] too: a caller who builds a
+     * chain holds no other reference to what is inside it. Children this
+     * derives follow the rule on [closesDelegate].
+     *
+     * @param delegate The underlying allocator to delegate to in decorator mode.
+     *   Pass [DefaultAllocator] when only listener mode is in use — the delegate
+     *   then sees no traffic.
+     * @param onLeak Callback invoked when a leaked buffer is detected. The
+     *   message includes the allocation site stack trace; the default prints to
+     *   stdout.
+     */
     constructor(
         delegate: BufferAllocator,
         onLeak: (String) -> Unit = { msg -> println("BUFFER LEAK: $msg") },

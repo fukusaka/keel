@@ -47,10 +47,6 @@ package io.github.fukusaka.keel.buf
  * // ... run test or benchmark ...
  * tracker.assertNoLeaks()
  * ```
- *
- * @param delegate The underlying allocator to delegate to in decorator mode.
- *   Pass [DefaultAllocator] (the constructor default) when only listener
- *   mode is in use — the delegate then sees no traffic.
  */
 class TrackingAllocator private constructor(
     private val delegate: BufferAllocator,
@@ -71,6 +67,17 @@ class TrackingAllocator private constructor(
     private val closesDelegate: Boolean,
 ) : BufferAllocator, BufferAllocatorLifecycleListener {
 
+    /**
+     * Wraps [delegate] in decorator mode.
+     *
+     * Closing what this returns closes [delegate] too: a caller who builds a
+     * chain holds no other reference to what is inside it. Children this
+     * derives follow the rule on [closesDelegate].
+     *
+     * @param delegate The underlying allocator to delegate to in decorator mode.
+     *   Pass [DefaultAllocator] (the default) when only listener mode is in use
+     *   — the delegate then sees no traffic.
+     */
     constructor(delegate: BufferAllocator = DefaultAllocator) : this(delegate, Stats(), closesDelegate = true)
 
     /**
