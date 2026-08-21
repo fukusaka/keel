@@ -54,6 +54,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `io`: closing a `TrackingAllocator`, `ProfilingAllocator` or `LeakDetectingAllocator` now reaches
+  what it wraps in the two cases where that is the caller's intent, and stops at a child derived from
+  an allocator that answered the request with itself (#1068)
+
 - `core`: `Logger.debug` takes an optional throwable, the way `warn` and `error` do (#1065)
 - `core`, `native-readiness`: a pipeline handler now hears a reported refused send on `onError`
   before `onInactive`, once, in both flush configurations (#1065)

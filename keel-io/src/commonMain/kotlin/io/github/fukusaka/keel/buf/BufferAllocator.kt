@@ -177,6 +177,13 @@ interface BufferAllocator {
      * returned child: this parent's [close] will not close it, and the
      * caller **must** [close] it exactly once itself.
      *
+     * **What comes back may be this allocator.** The default chain ends at
+     * [createChild]'s `this`, so a stateless implementation answers with itself
+     * — and then "close it exactly once" would close the allocator the caller
+     * was given. A caller that must not do that compares identity before
+     * closing; a decorator hands back an instance of its own but forwards the
+     * close only to a delegate that really made a child.
+     *
      * Use this for children with an independent, churning population the
      * parent cannot bound — e.g. one allocator per accepted connection,
      * closed when that connection tears down. Registering such children

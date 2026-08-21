@@ -110,10 +110,29 @@ class AllocationProfile {
  * @param delegate The underlying allocator to delegate to.
  * @param profile The shared histogram; defaults to a fresh instance.
  */
-class ProfilingAllocator(
+class ProfilingAllocator private constructor(
     private val delegate: BufferAllocator,
-    val profile: AllocationProfile = AllocationProfile(),
+    val profile: AllocationProfile,
+    /**
+     * Whether closing this wrapper closes what it wraps.
+     *
+     * True for the instance a caller constructed, which is what a decorator is:
+     * `SlabAllocator().withTracking()` hands back the only reference there is,
+     * and closing it has to reach the pool or nothing can.
+     *
+     * A child this wrapper derived is the other case. It closes through only
+     * when the delegate really produced one — an allocator that answers a child
+     * request with itself, which the interface allows, hands back what the
+     * caller already had, and closing that would close an allocator the caller
+     * owns rather than a child this made.
+     */
+    private val closesDelegate: Boolean,
 ) : BufferAllocator {
+
+    constructor(
+        delegate: BufferAllocator,
+        profile: AllocationProfile = AllocationProfile(),
+    ) : this(delegate, profile, closesDelegate = true)
 
     override fun allocate(capacity: Int): IoBuf {
         profile.record(capacity)
@@ -134,11 +153,44 @@ class ProfilingAllocator(
     override val lifecycleListener: BufferAllocatorLifecycleListener
         get() = delegate.lifecycleListener
 
-    override fun createChild(): BufferAllocator =
-        ProfilingAllocator(delegate.createChild(), profile)
+    override fun createChild(): BufferAllocator = wrapChild(delegate.createChild())
 
-    override fun createUntrackedChild(): BufferAllocator =
-        ProfilingAllocator(delegate.createUntrackedChild(), profile)
+    override fun createUntrackedChild(): BufferAllocator = wrapChild(delegate.createUntrackedChild())
+
+    /**
+     * Whether [delegate] is this wrapper's to close.
+     *
+     * False for the instance a caller constructed: that delegate was handed in,
+     * borrowed, and closing it would close an allocator somebody else owns —
+     * which a caller doing exactly what `createUntrackedChild` says to do would
+     * otherwise trigger. True for a wrapper this made around a delegate that
+     * really produced a new child, which nothing else holds a reference to and
+     * which only its own close gives back.
+     *
+     * A delegate that answers with itself, which the interface allows, produces
+     * neither: the wrapper is new but what it wraps is not.
+     */
+    /**
+     * Closes what this wraps, when closing this is meant to reach it.
+     *
+     * See [closesDelegate]: a chain a caller built closes through, and a child
+     * this derived closes through only when the delegate made one.
+     */
+    override fun close() {
+        if (closesDelegate) delegate.close()
+    }
+
+    /**
+     * Wraps what [delegate] answered, and records whether that answer is ours.
+     *
+     * A delegate that made a new child hands this wrapper something only it can
+     * give back; one that answered with itself hands back what the caller
+     * already had. The wrapper is new either way — a caller asking for a child
+     * gets its own instance, which is what the two factories promise — but only
+     * the first is closed through.
+     */
+    private fun wrapChild(childDelegate: BufferAllocator): BufferAllocator =
+        ProfilingAllocator(childDelegate, profile, closesDelegate = childDelegate !== delegate)
 
     override fun installConfinement(token: ConfinementToken) = delegate.installConfinement(token)
 }
