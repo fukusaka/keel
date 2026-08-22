@@ -46,8 +46,11 @@ package io.github.fukusaka.keel.buf
  *
  * The codec layer allocates too — the Native compression and TLS codecs take the
  * same pointer from buffers they allocate through a pipeline context — but that
- * context's allocator descends from this one, so the answer is inherited rather
- * than asked again.
+ * context's allocator is a child of this one and nothing asks it. The
+ * requirement therefore reaches the children an allocator hands out as well as
+ * the allocator itself, and descent does not carry the answer: one whose root
+ * deals in native buffers while its children do not passes the engine's check
+ * and fails in a codec.
  *
  * **Kotlin/JS member stability**: the Kotlin/JS IR backend mangles each
  * interface member to a hash derived from that member's own signature

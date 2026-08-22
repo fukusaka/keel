@@ -32,8 +32,8 @@ package io.github.fukusaka.keel.buf
  * itself, and a wrapper forwards that answer outward. Every rule for telling the
  * two apart is written in terms of identity, and identity is not ownership, so
  * each one has a hole where somebody's allocator gets closed mid-construction.
- * Asking the root has no such hole: one allocation, one release, nothing to give
- * back.
+ * Asking the root has no such hole: it makes no child, so there is nothing whose
+ * owner anybody has to work out.
  *
  * It costs something in both directions. An allocator whose root deals in native
  * buffers while its children do not passes and should not; one whose root
@@ -60,29 +60,53 @@ package io.github.fukusaka.keel.buf
  * here can attest to those. They keep failing per operation, which is where they
  * belong: they arrive one at a time, from callers this has never seen.
  *
- * What it leaves behind is one allocate and one release, balanced, so an observer
- * counting either sees one of each rather than an imbalance. Two things outlast
- * them on a pooled allocator, both measured rather than assumed.
+ * What it leaves behind is one allocate and one release. Whether an observer
+ * counting them sees a pair depends on which thread built the engine, which the
+ * paragraph on confinement below sets out. Two things outlast them on a pooled
+ * allocator, both measured rather than assumed.
  *
  * The first is a chunk. A read-sized probe is a pooled class, so it carves, and
  * carving an empty arena commits a chunk — 256 KiB on keel's own, still resident
- * afterwards and not given back by a trim (a probe above the cache cap allocates
- * outright instead and leaves nothing, which is why the residue depends on the
- * size an engine reads at). That arena is the one the engine's own children carve
- * from, so for an engine that goes on to serve anything the chunk is warm-up. For
- * one built and closed without serving — a test, mostly — it is a chunk held
- * until the caller closes the allocator, which an engine never does to one it was
- * given.
+ * afterwards and not given back by a trim, which keeps one idle chunk in reserve
+ * (a probe above the cache cap allocates outright instead and leaves nothing,
+ * which is why the residue depends on the size an engine reads at). One chunk per
+ * shard it lands on, so engines built from several threads against one shared
+ * allocator commit one apiece.
+ *
+ * That arena is the one the engine's own children carve from, so for an engine
+ * that goes on to serve anything the chunk is warm-up: measured, a serving engine
+ * ends up with the same chunk count either way. For one built and closed without
+ * serving it is residue — 256 KiB per construction, measured — and the remedy
+ * that would clear it, closing the allocator, is only open to someone holding
+ * one. A default configuration builds its own root inside itself, so in the
+ * common case nobody can. Building engines in order to discard them, which is
+ * mostly what tests do, therefore accumulates.
  *
  * The second is the root's confinement, which latches to the thread that built
  * the engine: a pooled allocator captures its owner on the first allocation, and
  * until now nothing allocated from a root, so a root answered every thread as
  * its owner. Engines read through children, whose confinement is untouched, so
- * this reaches only a caller who allocates from the root directly — and for that
- * caller it is a routing change, measured: releases from any other thread go
- * through the cross-thread queue rather than the freelist, and the counter that
- * reports the cross-thread rate counts them. They are not stranded; the queue
- * drains on the root's next miss, its trim, or its close.
+ * this reaches only a caller who allocates from the root itself — and this check
+ * is now one of those, which is what gives it a second reader.
+ *
+ * On a root nothing has allocated from yet, the probe latches it and its release
+ * takes the freelist path: allocate and release recorded as a pair. On a root
+ * already latched to another thread — a second engine built on a second thread
+ * from the same shared allocator, or a caller who allocated from it first — the
+ * release routes to the cross-thread queue instead, measured, and the counter
+ * that reports the cross-thread rate counts it. The buffer is not stranded: the
+ * queue drains on the root's next miss, its trim, or its close. The release
+ * *event* waits for that drain though, and nothing else allocates from a root,
+ * so in practice it waits until close — until then the root reports one more
+ * allocation than release, and a leak reporter driven by the lifecycle listener,
+ * asked to report inside that window, names this probe. The report is spurious
+ * and the configuration it appears on is the correct one, which is reason enough
+ * to say so here rather than leave it to be found.
+ *
+ * Both counts are the allocator's cumulative ones, plain increments documented as
+ * lossy when more than one thread writes them. A root's went untouched until now,
+ * so this is the first thing that can lose one: engines built concurrently
+ * against a shared allocator report slightly fewer than they made.
  *
  * One more thing an observer sees rather than keeps: an allocator that counts
  * pool hits and misses records the probe as a miss, since a root's freelist is

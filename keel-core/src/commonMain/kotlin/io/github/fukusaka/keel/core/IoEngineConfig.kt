@@ -32,7 +32,8 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  *                     pointer, and refuse to start when they do not. That is one
  *                     allocation and one release against this allocator — nothing
  *                     derived and nothing held open, though on a pooled allocator
- *                     it warms a chunk that stays; see
+ *                     it warms a chunk that stays, and on one already bound to
+ *                     another thread its release is recorded late; see
  *                     `requireNativePointerAccess` for what it measures. The
  *                     Netty engine is the exception — it allocates from each
  *                     channel's own `ByteBufAllocator` (`ch.alloc()`) and consumes

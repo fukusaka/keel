@@ -67,7 +67,7 @@ Configuration shared by all engines:
 
 | Property | Default | Description |
 |----------|---------|-------------|
-| `allocator` | `defaultAllocator()` | Root buffer allocator (platform pooled allocator — Native: `SlabAllocator`, JVM: `PooledDirectAllocator`, JS: `DefaultAllocator`); engines derive per-EventLoop child allocators from it. The epoll and kqueue engines also ask it once while being built — one allocation, one release — whether the buffers they would read into carry a native pointer, and refuse to start when they do not |
+| `allocator` | `defaultAllocator()` | Root buffer allocator (platform pooled allocator — Native: `SlabAllocator`, JVM: `PooledDirectAllocator`, JS: `DefaultAllocator`); engines derive per-EventLoop child allocators from it. The epoll and kqueue engines also ask it once while being built (one allocation and one release; `requireNativePointerAccess` records what that costs) whether the buffers they would read into carry a native pointer, and refuse to start when they do not |
 | `threads` | 0 (auto) | Worker EventLoop thread count; 0 resolves per engine (typically `availableProcessors()`) |
 | `loggerFactory` | `NoopLoggerFactory` | Logging factory |
 | `resolver` | `DnsResolver.SYSTEM` | DNS resolver used when `bind` / `connect` receives an unresolved hostname; swap in `CachingDnsResolver` or a custom implementation |
