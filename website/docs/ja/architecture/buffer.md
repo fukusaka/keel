@@ -357,7 +357,7 @@ engine は `allocator.createChild()` を呼び、自身がライフサイクル�
 
 ### engine が allocator に要求すること
 
-engine は read buffer のメモリを無検査 cast で kernel へ直接渡す — Native target では `NativePointerAccess`、JVM では `NioByteBufferBacking`、JS では `TypedArrayIoBuf`。engine と組み合わせるカスタム allocator は、その backing を持つ buffer を配らなければならず、子も同様である（engine が読むのは子だからである）。epoll と kqueue の engine は構築中に 1 度だけ問い、満たさなければ allocator を名指して起動を拒否する。他の engine では同じ誤りが後になって、その engine の read 経路なりの形で現れる。Netty engine は対象外である: buffer は各 channel 自身の `ByteBufAllocator` から確保し、設定された allocator は lifecycle listener の運搬にだけ使う。
+engine は read buffer のメモリを無検査 cast で kernel へ直接渡す — Native target では `NativePointerAccess`、JVM では `NioByteBufferBacking`、JS では `TypedArrayIoBuf`。engine と組み合わせるカスタム allocator は、その backing を持つ buffer を配らなければならず、子も同様である（engine が読むのは子だからである）。epoll と kqueue の engine は構築中に 1 度だけ問い、満たさなければ allocator を名指して起動を拒否する。他の engine では同じ誤りが後になって現れるが、その形は互いに比較できない — 実測では、NIO は connection を落とさず client が timeout するまで hang させ、NWConnection は Kotlin の frame が無い dispatch queue から送出するため accept の時点で process を abort させる。Netty engine は対象外である: buffer は各 channel 自身の `ByteBufAllocator` から確保し、設定された allocator は lifecycle listener の運搬にだけ使う。
 
 ### `DefaultAllocator`
 

@@ -89,8 +89,9 @@ through an unchecked cast — to `NativePointerAccess` on the Native targets,
 used with one must hand out buffers carrying that backing, and so must its
 children. The epoll and kqueue engines ask once while being built
 (`requireNativePointerAccess`) and refuse to start otherwise, naming the
-allocator; on the others the same mistake surfaces later, in whatever form that
-engine's read path gives it.
+allocator; on the others the same mistake surfaces later, in forms that are not
+comparable — measured, NIO leaves the connection hung and NWConnection aborts
+the process at accept.
 
 ## Chunk-Based Pooling
 

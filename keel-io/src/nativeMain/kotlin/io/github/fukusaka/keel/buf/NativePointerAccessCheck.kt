@@ -19,10 +19,15 @@ package io.github.fukusaka.keel.buf
  * Native engines take the same pointer and do not yet, and neither do the JVM
  * and JS ones, which cast to their own backing types. Extending it is tracked;
  * until then a user who moves a misconfigured allocator from one engine to
- * another meets the failure in a different form — and not always the same form.
- * On io_uring a ring-capable kernel reads into its own buffer ring and touches
- * the configured allocator only under back-pressure, so there the cast fails
- * under load rather than on every connection.
+ * another meets the failure in a different form, and the forms are not
+ * comparable. Measured, on the same misconfiguration: these two end the
+ * connection and log the cast; io_uring on a ring-capable kernel reads into its
+ * own buffer ring and touches the configured allocator only under
+ * back-pressure, so there it fails under load rather than per connection; NIO
+ * logs once and leaves the connection hung until the client's own timeout;
+ * and NWConnection raises it from a dispatch queue with no Kotlin frame to
+ * catch it, which aborts the process at accept rather than failing a
+ * connection at read.
  *
  * **It asks the allocator it was given, not a child of it.** An engine reads
  * through children, so asking one of those would be the sharper question — and
@@ -51,8 +56,9 @@ package io.github.fukusaka.keel.buf
  * classes from a chunk and allocates anything above the cache cap outright — so
  * a one-byte probe attests only the seam it happened to take. Callers pass the
  * size they read at. A per-bind or per-connect override that crosses the cache
- * boundary is still unattested; it fails per operation, like every other buffer
- * this never saw.
+ * boundary is still unattested — one argument on the ordinary bind overload
+ * reaches it — and it fails per operation, like every other buffer this never
+ * saw.
  *
  * **It speaks for read buffers only.** The write path takes the same pointer
  * from whatever the application handed to the pipeline — a slice, a wrapped

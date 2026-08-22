@@ -357,7 +357,7 @@ Engines call `allocator.createChild()` to obtain an owned child allocator whose 
 
 ### What an engine requires of an allocator
 
-An engine hands read-buffer memory straight to the kernel through an unchecked cast — to `NativePointerAccess` on the Native targets, `NioByteBufferBacking` on the JVM, `TypedArrayIoBuf` on JS. A custom allocator used with one must hand out buffers carrying that backing, and so must its children, since a child is what an engine reads through. The epoll and kqueue engines ask once while being built and refuse to start otherwise, naming the allocator; on the others the same mistake surfaces later, in whatever form that engine's read path gives it. The Netty engine is exempt: it allocates from each channel's own `ByteBufAllocator` and consults the configured one for its lifecycle listener alone.
+An engine hands read-buffer memory straight to the kernel through an unchecked cast — to `NativePointerAccess` on the Native targets, `NioByteBufferBacking` on the JVM, `TypedArrayIoBuf` on JS. A custom allocator used with one must hand out buffers carrying that backing, and so must its children, since a child is what an engine reads through. The epoll and kqueue engines ask once while being built and refuse to start otherwise, naming the allocator; on the others the same mistake surfaces later, in forms that are not comparable — measured, NIO leaves the connection hung until the client times out, and NWConnection aborts the process at accept because it raises from a dispatch queue with no Kotlin frame to catch it. The Netty engine is exempt: it allocates from each channel's own `ByteBufAllocator` and consults the configured one for its lifecycle listener alone.
 
 ### `DefaultAllocator`
 

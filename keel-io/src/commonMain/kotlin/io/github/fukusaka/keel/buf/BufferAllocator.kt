@@ -38,8 +38,11 @@ package io.github.fukusaka.keel.buf
  *
  * The epoll and kqueue engines ask once while being built (see
  * `requireNativePointerAccess`) and refuse to start otherwise, naming the
- * allocator. The rest do not yet, so on those the same mistake arrives later and
- * in whatever form that engine's read path gives it. One engine is different in
+ * allocator. The rest do not yet, so on those the same mistake arrives later,
+ * and the form differs by more than the message: measured, NIO leaves the
+ * connection hung rather than failing it, and NWConnection aborts the process
+ * at accept, because it raises from a dispatch queue with no Kotlin frame to
+ * catch it. One engine is different in
  * kind rather than merely unchecked: Netty allocates from each channel's own
  * `ByteBufAllocator` and consults this one for its [lifecycleListener] alone, so
  * what it hands out is not read through at all.
