@@ -541,10 +541,10 @@ class KqueueEngineLifecycleSeamTest {
         // the constructor.
         //
         // Two observables, because one is not enough. The allocator sees the
-        // children an engine asks for to keep. The logger factory sees the boss
-        // loop being built, which holds a kqueue descriptor and a wakeup pipe
-        // and comes first -- a check moved below it would still leave the
-        // allocator's count at zero.
+        // children an engine asks for to keep. The logger factory sees every tag
+        // anything asks for, and the base class asks for its own before it builds
+        // a single one of its own properties -- so an empty list says the refusal
+        // came before all of them, which the allocator's count alone would not.
         val refusing = PointerlessAllocator()
         val loggers = RecordingLoggerFactory()
 
@@ -556,9 +556,9 @@ class KqueueEngineLifecycleSeamTest {
 
         assertEquals(0, refusing.working, "a refusal must not have built anything to leak")
         assertEquals(
-            0,
-            loggers.tagsAskedFor.count { it == "KqueueEventLoop" },
-            "and must refuse before the event loops it would log through, got: ${loggers.tagsAskedFor}",
+            emptyList<String>(),
+            loggers.tagsAskedFor,
+            "and must refuse before anything asks for a logger, got: ${loggers.tagsAskedFor}",
         )
     }
 
