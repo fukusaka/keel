@@ -56,9 +56,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `native-readiness`, `engine-kqueue`, `engine-epoll`: refuse to start when the configured
-  `BufferAllocator` hands out buffers without native pointers, naming it and the fix instead of
-  failing per connection (#1067)
+- `native-readiness`, `engine-kqueue`, `engine-epoll`: refuse to start when a `BufferAllocator`
+  hands out buffers without native pointers (#1067)
 - `core`: `Logger.debug` takes an optional throwable, the way `warn` and `error` do (#1065)
 - `core`, `native-readiness`: a pipeline handler now hears a reported refused send on `onError`
   before `onInactive`, once, in both flush configurations (#1065)
@@ -323,9 +322,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
-- `core`, `native-readiness`: the fault model's four open questions answered on the pages a caller
-  reads — logger re-entrancy, the deferred FIN's place, the writability callback's guard, and the
-  engine-internal marker as a boundary (#1067)
+- `core`, `native-readiness`: document logger re-entrancy, the deferred FIN, the writability
+  guard, and the internal-API boundary (#1067)
 - `core`: `IoTransport.flush()` / `onFlushComplete` contracts now state the episode rule
   and the synchronous-completion allowance implementations must bound (#1061)
 
