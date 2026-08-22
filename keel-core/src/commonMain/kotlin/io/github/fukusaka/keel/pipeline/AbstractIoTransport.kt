@@ -612,6 +612,24 @@ abstract class AbstractIoTransport(
      * turns true. Subclasses call this from every flush-completion path;
      * it is a no-op unless a FIN is actually pending.
      *
+     * **Outside the flush funnel, deliberately.** A flush wait asks whether its
+     * bytes reached the peer; the FIN is a separate announcement, made once
+     * they have. So a FIN that cannot be sent should be reported rather than
+     * raised, and a waiter should not be told about it — it already has the
+     * answer to its own question. What a caller learns instead is the report a
+     * deferral makes when the engine can no longer discharge it.
+     *
+     * **The engines are not all there yet.** [sendFin] is the implementation's,
+     * and they answer a refused shutdown three different ways. The two POSIX
+     * readiness engines and io_uring report it. NW, Node and Netty drop it — an
+     * empty completion block by intent on the first, an error the second reads
+     * as a close, a discarded `ChannelFuture` on the third. NIO alone raises it,
+     * calling `shutdownOutput()` bare; and one of its call sites runs this
+     * *before* it resumes the waiter, which is the arrangement that can leave a
+     * waiter parked with nothing left to resume it. Tracked; a caller
+     * writing against this contract should read it as the one the engines are
+     * converging on.
+     *
      * **MUST** be invoked from the owning thread.
      */
     protected fun sendFinIfDrained() {

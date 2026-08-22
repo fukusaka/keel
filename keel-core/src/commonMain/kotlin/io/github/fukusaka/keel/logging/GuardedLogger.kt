@@ -46,6 +46,17 @@ package io.github.fukusaka.keel.logging
  * discipline, not a guarantee this class provides. Closing it properly is
  * tracked.
  *
+ * **A logger must not re-enter the object that is logging.** This guard makes
+ * a throwing logger harmless; it cannot make a *re-entrant* one harmless,
+ * because what a re-entrant logger does happens before the guard sees any
+ * result. A logger that reacts to a line by writing to the same connection —
+ * or by closing it — runs inside whatever frame emitted the line, which may
+ * be midway through a queue it is about to mutate. Keel calls loggers from
+ * such frames deliberately (a log line is cheaper than a deferral), so the
+ * requirement is on the logger: record the line, return, and do the reacting
+ * somewhere else. Nothing enforces it, and a guard that could would have to
+ * sit on every call rather than here.
+ *
  * Idempotent: wrapping a factory that is already wrapped returns it unchanged.
  */
 public fun LoggerFactory.guarded(): LoggerFactory =
