@@ -1,5 +1,8 @@
 package io.github.fukusaka.keel.engine.kqueue
 
+import io.github.fukusaka.keel.buf.BufferAllocator
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.ConnectConfig
 import io.github.fukusaka.keel.core.Host
@@ -9,10 +12,14 @@ import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.core.SocketOption
 import io.github.fukusaka.keel.core.SocketOptions
 import io.github.fukusaka.keel.core.UnixSocketAddress
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.LoggerFactory
+import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import io.github.fukusaka.keel.native.posix.ConnectResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
 import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
+import io.github.fukusaka.keel.testing.buf.PointerlessIoBuf
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -468,5 +475,141 @@ class KqueueEngineLifecycleSeamTest {
                 engine.close()
             }
         }
+    }
+
+    @Test
+    fun `an allocator whose buffers cannot reach a syscall is refused at construction`() {
+        // The engine passes buffer memory straight to syscalls through an
+        // unchecked cast, because that cast runs on every read and every
+        // gather. Without this refusal the mistake surfaces once per
+        // connection, as a ClassCastException inside a readiness dispatch,
+        // and what the log shows is every connection dying rather than the
+        // one thing that is wrong.
+        val refused = assertFailsWith<IllegalArgumentException> {
+            KqueueEngine(
+                config = IoEngineConfig(threads = 1, allocator = PointerlessAllocator()),
+                nativeSocket = FakeNativeSocket(),
+                nativeSocketOps = FakeNativeSocketOps(),
+            )
+        }
+
+        val message = checkNotNull(refused.message)
+        assertTrue(message.contains("KqueueEngine"), "the engine refusing must be named, got: $message")
+        assertTrue(
+            message.contains("PointerlessAllocator"),
+            "and the allocator the user configured, got: $message",
+        )
+    }
+
+    @Test
+    fun `the check asks at the read size this engine was configured with`() = runBlocking {
+        withTimeout(15.seconds) {
+            // The engine passes its own configured size, not the interface
+            // default. A pooled allocator can build a small buffer and a large
+            // one through different seams, so a call site that handed over a
+            // constant would attest a seam this engine never reads through.
+            val sizes = mutableListOf<Int>()
+            val configured = SizeRecordingAllocator(sizes)
+            val engine = KqueueEngine(
+                config = IoEngineConfig(
+                    threads = 1,
+                    readBufferSize = PROBE_READ_BUFFER_SIZE,
+                    allocator = configured,
+                ),
+            )
+
+            try {
+                assertEquals(
+                    listOf(PROBE_READ_BUFFER_SIZE),
+                    sizes,
+                    "the check must ask once, at the size this engine reads at",
+                )
+            } finally {
+                engine.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a refused allocator leaves nothing built`() {
+        // The check runs before anything else is built. The constructor does
+        // roll back what its own `try` covers, so most of a later placement
+        // would still unwind — but not the boss loop, which is built between
+        // the check and that `try` and holds a readiness descriptor, a wakeup
+        // primitive and an arena. A refusal there leaves them with nothing
+        // holding a reference to close them, because the reference never leaves
+        // the constructor.
+        //
+        // Two observables, because one is not enough. The allocator sees the
+        // children an engine asks for to keep. The logger factory sees the boss
+        // loop being built, which holds a kqueue descriptor and a wakeup pipe
+        // and comes first -- a check moved below it would still leave the
+        // allocator's count at zero.
+        val refusing = PointerlessAllocator()
+        val loggers = RecordingLoggerFactory()
+
+        assertFailsWith<IllegalArgumentException> {
+            KqueueEngine(
+                config = IoEngineConfig(threads = 1, allocator = refusing, loggerFactory = loggers),
+            )
+        }
+
+        assertEquals(0, refusing.working, "a refusal must not have built anything to leak")
+        assertEquals(
+            0,
+            loggers.tagsAskedFor.count { it == "KqueueEventLoop" },
+            "and must refuse before the event loops it would log through, got: ${loggers.tagsAskedFor}",
+        )
+    }
+
+    /** Records which loggers an engine asked for, and in what order. */
+    private class RecordingLoggerFactory : LoggerFactory {
+        val tagsAskedFor = mutableListOf<String>()
+
+        override fun logger(tag: String): Logger {
+            tagsAskedFor += tag
+            return NoopLoggerFactory.logger(tag)
+        }
+    }
+
+    /**
+     * Records the sizes the check asks for, and hands the engine something else.
+     *
+     * The children are plain: the engine's loops run on their own threads, and
+     * a recorder they shared would be a list written from those threads and read
+     * from this one. Only the check allocates through this instance, and it does
+     * so on the constructing thread before any loop is started.
+     */
+    private class SizeRecordingAllocator(private val sizes: MutableList<Int>) : BufferAllocator by DefaultAllocator {
+        override fun allocate(capacity: Int): IoBuf {
+            sizes += capacity
+            return DefaultAllocator.allocate(capacity)
+        }
+
+        override fun createChild(): BufferAllocator = DefaultAllocator
+    }
+
+    /**
+     * Everything it hands out fails the pointer cast, and it counts the children
+     * an engine asks for to keep.
+     *
+     * The count is what says a refusal built nothing: an engine that got as far
+     * as its worker group asked for one child per worker first.
+     */
+    private class PointerlessAllocator : BufferAllocator by DefaultAllocator {
+        var working = 0
+            private set
+
+        override fun allocate(capacity: Int): IoBuf = PointerlessIoBuf(DefaultAllocator.allocate(capacity))
+
+        override fun createChild(): BufferAllocator {
+            working++
+            return this
+        }
+    }
+
+    private companion object {
+        /** Not the interface default, so a call site handing over a constant shows. */
+        const val PROBE_READ_BUFFER_SIZE = 32 * 1024
     }
 }
