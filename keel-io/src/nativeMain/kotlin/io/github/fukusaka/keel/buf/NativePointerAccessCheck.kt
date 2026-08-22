@@ -70,8 +70,10 @@ package io.github.fukusaka.keel.buf
  * afterwards and not given back by a trim, which keeps one idle chunk in reserve
  * (a probe above the cache cap allocates outright instead and leaves nothing,
  * which is why the residue depends on the size an engine reads at). One chunk per
- * shard it lands on, so engines built from several threads against one shared
- * allocator commit one apiece.
+ * shard it lands on: engines built one after another against a shared allocator
+ * share the first, since the probe before them released into the freelist the
+ * probe after them pops, while engines built at the same time carve on separate
+ * shards and commit one apiece.
  *
  * That arena is the one the engine's own children carve from, so for an engine
  * that goes on to serve anything the chunk is warm-up: measured, a serving engine
@@ -84,10 +86,12 @@ package io.github.fukusaka.keel.buf
  *
  * The second is the root's confinement, which latches to the thread that built
  * the engine: a pooled allocator captures its owner on the first allocation, and
- * until now nothing allocated from a root, so a root answered every thread as
- * its owner. Engines read through children, whose confinement is untouched, so
- * this reaches only a caller who allocates from the root itself — and this check
- * is now one of those, which is what gives it a second reader.
+ * an unlatched root answers every thread as its owner. Engines read through
+ * children, whose confinement is untouched, so this reaches only a caller who
+ * allocates from the root itself. Those are rare but they are not new — the
+ * in-memory engine keel ships for tests hands a root straight to its transports
+ * and copies through it on every flush — so a root may or may not already be
+ * latched when this runs, and both cases are worth setting out.
  *
  * On a root nothing has allocated from yet, the probe latches it and its release
  * takes the freelist path: allocate and release recorded as a pair. On a root
@@ -96,16 +100,15 @@ package io.github.fukusaka.keel.buf
  * release routes to the cross-thread queue instead, measured, and the counter
  * that reports the cross-thread rate counts it. The buffer is not stranded: the
  * queue drains on the root's next miss, its trim, or its close. The release
- * *event* waits for that drain though, and nothing else allocates from a root,
- * so in practice it waits until close — until then the root reports one more
+ * *event* waits for that drain though, and an engine that reads through children
+ * never allocates from its root again, so in practice it waits until close — until then the root reports one more
  * allocation than release, and a leak reporter driven by the lifecycle listener,
  * asked to report inside that window, names this probe. The report is spurious
  * and the configuration it appears on is the correct one, which is reason enough
  * to say so here rather than leave it to be found.
  *
  * Both counts are the allocator's cumulative ones, plain increments documented as
- * lossy when more than one thread writes them. A root's went untouched until now,
- * so this is the first thing that can lose one: engines built concurrently
+ * lossy when more than one thread writes them, so engines built concurrently
  * against a shared allocator report slightly fewer than they made.
  *
  * One more thing an observer sees rather than keeps: an allocator that counts

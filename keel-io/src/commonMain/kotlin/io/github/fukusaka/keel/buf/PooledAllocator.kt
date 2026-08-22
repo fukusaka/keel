@@ -104,10 +104,11 @@ abstract class PooledAllocator internal constructor(
      * `leastUsedArena` style: ~one EventLoop per shard). Assigned by [createChild]
      * (the child's index); [shardIndexForCarve] may override per-carve (the Native
      * allocator hashes off-EL threads across shards). The root's value goes almost
-     * unused where engines are concerned: they read through children, and the
-     * only carve an engine makes against a root is the single-buffer check while
-     * being built. A caller allocating from a root directly uses it like any
-     * other instance.
+     * unused where engines are concerned, because they read through children —
+     * the exceptions being the single-buffer check two of them make while being
+     * built, and the in-memory test engine, which copies through a root on every
+     * flush. A caller allocating from a root directly uses it like any other
+     * instance.
      */
     protected val shardIdx: Int = 0,
     /**
