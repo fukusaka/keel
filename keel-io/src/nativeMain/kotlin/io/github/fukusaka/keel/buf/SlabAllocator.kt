@@ -26,8 +26,10 @@ import kotlin.concurrent.atomics.AtomicLong
  * installs the same ladder, so each EventLoop owns its own pool confined to a
  * single thread. The parent allocator (the instance passed to `IoEngineConfig`)
  * serves size-class setup and the single-buffer check the epoll and kqueue
- * engines make of it while being built; the per-EL children perform every allocation after
- * that.
+ * engines make of it while being built; after that those engines allocate
+ * through the per-EL children alone. Not every engine does — the in-memory one
+ * this project ships for tests copies through the instance it was handed on
+ * every flush.
  *
  * @param maxTotalBytes Worst-case cache-byte safety valve. Default:
  *   [DEFAULT_MAX_TOTAL_BYTES].

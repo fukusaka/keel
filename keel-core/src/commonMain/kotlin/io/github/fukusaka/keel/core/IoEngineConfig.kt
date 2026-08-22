@@ -20,8 +20,8 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  * The migration from data class to DSL is non-breaking.
  *
  * @property allocator Root buffer allocator for the engine's I/O buffers.
- *                     Engines never allocate from it directly — each derives its
- *                     working allocator(s) as children via
+ *                     Engines that read through children — every socket engine
+ *                     here — derive their working allocator(s) as children via
  *                     [createChild][BufferAllocator.createChild] (one **per
  *                     EventLoop** for the thread-pinned engines — epoll / kqueue /
  *                     nio / io_uring) and allocates from those, so this parent

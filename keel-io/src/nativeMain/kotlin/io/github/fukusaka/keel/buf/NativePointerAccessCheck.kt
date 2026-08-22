@@ -101,9 +101,11 @@ package io.github.fukusaka.keel.buf
  * that reports the cross-thread rate counts it. The buffer is not stranded: the
  * queue drains on the root's next miss, its trim, or its close. The release
  * *event* waits for that drain though, and an engine that reads through children
- * never allocates from its root again, so in practice it waits until close — until then the root reports one more
- * allocation than release, and a leak reporter driven by the lifecycle listener,
- * asked to report inside that window, names this probe. The report is spurious
+ * never allocates from its root again, so in practice it waits until close —
+ * which, under a default configuration, is a terminus nobody can reach. Until
+ * then the root reports one more allocation than release, and a leak reporter
+ * driven by the lifecycle listener, asked to report inside that window, names
+ * this probe. The report is spurious
  * and the configuration it appears on is the correct one, which is reason enough
  * to say so here rather than leave it to be found.
  *
@@ -113,8 +115,10 @@ package io.github.fukusaka.keel.buf
  *
  * One more thing an observer sees rather than keeps: an allocator that counts
  * pool hits and misses records the probe as a miss, since a root's freelist is
- * empty by definition the first time. A profile dumped before traffic arrives
- * therefore shows that size class at one miss and no hits.
+ * empty the first time anything asks. A profile dumped before traffic arrives
+ * therefore shows that size class at one miss and no hits — or, where an
+ * allocator is shared, at one miss and a hit for every engine built after the
+ * first, each popping what the one before it released.
  *
  * It is also one allocation the engine's own read path would have prefaced with
  * a size hint. A pooled allocator may route a hinted class differently from an
