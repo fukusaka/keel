@@ -103,8 +103,11 @@ abstract class PooledAllocator internal constructor(
      * The shard this instance carves from by default (its pinned shard, Netty
      * `leastUsedArena` style: ~one EventLoop per shard). Assigned by [createChild]
      * (the child's index); [shardIndexForCarve] may override per-carve (the Native
-     * allocator hashes off-EL threads across shards). The root's value is unused —
-     * it does not carve directly.
+     * allocator hashes off-EL threads across shards). The root's value goes almost
+     * unused where engines are concerned: they read through children, and the
+     * only carve an engine makes against a root is the single-buffer check while
+     * being built. A caller allocating from a root directly uses it like any
+     * other instance.
      */
     protected val shardIdx: Int = 0,
     /**

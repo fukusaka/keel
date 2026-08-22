@@ -22,6 +22,11 @@ import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
  * platform check, which Linux does not need — it has an abstract namespace.
  * What is here is the loops this engine builds, because the rollback their
  * construction needs runs before a base constructor could.
+ *
+ * **Allocator requirement**: enforced at construction. This engine passes
+ * read-buffer memory straight to syscalls, so the configured `BufferAllocator`
+ * must hand out buffers implementing `NativePointerAccess`; one that does not
+ * is refused here rather than failing once per connection.
  */
 class EpollEngine(
     config: IoEngineConfig = IoEngineConfig(),

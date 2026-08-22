@@ -24,6 +24,11 @@ import io.github.fukusaka.keel.native.readiness.ReadinessSuspendRegister
  * Unix-address check below. What is here is that check, and the loops this
  * engine builds — construction stays with the concrete engine because the
  * rollback it needs runs before a base constructor could.
+ *
+ * **Allocator requirement**: enforced at construction. This engine passes
+ * read-buffer memory straight to syscalls, so the configured `BufferAllocator`
+ * must hand out buffers implementing `NativePointerAccess`; one that does not
+ * is refused here rather than failing once per connection.
  */
 class KqueueEngine(
     config: IoEngineConfig = IoEngineConfig(),

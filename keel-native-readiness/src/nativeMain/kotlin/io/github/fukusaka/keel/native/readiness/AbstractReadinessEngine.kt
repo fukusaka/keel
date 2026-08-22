@@ -2,6 +2,7 @@
 
 package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.buf.requireNativePointerAccess
 import io.github.fukusaka.keel.core.BindConfig
 import io.github.fukusaka.keel.core.BindSpec
 import io.github.fukusaka.keel.core.Channel
@@ -96,6 +97,24 @@ abstract class AbstractReadinessEngine(
     nativeSocketOps: NativeSocketOps? = null,
     private val suspendRegisterOverride: ReadinessSuspendRegister? = null,
 ) : StreamEngine {
+
+    init {
+        // The buffers this engine's transports will read through, asked before
+        // anything at all is built -- this runs ahead of every property below and
+        // of the subclass's own init, so a refusal leaves no descriptor, arena or
+        // allocator child behind.
+        //
+        // Here rather than in each engine because this class owns the read that
+        // needs it: the transports it builds take a buffer's memory through an
+        // unchecked cast, and a subclass added later would inherit that read
+        // without inheriting a check it had to remember to call.
+        //
+        // "Before anything at all" is positional: initialisers run in the order
+        // they are written, so a property declared above this block would be
+        // built before the refusal and left behind by it. Nothing enforces that
+        // -- keep this first.
+        config.allocator.requireNativePointerAccess(logTag, config.readBufferSize)
+    }
 
     override val coroutineContext: CoroutineContext = SupervisorJob()
 

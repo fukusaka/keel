@@ -353,7 +353,11 @@ val engine = KqueueEngine(
 
 ### Role of `createChild()`
 
-Engines call `allocator.createChild()` to obtain an owned child allocator whose lifetime they control — one per EventLoop thread for the thread-pinned engines (epoll / kqueue / NIO / io_uring), once per engine where there is no per-thread split (NWConnection, Node.js). Pool-based parents give each child its own size-class freelist cache while all children share the parent's chunk arena; the parent tracks its children and cascade-closes them on `close()`. The parent instance passed to `IoEngineConfig` performs no hot-path allocation itself. A sibling, `createUntrackedChild()`, produces a child the caller must close itself — for unbounded, churning populations such as one allocator per accepted connection.
+Engines call `allocator.createChild()` to obtain an owned child allocator whose lifetime they control — one per EventLoop thread for the thread-pinned engines (epoll / kqueue / NIO / io_uring), once per engine where there is no per-thread split (NWConnection, Node.js). Pool-based parents give each child its own size-class freelist cache while all children share the parent's chunk arena; the parent tracks its children and cascade-closes them on `close()`. The parent instance passed to `IoEngineConfig` performs no hot-path allocation itself. A sibling, `createUntrackedChild()`, produces a child the caller must close itself — for unbounded, churning populations such as one allocator per accepted connection. What it hands back is not necessarily new: the default chain ends at `createChild()`'s `this`, and a wrapper forwards its delegate's answer outward, so a caller that must not close somebody else's allocator should be given one that makes real children rather than try to tell them apart.
+
+### What an engine requires of an allocator
+
+An engine hands read-buffer memory straight to the kernel through an unchecked cast — to `NativePointerAccess` on the Native targets, `NioByteBufferBacking` on the JVM, `TypedArrayIoBuf` on JS. A custom allocator used with one must hand out buffers carrying that backing, and so must its children, since a child is what an engine reads through. The epoll and kqueue engines ask once while being built and refuse to start otherwise, naming the allocator; on the others the same mistake surfaces later, in whatever form that engine's read path gives it. The Netty engine is exempt: it allocates from each channel's own `ByteBufAllocator` and consults the configured one for its lifecycle listener alone.
 
 ### `DefaultAllocator`
 
