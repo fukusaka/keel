@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `io`: `BufferAllocator.requireNativePointerAccess` — asks an allocator, once, whether the buffers
+  it hands out can be passed to a syscall (#1067)
 - `core`: `IoTransport.onConnectionFailure` — the refusal that ended the connection, reported
   before the inactive; a channel with handlers forwards it to the pipeline's error path (#1065)
 - **BREAKING** (`core`): `TransportFailureException` — the sealed supertype for a transport failing
@@ -54,6 +56,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `native-readiness`, `engine-kqueue`, `engine-epoll`: refuse to start when a `BufferAllocator`
+  hands out buffers without native pointers (#1067)
 - `core`: `Logger.debug` takes an optional throwable, the way `warn` and `error` do (#1065)
 - `core`, `native-readiness`: a pipeline handler now hears a reported refused send on `onError`
   before `onInactive`, once, in both flush configurations (#1065)
@@ -318,6 +322,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
+- `core`, `native-readiness`: document logger re-entrancy, the deferred FIN, the writability
+  guard, and the internal-API boundary (#1067)
 - `core`: `IoTransport.flush()` / `onFlushComplete` contracts now state the episode rule
   and the synchronous-completion allowance implementations must bound (#1061)
 

@@ -83,6 +83,16 @@ Pool-based parents cascade-close their children on `close()`;
 `createUntrackedChild()` produces a child the caller must close itself (e.g.
 one allocator per accepted connection).
 
+**Platform backing**: an engine hands read-buffer memory straight to the kernel
+through an unchecked cast — to `NativePointerAccess` on the Native targets,
+`NioByteBufferBacking` on the JVM, `TypedArrayIoBuf` on JS. A custom allocator
+used with one must hand out buffers carrying that backing, and so must its
+children. The epoll and kqueue engines ask once while being built
+(`requireNativePointerAccess`) and refuse to start otherwise, naming the
+allocator; on the others the same mistake surfaces later, in forms that are not
+comparable — measured, NIO leaves the connection hung and NWConnection aborts
+the process at accept.
+
 ## Chunk-Based Pooling
 
 `PooledAllocator` is the common pool skeleton behind both platform pools. It
@@ -187,7 +197,9 @@ implementations (`DefaultAllocator`, `SlabAllocator`, `PooledDirectAllocator`,
 `AllocatorStats`, `BufferAllocatorLifecycleListener`, `TrackingAllocator`,
 `LeakDetectingAllocator`, `ProfilingAllocator`), chunked payload carriers
 (`IoBufChunks`, `IoBufMutableChunks`, `IoBufAccumulator`), `IoBufAsciiText`
-(zero-copy ASCII `CharSequence` view), and the `@UnsafeIoBufApi` opt-in.
+(zero-copy ASCII `CharSequence` view), `requireNativePointerAccess` (the
+construction-time check a Native engine makes of the allocator it reads through),
+and the `@UnsafeIoBufApi` opt-in.
 
 # Package io.github.fukusaka.keel.io
 

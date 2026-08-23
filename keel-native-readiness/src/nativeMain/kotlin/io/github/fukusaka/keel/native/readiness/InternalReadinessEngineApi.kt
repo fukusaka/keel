@@ -17,6 +17,14 @@ package io.github.fukusaka.keel.native.readiness
  * ask about a connection they have just torn down, or both.
  * That is worth knowing before treating this surface as a design: it is mostly
  * the cost of testing an implementation from the module next door.
+ *
+ * **For the fault model, this is a boundary.** What it marks is keel's own
+ * code, not a seam: the engines do not guard calls to it as though a third
+ * party might have replaced the implementation. An opt-in cannot enforce that
+ * — anyone willing to write the annotation can call in — and the alternative
+ * is worse. Treating "public behind a marker" as a seam would make every
+ * helper on that surface something to be defended against, which is how the
+ * question of what can fail stops having an answer.
  */
 @RequiresOptIn(
     message = "Internal surface of the readiness engines. Opt in only from the engines " +

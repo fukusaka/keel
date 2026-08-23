@@ -248,6 +248,28 @@ interface IoTransport {
      * Called with `false` when pending bytes cross [DEFAULT_HIGH_WATER_MARK]
      * (stop writing), and `true` when they drop below
      * [DEFAULT_LOW_WATER_MARK] (resume writing).
+     *
+     * **Where a throw from this goes.** It is user code, so it is a seam — but
+     * the guard belongs to whoever set this, not to a `try` around this call,
+     * and that is two different places.
+     *
+     * A channel with a pipeline sets it to the pipeline's own notification, and
+     * a handler that throws there is caught and turned into an error event
+     * travelling the pipeline — never reaching the `write` that drove it, and
+     * never taking the surrounding frame with it. That is most callers, and for
+     * them this seam is already contained.
+     *
+     * A consumer that sets it directly on an [IoTransport] gets the raw
+     * behaviour, and the two directions differ. The `false` above the high-water
+     * mark is raised from `write` itself, on every engine, so it propagates to
+     * the caller doing the writing — which is where it belongs. The `true` below
+     * the low-water mark is raised from whatever drove the drain: the two POSIX
+     * readiness transports stage it, so it is carried and raised once the rest
+     * of that group has run, and the others do not — there it takes the rest of
+     * the frame with it, which can mean an arm not registered or a flush waiter
+     * not resumed. Converging that is the same work as the rest of that
+     * contract, and a handler that has to run on every engine should not throw
+     * from here.
      */
     var onWritabilityChanged: ((Boolean) -> Unit)?
 

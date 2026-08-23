@@ -353,7 +353,11 @@ val engine = KqueueEngine(
 
 ### createChild() の役割
 
-engine は `allocator.createChild()` を呼び、自身がライフサイクルを管理する child allocator を得る — thread 固定型 engine（epoll / kqueue / NIO / io_uring）では EventLoop thread ごとに 1 つ、per-thread 分割のない engine（NWConnection、Node.js）では engine ごとに 1 つ。pool 系の parent は child ごとに専用の size-class freelist cache を持たせつつ、全 child で parent の chunk arena を共有する。parent は child を追跡し、`close()` で cascade-close する。`IoEngineConfig` に渡した parent instance 自身は hot path での割り当てを行わない。兄弟メソッドの `createUntrackedChild()` は caller 自身が close する child を返す — accepted connection ごとに 1 allocator のような、無制限に増減する population 向けである。
+engine は `allocator.createChild()` を呼び、自身がライフサイクルを管理する child allocator を得る — thread 固定型 engine（epoll / kqueue / NIO / io_uring）では EventLoop thread ごとに 1 つ、per-thread 分割のない engine（NWConnection、Node.js）では engine ごとに 1 つ。pool 系の parent は child ごとに専用の size-class freelist cache を持たせつつ、全 child で parent の chunk arena を共有する。parent は child を追跡し、`close()` で cascade-close する。`IoEngineConfig` に渡した parent instance 自身は、これらの engine の hot path では割り当てを行わない。ただし parent 経由で割り当てる engine が禁じられているわけではない — テストで使う in-memory engine は flush ごとに parent を経由してコピーする。兄弟メソッドの `createUntrackedChild()` は caller 自身が close する child を返す — accepted connection ごとに 1 allocator のような、無制限に増減する population 向けである。返るものが新しいとは限らない: 既定のチェーンは `createChild()` の `this` で終わり、wrapper は delegate の答えを外へ転送するので、他人の allocator を close してはならない caller には、見分けさせるのではなく実際に child を作る allocator を渡すべきである。
+
+### engine が allocator に要求すること
+
+engine は read buffer のメモリを無検査 cast で kernel へ直接渡す — Native target では `NativePointerAccess`、JVM では `NioByteBufferBacking`、JS では `TypedArrayIoBuf`。engine と組み合わせるカスタム allocator は、その backing を持つ buffer を配らなければならず、子も同様である（engine が読むのは子だからである）。epoll と kqueue の engine は構築中に 1 度だけ問い、満たさなければ allocator を名指して起動を拒否する。他の engine では同じ誤りが後になって現れるが、その形は互いに比較できない — 実測では、NIO は connection を落とさず client が timeout するまで hang させ、NWConnection は Kotlin の frame が無い dispatch queue から送出するため accept の時点で process を abort させる。Netty engine は対象外である: buffer は各 channel 自身の `ByteBufAllocator` から確保し、設定された allocator は lifecycle listener の運搬にだけ使う。
 
 ### `DefaultAllocator`
 

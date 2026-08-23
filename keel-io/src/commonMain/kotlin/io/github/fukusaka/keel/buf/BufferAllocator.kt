@@ -28,6 +28,33 @@ package io.github.fukusaka.keel.buf
  * `nio` / `io_uring`, once per engine for `NwEngine` / `NodeEngine`
  * where the engine has no per-thread split).
  *
+ * **The buffers an engine reads into must carry its platform's backing.** An
+ * engine hands read-buffer memory straight to the kernel, through a cast that is
+ * unchecked because it runs on every read: `NativePointerAccess` on the Native
+ * targets, `NioByteBufferBacking` on the JVM, the `TypedArrayIoBuf` class itself
+ * on JS. An implementation used with one must therefore allocate buffers
+ * carrying the one its target needs — and so must its children, since a child is
+ * what an engine reads through.
+ *
+ * The epoll and kqueue engines ask once while being built (see
+ * `requireNativePointerAccess`) and refuse to start otherwise, naming the
+ * allocator. The rest do not yet, so on those the same mistake arrives later,
+ * and the form differs by more than the message: measured, NIO leaves the
+ * connection hung rather than failing it, and NWConnection aborts the process
+ * at accept, because it raises from a dispatch queue with no Kotlin frame to
+ * catch it. One engine is different in
+ * kind rather than merely unchecked: Netty allocates from each channel's own
+ * `ByteBufAllocator` and consults this one for its [lifecycleListener] alone, so
+ * what it hands out is not read through at all.
+ *
+ * The codec layer allocates too — the Native compression and TLS codecs take the
+ * same pointer from buffers they allocate through a pipeline context — but that
+ * context's allocator is a child of this one and nothing asks it. The
+ * requirement therefore reaches the children an allocator hands out as well as
+ * the allocator itself, and descent does not carry the answer: one whose root
+ * deals in native buffers while its children do not passes the engine's check
+ * and fails in a codec.
+ *
  * **Kotlin/JS member stability**: the Kotlin/JS IR backend mangles each
  * interface member to a hash derived from that member's own signature
  * (name + parameter types + return type), not from the interface's
@@ -176,6 +203,15 @@ interface BufferAllocator {
      * Identical to [createChild] except the parent does not retain the
      * returned child: this parent's [close] will not close it, and the
      * caller **must** [close] it exactly once itself.
+     *
+     * **What comes back may be this allocator.** The default chain ends at
+     * [createChild]'s `this`, so a stateless implementation answers with itself
+     * — and then "close it exactly once" closes the allocator the caller was
+     * given. Nothing in this interface distinguishes a new child from the
+     * receiver, and identity does not settle it either: a wrapper forwards its
+     * delegate's answer outward, so what comes back is neither the receiver nor
+     * anything new. A caller that must not close somebody else's allocator
+     * should be handed one that makes real children rather than try to tell.
      *
      * Use this for children with an independent, churning population the
      * parent cannot bound — e.g. one allocator per accepted connection,

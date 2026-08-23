@@ -20,13 +20,21 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  * The migration from data class to DSL is non-breaking.
  *
  * @property allocator Root buffer allocator for the engine's I/O buffers.
- *                     Engines never allocate from it directly — each derives its
- *                     working allocator(s) as children via
+ *                     Engines that read through children — every socket engine
+ *                     here — derive their working allocator(s) as children via
  *                     [createChild][BufferAllocator.createChild] (one **per
  *                     EventLoop** for the thread-pinned engines — epoll / kqueue /
  *                     nio / io_uring) and allocates from those, so this parent
  *                     stays **borrowed** and can be shared across engines: closing
  *                     an engine drains its own children, not this allocator. The
+ *                     epoll and kqueue engines ask it once, while being built,
+ *                     whether the buffers they would read into carry a native
+ *                     pointer, and refuse to start when they do not. That is one
+ *                     allocation and one release against this allocator — nothing
+ *                     derived and nothing held open, though on a pooled allocator
+ *                     it warms a chunk that stays, and on one already bound to
+ *                     another thread its release is recorded late; see
+ *                     `requireNativePointerAccess` for what it measures. The
  *                     Netty engine is the exception — it allocates from each
  *                     channel's own `ByteBufAllocator` (`ch.alloc()`) and consumes
  *                     only this allocator's
