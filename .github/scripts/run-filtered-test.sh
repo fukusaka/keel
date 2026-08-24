@@ -11,7 +11,7 @@
 # applied to both because the caller should not have to know which is which.
 #
 # The Native half is not the macOS half: `linuxX64Test` is Kotlin/Native too, so
-# four of this workflow's eight invocations are exposed, not two.
+# six of this workflow's ten invocations are exposed, not three.
 #
 # Without it, renaming a stress class turns every one of these invocations into a
 # silent no-op that reports success.

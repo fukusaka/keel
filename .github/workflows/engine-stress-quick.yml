@@ -2,14 +2,16 @@ name: Engine stress (quick)
 
 # Runs the per-engine cross-thread funnel stress (KqueuePipelineEchoStress,
 # EpollPipelineEchoStress, ...) plus the pooled allocator's arena-saturation
-# stress (PooledAllocatorArenaSaturationStress) and the transport teardown claim
+# stress (PooledAllocatorArenaSaturationStress), its concurrent-child race
+# (PooledAllocatorConcurrentChildStress) and the transport teardown claim
 # race (TeardownClaimStress) with KEEL_STRESS=quick on every PR that touches an
 # engine, keel-core, or keel-io. These tests skip unless
 # KEEL_STRESS is set, so the main CI (ci.yml) never runs them; this workflow is
 # the auto PR gate that guards the I/O ownership invariant (the funnel),
 # multi-EventLoop accept dispatch + per-EventLoop routing, the concurrent-allocate
-# path under load, the shared ChunkArena under cross-thread saturation, and the
-# transport teardown claim that keeps two concurrent closers from running the
+# path under load, the shared ChunkArena under cross-thread saturation, the list a
+# parent allocator tracks its children in when two engines are built at once, and
+# the transport teardown claim that keeps two concurrent closers from running the
 # cleanup pass twice.
 #
 # Kept OUT of ci.yml deliberately: path-filtering here means a change to an
@@ -35,6 +37,7 @@ on:
       - 'keel-core/**'
       - 'keel-io/**'
       - '.github/workflows/engine-stress-quick.yml'
+      - '.github/scripts/run-filtered-test.sh'
   pull_request:
     types: [ labeled, synchronize ]
     paths:
@@ -42,6 +45,7 @@ on:
       - 'keel-core/**'
       - 'keel-io/**'
       - '.github/workflows/engine-stress-quick.yml'
+      - '.github/scripts/run-filtered-test.sh'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -83,7 +87,8 @@ jobs:
           restore-keys: konan-${{ runner.os }}-
 
       # epoll / io_uring run on linuxX64; nio / netty are JVM engines; keel-io's
-      # allocator arena-saturation stress is JVM and runs here too.
+      # allocator's two stress cases run here too: arena saturation on the JVM,
+      # the concurrent-child race on linuxX64.
       # One gradle invocation PER suite: --tests narrows to the stress only
       # when a single Test task is on the command line — a multi-task
       # invocation leaves some suites unfiltered and runs the full module
@@ -99,8 +104,8 @@ jobs:
       # no-ops that report success. The script asserts the XML report shows a
       # non-zero test count.
       #
-      # That covers the two `linuxX64Test` invocations here as well as the two
-      # macosArm64 ones: linuxX64 is Kotlin/Native. The four `jvmTest` ones are
+      # That covers the three `linuxX64Test` invocations here as well as the
+      # three macosArm64 ones: linuxX64 is Kotlin/Native. The four `jvmTest` ones are
       # already failed by Gradle itself, and go through the script only so a
       # caller does not have to know which half it is on.
       - name: Stress (linuxX64 + JVM engines + keel-io allocator, quick)
@@ -111,6 +116,7 @@ jobs:
           "$S" :keel-engine-nio:jvmTest '*PipelineEchoStress'
           "$S" :keel-engine-netty:jvmTest '*PipelineEchoStress'
           "$S" :keel-io:jvmTest '*ArenaSaturationStress'
+          "$S" :keel-io:linuxX64Test '*ConcurrentChildStress'
           "$S" :keel-core:jvmTest '*TeardownClaimStress'
 
       - name: Upload stress reports (linux)
@@ -155,11 +161,12 @@ jobs:
       # One gradle invocation per engine — see the linux job for why a
       # multi-task invocation does not narrow with --tests, and for why these go
       # through `run-filtered-test.sh`.
-      - name: Stress (macosArm64 engines, quick)
+      - name: Stress (macosArm64 engines + keel-io allocator, quick)
         run: |
           S=.github/scripts/run-filtered-test.sh
           "$S" :keel-engine-kqueue:macosArm64Test '*PipelineEchoStress'
           "$S" :keel-engine-nwconnection:macosArm64Test '*PipelineEchoStress'
+          "$S" :keel-io:macosArm64Test '*ConcurrentChildStress'
 
       - name: Upload stress reports (macos)
         if: always()
