@@ -193,6 +193,17 @@ interface BufferAllocator {
      *
      * See [createUntrackedChild] for children whose lifecycle the parent
      * must **not** track (one allocator per accepted connection, etc.).
+     *
+     * **Thread safety**: safe to call from several threads on one parent, and
+     * safe against a concurrent [close] — a child is either handed out and
+     * tracked, so that the parent's close reaches it, or refused because the
+     * parent has closed. That holds for this method; [createUntrackedChild]
+     * takes no lock and can hand out a child while the parent is closing.
+     * What is *not* covered either way is using a child while the same parent
+     * is being closed: the parent cascade-closes the children it handed out,
+     * and an allocate racing that teardown is past the point where a defined
+     * answer is available. Close a parent only after the work on its children
+     * has stopped, and from one thread.
      */
     fun createChild(): BufferAllocator = this
 
