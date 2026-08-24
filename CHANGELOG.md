@@ -115,6 +115,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `io`: guard the list a pooled allocator tracks its children in, so engines built at the same time
+  on a shared allocator no longer corrupt it (#1069)
 - `engine-kqueue`, `engine-epoll`: a flush wait ended by a failure is told which one instead of
   being cancelled as if its caller had closed the channel (#1066)
 - `engine-kqueue`, `engine-epoll`: a gather write no longer offers the kernel more regions than
