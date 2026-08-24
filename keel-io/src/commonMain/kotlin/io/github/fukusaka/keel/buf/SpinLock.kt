@@ -16,6 +16,11 @@ import kotlin.concurrent.atomics.AtomicInt
  * EL-pinned engines access it uncontended (the acquire is then a single
  * uncontended CAS); JS is single-threaded so the CAS always succeeds at once.
  *
+ * One use is wider than that: [PooledAllocator]'s child list holds this across
+ * a whole child's construction, microseconds rather than instructions. That is
+ * chosen for when it is taken — once per child, off every data path — and is
+ * argued where it is taken rather than here.
+ *
  * **Not reentrant** and **not fair**: a thread that already holds the lock and
  * calls [lock] again spins forever. Acquire / release must strictly pair on one
  * thread. There is no `close` — the [AtomicInt] is GC-managed on every platform.

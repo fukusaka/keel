@@ -42,6 +42,17 @@ package io.github.fukusaka.keel.buf
  * copy-on-write writers and must not run concurrently with themselves on the same
  * instance — they are invoked at construction and at per-EventLoop setup
  * (bind / TLS handler) on the owning thread, never on the hot path.
+ * [createChild] is safe for concurrent callers and against a concurrent [close]:
+ * the list of tracked children is guarded, so two engines built on one parent at
+ * the same moment cannot corrupt it, and a tracked child is either in the
+ * snapshot [close] takes — and cascade-closed with it — or refused. Nothing
+ * wider than that is promised. [createUntrackedChild] deliberately takes no
+ * lock, so its closed check is a plain read and a child can be handed out while
+ * the parent is already closing. [close] is single-threaded, as
+ * [BufferAllocator.close] states: two concurrent closers are check-then-set on
+ * one flag, and on Native the second blocks on a mutex the first destroys. And
+ * using any child while its parent is being closed is outside the contract —
+ * close a parent only once the work on its children has stopped.
  *
  * @param maxTotalBytes Safety valve: an upper bound on the total bytes the cache
  *   may commit across all classes (worst case, every slot full). The default
@@ -222,12 +233,57 @@ abstract class PooledAllocator internal constructor(
      * Per-EventLoop children produced by [createChild]. The parent's
      * [close] propagates to each child first so the close direction matches
      * the construction direction (engine → group → per-EL allocators →
-     * engine teardown closes parent which fans back out). Mutated only at
-     * EventLoop construction (`newChildInstance` invocations) and at teardown
-     * (`close`) — both single-threaded by contract — so a plain
-     * `MutableList` suffices.
+     * engine teardown closes parent which fans back out).
+     *
+     * Guarded by [childrenLock] on both the sites that touch it, [newChild]
+     * and [close]. It used to be unguarded, on the reasoning that construction
+     * and teardown are each single-threaded — true of one engine, and not of
+     * two built at once on a shared parent, which the configuration that hands
+     * an allocator to an engine invites.
+     *
+     * What a concurrent append leaves behind depends on which list this is,
+     * and the two differ in the order of the two writes.
+     *
+     * On Kotlin/Native, `ArrayList` raises its length inside `insertAtInternal`
+     * before `addAtInternal` writes the element, and `get` checks the index
+     * against that length — so a reader is handed a counted slot the store has
+     * not reached, holding its zero-initialised null typed as non-null, and
+     * [close] dispatches on it. Measured on linuxX64, 40 runs of each of three
+     * shapes: every shape produced the fault, and none did with the append
+     * serialised — 0 of 40 each — nor with the asking moved to one thread.
+     * How it arrives is not a fixed thing and is not given a share here: most
+     * visibly the process dies, and the rest raise
+     * `ArrayIndexOutOfBoundsException` from the growth that a racing pair of
+     * appends can leave inconsistent.
+     *
+     * On the JVM the writes go the other way — `java.util.ArrayList` stores the
+     * element and then raises the size — so the null slot arrives from a racing
+     * growth rather than from that order. Both reach a test the same way: runs
+     * against the unguarded list have dropped a child the parent then never
+     * closed, killed an appending thread inside `add`, and dereferenced a null
+     * slot. Which one arrives varies by host and load.
      */
     private val children: MutableList<PooledAllocator> = mutableListOf()
+
+    /**
+     * Guards [children]. Held across the whole of a child's construction rather
+     * than the list operations alone — [newChild] says why — so the section is
+     * longer than the name suggests: on the JVM, building a child costs a few
+     * microseconds against single-digit nanoseconds for the index read and the
+     * append by themselves, so the list work is a rounding error in what is
+     * held.
+     *
+     * A spin lock even so, because of when it is taken rather than how long it
+     * is held. Once per child, at EventLoop construction and at teardown, never
+     * on a data path, and contended only while two engines are being built at
+     * the same moment. Nothing the section covers waits on another lock: it
+     * constructs freelists, which take theirs in `push` / `pop` / `size` /
+     * `snapshotInto` and not in their constructors. That is a statement about
+     * the freelists here — the factory is a constructor parameter, so an
+     * allocator built with one that locks while constructing would hold this
+     * lock across that.
+     */
+    private val childrenLock = SpinLock()
 
     // Cache-trim bookkeeping (per-EventLoop, single-thread on the common path — same
     // writer contract as hintSizeClass). Kept off the COW Ladder because they mutate
@@ -711,6 +767,12 @@ abstract class PooledAllocator internal constructor(
     internal fun trimNow() = trim()
 
     /**
+     * This allocator's shard of the shared arena (test/diagnostic
+     * observability — the shard [newChild] assigns under its lock).
+     */
+    internal val shardIndex: Int get() = shardIdx
+
+    /**
      * Cache-trim pass: for each size class, evict the entries its recent activity
      * does not justify keeping, returning their runs to their chunks, then reclaim
      * now-idle chunks (keeping [WARM_RESERVE]).
@@ -782,15 +844,39 @@ abstract class PooledAllocator internal constructor(
      * ~one EventLoop per shard). When `false` the child is left out of [children]
      * — the caller owns its [close] — and its shard is round-robin from
      * [untrackedChildShard] so an unbounded connection population spreads across
-     * shards. The untracked path never touches [children], so it stays safe under
-     * the concurrent per-connection construction NWConnection drives.
+     * shards. The untracked path never touches [children] and takes no lock, so
+     * it stays free of contention under the concurrent per-connection
+     * construction NWConnection drives.
+     *
+     * The tracked path takes [childrenLock] for the shard read, the construction
+     * and the append together. Holding it across the construction is what keeps
+     * one shard from being handed to two children; the alternative, reserving an
+     * index and appending after, would let a slower thread's child land out of
+     * order. The closed check is inside the lock as well, so a child cannot be
+     * appended to a parent that has already taken its snapshot to close.
+     *
+     * That makes a concurrent [close] safe, not harmless: a child handed out
+     * just before the snapshot is cascade-closed by it, and a caller that then
+     * uses it gets `allocator is closed`. A caller racing harder — already
+     * inside an allocate when the shared arena goes — is past that check, and
+     * has left the part of this that is defined. [ChunkArena.carve] does not
+     * re-check closed, so what happens next depends on what the arena was
+     * holding: it may raise (a released buffer on the JVM, a carve against a
+     * mutex [ChunkArena.close] has destroyed and freed on Native), and it may
+     * just as well **succeed**, handing back memory from an arena that has
+     * been torn down. Do not race your own teardown; serialise it.
      */
     private fun newChild(track: Boolean): BufferAllocator {
         check(!closed) { "allocator is closed" }
-        val shard = if (track) children.size else untrackedChildShard.fetchAndAdd(1)
-        val child = newChildInstance(maxTotalBytes, shardedArena, shard)
-        if (track) children.add(child)
-        return child
+        if (!track) {
+            return newChildInstance(maxTotalBytes, shardedArena, untrackedChildShard.fetchAndAdd(1))
+        }
+        return childrenLock.withLock {
+            check(!closed) { "allocator is closed" }
+            val child = newChildInstance(maxTotalBytes, shardedArena, children.size)
+            children.add(child)
+            child
+        }
     }
 
     /**
@@ -822,8 +908,16 @@ abstract class PooledAllocator internal constructor(
         // cross-thread release observes `closed` and frees directly in returnToPool
         // instead of enqueuing into a queue nobody drains.
         onClose()
-        for (i in children.indices) children[i].close()
-        children.clear()
+        // Taken out under the lock and closed outside it: a child's close drains
+        // freelists and can return runs to the arena, which is longer than a spin
+        // lock should be held, and nothing else may append once the list is
+        // emptied — [newChild] re-reads the closed flag inside the same lock.
+        val handedOut = childrenLock.withLock {
+            val snapshot = children.toList()
+            children.clear()
+            snapshot
+        }
+        for (i in handedOut.indices) handedOut[i].close()
         val l = ladder
         for (i in l.pools.indices) {
             val pool = l.pools[i] ?: continue
