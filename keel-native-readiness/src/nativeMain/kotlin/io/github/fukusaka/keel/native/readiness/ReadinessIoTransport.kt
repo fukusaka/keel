@@ -1097,16 +1097,21 @@ class ReadinessIoTransport(
     }
 
     /**
-     * The whole answer to a refused send, in the order that cannot be
-     * shuffled: the abandoned-FIN report is attached before the waiters are
-     * answered — the instance handed to a waiter must not be appended to
-     * after it is published — and the waiters are answered before
-     * [settleRefusedSend] ends the connection, because [failFlushWaiter]
-     * declines once `opened` is false. Both frames that meet a refusal call
-     * this and rethrow after: [performFlush]'s funnel for one met inside the
-     * drain, [drainAndNotifyIfComplete]'s obligation group for its own
-     * re-arm. One body, so a frame added later cannot inherit the steps
-     * without the order.
+     * The whole answer to a refused send, in the order the frames rely on:
+     * the abandoned-FIN report is attached before the waiters are answered —
+     * the instance handed to a waiter must not be appended to after it is
+     * published — and the waiters are answered before [settleRefusedSend]
+     * ends the connection, because [failFlushWaiter] declines once `opened`
+     * is false. Shuffling the last two strands nobody — the close teardown's
+     * waiter stage answers whoever is left with the recorded refusal — but
+     * it hands the answer's ownership to the teardown, trading
+     * [failFlushWaiter]'s dispatched resume for the teardown's inline one
+     * and silently losing the deferred publication the dispatch exists
+     * for. Both frames that meet a refusal call this and rethrow
+     * after: [performFlush]'s funnel for one met inside the drain,
+     * [drainAndNotifyIfComplete]'s obligation group for its own re-arm. One
+     * body, so a frame added later cannot inherit the steps without the
+     * order.
      */
     private fun answerRefusedSend(refusal: RefusedWriteException) {
         runStage(refusal) { reportAbandonedFin() }
