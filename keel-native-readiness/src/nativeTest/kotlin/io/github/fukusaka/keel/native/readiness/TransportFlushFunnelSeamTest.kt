@@ -266,21 +266,29 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     }
 
     @Test
-    fun `a cancelled waiter leaves no stored continuation behind`() = runBlocking {
+    fun `a cancelled waiter's entry is disposed of harmlessly by the next answer`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
+            fake.enqueueWrite(fd, WriteResult.WouldBlock)
             val transport = transport()
             transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            assertFalse(transport.flush(), "the unwritable socket leaves the queue for a later drain")
 
             val waiter = parkFlushWaiter(transport)
             assertTrue(transport.hasFlushWaiter(), "the waiter must be parked")
 
-            // External cancellation must clear the slot through the parked
-            // waiter's cancel hook — the one registration the drained-inline
-            // path skips — or every later drain answers a dead continuation
-            // while a live probe reads a waiter that is not there.
+            // There is deliberately no cancel hook: the one the old slot
+            // installed ran on the cancelling caller's thread — an off-loop
+            // write to loop-confined state — and cleared whichever waiter the
+            // slot held by then. The entry stays until the next answer, whose
+            // resume the coroutine machinery ignores on a cancelled
+            // continuation; what this pins is that the disposal is harmless.
             waiter.cancel()
-            assertFalse(transport.hasFlushWaiter(), "the cancel hook must clear the stored continuation")
+            assertTrue(transport.hasFlushWaiter(), "the entry stays listed until an answer disposes of it")
 
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            assertTrue(transport.flush(), "the retried drain completes past the dead entry")
+            assertFalse(transport.hasFlushWaiter(), "and the answer leaves nothing behind")
+            fake.assertAllConsumed()
             transport.close()
             tracker.assertNoLeaks()
         }
