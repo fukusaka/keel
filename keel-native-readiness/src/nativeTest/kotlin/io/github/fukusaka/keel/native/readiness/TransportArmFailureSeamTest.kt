@@ -52,7 +52,10 @@ internal class TransportArmFailureSeamTest : TransportSeamFixture() {
             }
 
             val told = parked.await().exceptionOrNull()
-            assertIs<Throwable>(told, "the parked waiter must be told, not left for the close: $told")
+            assertIs<RefusedWriteException>(
+                told,
+                "the parked waiter is told the refusal itself, not left for the close: $told",
+            )
             assertFalse(transport.isOpen, "bytes with no future leave nothing to send on")
             tracker.assertNoLeaks()
         }
@@ -105,7 +108,10 @@ internal class TransportArmFailureSeamTest : TransportSeamFixture() {
             }
 
             val told = parked.await().exceptionOrNull()
-            assertIs<Throwable>(told, "the parked waiter must be told, not left for the close: $told")
+            assertIs<RefusedWriteException>(
+                told,
+                "the parked waiter is told the refusal itself, not left for the close: $told",
+            )
             assertTrue(inactive, "the pipeline hears the end; nothing else would ever say it")
             assertFalse(transport.isOpen, "bytes with no future leave nothing to send on")
             tracker.assertNoLeaks()

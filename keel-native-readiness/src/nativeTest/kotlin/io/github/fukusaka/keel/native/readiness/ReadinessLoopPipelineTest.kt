@@ -138,7 +138,7 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
 
         val failure = loop.registerCallback(FD, Interest.WRITE, RecordingListener())
 
-        assertIs<Throwable>(failure, "the caller whose retry vanished must learn it, not just the log")
+        assertIs<IllegalStateException>(failure, "the caller whose retry vanished must learn it, not just the log")
         assertTrue(
             checkNotNull(failure.message).contains("fake-arm"),
             "and the failure names the syscall, got: ${failure.message}",
