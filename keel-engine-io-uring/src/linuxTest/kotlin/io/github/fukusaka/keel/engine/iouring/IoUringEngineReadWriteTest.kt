@@ -7,6 +7,8 @@ import io.github.fukusaka.keel.io.BufferedSuspendSource
 import io.github.fukusaka.keel.native.posix.PosixRawClient
 import io.github.fukusaka.keel.native.posix.ReadResult
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import platform.posix.close
@@ -473,6 +475,48 @@ class IoUringEngineReadWriteTest {
         assertEquals("", line3)
 
         source.close()
+        ch.close()
+        close(clientFd)
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `two coroutines awaiting one flush are both resumed when it drains`() = runBlocking {
+        // The waiter ledger was once a single slot, and the second park's
+        // store evicted the first — a permanent hang, since every answer
+        // path read only the slot. The exhaustive mechanism coverage lives
+        // in the readiness transport's seam tests; this pins the same
+        // contract through this engine's real sockets: nothing makes the
+        // wait exclusive, so an overlap must lose neither caller.
+        val engine = IoUringEngine()
+        val server = engine.bind(LOOPBACK_HOST, 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val clientFd = connectRawClient(port)
+        val ch = withTimeout(IO_OP_TIMEOUT_MS) { server.accept() }
+
+        // Far beyond the loopback socket buffers, and no reader yet: the
+        // flush cannot complete before both waiters have parked.
+        val payloadSize = 4 * 1024 * 1024
+        val buf = DefaultAllocator.allocate(payloadSize)
+        repeat(payloadSize) { buf.writeByte((it % 256).toByte()) }
+        ch.write(buf)
+
+        val first = async { withTimeout(IO_OP_LONG_TIMEOUT_MS) { ch.flush() } }
+        val second = async { withTimeout(IO_OP_LONG_TIMEOUT_MS) { ch.flush() } }
+
+        // Drain the peer from a worker thread so the blocking raw read
+        // cannot starve this builder's thread of the waiters' resumes.
+        val reader = async(Dispatchers.Default) {
+            PosixRawClient.rawReadBytes(clientFd, payloadSize)
+        }
+
+        first.await()
+        second.await()
+        val received = withTimeout(IO_OP_LONG_TIMEOUT_MS) { reader.await() }
+        assertEquals(payloadSize, received.size)
+
         ch.close()
         close(clientFd)
         server.close()
