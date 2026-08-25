@@ -583,7 +583,17 @@ class ReadinessIoTransport(
                 // applies (accept-to-first-byte, slowloris, keep-alive idle). A
                 // write-only client that never enables reads is never idle-timed.
                 armIdleTimeout()
-                armRead()
+                // Contained here, because this is the one armRead caller that
+                // is not already inside a read frame's containment: the setter
+                // runs from the accept hand-off and from Channel-mode read
+                // re-enables, and a raise escaping either leaves the
+                // connection open, deaf, and reported to nobody — measured, a
+                // multi-loop accept hand-off parked it that way for good. The
+                // containment ends the connection with the reason instead,
+                // like every other frame that meets this raise.
+                containReadinessFailure(WHAT_READ_REENABLE) {
+                    armRead()
+                }
             } else if (!value) {
                 // Back-pressure: pause the idle timeout while the app deliberately
                 // stops reading, rather than close a connection we asked to go quiet.
@@ -691,7 +701,19 @@ class ReadinessIoTransport(
 
     private fun armRead() {
         if (!opened) return
-        eventLoop.registerCallback(fd, Interest.READ, this)
+        eventLoop.registerCallback(fd, Interest.READ, this)?.let { armFailure ->
+            // The read twin of the raise in [registerWriteCallback]: a
+            // connection whose READ arm was withdrawn hears nothing ever
+            // again — no bytes, no EOF, no error. Every armRead caller sits
+            // inside a containment that ends the connection with the reason —
+            // the read frames through [onReady]'s, the [readEnabled] setter
+            // through its own — which is exactly what a permanently deaf
+            // connection needs.
+            throw IllegalStateException(
+                "the readiness arm for read failed; this connection can never hear again",
+                armFailure,
+            )
+        }
     }
 
     private fun onReadable() {
@@ -1898,7 +1920,26 @@ class ReadinessIoTransport(
         // receive window — start the write-idle (slow-read) clock. Drain progress
         // refreshes it and a full drain cancels it, both via updatePendingBytes.
         armWriteIdleTimeout()
-        eventLoop.registerCallback(fd, Interest.WRITE, this)
+        eventLoop.registerCallback(fd, Interest.WRITE, this)?.let { armFailure ->
+            // The arm was withdrawn: no readiness event will ever drive this
+            // queue again, so the bytes it holds can never reach the peer —
+            // which is a refused send, not a blocked one. Raised as such, it
+            // rides the refused-send pipeline every caller frame already has:
+            // the drain's failure handling answers the waiters with the
+            // reason, records it for the late ones, reports the connection
+            // inactive once, and ends it — with no FIN over the truncated
+            // stream. The suspend arm's sibling has failed its waiter this
+            // way all along (`submitArm` → `failUnarmedWaiter`); this is the
+            // callback arm reaching parity. Ending — rather than retrying —
+            // is deliberate: the errnos are misuse or kernel exhaustion, and
+            // a retry has no driver left to schedule it, so it would be a
+            // timer loop hiding the same hang.
+            throw RefusedWriteException(
+                "the readiness arm for the send's retry failed; " +
+                    "the ${pendingByteCount()} pending bytes can never reach the peer",
+                armFailure,
+            )
+        }
     }
 
     /** write readiness callback body — invoked via [onReady] when [Interest.WRITE] fires. */
@@ -2293,6 +2334,10 @@ class ReadinessIoTransport(
         // [containReadinessFailure] labels — constants so the per-event
         // dispatch path builds no strings outside the gated log lambda.
         private const val WHAT_READ_READINESS = "readiness for READ"
+
+        /** The containment label for the read re-enable's arm, see [readEnabled]. */
+        private const val WHAT_READ_REENABLE = "re-enabling read"
+
         private const val WHAT_WRITE_READINESS = "readiness for WRITE"
         private const val WHAT_PEER_CLOSE = "the peer close"
         private const val WHAT_DEFERRED_FLUSH = "the deferred flush"
