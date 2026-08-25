@@ -162,7 +162,9 @@ class ReadinessIoTransport(
      * on the same thread with the same nothing above it, and letting that one
      * fall through to the backstop in the event loop leaves the connection
      * open in CLOSE-WAIT holding its descriptor -- the loop survives, and the
-     * fd is never released by anybody.
+     * fd is never released by anybody. One caller is not the dispatch's: the
+     * [readEnabled] setter wraps its re-arm here, and its frames are
+     * loop-dispatched tasks, so the rule below still holds for it.
      *
      * [what] names the work being handled — one of the `WHAT_*` constants, so
      * this per-event path allocates nothing building it: the message is built

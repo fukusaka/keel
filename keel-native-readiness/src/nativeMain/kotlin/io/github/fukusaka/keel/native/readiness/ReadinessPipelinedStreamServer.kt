@@ -418,8 +418,9 @@ class ReadinessPipelinedStreamServer(
      * setter rather than throwing back out here (unguarded, that raise left
      * the connection joined, open and deaf with only the loop drain's generic
      * warning — measured). What can still escape is an allocation-class
-     * failure from the timer, and nothing here would know what to
-     * do about one. Before the transport exists nothing else will release
+     * failure from the timer, or the containment's own re-raise when the
+     * wind-down it starts fails — a double fault — and nothing here would
+     * know what to do about either. Before the transport exists nothing else will release
      * it; after it exists but before the channel attaches, the transport is not
      * in the registry, so no stop notification reaches it either. A throw
      * anywhere in that stretch used to leave the descriptor open for the

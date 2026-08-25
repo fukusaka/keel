@@ -127,7 +127,7 @@ internal class TransportArmFailureSeamTest : TransportSeamFixture() {
 
             transport.readEnabled = true
 
-            assertFalse(transport.isOpen, "the setter's containment ends the connection; nothing escapes it")
+            assertFalse(transport.isOpen, "the setter's containment ends the connection with the reason")
             val told = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
             assertIs<ConnectionFailureException>(told, "a wait arriving later is owed the reason, got: $told")
             tracker.assertNoLeaks()

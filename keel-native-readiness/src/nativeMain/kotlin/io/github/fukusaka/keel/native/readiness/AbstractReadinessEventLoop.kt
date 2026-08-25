@@ -1812,9 +1812,16 @@ abstract class AbstractReadinessEventLoop :
      *
      * **Thread safety**: safe from any thread. Off the loop the arm is queued.
      *
-     * **A registration arriving after the loop has stopped is refused**, and the
-     * refusal is silent to the caller — nothing is appended, no arm is issued,
-     * and there is no return value to check. What the caller gets instead is a
+     * **Returns the arm's failure, or `null`.** A failed on-loop arm is
+     * withdrawn and its failure handed back, so the caller's own frame can
+     * act on a listener that will never fire; a dispatched off-loop arm has
+     * no frame to answer and returns `null` — see [armRegisteredCallback]
+     * for what that leaves.
+     *
+     * **A registration arriving after the loop has stopped is refused**, and
+     * the refusal answers `null` too — nothing is appended and no arm is
+     * issued, but deliberately no failure either: the sweep owns that answer
+     * channel (see the branch's comment below). What the caller gets instead is a
      * WARN naming the fd and interest, because a listener refused here is one
      * that will never fire. Whether anyone was *told* is the registry's
      * business, not this ledger's: a transport that joined as a
@@ -1951,9 +1958,11 @@ abstract class AbstractReadinessEventLoop :
                 // withdrawal's ERROR log is the report, as it was for every
                 // arm before the chain learned to answer. The off-loop arms
                 // in this tree are the server's initial accept arm and the
-                // connect path's initial read arm (through joinLoop, which
-                // also discards the on-loop answer); their answer channels
-                // are their own follow-up.
+                // initial read arms made through joinLoop off the worker
+                // loop -- the connect paths and the coroutine-mode accept
+                // build their channels on the calling thread; joinLoop also
+                // discards the on-loop answer. Their answer channels are
+                // their own follow-up.
                 submitArmCallback(fd, interest, key, listener)
             }
         }

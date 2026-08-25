@@ -301,7 +301,8 @@ internal class EpollEventLoop(
      * arm never sees it. Which connections hold one, and for how long, is
      * stated at the arm itself in `ReadinessIoTransport.init`.
      *
-     * A failed arm withdraws the listener, as kqueue's does. On the first arm —
+     * A failed arm withdraws the listener and returns the withdrawal's
+     * failure, as kqueue's does. On the first arm —
      * [addOrModifyEpoll] issues `ADD` and reaches `MOD` only on `EEXIST` — the
      * fd is left out of the interest list altogether and nothing is delivered
      * for it, so a retained listener would never fire. On the `MOD` path the fd
