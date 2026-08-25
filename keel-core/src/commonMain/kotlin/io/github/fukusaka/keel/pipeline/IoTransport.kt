@@ -229,6 +229,17 @@ interface IoTransport {
      *
      * Returns immediately when no send is pending. Called by Coroutine
      * mode's [io.github.fukusaka.keel.core.Channel.awaitFlushComplete].
+     *
+     * **The wait is not exclusive.** Any number of callers may wait at once —
+     * two coroutines flushing one channel overlap here naturally — and each
+     * is answered: by the completion, by the failure, or by the teardown
+     * that ends the wait. An implementation must not let one waiter's
+     * arrival, answer, or cancellation cost another waiter its answer.
+     * What *form* the answer takes — a completion, a typed failure, a bare
+     * cancellation — still differs by engine, like the failure reporting
+     * documented on [io.github.fukusaka.keel.core.Channel.awaitFlushComplete]:
+     * a contract the implementations are converging on rather than one they
+     * all meet.
      */
     suspend fun awaitPendingFlush()
 
