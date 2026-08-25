@@ -56,6 +56,16 @@ import kotlin.coroutines.resumeWithException
  */
 @OptIn(ExperimentalForeignApi::class)
 @InternalReadinessEngineApi
+// LargeClass: the transport owns the whole per-connection readiness
+// lifecycle, the same surface its io_uring twin suppresses this for. One
+// extraction has already been taken (the gather scratch and the flush-wait
+// answers); the waiter-list code added for the multi-waiter contract puts
+// the class back over the threshold — code lines, not comments: detekt's
+// linesOfCode counts no comment or KDoc line. The right shrink is hoisting
+// that machinery, declared identically in three transports, into the shared
+// base — tracked, and it takes this suppression with it — rather than an
+// extraction invented inside a bug-fix change.
+@Suppress("LargeClass")
 class ReadinessIoTransport(
     /**
      * The connection's file descriptor. Readable rather than `private` so a test
@@ -459,16 +469,15 @@ class ReadinessIoTransport(
         // queue and the sweep drains once more after notifying participants,
         // which is what that drain is for. The close path is the one that
         // cannot -- it runs after quiescence, where nothing drains again.
-        flushContinuation?.let { cont ->
-            flushContinuation = null
+        for (cont in takeFlushWaiters()) {
             // Guarded like the sweep guards each waiter it ends, and for the
             // sweep's real reason: the answer goes back through the waiter's
             // dispatcher, which can refuse it -- a cancellation handler that
             // throws is taken by the coroutine machinery before this frame
             // ever sees it. The refusal must not take the read-side
-            // notification below with it; before the write side was ended
-            // here, onReadClosed was the only statement and could not be
-            // skipped.
+            // notification below with it, nor the next waiter's answer; before
+            // the write side was ended here, onReadClosed was the only
+            // statement and could not be skipped.
             answerFlushWaiter("ending the flush waiter for, while the stop notification goes on,") {
                 endWaitForStoppedLoop(cont, fd, eventLoop.loopFailure())
             }
@@ -527,7 +536,16 @@ class ReadinessIoTransport(
      * treat a `true` as "was parked", which is all the tests need.
      */
     @InternalReadinessEngineApi
-    fun hasFlushWaiter(): Boolean = flushContinuation != null
+    fun hasFlushWaiter(): Boolean = flushWaiters.isNotEmpty()
+
+    /**
+     * How many entries the waiter list holds, dead ones included. Behind the
+     * marker for the same reason as [hasFlushWaiter]; the park-time sweep is
+     * a memory bound, and a count is the only observation that can see it
+     * work — every other seam reads emptiness, which the sweep never changes.
+     */
+    @InternalReadinessEngineApi
+    fun flushWaiterCount(): Int = flushWaiters.size
 
     /**
      * The write ledger's current byte count.
@@ -1155,7 +1173,36 @@ class ReadinessIoTransport(
     }
 
     /**
-     * Resumes a parked flush waiter with [drainFailure] — the wait cannot
+     * Ends every waiter in [snapshot] through [end], one guard per waiter so a
+     * refusal cannot strand the waiters behind it in an already-taken
+     * snapshot — and then rethrows the first refusal, later ones suppressed.
+     * The rethrow is the difference from [answerFlushWaiter]: these run inside
+     * a teardown stage whose aggregate reaches the closer, and a close that
+     * could not deliver an answer must not report clean. The single-slot shape
+     * carried such a refusal the same way; the loop is what made carrying and
+     * continuing two separate duties.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun endFlushWaiters(
+        snapshot: List<CancellableContinuation<Unit>>,
+        what: String,
+        crossinline end: (CancellableContinuation<Unit>) -> Unit,
+    ) {
+        var refusal: Throwable? = null
+        for (cont in snapshot) {
+            try {
+                end(cont)
+            } catch (thrown: Throwable) {
+                eventLoop.logger.error(thrown) { "$what fd=$fd threw; nothing can reach that waiter, the rest go on" }
+                val first = refusal
+                if (first == null) refusal = thrown else first.addSuppressed(thrown)
+            }
+        }
+        refusal?.let { throw it }
+    }
+
+    /**
+     * Resumes every parked flush waiter with [drainFailure] — the wait cannot
      * complete, and the failure is the reason. A no-op when nobody is parked.
      *
      * `resumeWithException` rather than a cancellation: this says "the flush
@@ -1172,10 +1219,10 @@ class ReadinessIoTransport(
      * the loop left behind once the loop has gone. Answering here as well
      * would only race that stage; declining leaves one answer with one owner.
      *
-     * **The resume is dispatched, not inline.** The slot is cleared here — so
-     * the teardown's answer stage and the register's identity check see the
-     * answer as taken — but the waiter receives [drainFailure] from a later
-     * loop task. The entry point above this funnel may still attach
+     * **The resume is dispatched, not inline.** The snapshot is taken here —
+     * so the teardown's answer stage and the register's membership check see
+     * these answers as taken — but the waiters receive [drainFailure] from a
+     * later loop task. The entry point above this funnel may still attach
      * suppressed failures to the same instance during its wind-down, and this
      * platform's `Throwable` keeps that list unsynchronized: an off-loop
      * waiter resumed inline could observe it mid-append the moment its own
@@ -1183,7 +1230,9 @@ class ReadinessIoTransport(
      * in the current task, and the queued resume runs strictly after all of
      * them — per drain passage: a caller-cached singleton exception thrown
      * across two passages shares the instance by the caller's own hand, an
-     * exposure that predates the deferral. A throw from the
+     * exposure that predates the deferral — as does handing one instance to
+     * several waiters at once, which the list multiplied and is tracked with
+     * the shared-instance follow-up. A throw from the
      * deferred resume is only reported — attaching it would be the very
      * post-publication append this defers to avoid.
      *
@@ -1198,13 +1247,17 @@ class ReadinessIoTransport(
     @Suppress("TooGenericExceptionCaught")
     private fun failFlushWaiter(drainFailure: Throwable) {
         if (!opened) return
-        val cont = flushContinuation ?: return
-        flushContinuation = null
+        val waiters = takeFlushWaiters()
+        if (waiters.isEmpty()) return
         eventLoop.dispatch(
             EmptyCoroutineContext,
             Runnable {
-                answerFlushWaiter("resuming the flush waiter with the drain failure for, while the loop goes on,") {
-                    cont.resumeWithException(drainFailure)
+                for (cont in waiters) {
+                    answerFlushWaiter(
+                        "resuming the flush waiter with the drain failure for, while the loop goes on,",
+                    ) {
+                        cont.resumeWithException(drainFailure)
+                    }
                 }
             },
         )
@@ -1219,30 +1272,30 @@ class ReadinessIoTransport(
      * transport, after which the FIN is deliberately not sent.
      */
     private fun notifyFlushDrained() {
-        flushContinuation?.let { cont ->
-            // The drain succeeded; only this waiter's dispatcher can refuse
+        for (cont in takeFlushWaiters()) {
+            // The drain succeeded; only each waiter's dispatcher can refuse
             // the news. A refusal must not escape into the drain frame --
             // whose containment ends connections, and this one is healthy --
-            // nor skip the completion callback below.
+            // nor skip the next waiter or the completion callback below.
             resumeDrainedWaiter(cont, "resuming the drained flush waiter for, while the connection goes on serving,")
         }
         onFlushComplete?.invoke()
     }
 
     /**
-     * The one shape of a successful waiter answer, shared by the three paths
-     * that resume one — whose preconditions differ: the report and the
-     * register's re-check answer the continuation the slot holds, but the
-     * already-drained arm answers a caller that was never stored, while the
-     * slot may hold an *earlier* waiter whose report the outer frame still
-     * owes. The clear is therefore gated on identity — clearing another
-     * waiter's slot here stranded it for good, measured: even the close's
-     * teardown reads only the slot the clear emptied. The message
-     * names the path that emptied the queue, so a refusal report still says
-     * which one.
+     * The one shape of a successful waiter answer, shared by the paths that
+     * resume one — whose relations to the list differ: the report's waiters
+     * already left it at the snapshot, the already-drained arm's caller was
+     * never stored, and only the register's re-check answers a waiter the
+     * list still holds. The removal is by identity, so for the first two it
+     * is deliberately a no-op — an answer that touches nobody else's entry is
+     * the property, not the removal itself. The single slot this replaces was
+     * cleared whole here, and clearing another waiter's slot stranded it for
+     * good, measured. The message names the path that emptied the queue, so
+     * a refusal report still says which one.
      */
     private fun resumeDrainedWaiter(cont: CancellableContinuation<Unit>, what: String) {
-        if (flushContinuation === cont) flushContinuation = null
+        flushWaiters.remove(cont)
         answerFlushWaiter(what) {
             cont.resume(Unit)
         }
@@ -1360,10 +1413,10 @@ class ReadinessIoTransport(
         // is one the loop still runs (its own final drain included), and the
         // wait ends because the transport closed.
         failure = runStage(failure) {
-            flushContinuation?.let { cont ->
-                flushContinuation = null
-                endWaitForClosedTransport(cont, fd, transportFailure)
-            }
+            endFlushWaiters(
+                takeFlushWaiters(),
+                "ending the flush waiter of the closing transport for, while the teardown goes on,",
+            ) { endWaitForClosedTransport(it, fd, transportFailure) }
         }
         // Withdraw the registrations before dropping the fd. The map is keyed by
         // fd number, so one left behind keeps this transport — and the channel
@@ -1460,10 +1513,10 @@ class ReadinessIoTransport(
         var failure: Throwable? = null
         failure = runStage(failure) { releaseAllPendingWrites() }
         failure = runStage(failure) {
-            flushContinuation?.let { cont ->
-                flushContinuation = null
-                endWaitForStoppedLoop(cont, fd, eventLoop.loopFailure())
-            }
+            endFlushWaiters(
+                takeFlushWaiters(),
+                "ending the flush waiter of the stopped loop's transport for, while the teardown goes on,",
+            ) { endWaitForStoppedLoop(it, fd, eventLoop.loopFailure()) }
         }
         closeFdSafely(fd, eventLoop.logger, "transport teardown (loop stopped)")
         failure = runStage(failure) { logTransportStatsOnClose(eventLoop.logger, "fd=$fd") }
@@ -1762,21 +1815,43 @@ class ReadinessIoTransport(
 
     // --- Async write readiness ---
 
-    private var flushContinuation: CancellableContinuation<Unit>? = null
+    /**
+     * Every caller parked in [awaitPendingFlush], in arrival order. Loop
+     * confined, like the ledger it waits on. A list rather than a slot
+     * because nothing in the contract makes the wait exclusive — two
+     * coroutines flushing one channel overlap here naturally — and the slot
+     * this replaces lost one of them: the second park's store evicted the
+     * first, whose hang no answer path could end.
+     *
+     * There is deliberately **no cancellation hook**. The one the slot
+     * installed ran on the cancelling caller's thread — an off-loop write to
+     * loop-confined state — and, being shared, cleared whichever waiter the
+     * slot held. A cancelled waiter stays listed instead, until the next
+     * answer resumes it: `CancellableContinuationImpl.resumeImpl` ignores a
+     * resume attempt on a cancelled continuation (its `CancelledContinuation`
+     * branch — distinct from the double-resume throw), so the answer is a
+     * no-op and the guard around it never fires. Dead entries are swept when
+     * the next waiter parks, on the loop — without that sweep a stalled
+     * socket under a timeout-and-retry flusher grew one retained continuation
+     * per timeout for the connection's life, since no answer ever comes to a
+     * queue nothing drains. Every teardown path still answers and clears the
+     * whole list.
+     */
+    private val flushWaiters = ArrayList<CancellableContinuation<Unit>>(1)
 
     /**
-     * The cancel hook a parked waiter installs, hoisted so the park path pays
-     * one allocation per transport rather than one per await — which is also
-     * why it cannot check identity: a shared hook does not know whose
-     * cancellation fired it. It clears whatever is stored, on the design
-     * assumption of one waiter at a time. Overlapping waiters are a known
-     * pre-existing loss this single slot cannot carry — the second store
-     * evicts the first, and this hook can clear a slot another waiter
-     * occupies — tracked with the flush-waiter contract follow-up; nothing
-     * in the interface forbids the overlap yet. A resumed continuation
-     * never runs its cancel handler.
+     * Takes every parked waiter, leaving none: the caller answers the
+     * snapshot it gets back. Snapshot-and-clear rather than iterate-in-place
+     * because an answer can run user code that parks a new waiter inline —
+     * the newcomer lands on the emptied list for the *next* answer, not in
+     * the middle of this sweep.
      */
-    private val clearFlushWaiter: (Throwable?) -> Unit = { flushContinuation = null }
+    private fun takeFlushWaiters(): List<CancellableContinuation<Unit>> {
+        if (flushWaiters.isEmpty()) return emptyList()
+        val snapshot = flushWaiters.toList()
+        flushWaiters.clear()
+        return snapshot
+    }
 
     /**
      * The register's short-circuit: runs the drain the coalesced tick had
@@ -2045,7 +2120,12 @@ class ReadinessIoTransport(
                         // stored after -- a throw between the two left this
                         // continuation neither stored nor resumed, parked for
                         // good behind whatever guard swallowed it.
-                        flushContinuation = cont
+                        // The park is also where dead entries leave: a
+                        // cancelled waiter's resume is ignored, but its entry
+                        // holds the continuation until something answers, and
+                        // on a stalled socket nothing does — see [flushWaiters].
+                        flushWaiters.removeAll { it.isCancelled }
+                        flushWaiters.add(cont)
                         // If a coalesced flush is already queued to run on the next
                         // EL tick, run it now instead of waiting for the tick to fire.
                         // The awaitFlushComplete path is the backpressure gate under
@@ -2061,10 +2141,9 @@ class ReadinessIoTransport(
                             drainScheduledForWaiter()
                             // Answered by that drain -- resumed, failed by the
                             // funnel, or answered by a containment close?
-                            // Then nothing is parked: skip the cancel hook and
-                            // its per-await allocation, which the common
-                            // drained-inline backpressure path never needs.
-                            if (flushContinuation !== cont) return@Runnable
+                            // Then this caller is no longer listed, and the
+                            // register has nothing left to do for it.
+                            if (cont !in flushWaiters) return@Runnable
                         } else if (drainPoisoned && !eventLoop.hasCallbackRegistration(fd, Interest.WRITE)) {
                             // Queued bytes whose last drain threw, with the
                             // throw contained upstream -- the pipeline's flush
@@ -2078,7 +2157,7 @@ class ReadinessIoTransport(
                             // what keeps every legitimate park (a waiter
                             // arriving before the producer's flush) parked.
                             drainScheduledForWaiter()
-                            if (flushContinuation !== cont) return@Runnable
+                            if (cont !in flushWaiters) return@Runnable
                         }
                         // Re-read before answering anything below: the first
                         // arm's read is stale across a whole drain by now, and
@@ -2092,7 +2171,7 @@ class ReadinessIoTransport(
                         // runs after this task. Answer for the close, inline,
                         // like the arm above.
                         if (!opened) {
-                            flushContinuation = null
+                            flushWaiters.remove(cont)
                             answerFlushWaiter(
                                 "answering the flush waiter of a closing transport for, while the wind-down goes on,",
                             ) {
@@ -2118,7 +2197,9 @@ class ReadinessIoTransport(
                             )
                             return@Runnable
                         }
-                        cont.invokeOnCancellation(clearFlushWaiter)
+                        // No cancellation hook -- see [flushWaiters]: a
+                        // cancelled entry stays until the next answer, whose
+                        // resume the machinery ignores.
                     }
                 }
             }

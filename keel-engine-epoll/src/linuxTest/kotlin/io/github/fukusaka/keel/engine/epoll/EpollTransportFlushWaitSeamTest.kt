@@ -35,9 +35,10 @@ internal class EpollTransportFlushWaitSeamTest : EpollTransportSeamFixture() {
      * does not hang indefinitely.
      *
      * Before the fix, `teardownOnEventLoop` cleared `pendingWrites` but
-     * never touched `flushContinuation`, leaving `awaitPendingFlush`
-     * suspended forever. The fix cancels the continuation so the
-     * caller receives `CancellationException` and can proceed.
+     * never touched the stored flush waiter (then a single continuation
+     * slot, today the `flushWaiters` list), leaving `awaitPendingFlush`
+     * suspended forever. The teardown now answers every parked waiter so
+     * the caller can proceed.
      *
      * The EventLoop is started (pthread) so the dispatched
      * `teardownOnEventLoop` task is actually executed when
@@ -71,7 +72,7 @@ internal class EpollTransportFlushWaitSeamTest : EpollTransportSeamFixture() {
 
         // Close the transport from outside the EventLoop thread; transport.close()
         // dispatches teardownOnEventLoop() to the EventLoop. The EventLoop thread
-        // picks it up, cancels flushContinuation, and awaitJob completes.
+        // picks it up, answers every parked flush waiter, and awaitJob completes.
         // withTimeout guards the test against an infinite hang (the pre-fix bug).
         withTimeout(2000) {
             transport.close()
@@ -104,13 +105,14 @@ internal class EpollTransportFlushWaitSeamTest : EpollTransportSeamFixture() {
      * the continuation is being registered.
      *
      * **The race (pre-fix)**: the check (`pendingWrites.isEmpty()`) and the
-     * store (`flushContinuation = cont`) were both performed off-EL, creating
-     * a TOCTOU window:
+     * store of the waiter (then a single continuation slot, today the
+     * `flushWaiters` list) were both performed off-EL, creating a TOCTOU
+     * window:
      * 1. Caller off-EL: `pendingWrites.isEmpty()` → false (writes pending)
-     * 2. EL: `onReady(WRITE)` → `flush()` succeeds → `flushContinuation` is null
-     *    (cont not yet stored) → no resume; EPOLLOUT removed
-     * 3. Caller off-EL: `flushContinuation = cont` → stored after EL already
-     *    passed its null check → **permanent deadlock**
+     * 2. EL: `onReady(WRITE)` → `flush()` succeeds → no waiter stored yet
+     *    → no resume; EPOLLOUT removed
+     * 3. Caller off-EL: waiter stored after the EL already passed its
+     *    empty check → **permanent deadlock**
      *
      * **The fix**: `awaitPendingFlush` dispatches the check+register lambda to
      * the EventLoop. When the lambda runs on the EL thread, the check and store

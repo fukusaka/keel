@@ -30,6 +30,11 @@ import kotlin.concurrent.AtomicReference
 // flake on CI runners under load.
 internal const val IO_OP_TIMEOUT_MS = 5_000L
 
+// Longer bound for large-payload flush scenarios where write back-pressure
+// plus coroutine dispatch can legitimately push past IO_OP_TIMEOUT_MS on
+// loaded runners; mirrors the NIO suite's constant of the same name.
+internal const val IO_OP_LONG_TIMEOUT_MS = 10_000L
+
 // Shorter variant for ops expected to complete quickly on the happy
 // path (e.g. a read that should already have data queued).
 internal const val IO_OP_SHORT_TIMEOUT_MS = 3_000L
