@@ -82,6 +82,37 @@ internal class TransportArmFailureSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a re-arm that fails after the drain armed is settled like the drain's own refusal`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The one raise performFlush's funnel never sees: the obligation
+            // group's re-arm runs after the drain returned, so a refusal
+            // there escaped the direct flush() with the waiter still parked
+            // and nothing recorded -- the stranding this file exists to end,
+            // resurfacing one frame up. Found by independent review of this
+            // branch's second shape. The drain's own arm succeeds and only
+            // the repeat fails, which is what keeps this refusal out of the
+            // drain's catch and in the group's hands.
+            fake.enqueueWrite(fd, WriteResult.WouldBlock)
+            val transport = transport()
+            var inactive = false
+            transport.onReadClosed = { inactive = true }
+            transport.write(tracker.allocate(16).apply { writerIndex = 8 })
+            val parked = parkFlushWaiter(transport)
+            eventLoop.onArmCallback = { eventLoop.failArmCallback = true }
+
+            assertFailsWith<RefusedWriteException>("the group raises like every funnel exit") {
+                transport.flush()
+            }
+
+            val told = parked.await().exceptionOrNull()
+            assertIs<Throwable>(told, "the parked waiter must be told, not left for the close: $told")
+            assertTrue(inactive, "the pipeline hears the end; nothing else would ever say it")
+            assertFalse(transport.isOpen, "bytes with no future leave nothing to send on")
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `an arm failing in the read re-enable ends the connection instead of escaping the setter`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The one armRead caller outside a read frame: the accept hand-off
