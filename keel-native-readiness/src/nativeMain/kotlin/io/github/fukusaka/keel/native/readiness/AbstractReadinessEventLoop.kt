@@ -2305,13 +2305,12 @@ abstract class AbstractReadinessEventLoop :
         err: Int,
     ): Throwable? {
         if (!withRegLock { popCallbackIfCurrent(key, listener) }) return null
-        logger.error {
-            "$syscall(fd=$fd, ${interest.name}) for callback failed: " +
-                "${errnoMessage(err)} — readiness callback will not fire"
-        }
-        return IllegalStateException(
-            "$syscall(fd=$fd, ${interest.name}) for callback failed: ${errnoMessage(err)}",
-        )
+        // One copy: the log line and the returned failure must keep saying
+        // the same thing, and the exception's copy is built unconditionally
+        // anyway, so there is nothing for the log gate to save.
+        val reason = "$syscall(fd=$fd, ${interest.name}) for callback failed: ${errnoMessage(err)}"
+        logger.error { "$reason — readiness callback will not fire" }
+        return IllegalStateException(reason)
     }
 
     /**
