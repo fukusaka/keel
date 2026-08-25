@@ -1066,19 +1066,13 @@ class ReadinessIoTransport(
             // register eagerly drain a later, unrelated write its producer
             // has not flushed yet.
             drainPoisoned = pendingWrites.isNotEmpty()
-            // The FIN report's own failure is attached before the waiter is
-            // answered, for the same reason the answer below is deferred: the
-            // instance handed to the waiter must not be appended to after it
-            // is published.
-            runStage(drainFailure) { reportAbandonedFin() }
-            // Before the connection ends, not after: failFlushWaiter declines
-            // once `opened` is false, so answering has to happen while this
-            // transport still counts as live.
-            failFlushWaiter(drainFailure)
+            // Recorded ahead of the answering: recordDrainOutcome only
+            // updates the blocked-run counters, so taking the ledger row
+            // before the waiters hear anything changes nothing they observe.
             recordDrainOutcome(drainMovedBytes)
             drainMovedBytes = enclosingMovedBytes
             if (drainFailure is RefusedWriteException) {
-                settleRefusedSend(drainFailure)
+                answerRefusedSend(drainFailure)
                 // A refusal the settlement stays quiet about -- the caller is
                 // closing, the connection's reason is already the earlier
                 // refusal, or the inactive already went out -- rethrows
@@ -1089,9 +1083,35 @@ class ReadinessIoTransport(
                 // head's swallow -- the one frame that silences -- warns for
                 // an unreported rider, in the log and never by re-entering
                 // handlers. Naming them here as well reported one leak twice.
+            } else {
+                // The refusal helper's first two steps, in its order — the
+                // FIN report is attached before the waiter is handed the
+                // instance, and the waiter is answered while the transport
+                // still counts as live. Only the settlement itself is
+                // refusal-specific.
+                runStage(drainFailure) { reportAbandonedFin() }
+                failFlushWaiter(drainFailure)
             }
             throw drainFailure
         }
+    }
+
+    /**
+     * The whole answer to a refused send, in the order that cannot be
+     * shuffled: the abandoned-FIN report is attached before the waiters are
+     * answered — the instance handed to a waiter must not be appended to
+     * after it is published — and the waiters are answered before
+     * [settleRefusedSend] ends the connection, because [failFlushWaiter]
+     * declines once `opened` is false. Both frames that meet a refusal call
+     * this and rethrow after: [performFlush]'s funnel for one met inside the
+     * drain, [drainAndNotifyIfComplete]'s obligation group for its own
+     * re-arm. One body, so a frame added later cannot inherit the steps
+     * without the order.
+     */
+    private fun answerRefusedSend(refusal: RefusedWriteException) {
+        runStage(refusal) { reportAbandonedFin() }
+        failFlushWaiter(refusal)
+        settleRefusedSend(refusal)
     }
 
     /**
@@ -1102,9 +1122,10 @@ class ReadinessIoTransport(
      * funnel settles a refusal met inside the drain, and
      * [drainAndNotifyIfComplete]'s obligation group settles the one raise the
      * funnel never sees — its own re-arm, which runs after the drain
-     * returned. Both frames answer the parked waiters and report the
-     * abandoned FIN before calling here, and both rethrow after: the
-     * settlement is what happens on the way out, never instead of the raise.
+     * returned. Both reach it through [answerRefusedSend], which reports the
+     * abandoned FIN and answers the parked waiters first, and both rethrow
+     * after: the settlement is what happens on the way out, never instead of
+     * the raise.
      */
     private fun settleRefusedSend(refusal: RefusedWriteException) {
         // The write side is finished, and which path met the refusal is not
@@ -2119,19 +2140,17 @@ class ReadinessIoTransport(
                 // nothing recorded and nothing left to drive the queue again
                 // -- the same stranding the raise exists to end, reachable
                 // under the coalescing opt-out where this frame is the only
-                // containment. So it is settled the way the drain's own
-                // refusal is: the FIN it can no longer keep reported, the
-                // waiters answered, the reason recorded and the connection
-                // ended -- then raised, as every funnel exit raises. A
-                // refusal riding *suppressed* under an earlier stage failure
-                // is not settled here: the primary failure owns this frame
-                // and its caller's containment, which keeps this check one
-                // type test -- the double-failure edge is tracked with the
-                // other suppressed-rider edges.
+                // containment. So it takes the helper the drain's refusal
+                // takes: the FIN it can no longer keep reported, the waiters
+                // answered, the reason recorded and the connection ended --
+                // then raised, as every funnel exit raises. A refusal riding
+                // *suppressed* under an earlier stage failure is not settled
+                // here: the primary failure owns this frame and its caller's
+                // containment, which keeps this check one type test -- the
+                // double-failure edge is tracked with the other
+                // suppressed-rider edges.
                 if (groupFailure is RefusedWriteException) {
-                    runStage(groupFailure) { reportAbandonedFin() }
-                    failFlushWaiter(groupFailure)
-                    settleRefusedSend(groupFailure)
+                    answerRefusedSend(groupFailure)
                 }
                 throw groupFailure
             }
