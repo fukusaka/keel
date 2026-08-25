@@ -706,15 +706,15 @@ class ReadinessIoTransport(
         eventLoop.registerCallback(fd, Interest.READ, this)?.let { armFailure ->
             // The read twin of the raise in [registerWriteCallback]: a
             // connection whose READ arm was withdrawn hears nothing ever
-            // again — no bytes, no EOF, no error. Every armRead caller sits
-            // inside a containment that ends the connection with the reason —
-            // the read frames through [onReady]'s, the [readEnabled] setter
-            // through its own — which is exactly what a permanently deaf
-            // connection needs.
-            throw IllegalStateException(
-                "the readiness arm for read failed; this connection can never hear again",
-                armFailure,
-            )
+            // again — no bytes, no EOF, no error. Raised as itself, not
+            // wrapped — the write twin's wrapper type is what routes it into
+            // the refused-send pipeline, but nothing catching an armRead
+            // failure dispatches on a type: every caller sits inside a
+            // containment that ends the connection with any failure — the
+            // read frames through [onReady]'s, the [readEnabled] setter
+            // through its own — and the failure already names the syscall,
+            // fd, interest and errno.
+            throw armFailure
         }
     }
 
