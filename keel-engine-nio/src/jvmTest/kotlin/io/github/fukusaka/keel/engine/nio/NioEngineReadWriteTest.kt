@@ -4,9 +4,11 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.core.IoEngineConfig
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class NioEngineReadWriteTest {
 
@@ -441,6 +443,88 @@ class NioEngineReadWriteTest {
         assertEquals("hello", echo)
 
         serverCh.close()
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `two coroutines awaiting one flush are both resumed when it drains`() = runTest {
+        // The waiter ledger was once a single slot, and the second park's
+        // store evicted the first — a permanent hang, since every answer
+        // path read only the slot. The exhaustive mechanism coverage lives
+        // in the readiness transport's seam tests; this pins the same
+        // contract through this engine's real sockets: nothing makes the
+        // wait exclusive, so an overlap must lose neither caller.
+        val engine = NioEngine()
+        val server = engine.bind(LOOPBACK_HOST, 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        // Far beyond the loopback socket buffers, and no reader yet: the
+        // flush cannot complete before both waiters have parked.
+        val payloadSize = 4 * 1024 * 1024
+        val writeBuf = DefaultAllocator.allocate(payloadSize)
+        repeat(payloadSize) { writeBuf.writeByte((it % 256).toByte()) }
+        ch.write(writeBuf)
+
+        val first = async { withTimeout(IO_OP_LONG_TIMEOUT_MS) { ch.flush() } }
+        val second = async { withTimeout(IO_OP_LONG_TIMEOUT_MS) { ch.flush() } }
+
+        // Drain the peer so the flush can complete.
+        val reader = async {
+            val buf = ByteArray(64 * 1024)
+            var total = 0
+            val input = client.getInputStream()
+            while (total < payloadSize) {
+                val n = input.read(buf)
+                if (n < 0) break
+                total += n
+            }
+            total
+        }
+
+        first.await()
+        second.await()
+        assertEquals(payloadSize, withTimeout(IO_OP_LONG_TIMEOUT_MS) { reader.await() })
+
+        ch.close()
+        client.close()
+        server.close()
+        engine.close()
+    }
+
+    @Test
+    fun `a close over parked flush waiters answers them all`() = runTest {
+        // The teardown once answered nobody: a waiter parked over undrained
+        // bytes outlived its transport's close for good. Both waiters must
+        // come back -- with a failure, since the flush they waited for did
+        // not happen -- rather than hang.
+        val engine = NioEngine()
+        val server = engine.bind(LOOPBACK_HOST, 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val client = connectRawClient(port)
+        val ch = server.accept()
+
+        val payloadSize = 4 * 1024 * 1024
+        val writeBuf = DefaultAllocator.allocate(payloadSize)
+        repeat(payloadSize) { writeBuf.writeByte((it % 256).toByte()) }
+        ch.write(writeBuf)
+
+        val first = async { runCatching { ch.flush() } }
+        val second = async { runCatching { ch.flush() } }
+        // Give both callers time to park; one arriving after the close is
+        // answered by the entry check instead, which is the same promise.
+        delay(200)
+
+        ch.close()
+
+        assertTrue(first.await().isFailure, "the close must answer the first waiter, and not with a completion")
+        assertTrue(second.await().isFailure, "and the second -- the teardown answers them all")
+
         client.close()
         server.close()
         engine.close()

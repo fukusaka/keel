@@ -7,10 +7,12 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.buf.UnsafeIoBufApi
 import io.github.fukusaka.keel.buf.unsafeBuffer
 import io.github.fukusaka.keel.core.IdleReadPolicy
+import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport
 import io.github.fukusaka.keel.pipeline.AbstractIoTransport.PendingWrite
 import io.github.fukusaka.keel.pipeline.EventLoopTimer
 import io.github.fukusaka.keel.pipeline.IoTransport
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -321,10 +323,7 @@ internal class NioIoTransport(
                 transport.flushScheduled = false
                 val done = transport.performFlush()
                 if (done && transport.pendingWrites.isEmpty()) {
-                    transport.flushContinuation?.let { cont ->
-                        transport.flushContinuation = null
-                        cont.resume(Unit)
-                    }
+                    transport.resumeFlushWaiters(transport.takeFlushWaiters())
                     transport.onFlushComplete?.invoke()
                     transport.sendFinIfDrained()
                 }
@@ -390,6 +389,22 @@ internal class NioIoTransport(
         for (pw in pendingWrites) pw.buf.release()
         pendingWrites.clear()
         pendingBytes = 0
+        // Unblock every caller suspended in awaitPendingFlush(): the data is
+        // gone, and nothing after this teardown drains again. Cancellation
+        // rather than a completion — the flush these callers waited for did
+        // not happen. Guarded per waiter, so one refusal cannot strand the
+        // waiters behind it nor abort the channel close below. Before this
+        // stage the teardown answered nobody, and a parked waiter outlived
+        // its transport's close for good.
+        for (cont in takeFlushWaiters()) {
+            try {
+                cont.cancel()
+            } catch (refusal: Throwable) {
+                eventLoop.logger.error(refusal) {
+                    "cancelling a flush waiter on teardown threw; nothing can reach that waiter, the teardown goes on"
+                }
+            }
+        }
         selectionKey.cancel()
         logTransportStatsOnClose(eventLoop.logger, "channel=$socketChannel")
         if (socketChannel.isOpen) socketChannel.close()
@@ -484,7 +499,60 @@ internal class NioIoTransport(
         return false
     }
 
-    private var flushContinuation: kotlinx.coroutines.CancellableContinuation<Unit>? = null
+    /**
+     * Every caller parked in [awaitPendingFlush], in arrival order. Loop
+     * confined. A list rather than a slot because nothing in the contract
+     * makes the wait exclusive — two coroutines flushing one channel overlap
+     * here naturally — and a slot loses one of them: the second park's store
+     * evicts the first, whose hang no answer path can end. No cancellation
+     * hook, deliberately: the hook ran on the cancelling caller's thread (an
+     * off-loop write to loop-confined state), and a cancelled waiter's entry
+     * is answered harmlessly instead — the coroutine machinery ignores a
+     * resume attempt on a cancelled continuation — and swept out when the
+     * next waiter parks, so a timeout-and-retry flusher on a stalled socket
+     * cannot grow the list. Same design as the readiness transport's list;
+     * the contract is shared.
+     */
+    private val flushWaiters = ArrayList<CancellableContinuation<Unit>>(1)
+
+    /**
+     * Parks one waiter. A named seam rather than an inline `add` because
+     * detekt 1.23.8's type resolution crashes analysing the add inside the
+     * suspend builder's register (`findPackage`, message null) — measured by
+     * bisection; the call shape is the workaround, not a design point.
+     */
+    private fun parkFlushWaiter(cont: CancellableContinuation<Unit>) {
+        flushWaiters.removeAll { it.isCancelled }
+        flushWaiters.add(cont)
+    }
+
+    /**
+     * Resumes every waiter in [snapshot], one guard per waiter: the resume
+     * rides each waiter's dispatcher, which can refuse it, and the snapshot
+     * is already taken — an unguarded throw would abort the loop, strand
+     * every waiter behind the refusal, and skip the completion duties the
+     * caller runs after this.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun resumeFlushWaiters(snapshot: List<CancellableContinuation<Unit>>) {
+        for (cont in snapshot) {
+            try {
+                cont.resume(Unit)
+            } catch (refusal: Throwable) {
+                eventLoop.logger.error(refusal) {
+                    "resuming a drained flush waiter threw; nothing can reach that waiter, the rest go on"
+                }
+            }
+        }
+    }
+
+    /** Takes every parked waiter, leaving none; the caller answers the snapshot. */
+    private fun takeFlushWaiters(): List<CancellableContinuation<Unit>> {
+        if (flushWaiters.isEmpty()) return emptyList()
+        val snapshot = flushWaiters.toList()
+        flushWaiters.clear()
+        return snapshot
+    }
 
     /** Registers OP_WRITE callback on the EventLoop to retry flush when the socket becomes writable. */
     private fun registerWriteCallback() {
@@ -498,10 +566,7 @@ internal class NioIoTransport(
             Runnable {
                 val done = flush()
                 if (done) {
-                    flushContinuation?.let { cont ->
-                        flushContinuation = null
-                        cont.resume(Unit)
-                    }
+                    resumeFlushWaiters(takeFlushWaiters())
                     onFlushComplete?.invoke()
                     sendFinIfDrained()
                 }
@@ -540,8 +605,7 @@ internal class NioIoTransport(
                                 return@Runnable
                             }
                         }
-                        flushContinuation = cont
-                        cont.invokeOnCancellation { flushContinuation = null }
+                        parkFlushWaiter(cont)
                     }
                 }
             }
