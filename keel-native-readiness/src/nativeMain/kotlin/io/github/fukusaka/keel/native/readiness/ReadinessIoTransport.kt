@@ -162,7 +162,9 @@ class ReadinessIoTransport(
      * on the same thread with the same nothing above it, and letting that one
      * fall through to the backstop in the event loop leaves the connection
      * open in CLOSE-WAIT holding its descriptor -- the loop survives, and the
-     * fd is never released by anybody.
+     * fd is never released by anybody. One caller is not the dispatch's: the
+     * [readEnabled] setter wraps its re-arm here, and its frames are
+     * loop-dispatched tasks, so the rule below still holds for it.
      *
      * [what] names the work being handled — one of the `WHAT_*` constants, so
      * this per-event path allocates nothing building it: the message is built
@@ -583,7 +585,17 @@ class ReadinessIoTransport(
                 // applies (accept-to-first-byte, slowloris, keep-alive idle). A
                 // write-only client that never enables reads is never idle-timed.
                 armIdleTimeout()
-                armRead()
+                // Contained here, because this is the one armRead caller that
+                // is not already inside a read frame's containment: the setter
+                // runs from the accept hand-off and from Channel-mode read
+                // re-enables, and a raise escaping either leaves the
+                // connection open, deaf, and reported to nobody — measured, a
+                // multi-loop accept hand-off parked it that way for good. The
+                // containment ends the connection with the reason instead,
+                // like every other frame that meets this raise.
+                containReadinessFailure(WHAT_READ_REENABLE) {
+                    armRead()
+                }
             } else if (!value) {
                 // Back-pressure: pause the idle timeout while the app deliberately
                 // stops reading, rather than close a connection we asked to go quiet.
@@ -691,7 +703,19 @@ class ReadinessIoTransport(
 
     private fun armRead() {
         if (!opened) return
-        eventLoop.registerCallback(fd, Interest.READ, this)
+        eventLoop.registerCallback(fd, Interest.READ, this)?.let { armFailure ->
+            // The read twin of the raise in [registerWriteCallback]: a
+            // connection whose READ arm was withdrawn hears nothing ever
+            // again — no bytes, no EOF, no error. Raised as itself, not
+            // wrapped — the write twin's wrapper type is what routes it into
+            // the refused-send pipeline, but nothing catching an armRead
+            // failure dispatches on a type: every caller sits inside a
+            // containment that ends the connection with any failure — the
+            // read frames through [onReady]'s, the [readEnabled] setter
+            // through its own — and the failure already names the syscall,
+            // fd, interest and errno.
+            throw armFailure
+        }
     }
 
     private fun onReadable() {
@@ -1042,74 +1066,14 @@ class ReadinessIoTransport(
             // register eagerly drain a later, unrelated write its producer
             // has not flushed yet.
             drainPoisoned = pendingWrites.isNotEmpty()
-            // The FIN report's own failure is attached before the waiter is
-            // answered, for the same reason the answer below is deferred: the
-            // instance handed to the waiter must not be appended to after it
-            // is published.
-            runStage(drainFailure) { reportAbandonedFin() }
-            // Before the connection ends, not after: failFlushWaiter declines
-            // once `opened` is false, so answering has to happen while this
-            // transport still counts as live.
-            failFlushWaiter(drainFailure)
+            // Recorded ahead of the answering: recordDrainOutcome only
+            // updates the blocked-run counters, so taking the ledger row
+            // before the waiters hear anything changes nothing they observe.
             recordDrainOutcome(drainMovedBytes)
             drainMovedBytes = enclosingMovedBytes
             if (drainFailure is RefusedWriteException) {
-                // The write side is finished, and which path ran the drain is
-                // not something a caller chooses -- so it cannot be what
-                // decides whether the connection survives. Gated on `opened`
-                // because a teardown's own deferred drain arrives here with
-                // the connection already ending: starting a second wind-down
-                // there would run an application callback inside the close,
-                // and its throw would ride out on this failure as though the
-                // teardown had left something undone. The loop-driven
-                // entries reach the same end through their containment; this
-                // makes the direct callers reach it too, and the second call
-                // is a no-op because `markClosing` flips `opened` once.
-                //
-                // Recorded first: a later waiter has no queue left to inspect
-                // -- the refusal discarded it -- so the reason is the only
-                // thing that can tell it what happened.
-                val firstFailure = transportFailure == null
-                // The record is gated on being first, not on `opened`: a
-                // teardown's own deferred drain arrives with the connection
-                // already ending and still owes the late waiter this reason
-                // -- while a refusal met after the connection already had a
-                // reason must not overwrite it. Two arrive that way: one met
-                // *inside* the report below, where a handler answers the
-                // error by writing to the same dead peer, and one met by a
-                // wind-down the loop's containment started, where the reason
-                // is what it contained.
-                if (firstFailure) transportFailure = drainFailure
-                if (opened && firstFailure) {
-                    // The reason before the end, per the pipeline contract:
-                    // `onInactive` is the handler's cue to clean up, and a
-                    // reason delivered after the cleanup reaches nobody who
-                    // can act on it. Gated on `opened` -- a caller-asked
-                    // close is not an error to report -- and on being the
-                    // first failure, which is what makes the report
-                    // at-most-once: the handler runs while this transport
-                    // still accepts writes, and one that answers the error
-                    // by sending re-enters this drain synchronously under
-                    // the coalescing opt-out. Without the gate that nested
-                    // refusal would re-enter the handler too, and a handler
-                    // that always answers would recurse until the loop's
-                    // stack ran out. (The callback is user code -- a seam;
-                    // its containment lives with the helper.)
-                    //
-                    // The end can also precede the refusal: a peer FIN
-                    // reports the inactive first, and a handler that answers
-                    // its own `onInactive` with a final flush meets the dead
-                    // peer afterwards, with `opened` still true because the
-                    // channel's auto-close runs after the inactive report
-                    // returns. Reporting there would put the reason after the
-                    // end it is contracted to precede -- so a refusal met
-                    // once the inactive has gone out stays quiet toward the
-                    // pipeline. The wait is still answered with it above, and
-                    // a rider still reaches the head's check.
-                    if (!inactiveAlreadyReported) reportRefusalToPipeline(drainFailure)
-                    endConnectionAfterFailure(drainFailure)
-                }
-                // A refusal this branch stays quiet about -- the caller is
+                answerRefusedSend(drainFailure)
+                // A refusal the settlement stays quiet about -- the caller is
                 // closing, the connection's reason is already the earlier
                 // refusal, or the inactive already went out -- rethrows
                 // below carrying whatever rode along.
@@ -1119,8 +1083,107 @@ class ReadinessIoTransport(
                 // head's swallow -- the one frame that silences -- warns for
                 // an unreported rider, in the log and never by re-entering
                 // handlers. Naming them here as well reported one leak twice.
+            } else {
+                // The refusal helper's first two steps, in its order — the
+                // FIN report is attached before the waiter is handed the
+                // instance, and the waiter is answered while the transport
+                // still counts as live. Only the settlement itself is
+                // refusal-specific.
+                runStage(drainFailure) { reportAbandonedFin() }
+                failFlushWaiter(drainFailure)
             }
             throw drainFailure
+        }
+    }
+
+    /**
+     * The whole answer to a refused send, in the order the frames rely on:
+     * the abandoned-FIN report is attached before the waiters are answered —
+     * the instance handed to a waiter must not be appended to after it is
+     * published — and the waiters are answered before [settleRefusedSend]
+     * ends the connection, because [failFlushWaiter] declines once `opened`
+     * is false. Shuffling the last two strands nobody — the close teardown's
+     * waiter stage answers whoever is left with the recorded refusal — but
+     * it hands the answer's ownership to the teardown, trading
+     * [failFlushWaiter]'s dispatched resume for the teardown's inline one
+     * and silently losing the deferred publication the dispatch exists
+     * for. Both frames that meet a refusal call this and rethrow
+     * after: [performFlush]'s funnel for one met inside the drain,
+     * [drainAndNotifyIfComplete]'s obligation group for its own re-arm. One
+     * body, so a frame added later cannot inherit the steps without the
+     * order.
+     */
+    private fun answerRefusedSend(refusal: RefusedWriteException) {
+        runStage(refusal) { reportAbandonedFin() }
+        failFlushWaiter(refusal)
+        settleRefusedSend(refusal)
+    }
+
+    /**
+     * The refused-send settlement: records the reason for the late waiters,
+     * reports it to the pipeline and ends the connection — each at most once.
+     *
+     * Two frames call it, and the pairing is the point: [performFlush]'s
+     * funnel settles a refusal met inside the drain, and
+     * [drainAndNotifyIfComplete]'s obligation group settles the one raise the
+     * funnel never sees — its own re-arm, which runs after the drain
+     * returned. Both reach it through [answerRefusedSend], which reports the
+     * abandoned FIN and answers the parked waiters first, and both rethrow
+     * after: the settlement is what happens on the way out, never instead of
+     * the raise.
+     */
+    private fun settleRefusedSend(refusal: RefusedWriteException) {
+        // The write side is finished, and which path met the refusal is not
+        // something a caller chooses -- so it cannot be what decides whether
+        // the connection survives. Gated on `opened` because a teardown's
+        // own deferred drain arrives here with the connection already
+        // ending: starting a second wind-down there would run an application
+        // callback inside the close, and its throw would ride out on this
+        // failure as though the teardown had left something undone. The
+        // loop-driven entries reach the same end through their containment;
+        // this makes the direct callers reach it too, and the second call
+        // is a no-op because `markClosing` flips `opened` once.
+        //
+        // Recorded first: a later waiter has no queue left to inspect --
+        // the drain's refusal discarded it on the spot, the re-arm's dies
+        // with the connection this settlement ends -- so the reason is the
+        // only thing that can tell it what happened.
+        val firstFailure = transportFailure == null
+        // The record is gated on being first, not on `opened`: a teardown's
+        // own deferred drain arrives with the connection already ending and
+        // still owes the late waiter this reason -- while a refusal met
+        // after the connection already had a reason must not overwrite it.
+        // Two arrive that way: one met *inside* the report below, where a
+        // handler answers the error by writing to the same dead peer, and
+        // one met by a wind-down the loop's containment started, where the
+        // reason is what it contained.
+        if (firstFailure) transportFailure = refusal
+        if (opened && firstFailure) {
+            // The reason before the end, per the pipeline contract:
+            // `onInactive` is the handler's cue to clean up, and a reason
+            // delivered after the cleanup reaches nobody who can act on it.
+            // Gated on `opened` -- a caller-asked close is not an error to
+            // report -- and on being the first failure, which is what makes
+            // the report at-most-once: the handler runs while this transport
+            // still accepts writes, and one that answers the error by
+            // sending re-enters the drain synchronously under the coalescing
+            // opt-out. Without the gate that nested refusal would re-enter
+            // the handler too, and a handler that always answers would
+            // recurse until the loop's stack ran out. (The callback is user
+            // code -- a seam; its containment lives with the helper.)
+            //
+            // The end can also precede the refusal: a peer FIN reports the
+            // inactive first, and a handler that answers its own
+            // `onInactive` with a final flush meets the dead peer
+            // afterwards, with `opened` still true because the channel's
+            // auto-close runs after the inactive report returns. Reporting
+            // there would put the reason after the end it is contracted to
+            // precede -- so a refusal met once the inactive has gone out
+            // stays quiet toward the pipeline. The wait is still answered
+            // with it by the caller, and a rider still reaches the head's
+            // check.
+            if (!inactiveAlreadyReported) reportRefusalToPipeline(refusal)
+            endConnectionAfterFailure(refusal)
         }
     }
 
@@ -1755,12 +1818,15 @@ class ReadinessIoTransport(
      * a wake the tick has already made stale.
      *
      * The arm's own failure joins the one being raised rather than replacing
-     * it. That path is nearly unreachable — a kernel arm that fails is
-     * reported and withdrawn inside the event loop rather than raised — but
-     * "nearly" is not a contract, and the cost of saying it here is one
-     * `runStage`. **Note what that leaves**: a silently-withdrawn arm strands
-     * the remainder just the same. The event loop's ERROR report is the only
-     * signal, and closing that gap belongs with the arm, not here.
+     * it: [registerWriteCallback] raises a failed arm as a refused send, and
+     * `runStage` folds that refusal in as a rider on the failure already
+     * leaving. A rider rather than a settlement, deliberately — the primary
+     * failure owns this frame: the funnel's catch has already answered the
+     * waiters with it, and its catchers own what happens next, so the
+     * refusal stays where the head's check and the re-raises can name it.
+     * What the rider does not do is run the refused-send pipeline itself —
+     * that double-failure edge is tracked with the other suppressed-rider
+     * edges.
      */
     private fun raiseLeavingRemainderArmed(failure: Throwable): Nothing {
         if (pendingWrites.isEmpty() || flushScheduled) throw failure
@@ -1898,7 +1964,26 @@ class ReadinessIoTransport(
         // receive window — start the write-idle (slow-read) clock. Drain progress
         // refreshes it and a full drain cancels it, both via updatePendingBytes.
         armWriteIdleTimeout()
-        eventLoop.registerCallback(fd, Interest.WRITE, this)
+        eventLoop.registerCallback(fd, Interest.WRITE, this)?.let { armFailure ->
+            // The arm was withdrawn: no readiness event will ever drive this
+            // queue again, so the bytes it holds can never reach the peer —
+            // which is a refused send, not a blocked one. Raised as such, it
+            // rides the refused-send pipeline every caller frame already has:
+            // the drain's failure handling answers the waiters with the
+            // reason, records it for the late ones, reports the connection
+            // inactive once, and ends it — with no FIN over the truncated
+            // stream. The suspend arm's sibling has failed its waiter this
+            // way all along (`submitArm` → `failUnarmedWaiter`); this is the
+            // callback arm reaching parity. Ending — rather than retrying —
+            // is deliberate: the errnos are misuse or kernel exhaustion, and
+            // a retry has no driver left to schedule it, so it would be a
+            // timer loop hiding the same hang.
+            throw RefusedWriteException(
+                "the readiness arm for the send's retry failed; " +
+                    "the ${pendingByteCount()} pending bytes can never reach the peer",
+                armFailure,
+            )
+        }
     }
 
     /** write readiness callback body — invoked via [onReady] when [Interest.WRITE] fires. */
@@ -2053,7 +2138,27 @@ class ReadinessIoTransport(
             if (pendingWrites.isNotEmpty() && !flushScheduled) {
                 failure = runStage(failure) { registerWriteCallback() }
             }
-            failure?.let { throw it }
+            failure?.let { groupFailure ->
+                // The re-arm above is the one refusal [performFlush]'s funnel
+                // never sees: it runs after the drain returned. Unsettled, it
+                // escaped a direct `flush()` with the waiters still parked,
+                // nothing recorded and nothing left to drive the queue again
+                // -- the same stranding the raise exists to end, reachable
+                // under the coalescing opt-out where this frame is the only
+                // containment. So it takes the helper the drain's refusal
+                // takes: the FIN it can no longer keep reported, the waiters
+                // answered, the reason recorded and the connection ended --
+                // then raised, as every funnel exit raises. A refusal riding
+                // *suppressed* under an earlier stage failure is not settled
+                // here: the primary failure owns this frame and its caller's
+                // containment, which keeps this check one type test -- the
+                // double-failure edge is tracked with the other
+                // suppressed-rider edges.
+                if (groupFailure is RefusedWriteException) {
+                    answerRefusedSend(groupFailure)
+                }
+                throw groupFailure
+            }
             return emptied
         } finally {
             draining = false
@@ -2293,6 +2398,10 @@ class ReadinessIoTransport(
         // [containReadinessFailure] labels — constants so the per-event
         // dispatch path builds no strings outside the gated log lambda.
         private const val WHAT_READ_READINESS = "readiness for READ"
+
+        /** The containment label for the read re-enable's arm, see [readEnabled]. */
+        private const val WHAT_READ_REENABLE = "re-enabling read"
+
         private const val WHAT_WRITE_READINESS = "readiness for WRITE"
         private const val WHAT_PEER_CLOSE = "the peer close"
         private const val WHAT_DEFERRED_FLUSH = "the deferred flush"

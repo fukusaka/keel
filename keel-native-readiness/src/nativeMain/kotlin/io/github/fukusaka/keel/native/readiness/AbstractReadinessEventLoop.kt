@@ -591,14 +591,16 @@ abstract class AbstractReadinessEventLoop :
      * **A failed arm** goes to [withdrawFailedCallbackArm], which is where the
      * two copies of this drifted apart before — epoll discarded the errno while
      * kqueue withdrew and logged. An implementation passes the errno and the name
-     * of the syscall that produced it.
+     * of the syscall that produced it, **and returns what the withdrawal
+     * returns**: the failure for the caller whose retry just vanished, or null
+     * when the arm took (or the failed listener was already superseded).
      */
     protected abstract fun submitArmCallback(
         fd: Int,
         interest: Interest,
         key: Long,
         listener: FdReadyListener,
-    )
+    ): Throwable?
 
     /**
      * Runs everything queued on this loop's task queue, until it is empty.
@@ -1810,9 +1812,16 @@ abstract class AbstractReadinessEventLoop :
      *
      * **Thread safety**: safe from any thread. Off the loop the arm is queued.
      *
-     * **A registration arriving after the loop has stopped is refused**, and the
-     * refusal is silent to the caller — nothing is appended, no arm is issued,
-     * and there is no return value to check. What the caller gets instead is a
+     * **Returns the arm's failure, or `null`.** A failed on-loop arm is
+     * withdrawn and its failure handed back, so the caller's own frame can
+     * act on a listener that will never fire; a dispatched off-loop arm has
+     * no frame to answer and returns `null` — see [armRegisteredCallback]
+     * for what that leaves.
+     *
+     * **A registration arriving after the loop has stopped is refused**, and
+     * the refusal answers `null` too — nothing is appended and no arm is
+     * issued, but deliberately no failure either: the sweep owns that answer
+     * channel (see the branch's comment below). What the caller gets instead is a
      * WARN naming the fd and interest, because a listener refused here is one
      * that will never fire. Whether anyone was *told* is the registry's
      * business, not this ledger's: a transport that joined as a
@@ -1825,7 +1834,7 @@ abstract class AbstractReadinessEventLoop :
      * `armRead()` registers again on every wake — so the ledger holds one
      * listener per key by design, not one per registrant.
      */
-    fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener) {
+    fun registerCallback(fd: Int, interest: Interest, listener: FdReadyListener): Throwable? {
         val key = registrationKey(fd, interest)
         val appended = withRegLock {
             if (ledgersClosed) {
@@ -1851,9 +1860,13 @@ abstract class AbstractReadinessEventLoop :
                 "${this::class.simpleName}.registerCallback: EventLoop stopped — refusing " +
                     "fd=$fd ${interest.name}; this listener will not fire"
             }
-            return
+            // Null rather than the refusal: the sweep has told (or is telling)
+            // this participant the loop stopped, which is the answer channel a
+            // stopped loop owns -- returning a second one here is what invited
+            // the re-register recursion this branch's comment recounts.
+            return null
         }
-        armRegisteredCallback(fd, interest, key, listener)
+        return armRegisteredCallback(fd, interest, key, listener)
     }
 
     /**
@@ -1935,17 +1948,26 @@ abstract class AbstractReadinessEventLoop :
      * would be a lock acquisition every connection pays on every wake to prove
      * something already true.
      */
-    private fun armRegisteredCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
+    private fun armRegisteredCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener): Throwable? {
         if (inEventLoop()) {
-            submitArmCallback(fd, interest, key, listener)
-        } else {
-            val armIfStillRegistered = Runnable {
-                if (withRegLock { isCallbackRegistered(key, listener) }) {
-                    submitArmCallback(fd, interest, key, listener)
-                }
-            }
-            dispatch(EmptyCoroutineContext, armIfStillRegistered)
+            return submitArmCallback(fd, interest, key, listener)
         }
+        val armIfStillRegistered = Runnable {
+            if (withRegLock { isCallbackRegistered(key, listener) }) {
+                // A failure here has no caller frame to return into -- the
+                // withdrawal's ERROR log is the report, as it was for every
+                // arm before the chain learned to answer. The off-loop arms
+                // in this tree are the server's initial accept arm and the
+                // initial read arms made through joinLoop off the worker
+                // loop -- the connect paths and the coroutine-mode accept
+                // build their channels on the calling thread; joinLoop also
+                // discards the on-loop answer. Their answer channels are
+                // their own follow-up.
+                submitArmCallback(fd, interest, key, listener)
+            }
+        }
+        dispatch(EmptyCoroutineContext, armIfStillRegistered)
+        return null
     }
 
     /**
@@ -2259,9 +2281,20 @@ abstract class AbstractReadinessEventLoop :
      * logged. [syscall] is the one word that does differ, passed in so the
      * message still names what failed.
      *
-     * Silent when the withdrawal finds someone else on the key — see
-     * [popCallbackIfCurrent]. The listener that failed is already superseded, so
-     * there is nothing to withdraw and nothing true to say about the key.
+     * **Returns the failure it withdrew for**, so the arm chain can hand it to
+     * the caller whose bytes just lost their future — the ERROR log used to be
+     * the only signal, and a parked flush waiter hung until `close()` while
+     * the queue sat unsendable (measured). The suspend arm's sibling has
+     * answered its waiter this way all along ([submitArm] engines call their
+     * `failUnarmedWaiter`); returning is the callback path's parity, shaped as
+     * a value rather than a hook because a hook fired from a refusal is how
+     * this path recursed before (a told listener re-registering without
+     * bound).
+     *
+     * Null — and silent — when the withdrawal finds someone else on the key,
+     * see [popCallbackIfCurrent]: the listener that failed is already
+     * superseded, so there is nothing to withdraw, nothing true to say about
+     * the key, and nothing for the superseded caller to act on.
      */
     protected fun withdrawFailedCallbackArm(
         fd: Int,
@@ -2270,12 +2303,14 @@ abstract class AbstractReadinessEventLoop :
         listener: FdReadyListener,
         syscall: String,
         err: Int,
-    ) {
-        if (!withRegLock { popCallbackIfCurrent(key, listener) }) return
-        logger.error {
-            "$syscall(fd=$fd, ${interest.name}) for callback failed: " +
-                "${errnoMessage(err)} — readiness callback will not fire"
-        }
+    ): Throwable? {
+        if (!withRegLock { popCallbackIfCurrent(key, listener) }) return null
+        // One copy: the log line and the returned failure must keep saying
+        // the same thing, and the exception's copy is built unconditionally
+        // anyway, so there is nothing for the log gate to save.
+        val reason = "$syscall(fd=$fd, ${interest.name}) for callback failed: ${errnoMessage(err)}"
+        logger.error { "$reason — readiness callback will not fire" }
+        return IllegalStateException(reason)
     }
 
     /**

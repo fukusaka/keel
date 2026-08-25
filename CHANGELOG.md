@@ -115,6 +115,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll` / `engine-kqueue`: a failed readiness arm (`epoll_ctl` / `kevent(EV_ADD)`) now ends
+  the connection with the reason instead of leaving an ERROR log — a flush waiter parked over the
+  unsendable bytes hung until `close()`, and with nobody waiting the bytes were stranded (#1071)
+
 - `engine-*`: two callers awaiting one flush no longer lose one of them — the readiness (kqueue /
   epoll), io_uring and nio transports kept their flush waiter in a single slot, so a second
   `Channel.flush()` evicted the first waiter into a permanent hang; the nio teardown also now

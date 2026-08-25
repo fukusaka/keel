@@ -301,7 +301,8 @@ internal class EpollEventLoop(
      * arm never sees it. Which connections hold one, and for how long, is
      * stated at the arm itself in `ReadinessIoTransport.init`.
      *
-     * A failed arm withdraws the listener, as kqueue's does. On the first arm —
+     * A failed arm withdraws the listener and returns the withdrawal's
+     * failure, as kqueue's does. On the first arm —
      * [addOrModifyEpoll] issues `ADD` and reaches `MOD` only on `EEXIST` — the
      * fd is left out of the interest list altogether and nothing is delivered
      * for it, so a retained listener would never fire. On the `MOD` path the fd
@@ -309,7 +310,7 @@ internal class EpollEventLoop(
      * wake the loop; withdrawing means those take the no-handler branch, which
      * warns and disarms, rather than reaching a listener whose arm did not take.
      */
-    override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
+    override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener): Throwable? {
         assertInEventLoop("submitArmCallback")
         val events = when (interest) {
             Interest.READ -> EPOLLIN or EPOLLRDHUP
@@ -317,8 +318,9 @@ internal class EpollEventLoop(
         }
         val err = addOrModifyEpoll(fd, events)
         if (err != 0) {
-            withdrawFailedCallbackArm(fd, interest, key, listener, "epoll_ctl", err)
+            return withdrawFailedCallbackArm(fd, interest, key, listener, "epoll_ctl", err)
         }
+        return null
     }
 
     /**

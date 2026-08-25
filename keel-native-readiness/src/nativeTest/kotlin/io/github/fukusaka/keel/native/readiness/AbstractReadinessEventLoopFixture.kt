@@ -173,17 +173,17 @@ internal abstract class AbstractReadinessEventLoopFixture {
          * map READ onto different masks, so a test that only knows "something was
          * armed" would pass on a registerCallback mis-wired to the suspend hook.
          */
-        override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
+        override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener): Throwable? {
             // No guard of its own: refusing an arm for a withdrawn listener is
             // the base's, in registerCallback, and a stub that re-implemented it
             // would be what the tests asserted on instead.
             armedCallbackKeys.add(key)
             if (failArmCallback) {
-                withdrawFailedCallbackArm(fd, interest, key, listener, "fake-arm", ENOMEM)
-                return
+                return withdrawFailedCallbackArm(fd, interest, key, listener, "fake-arm", ENOMEM)
             }
             armedCallbacks.add(fd to interest)
             onArmCallback?.invoke()
+            return null
         }
 
         /** [registrationKey] is protected on the base; this is the subclass reaching it. */
@@ -508,8 +508,9 @@ internal abstract class AbstractReadinessEventLoopFixture {
 
         override fun removeInterest(fd: Int, interest: Interest) = Unit
 
-        override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
+        override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener): Throwable? {
             armedCallbacks.add(fd to interest)
+            return null
         }
 
         override fun submitArm(fd: Int, interest: Interest, key: Long, reg: Registration) = Unit
