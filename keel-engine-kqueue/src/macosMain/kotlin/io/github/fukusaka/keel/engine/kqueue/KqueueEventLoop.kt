@@ -321,19 +321,22 @@ internal class KqueueEventLoop(
     /**
      * Arms [fd] + [interest] for the pipeline path with a persistent `EV_ADD`.
      *
-     * A failed arm withdraws the listener through [key] and logs at ERROR: there
-     * is no continuation to fail, and a listener left in the ledger with nothing
-     * armed never fires again. epoll's override does the same.
+     * A failed arm withdraws the listener through [key], logs at ERROR, and
+     * returns the withdrawal's failure for the caller whose retry just
+     * vanished — a listener left in the ledger with nothing armed never fires
+     * again, and the caller has to hear that rather than continue as though
+     * armed. epoll's override does the same.
      */
-    override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
+    override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener): Throwable? {
         assertInEventLoop("submitArmCallback")
         val kevErr = when (interest) {
             Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {
-            withdrawFailedCallbackArm(fd, interest, key, listener, "kevent(EV_ADD)", kevErr)
+            return withdrawFailedCallbackArm(fd, interest, key, listener, "kevent(EV_ADD)", kevErr)
         }
+        return null
     }
 
     // --- Wakeup ---

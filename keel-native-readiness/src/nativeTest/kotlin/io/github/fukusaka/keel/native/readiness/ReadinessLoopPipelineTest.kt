@@ -17,6 +17,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -123,6 +124,26 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
 
         assertEquals(listOf(FD to Interest.WRITE), loop.disarmed)
         assertTrue(loop.warnings.any { it.contains("no handler") }, "the withdrawal must be visible: ${loop.warnings}")
+    }
+
+    @Test
+    fun `a failed arm hands its failure back to the caller`() = loopTest { loop ->
+        // The withdrawal used to be an ERROR log the caller never saw: the
+        // transport continued as though armed, and a flush waiter parked over
+        // the unsendable queue hung until close (measured). The chain now
+        // returns the failure so the caller's own frame can raise it — a
+        // value rather than a hook, because a hook fired from a refusal is
+        // how this path once recursed.
+        loop.failArmCallback = true
+
+        val failure = loop.registerCallback(FD, Interest.WRITE, RecordingListener())
+
+        assertIs<Throwable>(failure, "the caller whose retry vanished must learn it, not just the log")
+        assertTrue(
+            checkNotNull(failure.message).contains("fake-arm"),
+            "and the failure names the syscall, got: ${failure.message}",
+        )
+        assertFalse(loop.hasCallbackRegistration(FD, Interest.WRITE), "the withdrawal still happened")
     }
 
     @Test

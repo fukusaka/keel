@@ -309,7 +309,7 @@ internal class EpollEventLoop(
      * wake the loop; withdrawing means those take the no-handler branch, which
      * warns and disarms, rather than reaching a listener whose arm did not take.
      */
-    override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener) {
+    override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener): Throwable? {
         assertInEventLoop("submitArmCallback")
         val events = when (interest) {
             Interest.READ -> EPOLLIN or EPOLLRDHUP
@@ -317,8 +317,9 @@ internal class EpollEventLoop(
         }
         val err = addOrModifyEpoll(fd, events)
         if (err != 0) {
-            withdrawFailedCallbackArm(fd, interest, key, listener, "epoll_ctl", err)
+            return withdrawFailedCallbackArm(fd, interest, key, listener, "epoll_ctl", err)
         }
+        return null
     }
 
     /**
