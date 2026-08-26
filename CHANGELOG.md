@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `PipelinedStreamServer.activeLocalAddresses` — the subset of bound addresses still able
+  to accept, so a partially degraded multi-listener server is observable in-process (#1072)
 - `io`: `BufferAllocator.requireNativePointerAccess` — asks an allocator, once, whether the buffers
   it hands out can be passed to a syscall (#1067)
 - `core`: `IoTransport.onConnectionFailure` — the refusal that ended the connection, reported
@@ -115,6 +117,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll` / `engine-kqueue`: a listener whose accept arm the kernel refuses now ends —
+  its port is released and its address leaves the active set, and the server closes with its
+  last listener — instead of reporting active while never accepting again (#1072)
 - `engine-epoll` / `engine-kqueue`: a failed readiness arm (`epoll_ctl` / `kevent(EV_ADD)`) now ends
   the connection with the reason instead of leaving an ERROR log — a flush waiter parked over the
   unsendable bytes hung until `close()`, and with nobody waiting the bytes were stranded (#1071)
