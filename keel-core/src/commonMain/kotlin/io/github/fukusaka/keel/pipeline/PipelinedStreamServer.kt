@@ -50,8 +50,10 @@ interface PipelinedStreamServer : AutoCloseable {
      * promptly instead of parking in a backlog nobody drains — while its
      * siblings keep accepting and [isActive] stays true until the last one
      * goes. Engines without per-listener teardown report every address while
-     * [isActive] and none after, which keeps `activeLocalAddresses.size <
-     * localAddresses.size` a portable "partially degraded" probe.
+     * [isActive] and none after — there `activeLocalAddresses.size <
+     * localAddresses.size` never fires, so the comparison detects partial
+     * degradation only on engines that track it. After [close] the list is
+     * eventually empty: the release is asynchronous, like the port's.
      */
     val activeLocalAddresses: List<SocketAddress>
         get() = if (isActive) localAddresses else emptyList()
