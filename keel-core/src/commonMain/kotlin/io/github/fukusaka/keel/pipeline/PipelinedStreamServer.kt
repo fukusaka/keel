@@ -42,6 +42,21 @@ interface PipelinedStreamServer : AutoCloseable {
     val isActive: Boolean
 
     /**
+     * The subset of [localAddresses] still able to accept connections.
+     *
+     * An engine with per-listener teardown removes an address whose listener
+     * it had to close — the readiness engines do this when the kernel refuses
+     * the listener's accept arm, releasing the port so a connect is refused
+     * promptly instead of parking in a backlog nobody drains — while its
+     * siblings keep accepting and [isActive] stays true until the last one
+     * goes. Engines without per-listener teardown report every address while
+     * [isActive] and none after, which keeps `activeLocalAddresses.size <
+     * localAddresses.size` a portable "partially degraded" probe.
+     */
+    val activeLocalAddresses: List<SocketAddress>
+        get() = if (isActive) localAddresses else emptyList()
+
+    /**
      * Stops listening and releases resources.
      *
      * **The listening port is released asynchronously.** `close()` returns once
