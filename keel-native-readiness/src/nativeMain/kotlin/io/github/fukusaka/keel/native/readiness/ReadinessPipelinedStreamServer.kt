@@ -97,29 +97,64 @@ class ReadinessPipelinedStreamServer(
          */
         fun arm() {
             if (closed || dead.value != 0) return
-            bossLoop.registerCallback(listener.serverFd, Interest.READ, this)?.let { armFailure ->
+            val armFailure = bossLoop.registerCallback(listener.serverFd, Interest.READ, this)
+            if (armFailure != null) {
                 endListener(armFailure)
+                return
+            }
+            // A null is not only success. start()'s task can land in the
+            // boss's final drain, where the ledgers may still take the arm —
+            // and the stop sweep clears it in silence — or refuse it with
+            // the null the sweep's own answer channel owns. Either way a
+            // finishing loop will never deliver another readiness event, so
+            // an arm on it leaves this listener exactly as armless as a
+            // refusal does; only the flag can tell the two nulls apart.
+            if (bossLoop.isFinishing()) {
+                endListener(
+                    IllegalStateException(
+                        "the accept arm landed on a stopping EventLoop and will never fire: " +
+                            "serverFd=${listener.serverFd}",
+                    ),
+                )
             }
         }
 
         /**
          * Ends this listener with the reason: the port is released, so a peer
          * is refused promptly instead of parking in a backlog nobody drains,
-         * and the address leaves [activeLocalAddresses]. Boss-loop only — the
-         * non-null arm answer that gets here proves it. The registration is
-         * already withdrawn by the loop; what is left is the kernel interest
-         * and the descriptor. When the last listener goes, the server goes
-         * with it — [isActive] must not say "listening" over zero listeners.
+         * and the address leaves [activeLocalAddresses]. Runs on the thread
+         * that owns the loop's ledgers — the boss loop for a re-arm's answer,
+         * the terminal sequence's claimant for an arm its drain executed. The
+         * registration, if any survived, is cleared with the sweep; what is
+         * left is the kernel interest and the descriptor.
+         *
+         * The last listener flips the server closed itself, before
+         * releasing its fd. What a reader can still catch is a closed
+         * server whose last port is on its way out — the shape [close]'s
+         * asynchronous-release contract already means — and the instant
+         * between the two adjacent flags, where a poll may read listening
+         * over zero listeners; adjacent atomics cannot close that instant.
+         * Not by calling [close]: its hand-off runs inline here only
+         * because the terminal claimant publishes its thread id, and on a
+         * double without that it would wait for a quiescence this frame is
+         * upstream of — simpler to depend on neither.
+         *
+         * The ledger entry, where one survived, is not popped here: a live
+         * arm's failure was withdrawn by the loop already, a drained arm's
+         * entry is cleared by the stop sweep, and arm() has no off-loop
+         * caller — the three legs this leans on. An off-loop caller added
+         * later must revisit this, or its queued arm could pass the
+         * identity check over a closed, re-handed descriptor.
          */
         private fun endListener(armFailure: Throwable) {
             if (!dead.compareAndSet(0, 1)) return
+            if (acceptArms.all { it.dead.value != 0 }) closedFlag.compareAndSet(0, 1)
             logger.error(armFailure) {
                 "the accept arm failed; closing this listener: " +
                     "serverFd=${listener.serverFd} address=${listener.localAddress}"
             }
             bossLoop.cleanupFd(listener.serverFd)
             closeFdSafely(listener.serverFd, logger, "accept arm failure")
-            if (acceptArms.all { it.dead.value != 0 }) close()
         }
     }
 

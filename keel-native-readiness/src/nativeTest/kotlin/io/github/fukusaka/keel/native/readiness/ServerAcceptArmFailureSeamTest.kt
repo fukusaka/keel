@@ -163,6 +163,44 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
     }
 
     @Test
+    fun `an arm the stopping boss will never fire ends the listener`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // start() hands its arms to a boss that looks live; the boss goes
+            // down before the task runs, and the final drain executes it —
+            // where the ledgers may still take the arm and the sweep clears
+            // it in silence, or refuse it with the null the sweep's answer
+            // channel owns. Either way no readiness event is ever coming, so
+            // an armed-looking listener over a port nobody will accept on
+            // must end instead. Found by independent review of this branch's
+            // first shape.
+            val boss = FakeLoop(onLoopThread = false, runDispatchedInline = false)
+            val worker = FakeLoop()
+            val group = FakeWorkerGroup(worker)
+            val fd = newListenerFd()
+            val fake = FakeNativeSocket()
+            try {
+                val server = server(
+                    boss,
+                    group,
+                    fake,
+                    ReadinessPipelinedStreamServer.Listener(fd, address(18205), BindConfig()),
+                )
+                server.start()
+                boss.closeAsStoppedLoop()
+
+                assertFalse(server.isActive, "an arm nobody will fire is not a listening server")
+                assertTrue(
+                    server.activeLocalAddresses.isEmpty(),
+                    "no address is claimed accepting: ${server.activeLocalAddresses}",
+                )
+                assertFalse(stillOpen(fd), "the port is released, not held hostage")
+            } finally {
+                worker.close()
+            }
+        }
+    }
+
+    @Test
     fun `starting onto a stopped boss closes the server instead of holding the ports`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The boss stopped between bind and start — every path that ends
