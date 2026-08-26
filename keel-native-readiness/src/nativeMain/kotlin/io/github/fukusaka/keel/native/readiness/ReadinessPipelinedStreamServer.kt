@@ -52,6 +52,9 @@ class ReadinessPipelinedStreamServer(
     override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
     override val isActive: Boolean get() = !closed
 
+    override val activeLocalAddresses: List<SocketAddress>
+        get() = acceptArms.filter { it.dead.value == 0 }.map { it.listener.localAddress }
+
     // CAS rather than a volatile check-then-set: two concurrent close() calls
     // could both observe false and both tear down, closing each listener fd
     // twice — and by the second close the kernel may have handed that
@@ -69,21 +72,74 @@ class ReadinessPipelinedStreamServer(
      * registered; `WRITE` is never armed for a listening fd.
      */
     private inner class AcceptArm(val listener: Listener) : FdReadyListener {
+        /**
+         * CAS between the two paths that release this listener's fd — a failed
+         * arm on the boss loop and `close()` from any thread — so the number
+         * is closed exactly once whichever runs first. Read (plainly) by
+         * [activeLocalAddresses] from any thread.
+         */
+        val dead = AtomicInt(0)
+
         override fun onReady(interest: Interest) {
             onAcceptable(this)
         }
 
+        /**
+         * Registers this listener for accept readiness, and ends the listener
+         * if the kernel refuses.
+         *
+         * The refusal is definitive for a listener the way it is for a
+         * connection: the arm was the only thing that would ever drive
+         * `accept()` again, and every errno it can carry is misuse or
+         * exhaustion — so a retry has no driver and nothing to hope for.
+         * Every caller is on the boss loop ([start] hands its arms there),
+         * which is what makes the answer arrive in this frame at all.
+         */
         fun arm() {
-            if (closed) return
-            bossLoop.registerCallback(listener.serverFd, Interest.READ, this)
+            if (closed || dead.value != 0) return
+            bossLoop.registerCallback(listener.serverFd, Interest.READ, this)?.let { armFailure ->
+                endListener(armFailure)
+            }
+        }
+
+        /**
+         * Ends this listener with the reason: the port is released, so a peer
+         * is refused promptly instead of parking in a backlog nobody drains,
+         * and the address leaves [activeLocalAddresses]. Boss-loop only — the
+         * non-null arm answer that gets here proves it. The registration is
+         * already withdrawn by the loop; what is left is the kernel interest
+         * and the descriptor. When the last listener goes, the server goes
+         * with it — [isActive] must not say "listening" over zero listeners.
+         */
+        private fun endListener(armFailure: Throwable) {
+            if (!dead.compareAndSet(0, 1)) return
+            logger.error(armFailure) {
+                "the accept arm failed; closing this listener: " +
+                    "serverFd=${listener.serverFd} address=${listener.localAddress}"
+            }
+            bossLoop.cleanupFd(listener.serverFd)
+            closeFdSafely(listener.serverFd, logger, "accept arm failure")
+            if (acceptArms.all { it.dead.value != 0 }) close()
         }
     }
 
     private val acceptArms = listeners.map { AcceptArm(it) }
 
-    /** Starts accepting connections on the boss EventLoop (every listener). */
+    /**
+     * Starts accepting connections on the boss EventLoop (every listener).
+     *
+     * The arms are handed to the boss loop as one task rather than issued
+     * from the caller's thread: an off-loop `registerCallback` queues its arm
+     * and a failure there has no frame to answer into, while on the loop the
+     * refusal returns to [AcceptArm.arm], which ends that listener. A boss
+     * that has already stopped closes the server instead — a bound port must
+     * not outlive the loop that would have accepted on it.
+     */
     fun start() {
-        acceptArms.forEach { it.arm() }
+        bossLoop.runOnLoop(
+            onLoop = { acceptArms.forEach { it.arm() } },
+            ifStopped = { close() },
+        )
     }
 
     /**
@@ -98,10 +154,11 @@ class ReadinessPipelinedStreamServer(
     /**
      * Whether the first listener still holds an accept registration.
      *
-     * A probe, for the one property of this class that has no other symptom: a
-     * listener that lost its registration goes on reporting [isActive] and
-     * simply never accepts again. Nothing in the public surface separates that
-     * from an idle server.
+     * A probe for the arm's presence itself. It used to be the only witness of
+     * a listener that lost its registration — the server went on reporting
+     * [isActive] and simply never accepted again — but a failed arm now ends
+     * its listener, so the public surface shows that fate through
+     * [activeLocalAddresses] and, for the last listener, [isActive].
      */
     fun isFirstListenerArmed(): Boolean =
         bossLoop.hasCallbackRegistration(listeners.first().serverFd, Interest.READ)
@@ -543,18 +600,23 @@ class ReadinessPipelinedStreamServer(
      */
     override fun close() {
         if (!closedFlag.compareAndSet(0, 1)) return
+        // Per listener through the same CAS a failed arm takes: a listener
+        // that already ended released its fd then, and by now the kernel may
+        // have handed that number to someone else.
         bossLoop.runOnLoop(
             onLoop = {
-                for (listener in listeners) {
-                    bossLoop.unregisterCallback(listener.serverFd, Interest.READ)
-                    bossLoop.cleanupFd(listener.serverFd)
-                    closeFdSafely(listener.serverFd, logger, "pipelined server close")
+                for (arm in acceptArms) {
+                    if (!arm.dead.compareAndSet(0, 1)) continue
+                    bossLoop.unregisterCallback(arm.listener.serverFd, Interest.READ)
+                    bossLoop.cleanupFd(arm.listener.serverFd)
+                    closeFdSafely(arm.listener.serverFd, logger, "pipelined server close")
                 }
             },
             // Loop gone: the callback registry is dead, so only release the fd.
             ifStopped = {
-                for (listener in listeners) {
-                    closeFdSafely(listener.serverFd, logger, "pipelined server close")
+                for (arm in acceptArms) {
+                    if (!arm.dead.compareAndSet(0, 1)) continue
+                    closeFdSafely(arm.listener.serverFd, logger, "pipelined server close")
                 }
             },
         )

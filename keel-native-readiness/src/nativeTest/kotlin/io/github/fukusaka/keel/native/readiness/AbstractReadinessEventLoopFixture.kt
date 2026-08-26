@@ -77,6 +77,19 @@ internal abstract class AbstractReadinessEventLoopFixture {
         /** No thread to stop, but the base's gather scratch is still owed back. */
         override fun close() = freeWritevScratch()
 
+        /**
+         * What a real engine's `close()` does to a loop that never had a
+         * thread: run the base terminal sequence — sweep the ledgers, end the
+         * waiters, publish finished and quiescent — so `runOnLoop` reads this
+         * loop as stopped. The plain [close] stays shallow on purpose: the
+         * transport cases call it in teardown and their loop must stay live
+         * to the end of the test.
+         */
+        fun closeAsStoppedLoop() {
+            finishWithoutRunning()
+            freeWritevScratch()
+        }
+
         /** No connect path in this double. */
         override suspend fun awaitWriteReady(fd: Int, logger: Logger): Unit =
             error("this double has no connect path")
@@ -126,6 +139,12 @@ internal abstract class AbstractReadinessEventLoopFixture {
          * arrived, never that withdrawing by it removes the right listener.
          */
         var failArmCallback: Boolean = false
+
+        /**
+         * Like [failArmCallback], but for one fd only — the multi-listener
+         * server cases need one arm refused while its sibling's succeeds.
+         */
+        var failArmCallbackForFd: Int? = null
 
         /** What the engines would take back from the kernel, recorded instead. */
         val disarmed = mutableListOf<Pair<Int, Interest>>()
@@ -178,7 +197,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
             // the base's, in registerCallback, and a stub that re-implemented it
             // would be what the tests asserted on instead.
             armedCallbackKeys.add(key)
-            if (failArmCallback) {
+            if (failArmCallback || fd == failArmCallbackForFd) {
                 return withdrawFailedCallbackArm(fd, interest, key, listener, "fake-arm", ENOMEM)
             }
             armedCallbacks.add(fd to interest)
