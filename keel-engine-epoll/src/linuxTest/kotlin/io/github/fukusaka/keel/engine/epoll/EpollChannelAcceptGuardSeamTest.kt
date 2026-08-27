@@ -255,7 +255,7 @@ class EpollChannelAcceptGuardSeamTest {
                 // only thing that names which of the two it was. Pinned here
                 // because that is where a reader of this failure has to go.
                 assertTrue(
-                    warns.messages.any { "EventLoop stopped — refusing" in it },
+                    warns.messages.any { "joinLoop: EventLoop stopped — refusing" in it },
                     "the loop names the sweep it was, not an arm the kernel refused: ${warns.messages}",
                 )
                 server.close()

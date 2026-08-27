@@ -83,10 +83,13 @@ internal class TransportInitialArmSeamTest : TransportSeamFixture() {
             eventLoop.drainDispatched()
 
             assertFalse(transport.isOpen, "a connection that can never hear again is ended, not left deaf")
+            // Not the rollback: the transport's own teardown removes it too,
+            // so this passes either way and the rollback is pinned at the loop
+            // instead. What it does show is that nothing puts it back.
             assertEquals(
                 0,
                 eventLoop.participantCount(),
-                "and leaves the registry with the notification",
+                "and is not in the registry once the connection it stood for has ended",
             )
             // Nobody is left in a frame to be told, so the loop's own report
             // is what a reader of this failure has.

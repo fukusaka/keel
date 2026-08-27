@@ -159,8 +159,13 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
     @Test
     fun `an absent reason is answered rather than thrown on`() {
         // Not reachable from a site that checks the join first, but a
-        // diagnostic is the wrong place to add a way to fail.
-        assertIs<CancellationException>(acceptJoinFailure(null))
+        // diagnostic is the wrong place to add a way to fail. It falls to the
+        // side that costs one connection rather than the server: reaching it
+        // would mean the loop's own bookkeeping was wrong, and that is no
+        // reason to stop accepting.
+        val absent = acceptJoinFailure(null)
+        assertIs<IllegalStateException>(absent)
+        assertTrue(absent !is CancellationException, "the fallback must not end the accept loop: $absent")
         assertTrue(joinRefusalReason(null).isNotEmpty())
     }
 
