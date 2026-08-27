@@ -50,17 +50,27 @@ class ReadinessPipelinedStreamServer(
 
     override val localAddress: SocketAddress get() = listeners.first().localAddress
     override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
-    override val isActive: Boolean get() = !closed
+
+    // The loop's state as well as this server's: a boss that has stopped
+    // polling will never accept again, whatever this server was told. Its
+    // listeners are still bound then -- an engine close leaves the server to
+    // its owner -- so a peer's connect still completes into a backlog nobody
+    // drains, which is the state releasing a port exists to avoid. Saying
+    // "listening" over it would make this the one engine whose answer depends
+    // on which object was closed rather than on whether anything accepts.
+    override val isActive: Boolean get() = !closed && !bossLoop.isFinishing()
 
     override val activeLocalAddresses: List<SocketAddress>
-        // Closed first, not the arms' flags: [close] flips this one on the
-        // caller's thread and marks the arms from a task on the boss loop, so
-        // between the two an off-loop reader would find every address alive
-        // on a server whose [onAcceptable] already turns readiness away. The
-        // engines without per-listener teardown answer empty the moment they
-        // close, and reading the accept gate first is what makes this one
-        // agree with them.
-        get() = if (closed) {
+        // The whole-server gate first, not the arms' flags: [close] flips its
+        // own on the caller's thread and marks the arms from a task on the
+        // boss loop, so between the two an off-loop reader would find every
+        // address alive on a server whose [onAcceptable] already turns
+        // readiness away -- and a stopped boss makes every address unable to
+        // accept at once, whatever each arm's flag still says. The engines
+        // without per-listener teardown answer empty the moment they stop
+        // accepting, and reading the same gate is what makes this one agree
+        // with them.
+        get() = if (!isActive) {
             emptyList()
         } else {
             acceptArms.mapNotNull { arm -> arm.listener.localAddress.takeIf { arm.dead.value == 0 } }

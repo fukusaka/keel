@@ -165,6 +165,46 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
     }
 
     @Test
+    fun `a server whose accept loop stopped claims no address`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // An engine close stops the loops and leaves the servers to their
+            // owner, so a server nobody closed keeps its listeners bound over
+            // a boss that will never accept again: a peer's connect completes
+            // into a backlog nobody drains, which is the state releasing a
+            // port exists to avoid. Measured through a real engine by
+            // independent review, where this server said every address was
+            // still accepting while its sibling engine said none.
+            val boss = FakeLoop()
+            val worker = FakeLoop()
+            val group = FakeWorkerGroup(worker)
+            val fd = newListenerFd()
+            val addr = address(18210)
+            val fake = FakeNativeSocket()
+            try {
+                val server = server(
+                    boss,
+                    group,
+                    fake,
+                    ReadinessPipelinedStreamServer.Listener(fd, addr, BindConfig()),
+                )
+                server.start()
+                assertEquals(listOf(addr), server.activeLocalAddresses, "armed and accepting")
+
+                boss.closeAsStoppedLoop()
+
+                assertFalse(server.isActive, "a server whose loop stopped polling is not listening")
+                assertTrue(
+                    server.activeLocalAddresses.isEmpty(),
+                    "and claims no address as accepting: ${server.activeLocalAddresses}",
+                )
+            } finally {
+                boss.close()
+                worker.close()
+            }
+        }
+    }
+
+    @Test
     fun `a bind that outwaits its budget gives the ports back itself`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The boss is finished but not quiescent — its drain and sweep are
