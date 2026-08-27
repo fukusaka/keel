@@ -51,6 +51,11 @@ internal class TransportInitialArmSeamTest : TransportSeamFixture() {
                 eventLoop.participantCount(),
                 "and is not left in the registry it would be told from",
             )
+            assertEquals(
+                JoinRefusal.ARM_REFUSED,
+                transport.joinRefusal,
+                "and names the arm, not the sweep -- the accept site raises a different type for each",
+            )
             // The construction sites raise without saying which of the two
             // ways the join failed, so this warning is the only thing that
             // names it.

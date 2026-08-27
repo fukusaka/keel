@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.ShutdownResult
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.native.readiness.InternalReadinessEngineApi
+import io.github.fukusaka.keel.native.readiness.JoinRefusal
 import io.github.fukusaka.keel.native.readiness.LoopParticipant
 import io.github.fukusaka.keel.native.readiness.ReadinessIoTransport
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -103,6 +104,11 @@ internal class KqueueTransportStoppedLoopSeamTest : KqueueTransportSeamFixture()
         assertFalse(
             transport.joinedLoop,
             "a sweep between construction and attach must refuse the join, not swallow the notification",
+        )
+        assertEquals(
+            JoinRefusal.LOOP_STOPPED,
+            transport.joinRefusal,
+            "named as the sweep it was: the accept site ends its loop for this cause and not the other",
         )
 
         transport.close()
