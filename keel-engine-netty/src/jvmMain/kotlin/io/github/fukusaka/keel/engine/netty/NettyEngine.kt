@@ -649,7 +649,13 @@ class NettyEngine(
 
         override val localAddress: SocketAddress get() = listeners.first().localAddress
         override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
-        override val isActive: Boolean get() = !closed && listeners.all { it.serverChannel.isActive }
+        // Any, not all: a server with one channel down is still listening on
+        // the others, and saying otherwise contradicts the addresses
+        // [activeLocalAddresses] then names as accepting -- and tells a health
+        // check the server is down while it serves. False only once nothing is
+        // left to accept on, which is when the readiness engines' servers go
+        // false too.
+        override val isActive: Boolean get() = !closed && listeners.any { it.serverChannel.isActive }
 
         // Not the inherited default: that one derives the living set from
         // [isActive], which this server reads as "every channel is up". One

@@ -15,6 +15,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -123,6 +124,10 @@ class NettyMultiAddressBindTest {
                     listOf(addresses[1]),
                     server.activeLocalAddresses,
                     "the survivor is named, not emptied out with its sibling",
+                )
+                assertTrue(
+                    server.isActive,
+                    "and a server with an address left to accept on is listening, whatever the other did",
                 )
                 assertEchoServed(portOf(addresses[1]))
             } finally {
