@@ -53,7 +53,18 @@ class ReadinessPipelinedStreamServer(
     override val isActive: Boolean get() = !closed
 
     override val activeLocalAddresses: List<SocketAddress>
-        get() = acceptArms.filter { it.dead.value == 0 }.map { it.listener.localAddress }
+        // Closed first, not the arms' flags: [close] flips this one on the
+        // caller's thread and marks the arms from a task on the boss loop, so
+        // between the two an off-loop reader would find every address alive
+        // on a server whose [onAcceptable] already turns readiness away. The
+        // engines without per-listener teardown answer empty the moment they
+        // close, and reading the accept gate first is what makes this one
+        // agree with them.
+        get() = if (closed) {
+            emptyList()
+        } else {
+            acceptArms.mapNotNull { arm -> arm.listener.localAddress.takeIf { arm.dead.value == 0 } }
+        }
 
     // CAS rather than a volatile check-then-set: two concurrent close() calls
     // could both observe false and both tear down, closing each listener fd
@@ -91,9 +102,21 @@ class ReadinessPipelinedStreamServer(
          * The refusal is definitive for a listener the way it is for a
          * connection: the arm was the only thing that would ever drive
          * `accept()` again, and every errno it can carry is misuse or
-         * exhaustion — so a retry has no driver and nothing to hope for.
-         * Every caller is on the boss loop ([start] hands its arms there),
-         * which is what makes the answer arrive in this frame at all.
+         * exhaustion — so a retry has no driver: nothing would schedule one
+         * but a timer, and a timer that re-arms into a still-exhausted
+         * kernel parks peers in a backlog nobody drains, which is the state
+         * releasing the port exists to avoid. A transient exhaustion
+         * therefore ends the listener too; recovering from that is a
+         * re-bind, and pushing that signal belongs with the server-failure
+         * report tracked separately.
+         *
+         * Every production caller is on the boss loop ([start] hands its
+         * arms there, the re-arms run in readiness dispatch), which is what
+         * makes the answer arrive in this frame at all. The seam entry
+         * points [onAcceptable] and [dispatchAcceptReadiness] reach here
+         * from a test's thread, where the arm is queued and the answer is
+         * always `null` — a refusal there is reported by the loop and never
+         * seen by this frame.
          */
         fun arm() {
             if (closed || dead.value != 0) return
@@ -114,6 +137,14 @@ class ReadinessPipelinedStreamServer(
                     IllegalStateException(
                         "the accept arm landed on a stopping EventLoop and will never fire: " +
                             "serverFd=${listener.serverFd}",
+                        // Why the loop is stopping, when it is stopping because
+                        // something failed: published before the flag this
+                        // branch read, so a fault is already visible here, and
+                        // null for a loop that stopped as asked. Carried for
+                        // the same reason the transport's stopped-loop answers
+                        // carry it -- without it the listener's report names
+                        // the shutdown and never the fault behind it.
+                        bossLoop.loopFailure(),
                     ),
                 )
             }
@@ -141,10 +172,13 @@ class ReadinessPipelinedStreamServer(
          *
          * The ledger entry, where one survived, is not popped here: a live
          * arm's failure was withdrawn by the loop already, a drained arm's
-         * entry is cleared by the stop sweep, and arm() has no off-loop
-         * caller — the three legs this leans on. An off-loop caller added
-         * later must revisit this, or its queued arm could pass the
-         * identity check over a closed, re-handed descriptor.
+         * entry is cleared by the stop sweep, and no off-loop caller can
+         * reach *this function* — the queued arm an off-loop [arm] issues is
+         * answered `null`, so its refusal is the loop's to report and never
+         * arrives here. Those are the three legs this leans on. A caller
+         * that made an off-loop arm answer its own frame would have to
+         * revisit it, or its queued arm could pass the identity check over a
+         * closed, re-handed descriptor.
          */
         private fun endListener(armFailure: Throwable) {
             if (!dead.compareAndSet(0, 1)) return
@@ -168,13 +202,40 @@ class ReadinessPipelinedStreamServer(
      * and a failure there has no frame to answer into, while on the loop the
      * refusal returns to [AcceptArm.arm], which ends that listener. A boss
      * that has already stopped closes the server instead — a bound port must
-     * not outlive the loop that would have accepted on it.
+     * not outlive the loop that would have accepted on it — and says so,
+     * because nothing else would: the close is silent, and the caller holds a
+     * server that never listened.
+     *
+     * **The wait is bounded.** A hand-off landing while the boss is finishing
+     * spins out its final drain and stop sweep, which run application code;
+     * every other caller of that hand-off is a closing thread stalling only
+     * itself, but this one is the tail of a bind, on whatever thread the
+     * application binds from — possibly holding a lock the sweep's handlers
+     * want. The budget the accept hand-off spends on a stopping worker is the
+     * right size here too: long enough that a boss finishing normally is
+     * waited out and the arms go on the loop, short enough that a bind cannot
+     * be held for a human-noticeable time. Giving up early only means the
+     * arms were never issued — which [ifStopped] answers by closing the
+     * server, the same fate a swept boss gives it.
      */
     fun start() {
-        bossLoop.runOnLoop(
+        val outcome = bossLoop.runOnLoop(
             onLoop = { acceptArms.forEach { it.arm() } },
-            ifStopped = { close() },
+            ifStopped = {
+                logger.error {
+                    "the EventLoop that would accept has stopped; closing this server unstarted: " +
+                        "addresses=${listeners.map { it.localAddress }}"
+                }
+                close()
+            },
+            waitBudgetMicros = STOPPING_WORKER_WAIT_MICROS,
         )
+        if (outcome == HandoffOutcome.FELL_BACK_AFTER_EXPIRY) {
+            logger.error {
+                "the EventLoop that would accept did not finish stopping within " +
+                    "${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms; the server above was closed unstarted"
+            }
+        }
     }
 
     /**

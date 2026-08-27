@@ -163,6 +163,80 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
     }
 
     @Test
+    fun `a closed server claims no address before its listeners are marked`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // close() flips the server's own flag on the caller's thread and
+            // marks the arms from a task on the boss loop. Between the two an
+            // off-loop reader must not find every address alive on a server
+            // that already turns readiness away — the engines that answer from
+            // isActive alone are empty the moment they close, and this one
+            // agrees. Found by independent review.
+            val boss = FakeLoop(onLoopThread = false, runDispatchedInline = false)
+            val worker = FakeLoop()
+            val group = FakeWorkerGroup(worker)
+            val fd = newListenerFd()
+            val fake = FakeNativeSocket()
+            try {
+                val server = server(
+                    boss,
+                    group,
+                    fake,
+                    ReadinessPipelinedStreamServer.Listener(fd, address(18206), BindConfig()),
+                )
+
+                server.close()
+
+                assertFalse(server.isActive, "the flag is the caller's, and it is already down")
+                assertTrue(
+                    server.activeLocalAddresses.isEmpty(),
+                    "and nothing is claimed accepting while the marking is still queued: " +
+                        "${server.activeLocalAddresses}",
+                )
+                boss.drainDispatched()
+                assertTrue(server.activeLocalAddresses.isEmpty(), "still, once the task has run")
+                assertFalse(stillOpen(fd), "which is when the port goes")
+            } finally {
+                boss.close()
+                worker.close()
+            }
+        }
+    }
+
+    @Test
+    fun `starting onto a stopped boss says why the server never listened`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The close is silent and start() raises nothing, so without this
+            // line the caller holds a server that never listened and has
+            // nowhere to read the reason — while the neighbouring timing (an
+            // arm the final drain runs) reports at ERROR. Found by independent
+            // review.
+            val boss = FakeLoop()
+            boss.closeAsStoppedLoop()
+            val worker = FakeLoop()
+            val group = FakeWorkerGroup(worker)
+            val fd = newListenerFd()
+            val fake = FakeNativeSocket()
+            try {
+                val server = server(
+                    boss,
+                    group,
+                    fake,
+                    ReadinessPipelinedStreamServer.Listener(fd, address(18207), BindConfig()),
+                )
+                server.start()
+
+                assertFalse(server.isActive)
+                assertTrue(
+                    boss.errors.any { "closing this server unstarted" in it },
+                    "the reason is reported, naming the addresses: ${boss.errors}",
+                )
+            } finally {
+                worker.close()
+            }
+        }
+    }
+
+    @Test
     fun `an arm the stopping boss will never fire ends the listener`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // start() hands its arms to a boss that looks live; the boss goes
@@ -194,7 +268,15 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
                     "no address is claimed accepting: ${server.activeLocalAddresses}",
                 )
                 assertFalse(stillOpen(fd), "the port is released, not held hostage")
+                assertTrue(
+                    boss.errors.any { "accept arm failed" in it },
+                    "and the listener's end is reported: ${boss.errors}",
+                )
             } finally {
+                // The boss too, though the body closes it: its scratch is
+                // released mid-body, so anything throwing before that line
+                // would leave it. Idempotent, like every loop's close.
+                boss.close()
                 worker.close()
             }
         }
