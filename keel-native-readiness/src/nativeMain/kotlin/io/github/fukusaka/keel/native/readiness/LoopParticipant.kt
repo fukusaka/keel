@@ -50,8 +50,10 @@ interface LoopParticipant {
      *
      * Only for an arm issued from off the loop, where the failure has no
      * caller frame to return into: [AbstractReadinessEventLoop.joinLoop]
-     * answers an on-loop refusal by returning `false` instead. Called once,
-     * on the loop thread, after the registry has released this participant.
+     * answers an on-loop refusal with [JoinRefusal.ARM_REFUSED] instead.
+     * Called once, on the loop thread, after the registry has released this
+     * participant — unless it was already registered for something else, which
+     * it keeps.
      *
      * This is not [onLoopStopped]: the loop is running and will keep
      * dispatching for everyone else. What ended is this participant's own

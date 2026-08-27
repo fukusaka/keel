@@ -331,17 +331,17 @@ abstract class AbstractReadinessEngine(
             // thread -- an arm queued from anywhere else is answered after the
             // join has already been reported as taken, and reaches the
             // connection through [LoopParticipant.onInitialArmRefused] instead.
-            // This message names neither, because from here it would be a
-            // guess. The loop knows which, and said so in the warning it logged
-            // on its way to taking the join back, with the syscall, fd and
-            // errno.
+            // Both end this connect the same way; which it was comes from the
+            // loop, which is the only thing that can tell them apart, and the
+            // arm's own errno is in the warning it logged on its way to taking
+            // the join back.
             //
             // Closing the transport rather than the descriptor: close() is
             // idempotent and releases the fd itself, so nothing here can close a
             // number the loop might still hold or that a later close would close
             // twice. The channel is discarded unreturned.
             val stopped = IllegalStateException(
-                "connect($address) failed: this connection could not join its EventLoop",
+                "connect($address) failed: ${joinRefusalReason(transport.joinRefusal)}",
             )
             // Through the same release as the guards, because the teardown runs
             // inline on this thread either way: a swept loop has nothing left to
@@ -427,13 +427,13 @@ abstract class AbstractReadinessEngine(
             ReadinessPipelinedChannel(transport, logger, remoteAddr, localAddr)
         }
         if (!transport.joinedLoop) {
-            // Both ways in, and why this says neither: see the sibling connect
-            // path. Closing the transport rather than the descriptor: close() is
-            // idempotent and releases the fd itself, so nothing here can close a
-            // number the loop might still hold or that a later close would close
-            // twice. The channel is discarded unreturned.
+            // Both ways in, and where the answer comes from: see the sibling
+            // connect path. Closing the transport rather than the descriptor:
+            // close() is idempotent and releases the fd itself, so nothing here
+            // can close a number the loop might still hold or that a later
+            // close would close twice. The channel is discarded unreturned.
             val stopped = IllegalStateException(
-                "connect() failed: this connection could not join its EventLoop",
+                "connect() failed: ${joinRefusalReason(transport.joinRefusal)}",
             )
             // Through the same release as the guards, because the teardown runs
             // inline on this thread either way; see the sibling path.

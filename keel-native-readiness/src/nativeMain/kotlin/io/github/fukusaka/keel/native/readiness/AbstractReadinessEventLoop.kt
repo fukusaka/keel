@@ -1875,7 +1875,7 @@ abstract class AbstractReadinessEventLoop :
             // the re-register recursion this branch's comment recounts.
             return null
         }
-        return armRegisteredCallback(fd, interest, key, listener, joined = null)
+        return armRegisteredCallback(fd, interest, key, listener, joined = null, releaseJoined = false)
     }
 
     /**
@@ -1900,39 +1900,49 @@ abstract class AbstractReadinessEventLoop :
      * [registerCallback] — holding the registration lock across a syscall is what
      * the rest of this class is careful not to do.
      *
-     * A refusal means the loop has swept: **the descriptor is the caller's to
+     * Whichever way it is refused, **the descriptor is the caller's to
      * release**, and the caller can do that through the transport's own teardown
      * rather than closing the fd behind its back. See [addParticipant]'s KDoc for
      * why the refusal is not a throw.
      *
-     * **A kernel that refuses the arm is the same answer.** The arm is the only
+     * **A kernel that refuses the arm is a refusal too.** The arm is the only
      * thing that would ever deliver an event for this registration, so a
      * listener whose arm was withdrawn is exactly as useful as one the sweep
-     * declined to register — and a caller told `true` would hold a connection
-     * that can never hear its peer, not even its close. The join is rolled back
-     * so the participant is not left in a registry it will be told from; the
-     * ledger entry is already gone, popped by the withdrawal itself.
+     * declined to register — and a caller told the join took would hold a
+     * connection that can never hear its peer, not even its close. The join is
+     * rolled back so the participant is not left in a registry it will be told
+     * from; the ledger entry is already gone, popped by the withdrawal itself.
+     *
+     * The rollback gives back **what this call put there and nothing else**.
+     * The registry is a set with no count, so a participant already in it —
+     * added directly, or by an earlier join for another interest — would
+     * otherwise lose the notification its other registration is owed, which is
+     * the silent connection this whole path exists to prevent.
      *
      * Only an arm this thread issued can answer here. Off the loop the arm is
      * queued, and its failure is answered where it happens — see
      * [armRegisteredCallback].
      *
-     * @return `true` if both registrations took **and the arm was accepted**,
-     *   `false` if the loop refused or the kernel did — in which case nothing
-     *   this call made is left behind.
+     * @return `null` if both registrations took **and the arm was accepted**,
+     *   otherwise which of the two refused — in which case nothing this call
+     *   made is left behind. The two are not interchangeable to the caller:
+     *   see [JoinRefusal].
      */
     fun joinLoop(
         participant: LoopParticipant,
         fd: Int,
         interest: Interest,
         listener: FdReadyListener,
-    ): Boolean {
+    ): JoinRefusal? {
         val key = registrationKey(fd, interest)
+        // Whether the registry took this participant *from this call*, which is
+        // what the rollback below is allowed to undo.
+        var addedParticipant = false
         val joined = withRegLock {
             if (ledgersClosed) {
                 false
             } else {
-                participants.add(participant)
+                addedParticipant = participants.add(participant)
                 putCallback(key, listener)
                 true
             }
@@ -1943,19 +1953,19 @@ abstract class AbstractReadinessEventLoop :
                     "${interest.name}; ${participant::class.simpleName} will not be told and " +
                     "this listener will not fire"
             }
-            return false
+            return JoinRefusal.LOOP_STOPPED
         }
-        val armFailure = armRegisteredCallback(fd, interest, key, listener, participant)
+        val armFailure = armRegisteredCallback(fd, interest, key, listener, participant, addedParticipant)
         if (armFailure != null) {
             logger.warn(armFailure) {
                 "${this::class.simpleName}.joinLoop: the kernel refused the arm for fd=$fd " +
                     "${interest.name}; ${participant::class.simpleName} is not joined and this " +
                     "listener will not fire"
             }
-            withRegLock { participants.remove(participant) }
-            return false
+            if (addedParticipant) withRegLock { participants.remove(participant) }
+            return JoinRefusal.ARM_REFUSED
         }
-        return true
+        return null
     }
 
     /**
@@ -1985,6 +1995,11 @@ abstract class AbstractReadinessEventLoop :
         key: Long,
         listener: FdReadyListener,
         joined: LoopParticipant?,
+        // Separate from [joined] because the two answer different questions:
+        // who to tell, and whether this call is the one that put them in the
+        // registry. A participant that was already there is told all the same
+        // and left where it was.
+        releaseJoined: Boolean,
     ): Throwable? {
         if (inEventLoop()) {
             return submitArmCallback(fd, interest, key, listener)
@@ -2009,11 +2024,11 @@ abstract class AbstractReadinessEventLoop :
                 // its connection stays open and deaf. Closing that is
                 // tracked; it needs a caller that can say who to tell.
                 if (armFailure != null && joined != null) {
-                    withRegLock { participants.remove(joined) }
+                    if (releaseJoined) withRegLock { participants.remove(joined) }
                     logger.error(armFailure) {
                         "${this::class.simpleName}.armRegisteredCallback: the arm for fd=$fd " +
                             "${interest.name} was refused after ${joined::class.simpleName} " +
-                            "joined; releasing it from the registry and telling it"
+                            "joined; this registration is gone and it is being told"
                     }
                     joined.onInitialArmRefused(armFailure)
                 }

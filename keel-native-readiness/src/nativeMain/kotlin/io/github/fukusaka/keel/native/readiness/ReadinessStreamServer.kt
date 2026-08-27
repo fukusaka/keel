@@ -223,35 +223,24 @@ class ReadinessStreamServer(
         }
         if (!transport.joinedLoop) {
             // Two ways to arrive -- the worker swept under this accept, or it
-            // was running and the kernel refused the arm -- and this raise
-            // names neither, because from here it would be a guess. The loop
-            // knows which and warned so, naming the same fd, on its way to
-            // taking the join back. What this line adds is the accept-side
-            // framing: that a connection was dropped, not that a registration
-            // was refused.
+            // was running and the kernel refused the arm -- and unlike the other
+            // construction sites this one has to tell them apart, because they
+            // differ in what should happen to the accept loop and not just in
+            // what to say. [acceptJoinFailure] is where that is decided; the
+            // answer comes from the loop rather than from reading its state
+            // here, which would be a guess. What this frame adds is the
+            // accept-side framing: that a connection was dropped, not that a
+            // registration was refused. `_active` is still true either way,
+            // because the server was never closed. The channel is discarded
+            // uninitialised.
             //
-            // Raised as a cancellation for both, which is what ends this accept
-            // loop: AcceptLoop rethrows only CancellationException and
-            // otherwise logs and retries with backoff, and `_active` is still
-            // true here because the server was never closed. That is right for
-            // the sweep -- nothing accepted afterwards could be served. For a
-            // refused arm on a running loop it is heavier than the failure,
-            // which belongs to one connection; the arm can only be refused here
-            // when the caller drives this accept from the worker's own thread,
-            // which the in-tree callers do not -- they resume on the boss loop,
-            // which is a different loop from every worker -- so telling the two
-            // apart is left to a caller that can construct it, rather than
-            // guessed at here. The channel is discarded uninitialised.
-            //
-            // The release failure the funnel attaches is what does not arrive
-            // at the caller: suppressed exceptions on a cancellation cause do
-            // not generally surface. It is logged either way.
+            // The release failure the funnel attaches is what may not arrive at
+            // the caller: suppressed exceptions on a cancellation cause do not
+            // generally surface. It is logged either way.
             releaseAndRaise(
                 clientFd,
                 transport,
-                cause = CancellationException(
-                    "accept dropped this connection: it could not join its EventLoop",
-                ),
+                cause = acceptJoinFailure(transport.joinRefusal),
                 what = "this connection could not join its EventLoop; dropping it",
             )
         }

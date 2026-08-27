@@ -163,8 +163,16 @@ class ReadinessIoTransport(
      * fall through to the backstop in the event loop leaves the connection
      * open in CLOSE-WAIT holding its descriptor -- the loop survives, and the
      * fd is never released by anybody. One caller is not the dispatch's: the
-     * [readEnabled] setter wraps its re-arm here, and its frames are
-     * loop-dispatched tasks, so the rule below still holds for it.
+     * [readEnabled] setter wraps its re-arm here. That setter runs on whichever
+     * thread writes the property -- the accept hand-off is a loop task, but a
+     * Channel-mode re-enable comes from the consumer -- and the rule below
+     * holds either way. On the loop the arm is issued inline and its refusal
+     * returns into this containment. Off it the arm is queued and
+     * `registerCallback` answers null, so no failure reaches here at all: it
+     * happens later, on the loop, under the loop's per-task guard. What that
+     * shape loses is not the containment but the answer -- a queued re-arm
+     * carries no participant, so its refusal reaches nobody; see
+     * [AbstractReadinessEventLoop.armRegisteredCallback].
      *
      * [what] names the work being handled — one of the `WHAT_*` constants, so
      * this per-event path allocates nothing building it: the message is built
@@ -631,8 +639,8 @@ class ReadinessIoTransport(
      * second only when the channel attaches on the loop's own thread — an arm
      * issued from off the loop is queued, so the join is reported as taken and
      * a later refusal arrives through [onInitialArmRefused] instead. They
-     * differ in whether the loop is still running; the construction sites do
-     * not claim to know which, and the loop's own warning names it. **The
+     * differ in whether the loop is still running, and which it was is in
+     * [joinRefusal] — from the loop, not derived here. **The
      * construction site owns [fd] in that case**, as `joinLoop`'s KDoc says, and
      * releases it by closing this transport: [close] is idempotent and does the
      * release itself, which closing the descriptor behind the object's back
@@ -667,6 +675,26 @@ class ReadinessIoTransport(
      */
     @InternalReadinessEngineApi
     var joinedLoop: Boolean = false
+        private set
+
+    /**
+     * Why the join did not take, when [joinedLoop] is `false`.
+     *
+     * `null` while the join took, and before [onChannelAttached] has run at
+     * all. The construction sites read it to say what happened rather than to
+     * decide what to do — every one of them drops the connection either way —
+     * except the Channel-mode accept, where a swept loop and a refused arm
+     * differ in whether the accept loop itself should end (see
+     * [acceptJoinFailure]).
+     *
+     * The loop is what says which, rather than the site deriving it from the
+     * loop's state afterwards: that state moves — the finishing flag is
+     * published before the sweep — so a site that read it could name a refused
+     * arm as a sweep. Written on the same thread and under the same conditions
+     * as [joinedLoop].
+     */
+    @InternalReadinessEngineApi
+    var joinRefusal: JoinRefusal? = null
         private set
 
     init {
@@ -728,7 +756,9 @@ class ReadinessIoTransport(
      */
     override fun onChannelAttached() {
         if (joinedLoop) return
-        joinedLoop = eventLoop.joinLoop(this, fd, Interest.READ, this)
+        val refusal = eventLoop.joinLoop(this, fd, Interest.READ, this)
+        joinRefusal = refusal
+        joinedLoop = refusal == null
     }
 
     private fun armRead() {
