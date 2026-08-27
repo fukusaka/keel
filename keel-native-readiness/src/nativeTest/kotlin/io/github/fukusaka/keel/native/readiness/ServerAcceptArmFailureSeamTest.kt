@@ -173,7 +173,8 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
             // into a backlog nobody drains, which is the state releasing a
             // port exists to avoid. Measured through a real engine by
             // independent review, where this server said every address was
-            // still accepting while its sibling engine said none.
+            // still accepting while the Netty server, asked the same thing,
+            // said none.
             val boss = FakeLoop()
             val worker = FakeLoop()
             val group = FakeWorkerGroup(worker)
@@ -197,6 +198,12 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
                     server.activeLocalAddresses.isEmpty(),
                     "and claims no address as accepting: ${server.activeLocalAddresses}",
                 )
+                assertTrue(
+                    stillOpen(fd),
+                    "while the port stays bound — that is what makes the answer worth having",
+                )
+                server.close()
+                assertFalse(stillOpen(fd), "and this server's own close is what releases it")
             } finally {
                 boss.close()
                 worker.close()

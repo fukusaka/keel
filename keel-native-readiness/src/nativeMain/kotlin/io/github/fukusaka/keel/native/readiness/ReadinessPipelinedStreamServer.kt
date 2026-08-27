@@ -52,12 +52,15 @@ class ReadinessPipelinedStreamServer(
     override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
 
     // The loop's state as well as this server's: a boss that has stopped
-    // polling will never accept again, whatever this server was told. Its
-    // listeners are still bound then -- an engine close leaves the server to
-    // its owner -- so a peer's connect still completes into a backlog nobody
-    // drains, which is the state releasing a port exists to avoid. Saying
-    // "listening" over it would make this the one engine whose answer depends
-    // on which object was closed rather than on whether anything accepts.
+    // polling will never accept again, whatever this server was told. An
+    // engine close leaves the server to its owner, so the listeners stay
+    // bound -- a peer's connect still completes into a backlog nobody drains,
+    // and this answer is the only thing that says so. Saying "listening" over
+    // it would make the answer depend on which object was closed rather than
+    // on whether anything accepts. The engines that still answer from their
+    // own flag alone say "listening" there; closing that gap for them is
+    // tracked separately, and the port itself is a second question -- these
+    // listeners are released by this server's own close, not the engine's.
     override val isActive: Boolean get() = !closed && !bossLoop.isFinishing()
 
     override val activeLocalAddresses: List<SocketAddress>

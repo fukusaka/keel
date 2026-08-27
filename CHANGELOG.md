@@ -63,11 +63,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **BREAKING** (`engine-netty`): a pipelined server reports `isActive` while any listener still
   accepts, rather than requiring all of them — a multi-address server that lost one channel now
   reads as active (#1072)
+- **BREAKING** (`engine-epoll` / `engine-kqueue`): a pipelined server reads as inactive once its
+  accept loop stops, not only once it is closed — an engine closed out from under a server it
+  still owns now answers `isActive` false (#1072)
 - `engine-epoll` / `engine-kqueue`: `bindPipeline` arms its listeners on the accept loop, so a
   bind racing that loop's shutdown waits up to 100 ms for it instead of returning at once; a bind
   that gives up, or one onto a stopped loop, comes back with the server closed and the reason
-  logged. A server also reads as inactive once its accept loop stops, not only once it is closed
-  (#1072)
+  logged (#1072)
 - `native-readiness`, `engine-kqueue`, `engine-epoll`: refuse to start when a `BufferAllocator`
   hands out buffers without native pointers (#1067)
 - `core`: `Logger.debug` takes an optional throwable, the way `warn` and `error` do (#1065)
