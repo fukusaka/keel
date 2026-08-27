@@ -581,12 +581,15 @@ abstract class AbstractReadinessEngine(
                 nativeSocketOps = nativeSocketOps,
             )
         }
-        try {
-            serverChannel.start()
-        } catch (t: Throwable) {
-            serverChannel.close()
-            throw t
-        }
+        // Unguarded, unlike the two stretches above: `start()` answers its own
+        // failures. A refused arm ends its listener, a stopped boss closes the
+        // server, and neither reaches this frame -- the arm chain returns its
+        // failure rather than raising, and an arm the loop runs later is
+        // contained by the loop. Catching here would say a bind-time arm
+        // failure surfaces as a throw from `bindPipeline`, and a caller that
+        // believed it would wait for an exception that never comes; what it
+        // gets is a server reporting itself inactive, and the loop's ERROR.
+        serverChannel.start()
         return serverChannel
     }
 
