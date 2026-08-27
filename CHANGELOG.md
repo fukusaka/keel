@@ -10,8 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `core`: `PipelinedStreamServer.activeLocalAddresses` — the subset of bound addresses still able
   to accept, so a partially degraded multi-listener server is observable in-process. The epoll,
-  kqueue and Netty servers answer it per listener; the other engines derive it from `isActive`
-  (#1072)
+  kqueue and Netty servers answer it per listener; the other engines derive it from `isActive`,
+  which they read from their own closed flag alone — so on those a non-empty answer means the
+  server was not closed, not that a connect will be served (#1072)
 - `io`: `BufferAllocator.requireNativePointerAccess` — asks an allocator, once, whether the buffers
   it hands out can be passed to a syscall (#1067)
 - `core`: `IoTransport.onConnectionFailure` — the refusal that ended the connection, reported

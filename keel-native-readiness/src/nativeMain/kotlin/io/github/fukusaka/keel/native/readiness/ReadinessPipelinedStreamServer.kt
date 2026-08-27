@@ -129,7 +129,9 @@ class ReadinessPipelinedStreamServer(
          * points [onAcceptable] and [dispatchAcceptReadiness] reach here
          * from a test's thread, where the arm is queued and the answer is
          * always `null` — a refusal there is reported by the loop and never
-         * seen by this frame.
+         * seen by this frame. A `null` is not the end of it even so: the
+         * check below reads it against the loop's state, and a caller off
+         * the loop can end the listener that way.
          */
         fun arm() {
             if (closed || dead.value != 0) return
@@ -185,19 +187,28 @@ class ReadinessPipelinedStreamServer(
          *
          * The ledger entry, where one survived, is not popped here: a live
          * arm's failure was withdrawn by the loop already, a drained arm's
-         * entry is cleared by the stop sweep, and no off-loop caller can
-         * reach *this function* — the queued arm an off-loop [arm] issues is
-         * answered `null`, so its refusal is the loop's to report and never
-         * arrives here. Those are the three legs this leans on. A caller
-         * that made an off-loop arm answer its own frame would have to
-         * revisit it, or its queued arm could pass the identity check over a
-         * closed, re-handed descriptor.
+         * entry is cleared by the stop sweep, and every caller that gets
+         * here runs where the loop's own work runs — the loop's thread for a
+         * re-arm's answer, and, for an arm the terminal sequence executes,
+         * the claimant that published itself as that thread before draining.
+         * So there is no queued arm left that could act on this descriptor
+         * afterwards: whatever is in the queue is being drained by this very
+         * frame's thread. Those are the three legs this leans on, and the
+         * third is about *where* a caller runs rather than which entry point
+         * it came through — a call that reached here from a thread the loop
+         * does not answer for could leave a queued arm to pass the identity
+         * check over a closed, re-handed descriptor.
          */
         private fun endListener(armFailure: Throwable) {
             if (!dead.compareAndSet(0, 1)) return
             if (acceptArms.all { it.dead.value != 0 }) closedFlag.compareAndSet(0, 1)
             logger.error(armFailure) {
-                "the accept arm failed; closing this listener: " +
+                // "will not fire" rather than "failed": both timings end the
+                // listener the same way, but one of them is an arm the kernel
+                // took on a loop that had already stopped polling, and calling
+                // that a failure sends a reader looking for an errno that was
+                // never returned. The cause says which it was.
+                "the accept arm will not fire; closing this listener: " +
                     "serverFd=${listener.serverFd} address=${listener.localAddress}"
             }
             bossLoop.cleanupFd(listener.serverFd)

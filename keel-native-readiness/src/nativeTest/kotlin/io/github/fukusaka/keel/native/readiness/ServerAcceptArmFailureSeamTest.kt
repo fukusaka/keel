@@ -116,7 +116,7 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
                     "the sibling's arm is untouched",
                 )
                 assertTrue(
-                    boss.errors.any { "accept arm failed" in it },
+                    boss.errors.any { "accept arm will not fire" in it },
                     "the reason is reported, naming the listener: ${boss.errors}",
                 )
                 fake.assertAllConsumed()
@@ -200,7 +200,7 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
                 )
                 assertTrue(
                     stillOpen(fd),
-                    "while the port stays bound — that is what makes the answer worth having",
+                    "while the descriptor stays open — that is what makes the answer worth having",
                 )
                 server.close()
                 assertFalse(stillOpen(fd), "and this server's own close is what releases it")
@@ -288,7 +288,7 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
                 boss.closeAsStoppedLoop()
 
                 assertFalse(server.isActive, "the arm the drain ran will never fire, so the listener ended")
-                val reported = boss.logger.records.firstOrNull { "accept arm failed" in it.second }
+                val reported = boss.logger.records.firstOrNull { "accept arm will not fire" in it.second }
                 assertNotNull(reported, "the end is reported: ${boss.errors}")
                 assertTrue(
                     reported.third?.cause is InjectedFault,
@@ -412,7 +412,7 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
                 )
                 assertFalse(stillOpen(fd), "the port is released, not held hostage")
                 assertTrue(
-                    boss.errors.any { "accept arm failed" in it },
+                    boss.errors.any { "accept arm will not fire" in it },
                     "and the listener's end is reported: ${boss.errors}",
                 )
             } finally {
