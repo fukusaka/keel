@@ -228,29 +228,35 @@ class ReadinessPipelinedStreamServer(
      *
      * Both give-up timings land in the same lambda — the hand-off runs
      * `ifStopped` for a loop that was already quiescent and for one this
-     * thread stopped waiting on — so the report names which it was rather
-     * than the branch being split in two.
+     * thread stopped waiting on — so the ports go back there, and the report
+     * comes after, off the outcome. The outcome is the only exact answer:
+     * asking the loop again would let a quiescence published in between turn
+     * a bind that waited its whole budget into one that found the loop
+     * already gone, and those read very differently to whoever is holding
+     * the log. It is the distinction the accept hand-off's own tally makes,
+     * from the same values.
      */
     fun start() {
-        bossLoop.runOnLoop(
+        val outcome = bossLoop.runOnLoop(
             onLoop = { acceptArms.forEach { it.arm() } },
             ifStopped = {
-                val stopped = bossLoop.isStopped()
-                logger.error {
-                    if (stopped) {
-                        "the EventLoop that would accept has stopped; closing this server unstarted: " +
-                            "addresses=${listeners.map { it.localAddress }}"
-                    } else {
-                        "the EventLoop that would accept did not finish stopping within " +
-                            "${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms; closing this server " +
-                            "unstarted: addresses=${listeners.map { it.localAddress }}"
-                    }
-                }
                 closedFlag.compareAndSet(0, 1)
                 releaseListenerFds()
             },
             waitBudgetMicros = STOPPING_WORKER_WAIT_MICROS,
         )
+        when (outcome) {
+            HandoffOutcome.HANDED_TO_LOOP -> Unit
+            HandoffOutcome.FELL_BACK -> logger.error {
+                "the EventLoop that would accept has stopped; closed this server unstarted: " +
+                    "addresses=${listeners.map { it.localAddress }}"
+            }
+            HandoffOutcome.FELL_BACK_AFTER_EXPIRY -> logger.error {
+                "the EventLoop that would accept did not finish stopping within " +
+                    "${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms; closed this server " +
+                    "unstarted: addresses=${listeners.map { it.localAddress }}"
+            }
+        }
     }
 
     /**
@@ -738,9 +744,15 @@ class ReadinessPipelinedStreamServer(
      * Releases the descriptors alone, for a loop whose ledgers are already
      * gone — or one this thread has decided not to wait for.
      *
-     * Safe off the loop because it touches nothing the loop owns: the same
-     * CAS keeps it to one release per listener, and the registry it would
-     * otherwise withdraw from is either swept or about to be.
+     * Safe off the loop because nothing of the loop's is left to touch, and
+     * both callers earn that differently. [close]'s stopped leg runs after
+     * the sweep, which emptied the ledgers. [start]'s give-up runs having
+     * won the hand-off's claim, which means the arms it would have issued
+     * never run — these descriptors were never registered at all. A third
+     * caller must be able to say which of those it is: an off-loop release
+     * of a descriptor a live loop still holds a registration for is the
+     * recycled-fd hazard the hand-off exists to prevent. The per-listener
+     * CAS keeps whichever caller arrives to one release apiece.
      */
     private fun releaseListenerFds() {
         for (arm in acceptArms) {

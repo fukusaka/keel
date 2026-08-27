@@ -174,6 +174,12 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
             // close() would wait out the very quiescence it just declined to
             // wait for. Measured by independent review, which found the first
             // shape waiting the full teardown despite the budget.
+            //
+            // **The regression shows up as a hang, not a failure.** The wait
+            // is a blocking `usleep` spin, which no `withTimeout` can cut
+            // short, so a shape that waits again takes this case — and the
+            // suite around it — past every budget rather than reporting one.
+            // A run that stops here with nothing written is that shape.
             val boss = FakeLoop(onLoopThread = false, runDispatchedInline = false)
             val worker = FakeLoop()
             val group = FakeWorkerGroup(worker)
@@ -198,9 +204,14 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
                 assertFalse(stillOpen(fd), "and the port is back, released by this frame rather than a wait")
                 assertTrue(
                     boss.errors.any { "did not finish stopping" in it },
-                    "the give-up is reported, naming the addresses: ${boss.errors}",
+                    "the give-up names the wait it ran out of, not a loop already gone: ${boss.errors}",
+                )
+                assertTrue(
+                    boss.errors.none { "has stopped" in it },
+                    "and does not claim the other timing: ${boss.errors}",
                 )
             } finally {
+                boss.close()
                 worker.close()
             }
         }
@@ -308,8 +319,12 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
 
                 assertFalse(server.isActive)
                 assertTrue(
-                    boss.errors.any { "closing this server unstarted" in it },
-                    "the reason is reported, naming the addresses: ${boss.errors}",
+                    boss.errors.any { "has stopped" in it && "closed this server unstarted" in it },
+                    "the reason is reported as a loop already gone, naming the addresses: ${boss.errors}",
+                )
+                assertTrue(
+                    boss.errors.none { "did not finish stopping" in it },
+                    "and not as a wait that ran out: ${boss.errors}",
                 )
             } finally {
                 worker.close()

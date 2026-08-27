@@ -85,6 +85,11 @@ internal abstract class AbstractReadinessEventLoopFixture {
          * transport cases call it in teardown and their loop must stay live
          * to the end of the test.
          */
+        fun closeAsStoppedLoop() {
+            finishWithoutRunning()
+            freeWritevScratch()
+        }
+
         /**
          * Records what killed this loop, the way an engine's poll does before
          * it breaks out — for the readers that ask a stopped loop why.
@@ -98,11 +103,6 @@ internal abstract class AbstractReadinessEventLoopFixture {
          * the only way to reach the expiry branch from a double.
          */
         fun stageFinishedNotQuiescent() = publishLoopFinishedForTest()
-
-        fun closeAsStoppedLoop() {
-            finishWithoutRunning()
-            freeWritevScratch()
-        }
 
         /** No connect path in this double. */
         override suspend fun awaitWriteReady(fd: Int, logger: Logger): Unit =

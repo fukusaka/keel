@@ -658,11 +658,11 @@ class NettyEngine(
         override val isActive: Boolean get() = !closed && listeners.any { it.serverChannel.isActive }
 
         // Not the inherited default: that one derives the living set from
-        // [isActive], which this server reads as "every channel is up". One
-        // channel going down would then answer "no address accepts" while its
-        // siblings still do -- the reverse of what this property says. Asked
-        // per channel instead, so a partly-degraded server names the
-        // addresses that are still accepting.
+        // [isActive], which stays true here while any channel is up, so a
+        // server with one channel down would answer that every address
+        // accepts -- including the one that no longer does. Asked per channel
+        // instead, so a partly-degraded server names only what is still
+        // accepting, which is the difference this property exists to show.
         override val activeLocalAddresses: List<SocketAddress>
             get() = if (closed) {
                 emptyList()

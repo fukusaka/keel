@@ -99,11 +99,12 @@ class NettyMultiAddressBindTest {
 
     @Test
     fun `a server that lost one listener names the addresses still accepting`() = runTest {
-        // This server reads isActive as "every channel is up", so deriving the
-        // living set from that bit — as the interface default does — would
-        // answer "no address accepts" for a server still serving one. Asked
-        // per channel, the answer names the survivor. Found by independent
-        // review of the readiness engines' per-listener work.
+        // isActive stays true while any channel is up, so deriving the living
+        // set from that bit — as the interface default does — would answer
+        // that both addresses accept when one of them no longer does. Asked
+        // per channel, the answer names the survivor alone, and the server
+        // still calls itself listening. Found by independent review of the
+        // readiness engines' per-listener work.
         val engine = NettyEngine()
         try {
             val server = engine.bindPipeline(listOf(loopbackSpec(), loopbackSpec())) { ch ->
