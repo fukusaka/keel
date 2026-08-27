@@ -51,6 +51,13 @@ internal class TransportInitialArmSeamTest : TransportSeamFixture() {
                 eventLoop.participantCount(),
                 "and is not left in the registry it would be told from",
             )
+            // The construction sites raise without saying which of the two
+            // ways the join failed, so this warning is the only thing that
+            // names it.
+            assertTrue(
+                eventLoop.warnings.any { "the kernel refused the arm for fd=" in it },
+                "the loop names the refusal it answered with, got: ${eventLoop.warnings}",
+            )
             tracker.assertNoLeaks()
         }
     }
@@ -75,6 +82,12 @@ internal class TransportInitialArmSeamTest : TransportSeamFixture() {
                 0,
                 eventLoop.participantCount(),
                 "and leaves the registry with the notification",
+            )
+            // Nobody is left in a frame to be told, so the loop's own report
+            // is what a reader of this failure has.
+            assertTrue(
+                eventLoop.errors.any { "was refused after" in it },
+                "the loop reports the withdrawal it made alone, got: ${eventLoop.errors}",
             )
             // Drained after parking: this loop holds its dispatched work
             // until asked, which is what let the queued arm be staged at all,
