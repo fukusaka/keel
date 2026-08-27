@@ -187,15 +187,17 @@ class ReadinessStreamServer(
         remoteAddr: SocketAddress,
         localAddr: SocketAddress,
     ): PipelinedChannel {
+        // Chosen outside the guard, unlike the rest: the loop this connection
+        // was given is what the join's refusal has to be read against further
+        // down, and `next()` masks its index rather than throwing.
+        val workerLoop = workerGroup.next()
         val transport = try {
-            // Inside the guard, not above it. None of the three can throw
-            // today -- the group is non-empty by construction and masks its
-            // index, and the two overrides are constructor `val`s -- but they
+            // Inside the guard, not above it. Neither of these can throw
+            // today -- the two overrides are constructor `val`s -- but they
             // run with a descriptor already open and nobody holding it, which
             // is the same standard the construction and attach guards below
             // are held to. Keeping them out would also make the claim in
             // [releaseAndRaise] false.
-            val workerLoop = workerGroup.next()
             val rbs = bindConfig.readBufferSize ?: workerLoop.readBufferSize
             val ito = bindConfig.idleTimeoutMillis ?: workerLoop.idleTimeoutMillis
             ReadinessIoTransport(clientFd, workerLoop, workerLoop.allocator, nativeSocket, rbs, ito)
@@ -242,10 +244,20 @@ class ReadinessStreamServer(
             releaseAndRaise(
                 clientFd,
                 transport,
-                cause = CancellationException(
-                    "accept unavailable: the EventLoop stopped while accepting",
-                ),
-                what = "the EventLoop stopped while accepting; dropping the connection",
+                // A swept loop ends this accept loop, which is proportionate:
+                // nothing it accepts afterwards could be served. A refused arm
+                // is one connection's failure on a running loop, so it is not
+                // raised as a cancellation -- the descriptor goes back and the
+                // caller is told, without the loop it is accepting on ending
+                // over it.
+                cause = if (workerLoop.isFinishing()) {
+                    CancellationException("accept unavailable: the EventLoop stopped while accepting")
+                } else {
+                    IllegalStateException(
+                        "accept dropped this connection: the EventLoop refused to arm its read",
+                    )
+                },
+                what = "this connection could not join its EventLoop; dropping it",
             )
         }
         try {

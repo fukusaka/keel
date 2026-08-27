@@ -330,8 +330,17 @@ abstract class AbstractReadinessEngine(
             // idempotent and releases the fd itself, so nothing here can close a
             // number the loop might still hold or that a later close would close
             // twice. The channel is discarded unreturned.
+            // Which of the two the join answered `false` for is the loop's to
+            // say: a swept loop is finishing, a refused arm leaves it running.
+            // The arm's own failure is not repeated here -- the loop logged it
+            // with the syscall, fd and errno on its way to taking the join
+            // back, and this frame never sees the value.
             val stopped = IllegalStateException(
-                "connect(address) failed: the EventLoop stopped during connect",
+                if (workerLoop.isFinishing()) {
+                    "connect(address) failed: the EventLoop stopped during connect"
+                } else {
+                    "connect(address) failed: the EventLoop refused to arm this connection's read"
+                },
             )
             // Through the same release as the guards, because this branch is the
             // one where the loop has already swept: `close()` then runs the teardown
@@ -423,7 +432,11 @@ abstract class AbstractReadinessEngine(
             // number the loop might still hold or that a later close would close
             // twice. The channel is discarded unreturned.
             val stopped = IllegalStateException(
-                "connect(remoteAddr) failed: the EventLoop stopped during connect",
+                if (workerLoop.isFinishing()) {
+                    "connect(remoteAddr) failed: the EventLoop stopped during connect"
+                } else {
+                    "connect(remoteAddr) failed: the EventLoop refused to arm this connection's read"
+                },
             )
             // Through the same release as the guards, because this branch is the
             // one where the loop has already swept: `close()` then runs the teardown

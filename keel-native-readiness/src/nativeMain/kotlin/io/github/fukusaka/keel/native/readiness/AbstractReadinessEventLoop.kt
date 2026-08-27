@@ -2000,14 +2000,20 @@ abstract class AbstractReadinessEventLoop :
                 // peer, not even its close. Told through the registry's own
                 // notification so the participant hears it exactly once and
                 // leaves the registry with it, the same shape a sweep uses.
-                // Callers that pass no participant -- the re-arms, whose
-                // answer returns into their own frame -- keep the older
-                // contract: the withdrawal's ERROR report is all there is.
+                // Callers that pass no participant keep the older contract:
+                // nothing here has a frame to answer into either, so the
+                // withdrawal's ERROR report is all there is. That is the
+                // right shape for a re-arm issued on the loop, whose answer
+                // does return to its caller -- but one issued from off the
+                // loop arrives here with no participant and no answer, and
+                // its connection stays open and deaf. Closing that is
+                // tracked; it needs a caller that can say who to tell.
                 if (armFailure != null && joined != null) {
                     withRegLock { participants.remove(joined) }
                     logger.error(armFailure) {
-                        "the initial arm for fd=$fd ${interest.name} was refused after this " +
-                            "connection joined; ending it"
+                        "${this::class.simpleName}.armRegisteredCallback: the arm for fd=$fd " +
+                            "${interest.name} was refused after ${joined::class.simpleName} " +
+                            "joined; telling it and releasing it from the registry"
                     }
                     joined.onInitialArmRefused(armFailure)
                 }

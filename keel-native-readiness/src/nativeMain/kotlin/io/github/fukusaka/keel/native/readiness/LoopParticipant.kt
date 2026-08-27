@@ -57,12 +57,14 @@ interface LoopParticipant {
      * dispatching for everyone else. What ended is this participant's own
      * ability to hear anything — an arm is the only thing that delivers an
      * event, so a withdrawn one leaves a connection that cannot hear its
-     * peer, not even its close. The default treats it as that stop, which is
-     * the same practical outcome for a participant that only registered to
-     * listen; a participant that wants to say something more precise
-     * overrides it.
+     * peer, not even its close.
+     *
+     * **The default only reports.** Delegating to [onLoopStopped] would tell
+     * a participant the loop is gone, and one that answers that by moving to
+     * another loop or by treating the engine as dead would be acting on
+     * something untrue. Reporting is the most any participant can be assumed
+     * to want; one that can do something about it — ending the connection
+     * this registration was for — overrides this.
      */
-    fun onInitialArmRefused(cause: Throwable) {
-        onLoopStopped()
-    }
+    fun onInitialArmRefused(cause: Throwable) = Unit
 }

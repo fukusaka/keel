@@ -459,22 +459,6 @@ class ReadinessIoTransport(
      * and the worker-accept paths release the descriptor and drop the
      * connection without one to raise to.
      */
-    /**
-     * The initial read arm this connection joined with was refused, so it
-     * will never hear its peer — not the bytes, not the close. Ends the
-     * connection with that reason rather than taking the stop notification's
-     * quieter path: the loop is running, so this is a failure of this
-     * connection alone, and a caller that later waits on it is owed the
-     * difference.
-     *
-     * On the loop thread, which is what lets the teardown run through to the
-     * descriptor here rather than being handed anywhere.
-     */
-    override fun onInitialArmRefused(cause: Throwable) {
-        if (!opened) return
-        containReadinessFailure(WHAT_INITIAL_READ_ARM) { throw cause }
-    }
-
     override fun onLoopStopped() {
         if (!opened) return
         // The write side too, not just the read side: a caller parked in
@@ -526,6 +510,22 @@ class ReadinessIoTransport(
         // where this entry deliberately does not close and leaves the
         // transport open for the other to reach.
         notifyInactive()
+    }
+
+    /**
+     * The initial read arm this connection joined with was refused, so it
+     * will never hear its peer — not the bytes, not the close. Ends the
+     * connection with that reason rather than taking the stop notification's
+     * quieter path: the loop is running, so this is a failure of this
+     * connection alone, and a caller that later waits on it is owed the
+     * difference.
+     *
+     * On the loop thread, which is what lets the teardown run through to the
+     * descriptor here rather than being handed anywhere.
+     */
+    override fun onInitialArmRefused(cause: Throwable) {
+        if (!opened) return
+        containReadinessFailure(WHAT_INITIAL_READ_ARM) { throw cause }
     }
 
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
@@ -622,9 +622,13 @@ class ReadinessIoTransport(
     /**
      * Whether this transport is registered with its EventLoop.
      *
-     * `false` means the loop had already swept by the time the channel attached,
-     * so this transport holds neither the participant slot nor the read callback
-     * — no readiness will arrive and no stop notification will. **The
+     * `false` means this transport holds neither the participant slot nor the
+     * read callback, so no readiness will arrive and no stop notification
+     * will. Two ways to get there: the loop had already swept by the time the
+     * channel attached, or it took the registration and the kernel then
+     * refused the arm, which the loop answers by taking the join back. They
+     * differ in whether the loop is still running, and the report the
+     * construction site makes should not claim to know which without asking. **The
      * construction site owns [fd] in that case**, as `joinLoop`'s KDoc says, and
      * releases it by closing this transport: [close] is idempotent and does the
      * release itself, which closing the descriptor behind the object's back

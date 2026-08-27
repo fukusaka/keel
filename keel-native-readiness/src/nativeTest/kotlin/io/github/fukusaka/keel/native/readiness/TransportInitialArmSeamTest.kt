@@ -4,8 +4,6 @@ package io.github.fukusaka.keel.native.readiness
 
 import io.github.fukusaka.keel.core.ConnectionFailureException
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -78,12 +76,10 @@ internal class TransportInitialArmSeamTest : TransportSeamFixture() {
                 eventLoop.participantCount(),
                 "and leaves the registry with the notification",
             )
-            // Started undispatched so the register runs inline inside this
-            // call, then drained: this loop holds its dispatched work until
-            // asked, which is what let the queued arm be staged at all.
-            val told = async(start = CoroutineStart.UNDISPATCHED) {
-                runCatching { transport.awaitPendingFlush() }
-            }
+            // Drained after parking: this loop holds its dispatched work
+            // until asked, which is what let the queued arm be staged at all,
+            // and the wait's own registration rides the same queue.
+            val told = parkFlushWaiter(transport)
             eventLoop.drainDispatched()
             val reason = told.await().exceptionOrNull()
             assertIs<ConnectionFailureException>(reason, "a wait arriving later is owed the reason, got: $reason")
