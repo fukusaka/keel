@@ -459,6 +459,22 @@ class ReadinessIoTransport(
      * and the worker-accept paths release the descriptor and drop the
      * connection without one to raise to.
      */
+    /**
+     * The initial read arm this connection joined with was refused, so it
+     * will never hear its peer — not the bytes, not the close. Ends the
+     * connection with that reason rather than taking the stop notification's
+     * quieter path: the loop is running, so this is a failure of this
+     * connection alone, and a caller that later waits on it is owed the
+     * difference.
+     *
+     * On the loop thread, which is what lets the teardown run through to the
+     * descriptor here rather than being handed anywhere.
+     */
+    override fun onInitialArmRefused(cause: Throwable) {
+        if (!opened) return
+        containReadinessFailure(WHAT_INITIAL_READ_ARM) { throw cause }
+    }
+
     override fun onLoopStopped() {
         if (!opened) return
         // The write side too, not just the read side: a caller parked in
@@ -2401,6 +2417,9 @@ class ReadinessIoTransport(
 
         /** The containment label for the read re-enable's arm, see [readEnabled]. */
         private const val WHAT_READ_REENABLE = "re-enabling read"
+
+        /** What [onInitialArmRefused] names, for the containment's report. */
+        private const val WHAT_INITIAL_READ_ARM = "the initial read arm"
 
         private const val WHAT_WRITE_READINESS = "readiness for WRITE"
         private const val WHAT_PEER_CLOSE = "the peer close"
