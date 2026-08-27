@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `PipelinedStreamServer.activeLocalAddresses` — the subset of bound addresses still able
+  to accept, so a partially degraded multi-listener server is observable in-process. The epoll,
+  kqueue and Netty servers answer it per listener; the other engines derive it from `isActive`,
+  which they read from their own closed flag alone — so on those a non-empty answer means the
+  server was not closed, not that a connect will be served (#1072)
 - `io`: `BufferAllocator.requireNativePointerAccess` — asks an allocator, once, whether the buffers
   it hands out can be passed to a syscall (#1067)
 - `core`: `IoTransport.onConnectionFailure` — the refusal that ended the connection, reported
@@ -56,6 +61,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`engine-netty`): a pipelined server reports `isActive` while any listener still
+  accepts, rather than requiring all of them — a multi-address server that lost one channel now
+  reads as active (#1072)
+- **BREAKING** (`engine-epoll` / `engine-kqueue`): a pipelined server reads as inactive once its
+  accept loop stops, not only once it is closed — an engine closed out from under a server it
+  still owns now answers `isActive` false (#1072)
+- `engine-epoll` / `engine-kqueue`: `bindPipeline` arms its listeners on the accept loop, so a
+  bind racing that loop's shutdown waits up to 100 ms for it instead of returning at once; a bind
+  that gives up, or one onto a stopped loop, comes back with the server closed and the reason
+  logged (#1072)
 - `native-readiness`, `engine-kqueue`, `engine-epoll`: refuse to start when a `BufferAllocator`
   hands out buffers without native pointers (#1067)
 - `core`: `Logger.debug` takes an optional throwable, the way `warn` and `error` do (#1065)
@@ -115,6 +130,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll` / `engine-kqueue`: a listener whose accept arm the kernel refuses now ends —
+  its port is released and its address leaves the active set, and the server closes with its
+  last listener — instead of reporting active while never accepting again (#1072)
 - `engine-epoll` / `engine-kqueue`: a failed readiness arm (`epoll_ctl` / `kevent(EV_ADD)`) now ends
   the connection with the reason instead of leaving an ERROR log — a flush waiter parked over the
   unsendable bytes hung until `close()`, and with nobody waiting the bytes were stranded (#1071)

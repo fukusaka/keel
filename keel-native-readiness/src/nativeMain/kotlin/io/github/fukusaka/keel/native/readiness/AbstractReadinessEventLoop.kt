@@ -1642,6 +1642,15 @@ abstract class AbstractReadinessEventLoop :
     }
 
     /**
+     * Publishes `finished` alone, for the doubles that stage the window
+     * between it and quiescence — the one a hand-off's budget exists for.
+     * The loops themselves reach it through [terminate].
+     */
+    internal fun publishLoopFinishedForTest() {
+        handoff.markFinished()
+    }
+
+    /**
      * What ended this loop when nothing asked it to, or `null` if it ended
      * because it was asked to.
      *
@@ -1957,12 +1966,14 @@ abstract class AbstractReadinessEventLoop :
                 // A failure here has no caller frame to return into -- the
                 // withdrawal's ERROR log is the report, as it was for every
                 // arm before the chain learned to answer. The off-loop arms
-                // in this tree are the server's initial accept arm and the
-                // initial read arms made through joinLoop off the worker
-                // loop -- the connect paths and the coroutine-mode accept
-                // build their channels on the calling thread; joinLoop also
-                // discards the on-loop answer. Their answer channels are
-                // their own follow-up.
+                // in this tree are the initial read arms made through
+                // joinLoop off the worker loop -- the connect paths and the
+                // coroutine-mode accept build their channels on the calling
+                // thread; joinLoop also discards the on-loop answer, and its
+                // answer channel is its own follow-up. (The server's accept
+                // arms no longer come here off-loop: start() hands them to
+                // the boss loop, so a refusal ends the listener in its own
+                // frame.)
                 submitArmCallback(fd, interest, key, listener)
             }
         }

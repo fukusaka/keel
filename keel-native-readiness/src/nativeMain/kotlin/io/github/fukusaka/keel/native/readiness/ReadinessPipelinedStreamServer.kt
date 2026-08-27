@@ -50,7 +50,34 @@ class ReadinessPipelinedStreamServer(
 
     override val localAddress: SocketAddress get() = listeners.first().localAddress
     override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
-    override val isActive: Boolean get() = !closed
+
+    // The loop's state as well as this server's: a boss that has stopped
+    // polling will never accept again, whatever this server was told. An
+    // engine close leaves the server to its owner, so the listeners stay
+    // bound -- a peer's connect still completes into a backlog nobody drains,
+    // and this answer is the only thing that says so. Saying "listening" over
+    // it would make the answer depend on which object was closed rather than
+    // on whether anything accepts. The engines that still answer from their
+    // own flag alone say "listening" there; closing that gap for them is
+    // tracked separately, and the port itself is a second question -- these
+    // listeners are released by this server's own close, not the engine's.
+    override val isActive: Boolean get() = !closed && !bossLoop.isFinishing()
+
+    override val activeLocalAddresses: List<SocketAddress>
+        // The whole-server gate first, not the arms' flags: [close] flips its
+        // own on the caller's thread and marks the arms from a task on the
+        // boss loop, so between the two an off-loop reader would find every
+        // address alive on a server whose [onAcceptable] already turns
+        // readiness away -- and a stopped boss makes every address unable to
+        // accept at once, whatever each arm's flag still says. The engines
+        // without per-listener teardown answer empty the moment they stop
+        // accepting, and reading the same gate is what makes this one agree
+        // with them.
+        get() = if (!isActive) {
+            emptyList()
+        } else {
+            acceptArms.mapNotNull { arm -> arm.listener.localAddress.takeIf { arm.dead.value == 0 } }
+        }
 
     // CAS rather than a volatile check-then-set: two concurrent close() calls
     // could both observe false and both tear down, closing each listener fd
@@ -69,21 +96,191 @@ class ReadinessPipelinedStreamServer(
      * registered; `WRITE` is never armed for a listening fd.
      */
     private inner class AcceptArm(val listener: Listener) : FdReadyListener {
+        /**
+         * CAS between the two paths that release this listener's fd — a failed
+         * arm on the boss loop and `close()` from any thread — so the number
+         * is closed exactly once whichever runs first. Read (plainly) by
+         * [activeLocalAddresses] from any thread.
+         */
+        val dead = AtomicInt(0)
+
         override fun onReady(interest: Interest) {
             onAcceptable(this)
         }
 
+        /**
+         * Registers this listener for accept readiness, and ends the listener
+         * if the kernel refuses.
+         *
+         * The refusal is definitive for a listener the way it is for a
+         * connection: the arm was the only thing that would ever drive
+         * `accept()` again, and every errno it can carry is misuse or
+         * exhaustion — so a retry has no driver: nothing would schedule one
+         * but a timer, and a timer that re-arms into a still-exhausted
+         * kernel parks peers in a backlog nobody drains, which is the state
+         * releasing the port exists to avoid. A transient exhaustion
+         * therefore ends the listener too; recovering from that is a
+         * re-bind, and pushing that signal belongs with the server-failure
+         * report tracked separately.
+         *
+         * Every production caller is on the boss loop ([start] hands its
+         * arms there, the re-arms run in readiness dispatch), which is what
+         * makes the answer arrive in this frame at all. The seam entry
+         * points [onAcceptable] and [dispatchAcceptReadiness] reach here
+         * from a test's thread, where the arm is queued and the answer is
+         * always `null` — a refusal there is reported by the loop and never
+         * seen by this frame. A `null` is not the end of it even so: the
+         * check below reads it against the loop's state, and a caller off
+         * the loop can end the listener that way.
+         */
         fun arm() {
-            if (closed) return
-            bossLoop.registerCallback(listener.serverFd, Interest.READ, this)
+            if (closed || dead.value != 0) return
+            val armFailure = bossLoop.registerCallback(listener.serverFd, Interest.READ, this)
+            if (armFailure != null) {
+                endListener(armFailure)
+                return
+            }
+            // A null is not only success. start()'s task can land in the
+            // boss's final drain, where the ledgers may still take the arm —
+            // and the stop sweep clears it in silence — or refuse it with
+            // the null the sweep's own answer channel owns. Either way a
+            // finishing loop will never deliver another readiness event, so
+            // an arm on it leaves this listener exactly as armless as a
+            // refusal does; only the flag can tell the two nulls apart.
+            if (bossLoop.isFinishing()) {
+                endListener(
+                    IllegalStateException(
+                        "the accept arm landed on a stopping EventLoop and will never fire: " +
+                            "serverFd=${listener.serverFd}",
+                        // Why the loop is stopping, when it is stopping because
+                        // something failed: published before the flag this
+                        // branch read, so a fault is already visible here, and
+                        // null for a loop that stopped as asked. Carried for
+                        // the same reason the transport's stopped-loop answers
+                        // carry it -- without it the listener's report names
+                        // the shutdown and never the fault behind it.
+                        bossLoop.loopFailure(),
+                    ),
+                )
+            }
+        }
+
+        /**
+         * Ends this listener with the reason: the port is released, so a peer
+         * is refused promptly instead of parking in a backlog nobody drains,
+         * and the address leaves [activeLocalAddresses]. Runs on the thread
+         * that owns the loop's ledgers — the boss loop for a re-arm's answer,
+         * the terminal sequence's claimant for an arm its drain executed. The
+         * registration, if any survived, is cleared with the sweep; what is
+         * left is the kernel interest and the descriptor.
+         *
+         * The last listener flips the server closed itself, before
+         * releasing its fd. What a reader can still catch is a closed
+         * server whose last port is on its way out — the shape [close]'s
+         * asynchronous-release contract already means — and the instant
+         * between the two adjacent flags, where a poll may read listening
+         * over zero listeners; adjacent atomics cannot close that instant.
+         * Not by calling [close]: its hand-off runs inline here only
+         * because the terminal claimant publishes its thread id, and on a
+         * double without that it would wait for a quiescence this frame is
+         * upstream of — simpler to depend on neither.
+         *
+         * The ledger entry, where one survived, is not popped here: a live
+         * arm's failure was withdrawn by the loop already, a drained arm's
+         * entry is cleared by the stop sweep, and every caller that gets
+         * here runs where the loop's own work runs — the loop's thread for a
+         * re-arm's answer, and, for an arm the terminal sequence executes,
+         * the claimant that published itself as that thread before draining.
+         * So there is no queued arm left that could act on this descriptor
+         * afterwards: whatever is in the queue is being drained by this very
+         * frame's thread. Those are the three legs this leans on, and the
+         * third is about *where* a caller runs rather than which entry point
+         * it came through — a call that reached here from a thread the loop
+         * does not answer for could leave a queued arm to pass the identity
+         * check over a closed, re-handed descriptor.
+         */
+        private fun endListener(armFailure: Throwable) {
+            if (!dead.compareAndSet(0, 1)) return
+            if (acceptArms.all { it.dead.value != 0 }) closedFlag.compareAndSet(0, 1)
+            logger.error(armFailure) {
+                // "will not fire" rather than "failed": both timings end the
+                // listener the same way, but one of them is an arm the kernel
+                // took on a loop that had already stopped polling, and calling
+                // that a failure sends a reader looking for an errno that was
+                // never returned. The cause says which it was.
+                "the accept arm will not fire; closing this listener: " +
+                    "serverFd=${listener.serverFd} address=${listener.localAddress}"
+            }
+            bossLoop.cleanupFd(listener.serverFd)
+            closeFdSafely(listener.serverFd, logger, "accept arm failure")
         }
     }
 
     private val acceptArms = listeners.map { AcceptArm(it) }
 
-    /** Starts accepting connections on the boss EventLoop (every listener). */
+    /**
+     * Starts accepting connections on the boss EventLoop (every listener).
+     *
+     * The arms are handed to the boss loop as one task rather than issued
+     * from the caller's thread: an off-loop `registerCallback` queues its arm
+     * and a failure there has no frame to answer into, while on the loop the
+     * refusal returns to [AcceptArm.arm], which ends that listener. A boss
+     * that has already stopped closes the server instead — a bound port must
+     * not outlive the loop that would have accepted on it — and says so,
+     * because nothing else would: the close is silent, and the caller holds a
+     * server that never listened.
+     *
+     * **The wait is bounded.** A hand-off landing while the boss is finishing
+     * spins out its final drain and stop sweep, which run application code;
+     * every other caller of that hand-off is a closing thread stalling only
+     * itself, but this one is the tail of a bind, on whatever thread the
+     * application binds from — possibly holding a lock the sweep's handlers
+     * want. The budget the accept hand-off spends on a stopping worker is the
+     * right size here too: long enough that a boss finishing normally is
+     * waited out and the arms go on the loop, short enough that a bind cannot
+     * be held for a human-noticeable time.
+     *
+     * Giving up means the arms were never issued, so the ports go back — and
+     * the give-up path releases them **itself** rather than calling [close]:
+     * that hand-off carries no budget, so it would wait out the very
+     * quiescence this one just declined to wait for, and the budget would buy
+     * nothing. Measured: routing it through [close] held the bind for the
+     * whole teardown, budget or no budget. It takes the same off-loop leg
+     * [close] takes for a swept boss, having marked the server closed first,
+     * so a `close()` arriving afterwards finds the work done rather than
+     * repeating it.
+     *
+     * Both give-up timings land in the same lambda — the hand-off runs
+     * `ifStopped` for a loop that was already quiescent and for one this
+     * thread stopped waiting on — so the ports go back there, and the report
+     * comes after, off the outcome. The outcome is the only exact answer:
+     * asking the loop again would let a quiescence published in between turn
+     * a bind that waited its whole budget into one that found the loop
+     * already gone, and those read very differently to whoever is holding
+     * the log. It is the distinction the accept hand-off's own tally makes,
+     * from the same values.
+     */
     fun start() {
-        acceptArms.forEach { it.arm() }
+        val outcome = bossLoop.runOnLoop(
+            onLoop = { acceptArms.forEach { it.arm() } },
+            ifStopped = {
+                closedFlag.compareAndSet(0, 1)
+                releaseListenerFds()
+            },
+            waitBudgetMicros = STOPPING_WORKER_WAIT_MICROS,
+        )
+        when (outcome) {
+            HandoffOutcome.HANDED_TO_LOOP -> Unit
+            HandoffOutcome.FELL_BACK -> logger.error {
+                "the EventLoop that would accept has stopped; closed this server unstarted: " +
+                    "addresses=${listeners.map { it.localAddress }}"
+            }
+            HandoffOutcome.FELL_BACK_AFTER_EXPIRY -> logger.error {
+                "the EventLoop that would accept did not finish stopping within " +
+                    "${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms; closed this server " +
+                    "unstarted: addresses=${listeners.map { it.localAddress }}"
+            }
+        }
     }
 
     /**
@@ -98,10 +295,11 @@ class ReadinessPipelinedStreamServer(
     /**
      * Whether the first listener still holds an accept registration.
      *
-     * A probe, for the one property of this class that has no other symptom: a
-     * listener that lost its registration goes on reporting [isActive] and
-     * simply never accepts again. Nothing in the public surface separates that
-     * from an idle server.
+     * A probe for the arm's presence itself. It used to be the only witness of
+     * a listener that lost its registration — the server went on reporting
+     * [isActive] and simply never accepted again — but a failed arm now ends
+     * its listener, so the public surface shows that fate through
+     * [activeLocalAddresses] and, for the last listener, [isActive].
      */
     fun isFirstListenerArmed(): Boolean =
         bossLoop.hasCallbackRegistration(listeners.first().serverFd, Interest.READ)
@@ -544,20 +742,47 @@ class ReadinessPipelinedStreamServer(
     override fun close() {
         if (!closedFlag.compareAndSet(0, 1)) return
         bossLoop.runOnLoop(
-            onLoop = {
-                for (listener in listeners) {
-                    bossLoop.unregisterCallback(listener.serverFd, Interest.READ)
-                    bossLoop.cleanupFd(listener.serverFd)
-                    closeFdSafely(listener.serverFd, logger, "pipelined server close")
-                }
-            },
-            // Loop gone: the callback registry is dead, so only release the fd.
-            ifStopped = {
-                for (listener in listeners) {
-                    closeFdSafely(listener.serverFd, logger, "pipelined server close")
-                }
-            },
+            onLoop = { releaseListenersOnLoop() },
+            ifStopped = { releaseListenerFds() },
         )
+    }
+
+    /**
+     * Gives back every listener the loop still has state for: the
+     * registration, the loop's own record of the fd, and the descriptor.
+     *
+     * Loop-thread only. Per listener through the same CAS a failed arm
+     * takes: a listener that already ended released its fd then, and by now
+     * the kernel may have handed that number to someone else.
+     */
+    private fun releaseListenersOnLoop() {
+        for (arm in acceptArms) {
+            if (!arm.dead.compareAndSet(0, 1)) continue
+            bossLoop.unregisterCallback(arm.listener.serverFd, Interest.READ)
+            bossLoop.cleanupFd(arm.listener.serverFd)
+            closeFdSafely(arm.listener.serverFd, logger, "pipelined server close")
+        }
+    }
+
+    /**
+     * Releases the descriptors alone, for a loop whose ledgers are already
+     * gone — or one this thread has decided not to wait for.
+     *
+     * Safe off the loop because nothing of the loop's is left to touch, and
+     * both callers earn that differently. [close]'s stopped leg runs after
+     * the sweep, which emptied the ledgers. [start]'s give-up runs having
+     * won the hand-off's claim, which means the arms it would have issued
+     * never run — these descriptors were never registered at all. A third
+     * caller must be able to say which of those it is: an off-loop release
+     * of a descriptor a live loop still holds a registration for is the
+     * recycled-fd hazard the hand-off exists to prevent. The per-listener
+     * CAS keeps whichever caller arrives to one release apiece.
+     */
+    private fun releaseListenerFds() {
+        for (arm in acceptArms) {
+            if (!arm.dead.compareAndSet(0, 1)) continue
+            closeFdSafely(arm.listener.serverFd, logger, "pipelined server close")
+        }
     }
 
     /**

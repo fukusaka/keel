@@ -640,9 +640,36 @@ class NettyEngine(
         @Volatile
         private var closed = false
 
+        /**
+         * The listeners themselves, for the module's own tests: nothing on the
+         * public surface can single one out, and taking one down is how a
+         * partly-degraded server is staged.
+         */
+        internal val listenersForTest: List<Listener> get() = listeners
+
         override val localAddress: SocketAddress get() = listeners.first().localAddress
         override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
-        override val isActive: Boolean get() = !closed && listeners.all { it.serverChannel.isActive }
+        // Any, not all: a server with one channel down is still listening on
+        // the others, and saying otherwise contradicts the addresses
+        // [activeLocalAddresses] then names as accepting -- and tells a health
+        // check the server is down while it serves. False once nothing is left
+        // to accept on, the same bar the readiness engines' servers answer at:
+        // their own close, their last listener ending, or their accept loop
+        // stopping.
+        override val isActive: Boolean get() = !closed && listeners.any { it.serverChannel.isActive }
+
+        // Not the inherited default: that one derives the living set from
+        // [isActive], which stays true here while any channel is up, so a
+        // server with one channel down would answer that every address
+        // accepts -- including the one that no longer does. Asked per channel
+        // instead, so a partly-degraded server names only what is still
+        // accepting, which is the difference this property exists to show.
+        override val activeLocalAddresses: List<SocketAddress>
+            get() = if (closed) {
+                emptyList()
+            } else {
+                listeners.mapNotNull { l -> l.localAddress.takeIf { l.serverChannel.isActive } }
+            }
 
         override fun close() {
             if (closed) return
