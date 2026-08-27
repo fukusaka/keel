@@ -43,4 +43,26 @@ interface LoopParticipant {
      * different cause.
      */
     fun onLoopStopped()
+
+    /**
+     * The registration this participant joined with was withdrawn before it
+     * ever fired, because the kernel refused its arm.
+     *
+     * Only for an arm issued from off the loop, where the failure has no
+     * caller frame to return into: [AbstractReadinessEventLoop.joinLoop]
+     * answers an on-loop refusal by returning `false` instead. Called once,
+     * on the loop thread, after the registry has released this participant.
+     *
+     * This is not [onLoopStopped]: the loop is running and will keep
+     * dispatching for everyone else. What ended is this participant's own
+     * ability to hear anything — an arm is the only thing that delivers an
+     * event, so a withdrawn one leaves a connection that cannot hear its
+     * peer, not even its close. The default treats it as that stop, which is
+     * the same practical outcome for a participant that only registered to
+     * listen; a participant that wants to say something more precise
+     * overrides it.
+     */
+    fun onInitialArmRefused(cause: Throwable) {
+        onLoopStopped()
+    }
 }
