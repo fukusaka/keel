@@ -59,12 +59,15 @@ interface LoopParticipant {
      * event, so a withdrawn one leaves a connection that cannot hear its
      * peer, not even its close.
      *
-     * **The default only reports.** Delegating to [onLoopStopped] would tell
-     * a participant the loop is gone, and one that answers that by moving to
-     * another loop or by treating the engine as dead would be acting on
-     * something untrue. Reporting is the most any participant can be assumed
-     * to want; one that can do something about it — ending the connection
-     * this registration was for — overrides this.
+     * **The default does nothing.** The loop reports either way, with the
+     * syscall, fd and errno, before this is called — so what a default has to
+     * choose is what to do on top of that, and for an arbitrary participant
+     * the answer is nothing. Delegating to [onLoopStopped] was the obvious
+     * alternative and is wrong: it would tell a participant the loop is gone,
+     * and one that answers that by moving to another loop or by treating the
+     * engine as dead would be acting on something untrue. A participant that
+     * can do something about it — ending the connection this registration was
+     * for — overrides this.
      */
     fun onInitialArmRefused(cause: Throwable) = Unit
 }

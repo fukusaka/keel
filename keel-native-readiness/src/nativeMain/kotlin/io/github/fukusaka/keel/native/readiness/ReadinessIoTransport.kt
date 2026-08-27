@@ -620,19 +620,29 @@ class ReadinessIoTransport(
         }
 
     /**
-     * Whether this transport is registered with its EventLoop.
+     * Whether the join this transport's channel attempted was reported as
+     * taken.
      *
      * `false` means this transport holds neither the participant slot nor the
      * read callback, so no readiness will arrive and no stop notification
      * will. Two ways to get there: the loop had already swept by the time the
      * channel attached, or it took the registration and the kernel then
-     * refused the arm, which the loop answers by taking the join back. They
-     * differ in whether the loop is still running, and the report the
-     * construction site makes should not claim to know which without asking. **The
+     * refused the arm, which the loop answers by taking the join back. The
+     * second only when the channel attaches on the loop's own thread — an arm
+     * issued from off the loop is queued, so the join is reported as taken and
+     * a later refusal arrives through [onInitialArmRefused] instead. They
+     * differ in whether the loop is still running; the construction sites do
+     * not claim to know which, and the loop's own warning names it. **The
      * construction site owns [fd] in that case**, as `joinLoop`'s KDoc says, and
      * releases it by closing this transport: [close] is idempotent and does the
      * release itself, which closing the descriptor behind the object's back
      * would not be.
+     *
+     * `true` is therefore not "registered from here on": a queued arm refused
+     * afterwards leaves this flag set on a transport the loop has already
+     * released. What that connection gets is [onInitialArmRefused], which ends
+     * it — so nothing reads this flag to decide whether the connection is
+     * alive, only whether the join that has just been attempted took.
      *
      * Only meaningful once [onChannelAttached] has run — before that it is
      * `false` because nothing has been attempted, not because anything was

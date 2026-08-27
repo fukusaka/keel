@@ -2013,7 +2013,7 @@ abstract class AbstractReadinessEventLoop :
                     logger.error(armFailure) {
                         "${this::class.simpleName}.armRegisteredCallback: the arm for fd=$fd " +
                             "${interest.name} was refused after ${joined::class.simpleName} " +
-                            "joined; telling it and releasing it from the registry"
+                            "joined; releasing it from the registry and telling it"
                     }
                     joined.onInitialArmRefused(armFailure)
                 }

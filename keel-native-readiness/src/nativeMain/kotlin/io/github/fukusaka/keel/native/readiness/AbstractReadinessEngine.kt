@@ -325,28 +325,29 @@ abstract class AbstractReadinessEngine(
             ReadinessPipelinedChannel(transport, logger, address, null)
         }
         if (!transport.joinedLoop) {
-            // The loop swept between this call's check at the top and that join.
+            // Two ways to arrive: the loop swept between this call's check at
+            // the top and that join, or it was running and the kernel refused
+            // the arm. The second only when this call is itself on that loop's
+            // thread -- an arm queued from anywhere else is answered after the
+            // join has already been reported as taken, and reaches the
+            // connection through [LoopParticipant.onInitialArmRefused] instead.
+            // This message names neither, because from here it would be a
+            // guess. The loop knows which, and said so in the warning it logged
+            // on its way to taking the join back, with the syscall, fd and
+            // errno.
+            //
             // Closing the transport rather than the descriptor: close() is
             // idempotent and releases the fd itself, so nothing here can close a
             // number the loop might still hold or that a later close would close
             // twice. The channel is discarded unreturned.
-            // Which of the two the join answered `false` for is the loop's to
-            // say: a swept loop is finishing, a refused arm leaves it running.
-            // The arm's own failure is not repeated here -- the loop logged it
-            // with the syscall, fd and errno on its way to taking the join
-            // back, and this frame never sees the value.
             val stopped = IllegalStateException(
-                if (workerLoop.isFinishing()) {
-                    "connect(address) failed: the EventLoop stopped during connect"
-                } else {
-                    "connect(address) failed: the EventLoop refused to arm this connection's read"
-                },
+                "connect($address) failed: this connection could not join its EventLoop",
             )
-            // Through the same release as the guards, because this branch is the
-            // one where the loop has already swept: `close()` then runs the teardown
-            // inline on this thread, and a stage that fails re-raises -- which would
-            // hand the caller a buffer-release failure with nothing saying the loop
-            // stopped.
+            // Through the same release as the guards, because the teardown runs
+            // inline on this thread either way: a swept loop has nothing left to
+            // run it, and a refused arm means this frame is the loop thread. A
+            // stage that fails re-raises, which would hand the caller a
+            // buffer-release failure with nothing saying the join did not take.
             releaseTransport(transport, stopped)
             throw stopped
         }
@@ -426,23 +427,16 @@ abstract class AbstractReadinessEngine(
             ReadinessPipelinedChannel(transport, logger, remoteAddr, localAddr)
         }
         if (!transport.joinedLoop) {
-            // The loop swept between this call's check at the top and that join.
-            // Closing the transport rather than the descriptor: close() is
+            // Both ways in, and why this says neither: see the sibling connect
+            // path. Closing the transport rather than the descriptor: close() is
             // idempotent and releases the fd itself, so nothing here can close a
             // number the loop might still hold or that a later close would close
             // twice. The channel is discarded unreturned.
             val stopped = IllegalStateException(
-                if (workerLoop.isFinishing()) {
-                    "connect(remoteAddr) failed: the EventLoop stopped during connect"
-                } else {
-                    "connect(remoteAddr) failed: the EventLoop refused to arm this connection's read"
-                },
+                "connect() failed: this connection could not join its EventLoop",
             )
-            // Through the same release as the guards, because this branch is the
-            // one where the loop has already swept: `close()` then runs the teardown
-            // inline on this thread, and a stage that fails re-raises -- which would
-            // hand the caller a buffer-release failure with nothing saying the loop
-            // stopped.
+            // Through the same release as the guards, because the teardown runs
+            // inline on this thread either way; see the sibling path.
             releaseTransport(transport, stopped)
             throw stopped
         }
