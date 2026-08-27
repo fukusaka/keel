@@ -640,9 +640,29 @@ class NettyEngine(
         @Volatile
         private var closed = false
 
+        /**
+         * The listeners themselves, for the module's own tests: nothing on the
+         * public surface can single one out, and taking one down is how a
+         * partly-degraded server is staged.
+         */
+        internal val listenersForTest: List<Listener> get() = listeners
+
         override val localAddress: SocketAddress get() = listeners.first().localAddress
         override val localAddresses: List<SocketAddress> get() = listeners.map { it.localAddress }
         override val isActive: Boolean get() = !closed && listeners.all { it.serverChannel.isActive }
+
+        // Not the inherited default: that one derives the living set from
+        // [isActive], which this server reads as "every channel is up". One
+        // channel going down would then answer "no address accepts" while its
+        // siblings still do -- the reverse of what this property says. Asked
+        // per channel instead, so a partly-degraded server names the
+        // addresses that are still accepting.
+        override val activeLocalAddresses: List<SocketAddress>
+            get() = if (closed) {
+                emptyList()
+            } else {
+                listeners.mapNotNull { l -> l.localAddress.takeIf { l.serverChannel.isActive } }
+            }
 
         override fun close() {
             if (closed) return

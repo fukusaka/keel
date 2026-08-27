@@ -97,6 +97,44 @@ class NettyMultiAddressBindTest {
     }
 
     @Test
+    fun `a server that lost one listener names the addresses still accepting`() = runTest {
+        // This server reads isActive as "every channel is up", so deriving the
+        // living set from that bit — as the interface default does — would
+        // answer "no address accepts" for a server still serving one. Asked
+        // per channel, the answer names the survivor. Found by independent
+        // review of the readiness engines' per-listener work.
+        val engine = NettyEngine()
+        try {
+            val server = engine.bindPipeline(listOf(loopbackSpec(), loopbackSpec())) { ch ->
+                ch.pipeline.addLast("echo", EchoHandler())
+            }
+            try {
+                val addresses = server.localAddresses
+                assertEquals(addresses, server.activeLocalAddresses, "all up, all accepting")
+
+                // One listener's channel goes down behind the server's back —
+                // what a channel-level failure leaves, without one to inject.
+                // Reached through the module-internal server, since nothing on
+                // the public surface can single a listener out.
+                val impl = server as NettyEngine.NettyPipelinedServer
+                impl.listenersForTest.first().serverChannel.close().sync()
+
+                assertEquals(
+                    listOf(addresses[1]),
+                    server.activeLocalAddresses,
+                    "the survivor is named, not emptied out with its sibling",
+                )
+                assertEchoServed(portOf(addresses[1]))
+            } finally {
+                server.close()
+            }
+            assertEquals(emptyList(), server.activeLocalAddresses, "and a closed server claims none")
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
     fun `a single-entry bind list behaves like the single-address overload`() = runTest {
         val engine = NettyEngine()
         try {

@@ -117,6 +117,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-netty`: `activeLocalAddresses` is asked per listener, so a server that lost one channel
+  names the addresses still accepting instead of reporting none (#1072)
 - `engine-epoll` / `engine-kqueue`: a listener whose accept arm the kernel refuses now ends —
   its port is released and its address leaves the active set, and the server closes with its
   last listener — instead of reporting active while never accepting again (#1072)
