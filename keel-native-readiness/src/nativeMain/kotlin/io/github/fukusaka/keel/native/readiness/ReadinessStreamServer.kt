@@ -228,7 +228,15 @@ class ReadinessStreamServer(
             // differ in what should happen to the accept loop and not just in
             // what to say. [acceptJoinFailure] is where that is decided; the
             // answer comes from the loop rather than from reading its state
-            // here, which would be a guess. What this frame adds is the
+            // here, which would be a guess.
+            //
+            // A refused arm reaches this site only when the caller drives the
+            // accept from the worker's own thread, since an arm issued from
+            // anywhere else is queued and the join comes back taken. The
+            // in-tree callers resume on the boss loop, which is a different
+            // loop from every worker, so what they see here is the sweep. The
+            // branch is for the caller that can construct the other, and is
+            // held to that by a seam case that builds one. What this frame adds is the
             // accept-side framing: that a connection was dropped, not that a
             // registration was refused. `_active` is still true either way,
             // because the server was never closed. The channel is discarded

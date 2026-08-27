@@ -162,8 +162,9 @@ class ReadinessIoTransport(
      * on the same thread with the same nothing above it, and letting that one
      * fall through to the backstop in the event loop leaves the connection
      * open in CLOSE-WAIT holding its descriptor -- the loop survives, and the
-     * fd is never released by anybody. One caller is not the dispatch's: the
-     * [readEnabled] setter wraps its re-arm here. That setter runs on whichever
+     * fd is never released by anybody. Not every caller is the dispatch's --
+     * [onInitialArmRefused] and the deferred-flush entries come from loop tasks,
+     * and the [readEnabled] setter wraps its re-arm here. That setter runs on whichever
      * thread writes the property -- the accept hand-off is a loop task, but a
      * Channel-mode re-enable comes from the consumer -- and the rule below
      * holds either way. On the loop the arm is issued inline and its refusal

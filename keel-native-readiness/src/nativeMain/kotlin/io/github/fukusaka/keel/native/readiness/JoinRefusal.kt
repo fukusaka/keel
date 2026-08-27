@@ -62,12 +62,17 @@ internal fun joinRefusalReason(refusal: JoinRefusal?): String = when (refusal) {
  * loop is running, the failure belongs to the one connection whose descriptor
  * has already gone back, and ending the whole accept loop over it would take a
  * healthy server off the air.
+ *
+ * A `null` refusal is not reachable from a site that checks the join first, and
+ * takes the same answer as a refused arm rather than the cancellation: if this
+ * ever became reachable it would mean this loop's own bookkeeping was wrong,
+ * and the smaller blast radius for that is the one connection.
  */
 internal fun acceptJoinFailure(refusal: JoinRefusal?): Throwable {
     val message = "accept dropped this connection: ${joinRefusalReason(refusal)}"
-    return if (refusal == JoinRefusal.ARM_REFUSED) {
-        IllegalStateException(message)
-    } else {
+    return if (refusal == JoinRefusal.LOOP_STOPPED) {
         CancellationException(message)
+    } else {
+        IllegalStateException(message)
     }
 }

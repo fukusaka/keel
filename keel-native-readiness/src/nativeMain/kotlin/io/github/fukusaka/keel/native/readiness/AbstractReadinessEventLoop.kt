@@ -2013,8 +2013,9 @@ abstract class AbstractReadinessEventLoop :
                 // will never deliver an event, and for the transports that
                 // join this way that is a connection which can never hear its
                 // peer, not even its close. Told through the registry's own
-                // notification so the participant hears it exactly once and
-                // leaves the registry with it, the same shape a sweep uses.
+                // notification so the participant hears it exactly once, the
+                // same shape a sweep uses -- and leaves the registry with it
+                // when this join is what put it there.
                 // Callers that pass no participant keep the older contract:
                 // nothing here has a frame to answer into either, so the
                 // withdrawal's ERROR report is all there is. That is the
