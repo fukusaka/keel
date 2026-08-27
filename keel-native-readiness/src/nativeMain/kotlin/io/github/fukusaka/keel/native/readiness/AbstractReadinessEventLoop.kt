@@ -1637,6 +1637,15 @@ abstract class AbstractReadinessEventLoop :
      * nothing about whether this loop is ending or was already asked to. The
      * body's own check answers that, and answers it in the right order.
      */
+    /**
+     * Publishes `finished` alone, for the doubles that stage the window
+     * between it and quiescence — the one a hand-off's budget exists for.
+     * The loops themselves reach it through [terminate].
+     */
+    internal fun publishLoopFinishedForTest() {
+        handoff.markFinished()
+    }
+
     protected fun recordLoopFault(cause: Throwable) {
         handoff.recordLoopFailure(cause)
     }

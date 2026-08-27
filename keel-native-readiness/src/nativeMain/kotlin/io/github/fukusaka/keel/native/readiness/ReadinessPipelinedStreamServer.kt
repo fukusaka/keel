@@ -214,28 +214,43 @@ class ReadinessPipelinedStreamServer(
      * want. The budget the accept hand-off spends on a stopping worker is the
      * right size here too: long enough that a boss finishing normally is
      * waited out and the arms go on the loop, short enough that a bind cannot
-     * be held for a human-noticeable time. Giving up early only means the
-     * arms were never issued — which [ifStopped] answers by closing the
-     * server, the same fate a swept boss gives it.
+     * be held for a human-noticeable time.
+     *
+     * Giving up means the arms were never issued, so the ports go back — and
+     * the give-up path releases them **itself** rather than calling [close]:
+     * that hand-off carries no budget, so it would wait out the very
+     * quiescence this one just declined to wait for, and the budget would buy
+     * nothing. Measured: routing it through [close] held the bind for the
+     * whole teardown, budget or no budget. It takes the same off-loop leg
+     * [close] takes for a swept boss, having marked the server closed first,
+     * so a `close()` arriving afterwards finds the work done rather than
+     * repeating it.
+     *
+     * Both give-up timings land in the same lambda — the hand-off runs
+     * `ifStopped` for a loop that was already quiescent and for one this
+     * thread stopped waiting on — so the report names which it was rather
+     * than the branch being split in two.
      */
     fun start() {
-        val outcome = bossLoop.runOnLoop(
+        bossLoop.runOnLoop(
             onLoop = { acceptArms.forEach { it.arm() } },
             ifStopped = {
+                val stopped = bossLoop.isStopped()
                 logger.error {
-                    "the EventLoop that would accept has stopped; closing this server unstarted: " +
-                        "addresses=${listeners.map { it.localAddress }}"
+                    if (stopped) {
+                        "the EventLoop that would accept has stopped; closing this server unstarted: " +
+                            "addresses=${listeners.map { it.localAddress }}"
+                    } else {
+                        "the EventLoop that would accept did not finish stopping within " +
+                            "${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms; closing this server " +
+                            "unstarted: addresses=${listeners.map { it.localAddress }}"
+                    }
                 }
-                close()
+                closedFlag.compareAndSet(0, 1)
+                releaseListenerFds()
             },
             waitBudgetMicros = STOPPING_WORKER_WAIT_MICROS,
         )
-        if (outcome == HandoffOutcome.FELL_BACK_AFTER_EXPIRY) {
-            logger.error {
-                "the EventLoop that would accept did not finish stopping within " +
-                    "${STOPPING_WORKER_WAIT_MICROS / MICROS_PER_MILLI}ms; the server above was closed unstarted"
-            }
-        }
     }
 
     /**
@@ -696,26 +711,42 @@ class ReadinessPipelinedStreamServer(
      */
     override fun close() {
         if (!closedFlag.compareAndSet(0, 1)) return
-        // Per listener through the same CAS a failed arm takes: a listener
-        // that already ended released its fd then, and by now the kernel may
-        // have handed that number to someone else.
         bossLoop.runOnLoop(
-            onLoop = {
-                for (arm in acceptArms) {
-                    if (!arm.dead.compareAndSet(0, 1)) continue
-                    bossLoop.unregisterCallback(arm.listener.serverFd, Interest.READ)
-                    bossLoop.cleanupFd(arm.listener.serverFd)
-                    closeFdSafely(arm.listener.serverFd, logger, "pipelined server close")
-                }
-            },
-            // Loop gone: the callback registry is dead, so only release the fd.
-            ifStopped = {
-                for (arm in acceptArms) {
-                    if (!arm.dead.compareAndSet(0, 1)) continue
-                    closeFdSafely(arm.listener.serverFd, logger, "pipelined server close")
-                }
-            },
+            onLoop = { releaseListenersOnLoop() },
+            ifStopped = { releaseListenerFds() },
         )
+    }
+
+    /**
+     * Gives back every listener the loop still has state for: the
+     * registration, the loop's own record of the fd, and the descriptor.
+     *
+     * Loop-thread only. Per listener through the same CAS a failed arm
+     * takes: a listener that already ended released its fd then, and by now
+     * the kernel may have handed that number to someone else.
+     */
+    private fun releaseListenersOnLoop() {
+        for (arm in acceptArms) {
+            if (!arm.dead.compareAndSet(0, 1)) continue
+            bossLoop.unregisterCallback(arm.listener.serverFd, Interest.READ)
+            bossLoop.cleanupFd(arm.listener.serverFd)
+            closeFdSafely(arm.listener.serverFd, logger, "pipelined server close")
+        }
+    }
+
+    /**
+     * Releases the descriptors alone, for a loop whose ledgers are already
+     * gone — or one this thread has decided not to wait for.
+     *
+     * Safe off the loop because it touches nothing the loop owns: the same
+     * CAS keeps it to one release per listener, and the registry it would
+     * otherwise withdraw from is either swept or about to be.
+     */
+    private fun releaseListenerFds() {
+        for (arm in acceptArms) {
+            if (!arm.dead.compareAndSet(0, 1)) continue
+            closeFdSafely(arm.listener.serverFd, logger, "pipelined server close")
+        }
     }
 
     /**

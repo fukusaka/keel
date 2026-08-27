@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.core.IpAddress
 import io.github.fukusaka.keel.native.posix.AcceptResult
 import io.github.fukusaka.keel.native.posix.FakeNativeSocket
 import io.github.fukusaka.keel.native.posix.FakeNativeSocketOps
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -20,6 +21,7 @@ import platform.posix.socket
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -155,6 +157,85 @@ internal class ServerAcceptArmFailureSeamTest : AbstractReadinessEventLoopFixtur
                 )
                 assertFalse(stillOpen(fd), "the port is released with the listener")
                 fake.assertAllConsumed()
+            } finally {
+                boss.close()
+                worker.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a bind that outwaits its budget gives the ports back itself`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The boss is finished but not quiescent — its drain and sweep are
+            // still running application code — so the hand-off waits, and the
+            // budget is what ends that wait. What the budget buys is only real
+            // if this frame then releases the ports itself: routing through
+            // close() would wait out the very quiescence it just declined to
+            // wait for. Measured by independent review, which found the first
+            // shape waiting the full teardown despite the budget.
+            val boss = FakeLoop(onLoopThread = false, runDispatchedInline = false)
+            val worker = FakeLoop()
+            val group = FakeWorkerGroup(worker)
+            val fd = newListenerFd()
+            val fake = FakeNativeSocket()
+            try {
+                val server = server(
+                    boss,
+                    group,
+                    fake,
+                    ReadinessPipelinedStreamServer.Listener(fd, address(18209), BindConfig()),
+                )
+                boss.stageFinishedNotQuiescent()
+
+                server.start()
+
+                assertFalse(server.isActive, "the arms were never issued, so the server is not listening")
+                assertTrue(
+                    server.activeLocalAddresses.isEmpty(),
+                    "no address is claimed accepting: ${server.activeLocalAddresses}",
+                )
+                assertFalse(stillOpen(fd), "and the port is back, released by this frame rather than a wait")
+                assertTrue(
+                    boss.errors.any { "did not finish stopping" in it },
+                    "the give-up is reported, naming the addresses: ${boss.errors}",
+                )
+            } finally {
+                worker.close()
+            }
+        }
+    }
+
+    @Test
+    fun `an arm on a boss that died carries the reason it died`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The listener's end names the shutdown; what killed the loop is
+            // the operator's actual question, and the transport's stopped-loop
+            // answers have carried it all along. Found by independent review:
+            // the cause was added without a test, so nothing said it arrived.
+            val boss = FakeLoop(onLoopThread = false, runDispatchedInline = false)
+            val worker = FakeLoop()
+            val group = FakeWorkerGroup(worker)
+            val fd = newListenerFd()
+            val fake = FakeNativeSocket()
+            try {
+                val server = server(
+                    boss,
+                    group,
+                    fake,
+                    ReadinessPipelinedStreamServer.Listener(fd, address(18208), BindConfig()),
+                )
+                server.start()
+                boss.stageLoopFault(InjectedFault("the poll this loop died on"))
+                boss.closeAsStoppedLoop()
+
+                assertFalse(server.isActive, "the arm the drain ran will never fire, so the listener ended")
+                val reported = boss.logger.records.firstOrNull { "accept arm failed" in it.second }
+                assertNotNull(reported, "the end is reported: ${boss.errors}")
+                assertTrue(
+                    reported.third?.cause is InjectedFault,
+                    "and the reason the loop died rides along, got: ${reported.third?.cause}",
+                )
             } finally {
                 boss.close()
                 worker.close()

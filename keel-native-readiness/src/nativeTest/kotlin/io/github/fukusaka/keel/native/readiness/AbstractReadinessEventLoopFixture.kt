@@ -85,6 +85,20 @@ internal abstract class AbstractReadinessEventLoopFixture {
          * transport cases call it in teardown and their loop must stay live
          * to the end of the test.
          */
+        /**
+         * Records what killed this loop, the way an engine's poll does before
+         * it breaks out — for the readers that ask a stopped loop why.
+         */
+        fun stageLoopFault(cause: Throwable) = recordLoopFault(cause)
+
+        /**
+         * Publishes `finished` without `quiescent`: the window a real loop is
+         * in while its final drain and stop sweep run. A hand-off landing
+         * here waits — with a budget, until that budget runs out — which is
+         * the only way to reach the expiry branch from a double.
+         */
+        fun stageFinishedNotQuiescent() = publishLoopFinishedForTest()
+
         fun closeAsStoppedLoop() {
             finishWithoutRunning()
             freeWritevScratch()
