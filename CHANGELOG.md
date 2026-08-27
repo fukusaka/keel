@@ -133,8 +133,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `engine-epoll` / `engine-kqueue`: a connection whose initial read arm the kernel refuses is
-  reported as not joined, or ended if its arm was already queued, instead of coming back joined
-  and permanently unable to hear its peer — including the close (#1073)
+  dropped, not left joined and deaf to its peer (#1073)
 - `engine-epoll` / `engine-kqueue`: a listener whose accept arm the kernel refuses now ends —
   its port is released and its address leaves the active set, and the server closes with its
   last listener — instead of reporting active while never accepting again (#1072)
