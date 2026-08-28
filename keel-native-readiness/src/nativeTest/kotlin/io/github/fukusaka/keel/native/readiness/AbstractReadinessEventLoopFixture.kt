@@ -732,6 +732,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
     protected fun loopTestWith(loop: FakeLoop, block: suspend CoroutineScope.(FakeLoop) -> Unit) = runBlocking {
         withTimeout(TEST_BUDGET) {
             val waiters = CoroutineScope(coroutineContext + Job())
+            var closeFailure: Throwable? = null
             try {
                 waiters.block(loop)
             } finally {
@@ -750,13 +751,15 @@ internal abstract class AbstractReadinessEventLoopFixture {
                 // The loop this helper handed out is the helper's to give
                 // back. Here rather than after the lock checks below, so a case
                 // that fails one of them still returns the scratch -- and
-                // guarded, like the teardown guards its own closes: a throw
-                // here would otherwise stand in for whatever the case was
-                // really reporting, and take those two checks with it. Nothing
-                // is lost by swallowing it, because a close that failed leaves
-                // the scratch checked out and the teardown reports the loop --
-                // the same news, arriving from the place that watches for it.
-                runCatching { loop.close() }
+                // caught, like the teardown catches its own closes, so a throw
+                // does not stand in for whatever the case was really reporting
+                // or take those two checks with it. Kept, also like the
+                // teardown: swallowing it would be safe only for a close that
+                // failed before freeing, and [OpenTestLoops] names the other
+                // shape among its premises -- a close that grew a second duty
+                // returns the scratch and then fails, and the teardown has
+                // nothing left to notice. Fifty-two cases go quiet, measured.
+                closeFailure = runCatching { loop.close() }.exceptionOrNull()
             }
             // The lock outlives every test: nothing frees it, so a fake that
             // reports a failure means this class broke its own exclusion. The
@@ -767,6 +770,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
                 assertFalse(loop.lockBroken(), "no test may leave the registration lock broken")
             }
             assertTrue(loop.lockFree(), "no test may leave the registration lock held")
+            // Last, so the checks above run first and a case's own failure is
+            // never displaced by this one.
+            val failedClose = closeFailure
+            if (failedClose != null) throw failedClose
         }
     }
 
