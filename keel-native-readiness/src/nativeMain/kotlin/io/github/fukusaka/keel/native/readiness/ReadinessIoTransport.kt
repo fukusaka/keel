@@ -184,10 +184,11 @@ class ReadinessIoTransport(
      * — [body]'s failure is re-raised rather than swallowed; see
      * [endConnectionAfterFailure] for why, and for why that decision cannot be
      * made by calling the notification a second time. The intended recipient is
-     * the backstop in the readiness dispatch — or, for the deferred-flush
-     * entries, the loop's per-task guard — the only *guard* between here and
-     * the loop's `pthread` entry point, so a new call site must be one a
-     * backstop reaches. The one entry that has none is `awaitPendingFlush`'s
+     * the backstop in the readiness dispatch — or, for the entries that arrive
+     * as loop tasks (the deferred flushes and [onInitialArmRefused]), the
+     * loop's per-task guard — the only *guard* between here and the loop's
+     * `pthread` entry point, so a new call site must be one a backstop
+     * reaches. The one entry that has none is `awaitPendingFlush`'s
      * register, which wraps this in its own catch for exactly that reason.
      */
     @Suppress("TooGenericExceptionCaught")

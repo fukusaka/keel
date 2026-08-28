@@ -1923,10 +1923,12 @@ abstract class AbstractReadinessEventLoop :
      * queued, and its failure is answered where it happens — see
      * [armRegisteredCallback].
      *
-     * @return `null` if both registrations took **and the arm was accepted**,
-     *   otherwise which of the two refused — in which case nothing this call
-     *   made is left behind. The two are not interchangeable to the caller:
-     *   see [JoinRefusal].
+     * @return `null` if both registrations took and nothing has refused the
+     *   arm **by the time this returns** — which off the loop means only that
+     *   the arm is queued, since its answer comes later through
+     *   [LoopParticipant.onInitialArmRefused]. Otherwise which of the two
+     *   refused, in which case nothing this call made is left behind. The two
+     *   are not interchangeable to the caller: see [JoinRefusal].
      */
     fun joinLoop(
         participant: LoopParticipant,
@@ -1988,6 +1990,17 @@ abstract class AbstractReadinessEventLoop :
      * -- so nothing can withdraw between the append and the arm. A check there
      * would be a lock acquisition every connection pays on every wake to prove
      * something already true.
+     *
+     * @param joined the participant to tell if a queued arm is refused, or
+     *   `null` for a caller with nobody to tell — the re-arms, whose refusal
+     *   returns to them when they issued it on the loop, and reaches nobody
+     *   when they did not.
+     * @param releaseJoined whether [joined] is this join's to take back out of
+     *   the registry. A participant that was already registered is told all the
+     *   same and left where it was; see [joinLoop].
+     * @return the arm's failure when this thread issued it, and `null` when it
+     *   was queued — a queued arm has not been tried yet by the time this
+     *   returns.
      */
     private fun armRegisteredCallback(
         fd: Int,
@@ -2029,7 +2042,7 @@ abstract class AbstractReadinessEventLoop :
                     logger.error(armFailure) {
                         "${this::class.simpleName}.armRegisteredCallback: the arm for fd=$fd " +
                             "${interest.name} was refused after ${joined::class.simpleName} " +
-                            "joined; this registration is gone and it is being told"
+                            "joined; this registration is gone and it is offered the reason"
                     }
                     joined.onInitialArmRefused(armFailure)
                 }

@@ -233,10 +233,10 @@ class ReadinessStreamServer(
             // A refused arm reaches this site only when the caller drives the
             // accept from the worker's own thread, since an arm issued from
             // anywhere else is queued and the join comes back taken. The
-            // in-tree callers resume on the boss loop, which is a different
-            // loop from every worker, so what they see here is the sweep. The
-            // branch is for the caller that can construct the other, and is
-            // held to that by a seam case that builds one. What this frame adds is the
+            // in-tree caller runs its accept loop on `Dispatchers.Default`,
+            // which is no loop's thread at all, so what it sees here is the
+            // sweep. The branch is for a caller that dispatches on a worker,
+            // and is held to that by a seam case that builds one. What this frame adds is the
             // accept-side framing: that a connection was dropped, not that a
             // registration was refused. `_active` is still true either way,
             // because the server was never closed. The channel is discarded
