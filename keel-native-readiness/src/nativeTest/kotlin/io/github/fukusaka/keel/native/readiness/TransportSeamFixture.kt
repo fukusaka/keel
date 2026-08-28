@@ -55,17 +55,18 @@ internal abstract class TransportSeamFixture : AbstractReadinessEventLoopFixture
         // byte-level syscall.
         fd = socket(AF_INET, SOCK_STREAM, 0)
         check(fd >= 0) { "socket() failed in test setUp" }
-    }
-
-    /**
-     * Ahead of the base's check that every loop was given back, so the loop
-     * this fixture built is not reported as one a case forgot.
-     */
-    override fun releaseFixtureResources() {
-        eventLoop.close()
-        // EBADF when a test's transport.close() already released it — ignored,
-        // like the engine fixtures ignore it.
-        if (fd >= 0) close(fd)
+        // Registered rather than released from an `@AfterTest` or an override:
+        // this runs ahead of the base's check, so the loop this fixture built
+        // is not reported as one a case forgot, and a fixture below this one
+        // has no `super` to forget. Reads `eventLoop` at teardown, not now, so
+        // a case that swaps it through rebuildLoop gives back the one it ends
+        // with -- rebuildLoop closes the one it replaces.
+        onRelease {
+            eventLoop.close()
+            // EBADF when a test's transport.close() already released it —
+            // ignored, like the engine fixtures ignore it.
+            if (fd >= 0) close(fd)
+        }
     }
 
     /** The transport under test, wired to the fixture's loop, allocator and syscall fake. */

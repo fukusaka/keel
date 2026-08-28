@@ -57,15 +57,22 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * rather than here (#1073). [OpenTestLoops] records them; this is what
      * reads the record.
      *
-     * The subclass hook rather than a second `@AfterTest`: two of those would
-     * run in whichever order the runner picks, and a fixture that closes its
-     * own loop after this ran would be reported as leaking it. Overriding says
-     * the order instead of hoping for it.
+     * Registration rather than a second `@AfterTest` or an overridable hook.
+     * Two `@AfterTest`s run in whichever order the runner picks, and a fixture
+     * that closed its own loop after this ran would be reported as leaking it
+     * -- the observed runner happens to take the subclass first, which is the
+     * safe order, but nothing specifies that. An overridable hook fixes the
+     * order and buys a worse problem: an override that forgets `super` silently
+     * drops what its parent was releasing, and that is a rule living in one
+     * file again. What a fixture registers in [onRelease] cannot be forgotten
+     * by the one below it.
      *
-     * **Anything else that failed in this case is reported by this line and not
-     * by itself** -- its own assertion, and its `@BeforeTest` too. The Native
-     * runner keeps the exception from `@AfterTest` and drops the earlier one,
-     * so there is no "see the real failure above" -- there is no above. The message says so rather than sending a reader after
+     * **When this line fails, whatever failed earlier in the case is not
+     * reported** -- its own assertion, its `@BeforeTest`. The Native runner
+     * keeps the exception from `@AfterTest` and drops the earlier one, so there
+     * is no "see the real failure above". A case that fails on its own and
+     * leaves nothing behind is reported normally; it is only when this line
+     * also fails that the earlier one is lost. The message says so rather than sending a reader after
      * output that was never written.
      */
     @AfterTest
@@ -73,17 +80,19 @@ internal abstract class AbstractReadinessEventLoopFixture {
         val closeFailures = mutableListOf<Throwable>()
         val left: List<AbstractReadinessEventLoop>
         try {
-            // Caught rather than left to skip the closes below: a hook that
-            // threw would otherwise leave every loop this case handed over
-            // open, and the drain would then clear the record of them -- a real
-            // leak that nothing reports. Its failure is answered with theirs.
-            runCatching { releaseFixtureResources() }.onFailure { closeFailures += it }
+            // Each guarded, and none allowed to skip the rest: a releaser that
+            // threw would otherwise leave every later one and every loop this
+            // case handed over unreleased, and the drain would then clear the
+            // record of them -- a real leak that nothing reports. Their
+            // failures are answered together.
+            releasers.forEach { release -> runCatching { release() }.onFailure { closeFailures += it } }
             ownedLoops.forEach { loop -> runCatching { loop.close() }.onFailure { closeFailures += it } }
         } finally {
             // Drained whatever happened above, or this case's loops would stay
             // in a record the next case reads as its own -- one case broken and
             // the following one blamed for it.
             ownedLoops.clear()
+            releasers.clear()
             left = OpenTestLoops.drain()
         }
         // Answered first, because a close that failed is why the scratch would
@@ -91,7 +100,8 @@ internal abstract class AbstractReadinessEventLoopFixture {
         // already handed its loop over to hand it over.
         assertTrue(
             closeFailures.isEmpty(),
-            "giving back what this case built failed: $closeFailures",
+            "giving back what this case and its fixture built failed: $closeFailures. " +
+                "Anything that failed earlier in the case is not in the report either.",
         )
         assertTrue(
             left.isEmpty(),
@@ -103,13 +113,21 @@ internal abstract class AbstractReadinessEventLoopFixture {
         )
     }
 
+    private val releasers = mutableListOf<() -> Unit>()
+
     /**
-     * Gives back what the fixture itself built, ahead of the check above.
+     * Registers something the fixture itself built, to be given back ahead of
+     * the check above.
      *
-     * Subclasses that own a loop or a descriptor release it here rather than in
-     * an `@AfterTest` of their own; see [everyLoopWasGivenBack].
+     * A fixture that owns a loop or a descriptor registers its release from
+     * `@BeforeTest` rather than overriding anything: there is no `super` for a
+     * fixture below it to forget, and every registration runs whatever the
+     * others do. See [everyLoopWasGivenBack] for why not an `@AfterTest` of
+     * its own.
      */
-    protected open fun releaseFixtureResources() {}
+    protected fun onRelease(block: () -> Unit) {
+        releasers += block
+    }
 
     private val ownedLoops = mutableListOf<AbstractReadinessEventLoop>()
 
