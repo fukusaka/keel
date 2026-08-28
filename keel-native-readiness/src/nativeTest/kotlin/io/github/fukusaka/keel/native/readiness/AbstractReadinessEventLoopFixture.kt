@@ -62,10 +62,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * own loop after this ran would be reported as leaking it. Overriding says
      * the order instead of hoping for it.
      *
-     * **A case that fails on its own assertion is reported by this line and not
-     * by that one.** The Native runner keeps the exception from `@AfterTest`
-     * and drops the body's, so there is no "see the real failure above" -- there
-     * is no above. The message says so rather than sending a reader after
+     * **Anything else that failed in this case is reported by this line and not
+     * by itself** -- its own assertion, and its `@BeforeTest` too. The Native
+     * runner keeps the exception from `@AfterTest` and drops the earlier one,
+     * so there is no "see the real failure above" -- there is no above. The message says so rather than sending a reader after
      * output that was never written.
      */
     @AfterTest
@@ -96,9 +96,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
         assertTrue(
             left.isEmpty(),
             "a loop double still holds its gather scratch: ${left.map { it::class.simpleName }} — " +
-                "close it, or hand it to owned() where it is built. If this case failed on its own " +
-                "assertion as well, that failure is not in the report: the runner keeps this one " +
-                "instead, so look at what the case was doing rather than at this line.",
+                "close it, or hand it to owned() where it is built. If anything else in this case " +
+                "failed first -- its own assertion, or its @BeforeTest -- that failure is not in " +
+                "the report: the runner keeps this one instead, so look at what the case was " +
+                "doing rather than at this line.",
         )
     }
 
