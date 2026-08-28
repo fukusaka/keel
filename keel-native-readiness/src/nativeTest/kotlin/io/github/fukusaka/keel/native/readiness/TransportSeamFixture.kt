@@ -15,7 +15,6 @@ import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
 import platform.posix.close
 import platform.posix.socket
-import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 
 /**
@@ -58,8 +57,11 @@ internal abstract class TransportSeamFixture : AbstractReadinessEventLoopFixture
         check(fd >= 0) { "socket() failed in test setUp" }
     }
 
-    @AfterTest
-    fun tearDown() {
+    /**
+     * Ahead of the base's check that every loop was given back, so the loop
+     * this fixture built is not reported as one a case forgot.
+     */
+    override fun releaseFixtureResources() {
         eventLoop.close()
         // EBADF when a test's transport.close() already released it — ignored,
         // like the engine fixtures ignore it.

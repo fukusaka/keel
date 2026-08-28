@@ -24,6 +24,7 @@ import platform.posix.pthread_equal
 import platform.posix.pthread_self
 import platform.posix.pthread_t
 import kotlin.coroutines.CoroutineContext
+import kotlin.test.AfterTest
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -46,6 +47,71 @@ import kotlin.time.Duration.Companion.seconds
  */
 @OptIn(InternalReadinessEngineApi::class)
 internal abstract class AbstractReadinessEventLoopFixture {
+
+    /**
+     * Fails a case that built a loop double and did not give it back.
+     *
+     * A loop takes its native gather scratch in its constructor, so one left
+     * open is a leak this suite could not see before — a whole class of cases
+     * stayed green while leaking, and the omission was found by a reviewer
+     * rather than here (#1073). [OpenTestLoops] records them; this is what
+     * reads the record.
+     *
+     * The subclass hook rather than a second `@AfterTest`: two of those would
+     * run in whichever order the runner picks, and a fixture that closes its
+     * own loop after this ran would be reported as leaking it. Overriding says
+     * the order instead of hoping for it.
+     *
+     * A case that fails before its close is reported here as well, so a red
+     * suite can show this alongside the real failure rather than instead of
+     * it. The names are printed for that reason.
+     */
+    @AfterTest
+    fun everyLoopWasGivenBack() {
+        releaseFixtureResources()
+        val closeFailures = mutableListOf<Throwable>()
+        ownedLoops.forEach { loop -> runCatching { loop.close() }.onFailure { closeFailures += it } }
+        ownedLoops.clear()
+        val left = OpenTestLoops.drain()
+        assertTrue(
+            left.isEmpty(),
+            "a loop double was never closed, so its gather scratch is still out: " +
+                "${left.map { it::class.simpleName }} — close it (try/finally), or say so with " +
+                "OpenTestLoops.waiveUnclosed if the case wedges it on purpose. If this case also " +
+                "failed above, fix that first: this may just be its unwind.",
+        )
+        assertTrue(
+            closeFailures.isEmpty(),
+            "closing a loop the case handed over failed: $closeFailures",
+        )
+    }
+
+    /**
+     * Gives back what the fixture itself built, ahead of the check above.
+     *
+     * Subclasses that own a loop or a descriptor release it here rather than in
+     * an `@AfterTest` of their own; see [everyLoopWasGivenBack].
+     */
+    protected open fun releaseFixtureResources() {}
+
+    private val ownedLoops = mutableListOf<AbstractReadinessEventLoop>()
+
+    /**
+     * Hands a loop to the fixture to close after the case.
+     *
+     * For the cases that build one at the top and drive it throughout, where a
+     * `finally` would be more unwind than test. **Not the fixture tidying up
+     * quietly**: a loop that goes through neither this nor a close of its own
+     * still fails [everyLoopWasGivenBack]. What this changes is that the case
+     * says whose the loop is, in one word, where it builds it.
+     *
+     * Not for a loop a case wedges on purpose -- closing that one here would
+     * hang the teardown; see [OpenTestLoops.waiveUnclosed].
+     */
+    protected fun <L : AbstractReadinessEventLoop> owned(loop: L): L {
+        ownedLoops += loop
+        return loop
+    }
 
     /**
      * Records what would have been armed instead of issuing a syscall.
@@ -71,11 +137,21 @@ internal abstract class AbstractReadinessEventLoopFixture {
         override val flushCoalescing: Boolean = true,
     ) : AbstractReadinessEventLoop() {
 
+        init {
+            // Recorded from here, not from a factory: the cases build these
+            // with a constructor call, so a factory would only watch the ones
+            // that remembered to use it. See [OpenTestLoops].
+            OpenTestLoops.opened(this)
+        }
+
         /** No thread of its own; the fixture drives the ledger and the sweep directly. */
         override fun start() = Unit
 
         /** No thread to stop, but the base's gather scratch is still owed back. */
-        override fun close() = freeWritevScratch()
+        override fun close() {
+            OpenTestLoops.closed(this)
+            freeWritevScratch()
+        }
 
         /**
          * What a real engine's `close()` does to a loop that never had a
@@ -86,6 +162,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
          * to the end of the test.
          */
         fun closeAsStoppedLoop() {
+            OpenTestLoops.closed(this)
             finishWithoutRunning()
             freeWritevScratch()
         }
@@ -483,6 +560,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
      */
     protected class RealQueueLoop(var onLoopThread: Boolean = true) : AbstractReadinessEventLoop() {
 
+        init {
+            OpenTestLoops.opened(this)
+        }
+
         /** Whether anything is still sitting on the base's task queue. */
         fun queueHoldsWork(): Boolean = hasTasksPending()
 
@@ -490,7 +571,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
         override fun start() = Unit
 
         /** No thread to stop, but the base's gather scratch is still owed back. */
-        override fun close() = freeWritevScratch()
+        override fun close() {
+            OpenTestLoops.closed(this)
+            freeWritevScratch()
+        }
 
         /** No connect path in this double. */
         override suspend fun awaitWriteReady(fd: Int, logger: Logger): Unit =
@@ -620,6 +704,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
                 // bare join() throws at once.
                 waiters.cancel()
                 withContext(NonCancellable) { waiters.coroutineContext.job.join() }
+                // The loop this helper handed out is the helper's to give
+                // back. Here rather than after the lock checks below, so a
+                // case that fails one of them still returns the scratch.
+                loop.close()
             }
             // The lock outlives every test: nothing frees it, so a fake that
             // reports a failure means this class broke its own exclusion. The
