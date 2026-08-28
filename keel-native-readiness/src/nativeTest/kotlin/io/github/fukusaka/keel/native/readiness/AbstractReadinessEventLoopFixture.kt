@@ -36,8 +36,10 @@ import kotlin.time.Duration.Companion.seconds
  * Holds what the split would otherwise have duplicated five times: the seven
  * test doubles, the `loopTest` / `suspendOn` / `chainOf` helpers, the
  * constants, and the teardown that asks each loop a case built whether its
- * scratch came back -- with [owned] and [onRelease], which are how a case and
- * a fixture say a loop is theirs to give. The transport seam fixture extends this too, for [FakeLoop] —
+ * scratch came back. A loop reaches that teardown three ways: [owned] for a
+ * case that built its own, [onRelease] for a fixture that has one to give
+ * back, and the `loopTest` helpers, which close the loop they hand out -- the
+ * last covering half the cases here. The transport seam fixture extends this too, for [FakeLoop] —
  * one loop double serving both families rather than a near-copy per family.
  *
  * All `protected` and nested rather than hoisted to package scope, which is
@@ -65,7 +67,11 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * it runs the leaf, then this base, then the fixture in between. So a
      * fixture that closed its own loop in an `@AfterTest` of its own would run
      * *after* this check and be reported as leaking it -- constructed and
-     * reproduced, not a worry about what some runner might do. An overridable
+     * reproduced, not a worry about what some runner might do. A second
+     * `@AfterTest` on *this* class is worse and is the reason not to add one
+     * here either: two on one class do not run in the order they are declared,
+     * so one that throws can take this check with it -- a review built both
+     * orders and saw exactly that. An overridable
      * hook fixes the order and buys a different problem: an override that
      * forgets `super` silently drops what its parent was releasing, and that is
      * a rule living in one file again. What a fixture registers in [onRelease]
