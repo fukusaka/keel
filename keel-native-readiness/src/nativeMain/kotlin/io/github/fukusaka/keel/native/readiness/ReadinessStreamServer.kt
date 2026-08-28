@@ -222,30 +222,34 @@ class ReadinessStreamServer(
             )
         }
         if (!transport.joinedLoop) {
-            // Same cause as the null-registration branch in [accept], so the
-            // same exception: AcceptLoop rethrows only CancellationException
-            // and otherwise logs and retries with backoff, and `_active` is
-            // still true here because the server was never closed — the loop
-            // stopped under it. The channel is discarded uninitialised.
+            // Two ways to arrive -- the worker swept under this accept, or it
+            // was running and the kernel refused the arm -- and unlike the other
+            // construction sites this one has to tell them apart, because they
+            // differ in what should happen to the accept loop and not just in
+            // what to say. [acceptJoinFailure] is where that is decided; the
+            // answer comes from the loop rather than from reading its state
+            // here, which would be a guess.
             //
-            // Through the funnel like the rest, for uniformity rather than
-            // for the report: the refusal is already logged one level down.
-            // `joinLoop` warns naming the same fd when it declines, and it is
-            // the only way this flag is false, so what this line adds is the
-            // accept-side framing -- that a connection was dropped, not that a
-            // registration was refused. The pair costs one accept-loop
-            // lifetime, since the raised cancellation ends that loop; a caller
-            // driving this public accept from a retry loop of its own would
-            // see both lines per attempt. The release failure the funnel attaches is
-            // what does not arrive here: suppressed exceptions on a
-            // cancellation cause do not generally surface.
+            // A refused arm reaches this site only when the caller drives the
+            // accept from the worker's own thread, since an arm issued from
+            // anywhere else is queued and the join comes back taken. The
+            // in-tree caller runs its accept loop on `Dispatchers.Default`,
+            // which is no loop's thread at all, so what it sees here is the
+            // sweep. The branch is for a caller that dispatches on a worker,
+            // and is held to that by a seam case that builds one. What this frame adds is the
+            // accept-side framing: that a connection was dropped, not that a
+            // registration was refused. `_active` is still true either way,
+            // because the server was never closed. The channel is discarded
+            // uninitialised.
+            //
+            // The release failure the funnel attaches is what may not arrive at
+            // the caller: suppressed exceptions on a cancellation cause do not
+            // generally surface. It is logged either way.
             releaseAndRaise(
                 clientFd,
                 transport,
-                cause = CancellationException(
-                    "accept unavailable: the EventLoop stopped while accepting",
-                ),
-                what = "the EventLoop stopped while accepting; dropping the connection",
+                cause = acceptJoinFailure(transport.joinRefusal),
+                what = "this connection could not join its EventLoop; dropping it",
             )
         }
         try {

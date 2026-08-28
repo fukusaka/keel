@@ -247,8 +247,16 @@ class EpollChannelAcceptGuardSeamTest {
                 // cannot say, since the registration path raises the same type.
                 assertEquals(
                     1,
-                    warns.messages.count { "the EventLoop stopped while accepting" in it && "fd=$doomed" in it },
+                    warns.messages.count { "could not join its EventLoop" in it && "fd=$doomed" in it },
                     "the drop is reported from the accept side, naming the descriptor: ${warns.messages}",
+                )
+                // The raise says only that the join did not take -- a refused
+                // arm ends the same way -- so the loop's own warning is the
+                // only thing that names which of the two it was. Pinned here
+                // because that is where a reader of this failure has to go.
+                assertTrue(
+                    warns.messages.any { "joinLoop: EventLoop stopped — refusing" in it },
+                    "the loop names the sweep it was, not an arm the kernel refused: ${warns.messages}",
                 )
                 server.close()
             } catch (t: Throwable) {

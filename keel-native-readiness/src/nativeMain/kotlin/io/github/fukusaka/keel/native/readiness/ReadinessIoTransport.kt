@@ -162,9 +162,19 @@ class ReadinessIoTransport(
      * on the same thread with the same nothing above it, and letting that one
      * fall through to the backstop in the event loop leaves the connection
      * open in CLOSE-WAIT holding its descriptor -- the loop survives, and the
-     * fd is never released by anybody. One caller is not the dispatch's: the
-     * [readEnabled] setter wraps its re-arm here, and its frames are
-     * loop-dispatched tasks, so the rule below still holds for it.
+     * fd is never released by anybody. Not every caller is the dispatch's --
+     * [onInitialArmRefused], the half-close and the deferred-flush entries all
+     * come from loop tasks, and the [readEnabled] setter wraps its re-arm
+     * here. That setter runs on whichever
+     * thread writes the property -- the accept hand-off is a loop task, but a
+     * Channel-mode re-enable comes from the consumer -- and the rule below
+     * holds either way. On the loop the arm is issued inline and its refusal
+     * returns into this containment. Off it the arm is queued and
+     * `registerCallback` answers null, so no failure reaches here at all: it
+     * happens later, on the loop, under the loop's per-task guard. What that
+     * shape loses is not the containment but the answer -- a queued re-arm
+     * carries no participant, so its refusal reaches nobody; see
+     * [AbstractReadinessEventLoop.armRegisteredCallback].
      *
      * [what] names the work being handled — one of the `WHAT_*` constants, so
      * this per-event path allocates nothing building it: the message is built
@@ -175,10 +185,11 @@ class ReadinessIoTransport(
      * — [body]'s failure is re-raised rather than swallowed; see
      * [endConnectionAfterFailure] for why, and for why that decision cannot be
      * made by calling the notification a second time. The intended recipient is
-     * the backstop in the readiness dispatch — or, for the deferred-flush
-     * entries, the loop's per-task guard — the only *guard* between here and
-     * the loop's `pthread` entry point, so a new call site must be one a
-     * backstop reaches. The one entry that has none is `awaitPendingFlush`'s
+     * the backstop in the readiness dispatch — or, for the entries that arrive
+     * as loop tasks (the deferred flushes, the half-close and
+     * [onInitialArmRefused]), the loop's per-task guard — the only *guard*
+     * between here and the loop's `pthread` entry point, so a new call site
+     * must be one a backstop reaches. The one entry that has none is `awaitPendingFlush`'s
      * register, which wraps this in its own catch for exactly that reason.
      */
     @Suppress("TooGenericExceptionCaught")
@@ -512,6 +523,22 @@ class ReadinessIoTransport(
         notifyInactive()
     }
 
+    /**
+     * The initial read arm this connection joined with was refused, so it
+     * will never hear its peer — not the bytes, not the close. Ends the
+     * connection with that reason rather than taking the stop notification's
+     * quieter path: the loop is running, so this is a failure of this
+     * connection alone, and a caller that later waits on it is owed the
+     * difference.
+     *
+     * On the loop thread, which is what lets the teardown run through to the
+     * descriptor here rather than being handed anywhere.
+     */
+    override fun onInitialArmRefused(cause: Throwable) {
+        if (!opened) return
+        containReadinessFailure(WHAT_INITIAL_READ_ARM) { throw cause }
+    }
+
     override val ioDispatcher: CoroutineDispatcher get() = eventLoop
 
     override val inOwningContext: Boolean get() = eventLoop.inEventLoop()
@@ -604,15 +631,29 @@ class ReadinessIoTransport(
         }
 
     /**
-     * Whether this transport is registered with its EventLoop.
+     * Whether the join this transport's channel attempted was reported as
+     * taken.
      *
-     * `false` means the loop had already swept by the time the channel attached,
-     * so this transport holds neither the participant slot nor the read callback
-     * — no readiness will arrive and no stop notification will. **The
+     * `false` means this transport holds neither the participant slot nor the
+     * read callback, so no readiness will arrive and no stop notification
+     * will. Two ways to get there: the loop had already swept by the time the
+     * channel attached, or it took the registration and the kernel then
+     * refused the arm, which the loop answers by taking the join back. The
+     * second only when the channel attaches on the loop's own thread — an arm
+     * issued from off the loop is queued, so the join is reported as taken and
+     * a later refusal arrives through [onInitialArmRefused] instead. They
+     * differ in whether the loop is still running, and which it was is in
+     * [joinRefusal] — from the loop, not derived here. **The
      * construction site owns [fd] in that case**, as `joinLoop`'s KDoc says, and
      * releases it by closing this transport: [close] is idempotent and does the
      * release itself, which closing the descriptor behind the object's back
      * would not be.
+     *
+     * `true` is therefore not "registered from here on": a queued arm refused
+     * afterwards leaves this flag set on a transport the loop has already
+     * released. What that connection gets is [onInitialArmRefused], which ends
+     * it — so nothing reads this flag to decide whether the connection is
+     * alive, only whether the join that has just been attempted took.
      *
      * Only meaningful once [onChannelAttached] has run — before that it is
      * `false` because nothing has been attempted, not because anything was
@@ -637,6 +678,26 @@ class ReadinessIoTransport(
      */
     @InternalReadinessEngineApi
     var joinedLoop: Boolean = false
+        private set
+
+    /**
+     * Why the join did not take, when [joinedLoop] is `false`.
+     *
+     * `null` while the join took, and before [onChannelAttached] has run at
+     * all. The construction sites read it to say what happened rather than to
+     * decide what to do — every one of them drops the connection either way —
+     * except the Channel-mode accept, where a swept loop and a refused arm
+     * differ in whether the accept loop itself should end (see
+     * [acceptJoinFailure]).
+     *
+     * The loop is what says which, rather than the site deriving it from the
+     * loop's state afterwards: that state moves — the finishing flag is
+     * published before the sweep — so a site that read it could name a refused
+     * arm as a sweep. Written on the same thread and under the same conditions
+     * as [joinedLoop].
+     */
+    @InternalReadinessEngineApi
+    var joinRefusal: JoinRefusal? = null
         private set
 
     init {
@@ -698,7 +759,9 @@ class ReadinessIoTransport(
      */
     override fun onChannelAttached() {
         if (joinedLoop) return
-        joinedLoop = eventLoop.joinLoop(this, fd, Interest.READ, this)
+        val refusal = eventLoop.joinLoop(this, fd, Interest.READ, this)
+        joinRefusal = refusal
+        joinedLoop = refusal == null
     }
 
     private fun armRead() {
@@ -2401,6 +2464,9 @@ class ReadinessIoTransport(
 
         /** The containment label for the read re-enable's arm, see [readEnabled]. */
         private const val WHAT_READ_REENABLE = "re-enabling read"
+
+        /** What [onInitialArmRefused] names, for the containment's report. */
+        private const val WHAT_INITIAL_READ_ARM = "the initial read arm"
 
         private const val WHAT_WRITE_READINESS = "readiness for WRITE"
         private const val WHAT_PEER_CLOSE = "the peer close"

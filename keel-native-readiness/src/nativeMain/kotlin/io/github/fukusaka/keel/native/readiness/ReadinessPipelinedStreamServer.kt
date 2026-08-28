@@ -544,7 +544,8 @@ class ReadinessPipelinedStreamServer(
      * picks up still finds the ledgers open — they close in the stop sweep that
      * follows — and is unwound by that sweep telling its participants instead;
      * the `joinedLoop` branch belongs to the drain the sweep itself runs
-     * afterwards. Either way the loop runs the work. This window is after all
+     * afterwards, and to an arm the kernel refuses while the loop is still
+     * running. Either way the loop runs the work. This window is after all
      * of them, where nothing runs it at all.
      *
      * [AbstractReadinessEventLoop.runOnLoop]
@@ -694,10 +695,18 @@ class ReadinessPipelinedStreamServer(
             return
         }
         if (!transport.joinedLoop) {
-            // Reached when the sweep's own final drain runs this queued accept.
-            // On the loop thread, so close() tears down synchronously; there is
-            // nobody to raise to, and the connection was never handed on. The
-            // channel is discarded uninitialised.
+            // Two ways to arrive: the sweep's own final drain runs this queued
+            // accept, or the loop is running and the kernel refused the arm.
+            // The second is ordinary here and nowhere else -- this is the one
+            // construction site that attaches on the loop's own thread, so the
+            // arm is issued inline and its refusal comes straight back out of
+            // the join, rather than arriving later through
+            // [LoopParticipant.onInitialArmRefused] as it does off the loop.
+            // Both end the same way and neither is told apart here: on the loop
+            // thread, so close() tears down synchronously; there is nobody to
+            // raise to, and the connection was never handed on. The loop named
+            // which in the warning it logged. The channel is discarded
+            // uninitialised.
             transport.close()
             return
         }
