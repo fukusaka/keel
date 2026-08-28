@@ -62,34 +62,43 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * own loop after this ran would be reported as leaking it. Overriding says
      * the order instead of hoping for it.
      *
-     * A case that fails before its close is reported here as well, so a red
-     * suite can show this alongside the real failure rather than instead of
-     * it. The names are printed for that reason.
+     * **A case that fails on its own assertion is reported by this line and not
+     * by that one.** The Native runner keeps the exception from `@AfterTest`
+     * and drops the body's, so there is no "see the real failure above" -- there
+     * is no above. The message says so rather than sending a reader after
+     * output that was never written.
      */
     @AfterTest
     fun everyLoopWasGivenBack() {
         val closeFailures = mutableListOf<Throwable>()
         val left: List<AbstractReadinessEventLoop>
         try {
-            releaseFixtureResources()
+            // Caught rather than left to skip the closes below: a hook that
+            // threw would otherwise leave every loop this case handed over
+            // open, and the drain would then clear the record of them -- a real
+            // leak that nothing reports. Its failure is answered with theirs.
+            runCatching { releaseFixtureResources() }.onFailure { closeFailures += it }
             ownedLoops.forEach { loop -> runCatching { loop.close() }.onFailure { closeFailures += it } }
         } finally {
-            // Drained whatever happened above, or a hook that threw would leave
-            // this case's loops in a record the next case reads as its own --
-            // one case broken and the following one blamed for it.
+            // Drained whatever happened above, or this case's loops would stay
+            // in a record the next case reads as its own -- one case broken and
+            // the following one blamed for it.
             ownedLoops.clear()
             left = OpenTestLoops.drain()
         }
+        // Answered first, because a close that failed is why the scratch would
+        // still be out: reporting the leak ahead of it would tell a case that
+        // already handed its loop over to hand it over.
+        assertTrue(
+            closeFailures.isEmpty(),
+            "giving back what this case built failed: $closeFailures",
+        )
         assertTrue(
             left.isEmpty(),
             "a loop double still holds its gather scratch: ${left.map { it::class.simpleName }} — " +
                 "close it, or hand it to owned() where it is built. If this case failed on its own " +
                 "assertion as well, that failure is not in the report: the runner keeps this one " +
                 "instead, so look at what the case was doing rather than at this line.",
-        )
-        assertTrue(
-            closeFailures.isEmpty(),
-            "closing a loop the case handed over failed: $closeFailures",
         )
     }
 
@@ -114,8 +123,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
      *
      * A case that means to end still holding scratch -- there is none today --
      * would need neither this nor a close, and would have to say so where the
-     * teardown asks. Nothing here can hang: these doubles' closes free the
-     * scratch and nothing else.
+     * teardown asks. Nothing here can hang, and that is a fact about the two
+     * doubles rather than about the bound: their closes free the scratch and do
+     * nothing else. A loop reaching this from somewhere else would owe its own
+     * account of what its close does.
      */
     protected fun <L : AbstractReadinessEventLoop> owned(loop: L): L {
         ownedLoops += loop
