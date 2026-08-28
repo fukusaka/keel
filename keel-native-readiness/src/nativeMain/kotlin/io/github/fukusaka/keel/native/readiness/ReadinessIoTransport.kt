@@ -163,8 +163,9 @@ class ReadinessIoTransport(
      * fall through to the backstop in the event loop leaves the connection
      * open in CLOSE-WAIT holding its descriptor -- the loop survives, and the
      * fd is never released by anybody. Not every caller is the dispatch's --
-     * [onInitialArmRefused] and the deferred-flush entries come from loop tasks,
-     * and the [readEnabled] setter wraps its re-arm here. That setter runs on whichever
+     * [onInitialArmRefused], the half-close and the deferred-flush entries all
+     * come from loop tasks, and the [readEnabled] setter wraps its re-arm
+     * here. That setter runs on whichever
      * thread writes the property -- the accept hand-off is a loop task, but a
      * Channel-mode re-enable comes from the consumer -- and the rule below
      * holds either way. On the loop the arm is issued inline and its refusal
@@ -185,10 +186,10 @@ class ReadinessIoTransport(
      * [endConnectionAfterFailure] for why, and for why that decision cannot be
      * made by calling the notification a second time. The intended recipient is
      * the backstop in the readiness dispatch — or, for the entries that arrive
-     * as loop tasks (the deferred flushes and [onInitialArmRefused]), the
-     * loop's per-task guard — the only *guard* between here and the loop's
-     * `pthread` entry point, so a new call site must be one a backstop
-     * reaches. The one entry that has none is `awaitPendingFlush`'s
+     * as loop tasks (the deferred flushes, the half-close and
+     * [onInitialArmRefused]), the loop's per-task guard — the only *guard*
+     * between here and the loop's `pthread` entry point, so a new call site
+     * must be one a backstop reaches. The one entry that has none is `awaitPendingFlush`'s
      * register, which wraps this in its own catch for exactly that reason.
      */
     @Suppress("TooGenericExceptionCaught")

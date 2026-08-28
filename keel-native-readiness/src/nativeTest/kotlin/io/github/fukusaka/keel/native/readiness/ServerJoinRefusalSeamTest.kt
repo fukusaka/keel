@@ -73,6 +73,20 @@ internal class ServerJoinRefusalSeamTest : AbstractReadinessEventLoopFixture() {
             nativeSocketOps = FakeNativeSocketOps(),
         )
 
+    /**
+     * Gives back everything a case built, on the failing path as well.
+     *
+     * The loops hold native gather scratch from construction, which only their
+     * close returns, and the server holds a real descriptor. `close()` is
+     * idempotent on all three, and the server's runs first because it hands its
+     * teardown to the boss loop.
+     */
+    private suspend fun release(server: ReadinessStreamServer, boss: FakeLoop, worker: FakeLoop) {
+        server.close()
+        boss.close()
+        worker.close()
+    }
+
     @Test
     fun `an accept whose worker refused the arm fails that connection alone`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
@@ -85,16 +99,18 @@ internal class ServerJoinRefusalSeamTest : AbstractReadinessEventLoopFixture() {
             val serverFd = newFd()
             val clientFd = newFd()
             val server = server(boss, worker, serverFd, clientFd)
+            try {
+                val failure = assertFailsWith<IllegalStateException> { server.accept() }
 
-            val failure = assertFailsWith<IllegalStateException> { server.accept() }
-
-            assertTrue(
-                failure !is CancellationException,
-                "a running worker keeps serving everyone else, so this must not end the accept " +
-                    "loop -- AcceptLoop rethrows only a cancellation: $failure",
-            )
-            assertFalse(stillOpen(clientFd), "and the connection nobody holds gives its descriptor back")
-            server.close()
+                assertTrue(
+                    failure !is CancellationException,
+                    "a running worker keeps serving everyone else, so this must not end the accept " +
+                        "loop -- AcceptLoop rethrows only a cancellation: $failure",
+                )
+                assertFalse(stillOpen(clientFd), "and the connection nobody holds gives its descriptor back")
+            } finally {
+                release(server, boss, worker)
+            }
         }
     }
 
@@ -109,11 +125,13 @@ internal class ServerJoinRefusalSeamTest : AbstractReadinessEventLoopFixture() {
             val serverFd = newFd()
             val clientFd = newFd()
             val server = server(boss, worker, serverFd, clientFd)
+            try {
+                assertFailsWith<CancellationException> { server.accept() }
 
-            assertFailsWith<CancellationException> { server.accept() }
-
-            assertFalse(stillOpen(clientFd), "and this one gives its descriptor back too")
-            server.close()
+                assertFalse(stillOpen(clientFd), "and this one gives its descriptor back too")
+            } finally {
+                release(server, boss, worker)
+            }
         }
     }
 

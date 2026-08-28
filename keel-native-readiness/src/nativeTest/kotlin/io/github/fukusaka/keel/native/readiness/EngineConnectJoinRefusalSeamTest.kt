@@ -40,7 +40,13 @@ internal class EngineConnectJoinRefusalSeamTest : AbstractReadinessEventLoopFixt
 
     private class FakeWorkerGroup(loop: FakeLoop) : AbstractReadinessEventLoopGroup<FakeLoop>(arrayOf(loop))
 
-    /** The abstract engine over fake loops, which is what makes the guard reachable. */
+    /**
+     * The abstract engine over fake loops, which is what makes the guard
+     * reachable.
+     *
+     * Every case closes it: the loops hold native gather scratch from
+     * construction, and only their close gives it back.
+     */
     private class TestEngine(
         boss: FakeLoop,
         worker: FakeLoop,
@@ -78,17 +84,20 @@ internal class EngineConnectJoinRefusalSeamTest : AbstractReadinessEventLoopFixt
             worker.closeAsStoppedLoop()
             val fd = newFd()
             val engine = TestEngine(boss, worker, ops(fd))
+            try {
+                val failed = assertFailsWith<IllegalStateException> {
+                    engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), TEST_PORT))
+                }
 
-            val failed = assertFailsWith<IllegalStateException> {
-                engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), TEST_PORT))
+                val message = checkNotNull(failed.message)
+                assertTrue(
+                    joinRefusalReason(JoinRefusal.LOOP_STOPPED) in message,
+                    "the caller is told which of the two happened, got: $message",
+                )
+                assertFalse(stillOpen(fd), "and the connection it could not build gives its descriptor back")
+            } finally {
+                engine.close()
             }
-
-            val message = checkNotNull(failed.message)
-            assertTrue(
-                joinRefusalReason(JoinRefusal.LOOP_STOPPED) in message,
-                "the caller is told which of the two happened, got: $message",
-            )
-            assertFalse(stillOpen(fd), "and the connection it could not build gives its descriptor back")
         }
     }
 
@@ -102,18 +111,21 @@ internal class EngineConnectJoinRefusalSeamTest : AbstractReadinessEventLoopFixt
             worker.failArmCallback = true
             val fd = newFd()
             val engine = TestEngine(boss, worker, ops(fd))
+            try {
+                val failed = assertFailsWith<IllegalStateException> {
+                    engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), TEST_PORT))
+                }
 
-            val failed = assertFailsWith<IllegalStateException> {
-                engine.connect(InetSocketAddress(Host.Ip(IpAddress.parse("127.0.0.1")), TEST_PORT))
+                val message = checkNotNull(failed.message)
+                assertTrue(
+                    joinRefusalReason(JoinRefusal.ARM_REFUSED) in message,
+                    "a running loop refused the arm, and saying it stopped would send a reader after the wrong " +
+                        "thing, got: $message",
+                )
+                assertFalse(stillOpen(fd), "and the descriptor goes back here too")
+            } finally {
+                engine.close()
             }
-
-            val message = checkNotNull(failed.message)
-            assertTrue(
-                joinRefusalReason(JoinRefusal.ARM_REFUSED) in message,
-                "a running loop refused the arm, and saying it stopped would send a reader after the wrong thing, " +
-                    "got: $message",
-            )
-            assertFalse(stillOpen(fd), "and the descriptor goes back here too")
         }
     }
 
@@ -126,17 +138,20 @@ internal class EngineConnectJoinRefusalSeamTest : AbstractReadinessEventLoopFixt
             worker.closeAsStoppedLoop()
             val fd = newFd()
             val engine = TestEngine(boss, worker, ops(fd))
+            try {
+                val failed = assertFailsWith<IllegalStateException> {
+                    engine.connect(UnixSocketAddress("/tmp/keel-test-not-bound.sock"))
+                }
 
-            val failed = assertFailsWith<IllegalStateException> {
-                engine.connect(UnixSocketAddress("/tmp/keel-test-not-bound.sock"))
+                val message = checkNotNull(failed.message)
+                assertTrue(
+                    joinRefusalReason(JoinRefusal.LOOP_STOPPED) in message,
+                    "the unix path answers the same way, got: $message",
+                )
+                assertFalse(stillOpen(fd), "and gives its descriptor back")
+            } finally {
+                engine.close()
             }
-
-            val message = checkNotNull(failed.message)
-            assertTrue(
-                joinRefusalReason(JoinRefusal.LOOP_STOPPED) in message,
-                "the unix path answers the same way, got: $message",
-            )
-            assertFalse(stillOpen(fd), "and gives its descriptor back")
         }
     }
 
