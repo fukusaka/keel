@@ -61,12 +61,13 @@ internal abstract class TransportSeamFixture : AbstractReadinessEventLoopFixture
         // has no `super` to forget. Reads `eventLoop` at teardown, not now, so
         // a case that swaps it through rebuildLoop gives back the one it ends
         // with -- rebuildLoop closes the one it replaces.
-        onRelease {
-            eventLoop.close()
-            // EBADF when a test's transport.close() already released it —
-            // ignored, like the engine fixtures ignore it.
-            if (fd >= 0) close(fd)
-        }
+        onRelease { eventLoop.close() }
+        // Its own registration, not a second statement in the one above: a
+        // close that threw would otherwise take the descriptor with it, which
+        // is the shape the base's own loop over these was fixed for. EBADF when
+        // a test's transport.close() already released it -- ignored, like the
+        // engine fixtures ignore it.
+        onRelease { if (fd >= 0) close(fd) }
     }
 
     /** The transport under test, wired to the fixture's loop, allocator and syscall fake. */
