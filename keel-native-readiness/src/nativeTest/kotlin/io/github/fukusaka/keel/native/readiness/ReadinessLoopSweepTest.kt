@@ -131,7 +131,7 @@ internal class ReadinessLoopSweepTest : AbstractReadinessEventLoopFixture() {
         // one. The listener is told, tries to come back, and the ledger it
         // reaches is already closed -- so the sweep's postcondition survives the
         // sweep's own notifications.
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val listener = RegisteringOnStopListener(loop)
         loop.addParticipant(listener)
         loop.registerCallback(FD, Interest.READ, listener)
@@ -218,7 +218,7 @@ internal class ReadinessLoopSweepTest : AbstractReadinessEventLoopFixture() {
         // thread's lifetime lets an unrelated thread that inherits the id
         // answer inEventLoop with true, and act directly on state only the loop
         // may touch -- long after there is any loop to be on.
-        val loop = RealQueueLoop()
+        val loop = owned(RealQueueLoop())
         loop.loop()
 
         assertNull(loop.recordedLoopThread, "the id must not outlive the thread that owned it")
@@ -232,7 +232,7 @@ internal class ReadinessLoopSweepTest : AbstractReadinessEventLoopFixture() {
         // its caller -- so acquisitions arrive after teardown, without bound.
         // Destroying the slot turns those into EINVAL; freeing it turns them
         // into a use-after-free. This pins that neither happens.
-        val loop = RealQueueLoop()
+        val loop = owned(RealQueueLoop())
         loop.loop() // full lifecycle: final drain, sweep, quiescence
         loop.takeRegLock()
         assertFalse(loop.lockBroken(), "a post-teardown acquisition must succeed, not report a failure")
@@ -246,7 +246,7 @@ internal class ReadinessLoopSweepTest : AbstractReadinessEventLoopFixture() {
         // cannot be made to fail on demand, so the handler is driven directly;
         // what wires it to the acquire is covered by the mutation recorded with
         // this change.
-        val loop = RealQueueLoop()
+        val loop = owned(RealQueueLoop())
         loop.reportLockFailure("lock", EINVAL, stillHeld = false)
 
         assertTrue(loop.lockBroken(), "the loop must be told to stop")
@@ -301,7 +301,7 @@ internal class ReadinessLoopSweepTest : AbstractReadinessEventLoopFixture() {
         // teardown is any thread at all -- and by then the loop's own close has
         // released the wakeup fd, whose number the kernel may have re-handed.
         // Same guard, and the same reason, as the dispatch path.
-        val loop = RealQueueLoop()
+        val loop = owned(RealQueueLoop())
         loop.loop() // publishes quiescence
         val before = loop.wakeups
 
@@ -394,7 +394,7 @@ internal class ReadinessLoopSweepTest : AbstractReadinessEventLoopFixture() {
             // `waiter.isCancelled` discriminate: a Job that completed
             // exceptionally reports that too. What separates the two cases is
             // whether anything reached this handler, and whether the scope lived.
-            val loop = FakeLoop()
+            val loop = owned(FakeLoop())
             val reported = mutableListOf<Throwable>()
             val parent = CoroutineScope(
                 coroutineContext + Job() + CoroutineExceptionHandler { _, t -> reported.add(t) },

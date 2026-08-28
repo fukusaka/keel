@@ -40,7 +40,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         // drainTasks is re-entrant from a task it is running. The outer call
         // already drains until the queue is empty, so the inner one has nothing
         // left to do -- and must not clear the shared batch under the iteration.
-        val loop = RealQueueLoop()
+        val loop = owned(RealQueueLoop())
         val ran = mutableListOf<String>()
         loop.dispatch(EmptyCoroutineContext, Runnable { ran.add("first") })
         loop.dispatch(
@@ -66,7 +66,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         // live loop actually takes. A regression that queued the arm and
         // skipped the wakeup would leave the re-arm waiting for an unrelated
         // event and pass every one of them.
-        val loop = RealQueueLoop(onLoopThread = false)
+        val loop = owned(RealQueueLoop(onLoopThread = false))
         loop.registerCallback(FD, Interest.READ, RecordingListener())
 
         assertTrue(loop.armedCallbacks.isEmpty(), "the arm is queued, not run on the caller")
@@ -80,7 +80,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a task that throws does not stop the rest of its batch`() {
-        val loop = RealQueueLoop()
+        val loop = owned(RealQueueLoop())
         var laterRan = false
         loop.dispatch(EmptyCoroutineContext, Runnable { throw IllegalStateException("boom") })
         loop.dispatch(EmptyCoroutineContext, Runnable { laterRan = true })
@@ -99,7 +99,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         // identity the whole class reads. A second `loop()` is one way to
         // arrive without the claim; a `close()` that ran the teardown first is
         // the other.
-        val loop = RealQueueLoop()
+        val loop = owned(RealQueueLoop())
         loop.loop()
         val errorsAfterFirst = loop.logged.count { it.first == LogLevel.ERROR }
 
@@ -127,7 +127,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         // while the kernel wait sits on its deadline, or forever. Neither of
         // this file's other subclasses can reach it -- one answers on-loop
         // unconditionally, the other overrides dispatch entirely.
-        val loop = RealQueueLoop(onLoopThread = true)
+        val loop = owned(RealQueueLoop(onLoopThread = true))
         loop.dispatch(EmptyCoroutineContext, Runnable { })
         assertEquals(0, loop.wakeups, "an on-loop caller drains before the next wait")
 
@@ -143,7 +143,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         // number -- so the write would land in someone else's descriptor. The
         // offer stays: bounded retention on a queue nothing reads, which is
         // the best a dispatch to a dead loop can do.
-        val loop = RealQueueLoop()
+        val loop = owned(RealQueueLoop())
         loop.loop() // runs to completion: finished, swept, quiescent
         loop.onLoopThread = false
         var ran = false
@@ -161,7 +161,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         // that it can be called again: the readiness that woke it is still
         // there, so honouring it hands the same event to the same throw on the
         // next turn, and the turn after.
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val thrower = object : FdReadyListener {
             override fun onReady(interest: Interest) {
                 loop.registerCallback(FD, interest, this)
@@ -188,7 +188,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         // that leaves a channel that reports itself open, never reads a byte
         // and never learns of a close -- and, with the interest taken back too,
         // nothing to revive it.
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val newcomer = object : FdReadyListener {
             override fun onReady(interest: Interest) = Unit
         }
@@ -214,7 +214,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         // Nothing published `finished` or `quiescent` for such a loop, so the
         // hand-off reads it as live and offers work no drain would ever run.
         // The closing thread runs the loop's terminal sequence instead.
-        val loop = RealQueueLoop(onLoopThread = false)
+        val loop = owned(RealQueueLoop(onLoopThread = false))
         var ran = 0
         loop.runOnLoop(onLoop = { ran++ }, ifStopped = { })
 
@@ -236,7 +236,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
     fun `only one thread takes a loop apart and it is whichever gets there first`() {
         // The claim is what makes the confinement a fact: the sequence walks
         // ledgers, and two walkers would do it against each other.
-        val closed = RealQueueLoop(onLoopThread = false)
+        val closed = owned(RealQueueLoop(onLoopThread = false))
         assertTrue(closed.finishWithoutRunning(), "the first caller takes it")
 
         assertFalse(closed.finishWithoutRunning(), "a second caller is refused")
@@ -250,7 +250,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
         )
 
         // And the other way round: a loop that ran owns its own end.
-        val ran = RealQueueLoop()
+        val ran = owned(RealQueueLoop())
         ran.loop()
         assertEquals(2, ran.drainCalls, "premise: the loop ran its sequence")
 
@@ -262,7 +262,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a waiter whose resume throws does not take the loop with it`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val refusing = RefusingDispatcher()
         // A scope of its own, not this test's: the waiter's dispatcher refuses
         // the resumption, so that coroutine can never complete, and a child of
@@ -309,7 +309,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a waiter that owns a descriptor releases it when the loop cannot deliver`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val refusing = RefusingDispatcher()
         var released = 0
         CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
@@ -331,7 +331,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a refusing waiter does not strand the ones queued behind it when a server closes`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val refusing = RefusingDispatcher()
         // Head of the FIFO chain: registered first, so cancelAll reaches it
         // first and its dispatcher refuses.
@@ -374,7 +374,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a refusing waiter does not strand the ones the stop sweep still has to end`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val refusing = RefusingDispatcher()
         // Armed, but no readiness is ever dispatched for them, so the sweep is
         // what ends them. Head of the chain refuses; the sibling behind it must
@@ -412,7 +412,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a waiter that owns a descriptor releases it when its arm could not be made`() {
-        val loop = FakeLoop(onLoopThread = false, runDispatchedInline = false)
+        val loop = owned(FakeLoop(onLoopThread = false, runDispatchedInline = false))
         loop.failArm = ENOMEM
         val refusing = RefusingDispatcher()
         var released = 0
@@ -451,7 +451,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `an owning waiter registered through registerIf releases what it owns on a refused delivery`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val refusing = RefusingDispatcher()
         var released = 0
         CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
@@ -470,7 +470,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a waiter refused entry by closed ledgers is ended without the refusal escaping register`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         loop.failRemainingWaiters() // sweeps nothing; closes the ledgers
         val refusing = RefusingDispatcher()
         var released = 0
@@ -496,7 +496,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a delivery that lands before its dispatcher throws leaves the descriptor with the winner`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         // A real descriptor: the losing claimant would close it, and whether
         // anybody did is the assertion.
         val fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -521,7 +521,7 @@ internal class ReadinessLoopGuardTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a delivery enqueued after its dispatcher threw finds its descriptor released and says so`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val fd = socket(AF_INET, SOCK_STREAM, 0)
         assertTrue(fd >= 0, "could not open a socket to wait on")
         val enqueueing = EnqueueThenRefuseDispatcher()

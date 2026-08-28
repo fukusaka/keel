@@ -29,33 +29,42 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
     @Test
     fun `a join answers which way it was refused`() {
         val swept = FakeLoop()
-        val sweptListener = RecordingListener()
-        swept.failRemainingWaiters()
-
-        assertEquals(
-            JoinRefusal.LOOP_STOPPED,
-            swept.joinLoop(sweptListener, FD, Interest.READ, sweptListener),
-            "a loop whose ledgers are closed refused before it registered anything",
-        )
-
         val running = FakeLoop()
-        val listener = RecordingListener()
-        running.failArmCallback = true
+        try {
+            val sweptListener = RecordingListener()
+            swept.failRemainingWaiters()
 
-        assertEquals(
-            JoinRefusal.ARM_REFUSED,
-            running.joinLoop(listener, FD, Interest.READ, listener),
-            "a running loop took the registration and the kernel refused the arm",
-        )
+            assertEquals(
+                JoinRefusal.LOOP_STOPPED,
+                swept.joinLoop(sweptListener, FD, Interest.READ, sweptListener),
+                "a loop whose ledgers are closed refused before it registered anything",
+            )
+
+            val listener = RecordingListener()
+            running.failArmCallback = true
+
+            assertEquals(
+                JoinRefusal.ARM_REFUSED,
+                running.joinLoop(listener, FD, Interest.READ, listener),
+                "a running loop took the registration and the kernel refused the arm",
+            )
+        } finally {
+            swept.close()
+            running.close()
+        }
     }
 
     @Test
     fun `a join that takes answers with nothing to report`() {
         val loop = FakeLoop()
-        val listener = RecordingListener()
+        try {
+            val listener = RecordingListener()
 
-        assertNull(loop.joinLoop(listener, FD, Interest.READ, listener), "nothing refused it")
-        assertEquals(1, loop.participantCount(), "and it is in the registry it will be told from")
+            assertNull(loop.joinLoop(listener, FD, Interest.READ, listener), "nothing refused it")
+            assertEquals(1, loop.participantCount(), "and it is in the registry it will be told from")
+        } finally {
+            loop.close()
+        }
     }
 
     @Test
@@ -65,17 +74,21 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
         // else -- leaving a live registration that is never told the loop
         // stopped, which is the silent connection this path exists to prevent.
         val loop = FakeLoop()
-        val listener = RecordingListener()
-        loop.addParticipant(listener)
-        loop.failArmCallback = true
+        try {
+            val listener = RecordingListener()
+            loop.addParticipant(listener)
+            loop.failArmCallback = true
 
-        assertEquals(JoinRefusal.ARM_REFUSED, loop.joinLoop(listener, FD, Interest.WRITE, listener))
+            assertEquals(JoinRefusal.ARM_REFUSED, loop.joinLoop(listener, FD, Interest.WRITE, listener))
 
-        assertEquals(
-            1,
-            loop.participantCount(),
-            "the standing registration is not this join's to give back",
-        )
+            assertEquals(
+                1,
+                loop.participantCount(),
+                "the standing registration is not this join's to give back",
+            )
+        } finally {
+            loop.close()
+        }
     }
 
     @Test
@@ -83,16 +96,20 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
         // The other half, or the test above passes for a rollback that never
         // runs at all.
         val loop = FakeLoop()
-        val listener = RecordingListener()
-        loop.failArmCallback = true
+        try {
+            val listener = RecordingListener()
+            loop.failArmCallback = true
 
-        assertEquals(JoinRefusal.ARM_REFUSED, loop.joinLoop(listener, FD, Interest.READ, listener))
+            assertEquals(JoinRefusal.ARM_REFUSED, loop.joinLoop(listener, FD, Interest.READ, listener))
 
-        assertEquals(
-            0,
-            loop.participantCount(),
-            "a participant this join put there is not left in a registry it will be told from",
-        )
+            assertEquals(
+                0,
+                loop.participantCount(),
+                "a participant this join put there is not left in a registry it will be told from",
+            )
+        } finally {
+            loop.close()
+        }
     }
 
     @Test
@@ -101,21 +118,25 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
         // of `joinLoop` here -- the arm is still queued when it returns -- so
         // the release happens where the failure does, and has the same reach.
         val loop = FakeLoop(onLoopThread = false, runDispatchedInline = false)
-        val standing = RecordingListener()
-        loop.addParticipant(standing)
-        assertNull(
-            loop.joinLoop(standing, FD, Interest.WRITE, standing),
-            "off the loop the arm is queued, so the join comes back reported as taken",
-        )
-        loop.failArmCallback = true
+        try {
+            val standing = RecordingListener()
+            loop.addParticipant(standing)
+            assertNull(
+                loop.joinLoop(standing, FD, Interest.WRITE, standing),
+                "off the loop the arm is queued, so the join comes back reported as taken",
+            )
+            loop.failArmCallback = true
 
-        loop.drainDispatched()
+            loop.drainDispatched()
 
-        assertEquals(
-            1,
-            loop.participantCount(),
-            "the registration it held before this join is not this join's to give back",
-        )
+            assertEquals(
+                1,
+                loop.participantCount(),
+                "the registration it held before this join is not this join's to give back",
+            )
+        } finally {
+            loop.close()
+        }
     }
 
     @Test
@@ -123,17 +144,21 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
         // The other half, or the test above passes for a release that never
         // runs at all.
         val loop = FakeLoop(onLoopThread = false, runDispatchedInline = false)
-        val listener = RecordingListener()
-        assertNull(loop.joinLoop(listener, FD, Interest.READ, listener))
-        loop.failArmCallback = true
+        try {
+            val listener = RecordingListener()
+            assertNull(loop.joinLoop(listener, FD, Interest.READ, listener))
+            loop.failArmCallback = true
 
-        loop.drainDispatched()
+            loop.drainDispatched()
 
-        assertEquals(
-            0,
-            loop.participantCount(),
-            "a participant this join put there is not left in a registry it will be told from",
-        )
+            assertEquals(
+                0,
+                loop.participantCount(),
+                "a participant this join put there is not left in a registry it will be told from",
+            )
+        } finally {
+            loop.close()
+        }
     }
 
     @Test
