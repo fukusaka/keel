@@ -30,7 +30,7 @@ internal class ReadinessLoopScratchTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a second close owes nothing`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         assertTrue(loop.writevScratch.owned, "a fresh loop owns the scratch its constructor allocated")
 
         loop.close()
@@ -42,7 +42,7 @@ internal class ReadinessLoopScratchTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `closing after a grow returns what the grow allocated`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         loop.writevScratch.ensure(GROWN_CAPACITY)
         assertTrue(loop.writevScratch.owned, "the grow allocated in place of what it freed")
 
@@ -52,7 +52,7 @@ internal class ReadinessLoopScratchTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `growing after a close takes ownership back`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         loop.close()
 
         // The grow must not free what the close already did — and what it
@@ -67,7 +67,7 @@ internal class ReadinessLoopScratchTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a gather that would have fit the freed scratch reallocates instead`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         loop.close()
 
         // The capacity went with the memory. Had it survived the free, this

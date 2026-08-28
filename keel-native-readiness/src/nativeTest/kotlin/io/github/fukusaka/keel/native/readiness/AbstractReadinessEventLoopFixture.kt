@@ -68,17 +68,24 @@ internal abstract class AbstractReadinessEventLoopFixture {
      */
     @AfterTest
     fun everyLoopWasGivenBack() {
-        releaseFixtureResources()
         val closeFailures = mutableListOf<Throwable>()
-        ownedLoops.forEach { loop -> runCatching { loop.close() }.onFailure { closeFailures += it } }
-        ownedLoops.clear()
-        val left = OpenTestLoops.drain()
+        val left: List<AbstractReadinessEventLoop>
+        try {
+            releaseFixtureResources()
+            ownedLoops.forEach { loop -> runCatching { loop.close() }.onFailure { closeFailures += it } }
+        } finally {
+            // Drained whatever happened above, or a hook that threw would leave
+            // this case's loops in a record the next case reads as its own --
+            // one case broken and the following one blamed for it.
+            ownedLoops.clear()
+            left = OpenTestLoops.drain()
+        }
         assertTrue(
             left.isEmpty(),
-            "a loop double was never closed, so its gather scratch is still out: " +
-                "${left.map { it::class.simpleName }} — close it (try/finally), or say so with " +
-                "OpenTestLoops.waiveUnclosed if the case wedges it on purpose. If this case also " +
-                "failed above, fix that first: this may just be its unwind.",
+            "a loop double still holds its gather scratch: ${left.map { it::class.simpleName }} — " +
+                "close it, or hand it to owned() where it is built. If this case failed on its own " +
+                "assertion as well, that failure is not in the report: the runner keeps this one " +
+                "instead, so look at what the case was doing rather than at this line.",
         )
         assertTrue(
             closeFailures.isEmpty(),
@@ -105,8 +112,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * still fails [everyLoopWasGivenBack]. What this changes is that the case
      * says whose the loop is, in one word, where it builds it.
      *
-     * Not for a loop a case wedges on purpose -- closing that one here would
-     * hang the teardown; see [OpenTestLoops.waiveUnclosed].
+     * A case that means to end still holding scratch -- there is none today --
+     * would need neither this nor a close, and would have to say so where the
+     * teardown asks. Nothing here can hang: these doubles' closes free the
+     * scratch and nothing else.
      */
     protected fun <L : AbstractReadinessEventLoop> owned(loop: L): L {
         ownedLoops += loop
@@ -148,10 +157,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
         override fun start() = Unit
 
         /** No thread to stop, but the base's gather scratch is still owed back. */
-        override fun close() {
-            OpenTestLoops.closed(this)
-            freeWritevScratch()
-        }
+        override fun close() = freeWritevScratch()
 
         /**
          * What a real engine's `close()` does to a loop that never had a
@@ -162,7 +168,6 @@ internal abstract class AbstractReadinessEventLoopFixture {
          * to the end of the test.
          */
         fun closeAsStoppedLoop() {
-            OpenTestLoops.closed(this)
             finishWithoutRunning()
             freeWritevScratch()
         }
@@ -571,10 +576,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
         override fun start() = Unit
 
         /** No thread to stop, but the base's gather scratch is still owed back. */
-        override fun close() {
-            OpenTestLoops.closed(this)
-            freeWritevScratch()
-        }
+        override fun close() = freeWritevScratch()
 
         /** No connect path in this double. */
         override suspend fun awaitWriteReady(fd: Int, logger: Logger): Unit =
