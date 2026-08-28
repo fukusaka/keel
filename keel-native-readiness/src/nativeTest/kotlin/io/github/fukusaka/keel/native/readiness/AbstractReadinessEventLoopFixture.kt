@@ -34,8 +34,10 @@ import kotlin.time.Duration.Companion.seconds
  * The fixture shared by the [AbstractReadinessEventLoop] tests.
  *
  * Holds what the split would otherwise have duplicated five times: the seven
- * test doubles, the `loopTest` / `suspendOn` / `chainOf` helpers, and the
- * constants. The transport seam fixture extends this too, for [FakeLoop] —
+ * test doubles, the `loopTest` / `suspendOn` / `chainOf` helpers, the
+ * constants, and the teardown that asks each loop a case built whether its
+ * scratch came back -- with [owned] and [onRelease], which are how a case and
+ * a fixture say a loop is theirs to give. The transport seam fixture extends this too, for [FakeLoop] —
  * one loop double serving both families rather than a near-copy per family.
  *
  * All `protected` and nested rather than hoisted to package scope, which is
@@ -65,7 +67,14 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * order and buys a worse problem: an override that forgets `super` silently
      * drops what its parent was releasing, and that is a rule living in one
      * file again. What a fixture registers in [onRelease] cannot be forgotten
-     * by the one below it.
+     * by the one below it -- and it must not become an `@AfterTest` again, for
+     * the reason [OpenTestLoops] gives among its premises.
+     *
+     * They run in registration order, which the runner makes child-first: it
+     * takes `@BeforeTest` from the subclass down, so a fixture releases before
+     * the one it extends. Nothing here depends on that today -- each is guarded
+     * and all of them run -- but it is the order, not an accident to rely on
+     * silently.
      *
      * **When this line fails, whatever failed earlier in the case is not
      * reported** -- its own assertion, its `@BeforeTest`. The Native runner
@@ -140,9 +149,11 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * still fails [everyLoopWasGivenBack]. What this changes is that the case
      * says whose the loop is, in one word, where it builds it.
      *
-     * A case that means to end still holding scratch -- there is none today --
-     * would need neither this nor a close, and would have to say so where the
-     * teardown asks. Nothing here can hang, and that is a fact about the two
+     * A case that means to end with its scratch checked out *and to be let
+     * through* would need neither this nor a close, and would have to say so
+     * where the teardown asks. There is none. The one case that ends holding
+     * scratch it re-took after closing is not that: it is given back by this
+     * handover, which is what makes it pass. Nothing here can hang, and that is a fact about the two
      * doubles rather than about the bound: their closes free the scratch and do
      * nothing else. A loop reaching this from somewhere else would owe its own
      * account of what its close does.
