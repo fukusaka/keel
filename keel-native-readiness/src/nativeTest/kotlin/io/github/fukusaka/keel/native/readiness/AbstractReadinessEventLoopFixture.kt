@@ -748,9 +748,15 @@ internal abstract class AbstractReadinessEventLoopFixture {
                 waiters.cancel()
                 withContext(NonCancellable) { waiters.coroutineContext.job.join() }
                 // The loop this helper handed out is the helper's to give
-                // back. Here rather than after the lock checks below, so a
-                // case that fails one of them still returns the scratch.
-                loop.close()
+                // back. Here rather than after the lock checks below, so a case
+                // that fails one of them still returns the scratch -- and
+                // guarded, like the teardown guards its own closes: a throw
+                // here would otherwise stand in for whatever the case was
+                // really reporting, and take those two checks with it. Nothing
+                // is lost by swallowing it, because a close that failed leaves
+                // the scratch checked out and the teardown reports the loop --
+                // the same news, arriving from the place that watches for it.
+                runCatching { loop.close() }
             }
             // The lock outlives every test: nothing frees it, so a fake that
             // reports a failure means this class broke its own exclusion. The
