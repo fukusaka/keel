@@ -346,8 +346,7 @@ internal class TransportOwnershipSeamTest : TransportSeamFixture() {
         // tests drive through a real loop. The queue is still populated when
         // the stalled drain reaches the re-arm, so what declines it is the
         // closing flag alone, not queue emptiness.
-        eventLoop.close()
-        eventLoop = FakeLoop(runDispatchedInline = false)
+        rebuildLoop(runDispatchedInline = false)
         fake.enqueueWrite(fd, WriteResult.WouldBlock)
         val transport = transport()
 

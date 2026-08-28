@@ -60,21 +60,24 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * reads the record.
      *
      * Registration rather than a second `@AfterTest` or an overridable hook.
-     * Two `@AfterTest`s run in whichever order the runner picks, and a fixture
-     * that closed its own loop after this ran would be reported as leaking it
-     * -- the observed runner happens to take the subclass first, which is the
-     * safe order, but nothing specifies that. An overridable hook fixes the
-     * order and buys a worse problem: an override that forgets `super` silently
-     * drops what its parent was releasing, and that is a rule living in one
-     * file again. What a fixture registers in [onRelease] cannot be forgotten
-     * by the one below it -- and it must not become an `@AfterTest` again, for
+     * Two `@AfterTest`s run in an order the runner is free to pick, and the one
+     * it picks is not the chain anyone would guess: measured over three levels
+     * it runs the leaf, then this base, then the fixture in between. So a
+     * fixture that closed its own loop in an `@AfterTest` of its own would run
+     * *after* this check and be reported as leaking it -- constructed and
+     * reproduced, not a worry about what some runner might do. An overridable
+     * hook fixes the order and buys a different problem: an override that
+     * forgets `super` silently drops what its parent was releasing, and that is
+     * a rule living in one file again. What a fixture registers in [onRelease]
+     * cannot be forgotten by the one below it -- and it must not become an `@AfterTest` again, for
      * the reason [OpenTestLoops] gives among its premises.
      *
-     * They run in registration order, which the runner makes child-first: it
-     * takes `@BeforeTest` from the subclass down, so a fixture releases before
-     * the one it extends. Nothing here depends on that today -- each is guarded
-     * and all of them run -- but it is the order, not an accident to rely on
-     * silently.
+     * They run in registration order, and that order is whatever the runner's
+     * `@BeforeTest` order is -- measured as leaf, then base, then the fixture
+     * in between, which is nobody's mental model of a hierarchy. Nothing here
+     * depends on it: each releaser is guarded and all of them run whatever the
+     * others do. Written down because an order this surprising is one a later
+     * reader would otherwise assume, and assume wrongly.
      *
      * **When this line fails, whatever failed earlier in the case is not
      * reported** -- its own assertion, its `@BeforeTest`. The Native runner
