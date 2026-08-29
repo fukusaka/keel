@@ -15,7 +15,6 @@ import platform.posix.AF_INET
 import platform.posix.SOCK_STREAM
 import platform.posix.close
 import platform.posix.socket
-import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 
 /**
@@ -48,6 +47,17 @@ internal abstract class TransportSeamFixture : AbstractReadinessEventLoopFixture
     @BeforeTest
     fun setUp() {
         eventLoop = FakeLoop(flushCoalescing = false)
+        // Registered on the line after the loop exists, not at the end of this
+        // method: a `check` below it used to leave the loop recorded and
+        // unreleased, so a setUp that failed there was reported to all hundred
+        // and twenty-nine cases as a leak and its own cause appeared in none of
+        // them. Measured. Registered rather than released from an `@AfterTest`
+        // or an override: this runs ahead of the base's check, so the loop this
+        // fixture built is not reported as one a case forgot, and a fixture
+        // below this one has no `super` to forget. Reads `eventLoop` at
+        // teardown, not now, so a case that swaps it through rebuildLoop gives
+        // back the one it ends with -- rebuildLoop closes the one it replaces.
+        onRelease { eventLoop.close() }
         fake = FakeNativeSocket()
         tracker = TrackingAllocator(DefaultAllocator)
         // Disposable real socket fd: the transport's teardown ends in
@@ -55,15 +65,15 @@ internal abstract class TransportSeamFixture : AbstractReadinessEventLoopFixture
         // EBADF on every test. No real I/O happens; the fake intercepts every
         // byte-level syscall.
         fd = socket(AF_INET, SOCK_STREAM, 0)
+        // Its own registration, not a second statement in the one above: a
+        // close that threw would otherwise take the descriptor with it, which
+        // is the shape the base's own loop over these was fixed for. Before the
+        // check, for the same reason the loop's is early -- it reads `fd` at
+        // teardown, and a negative one has nothing to close. EBADF when a
+        // test's transport.close() already released it -- ignored, like the
+        // engine fixtures ignore it.
+        onRelease { if (fd >= 0) close(fd) }
         check(fd >= 0) { "socket() failed in test setUp" }
-    }
-
-    @AfterTest
-    fun tearDown() {
-        eventLoop.close()
-        // EBADF when a test's transport.close() already released it — ignored,
-        // like the engine fixtures ignore it.
-        if (fd >= 0) close(fd)
     }
 
     /** The transport under test, wired to the fixture's loop, allocator and syscall fake. */

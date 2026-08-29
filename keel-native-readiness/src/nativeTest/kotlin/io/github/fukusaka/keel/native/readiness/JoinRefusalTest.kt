@@ -28,7 +28,7 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a join answers which way it was refused`() {
-        val swept = FakeLoop()
+        val swept = owned(FakeLoop())
         val sweptListener = RecordingListener()
         swept.failRemainingWaiters()
 
@@ -38,7 +38,7 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
             "a loop whose ledgers are closed refused before it registered anything",
         )
 
-        val running = FakeLoop()
+        val running = owned(FakeLoop())
         val listener = RecordingListener()
         running.failArmCallback = true
 
@@ -51,7 +51,7 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
 
     @Test
     fun `a join that takes answers with nothing to report`() {
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val listener = RecordingListener()
 
         assertNull(loop.joinLoop(listener, FD, Interest.READ, listener), "nothing refused it")
@@ -64,7 +64,7 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
         // would take away a participant that was already in it for something
         // else -- leaving a live registration that is never told the loop
         // stopped, which is the silent connection this path exists to prevent.
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val listener = RecordingListener()
         loop.addParticipant(listener)
         loop.failArmCallback = true
@@ -82,7 +82,7 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
     fun `a refused join gives back the registration it did add`() {
         // The other half, or the test above passes for a rollback that never
         // runs at all.
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val listener = RecordingListener()
         loop.failArmCallback = true
 
@@ -100,7 +100,7 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
         // The off-loop half of the same rule. The answer cannot come back out
         // of `joinLoop` here -- the arm is still queued when it returns -- so
         // the release happens where the failure does, and has the same reach.
-        val loop = FakeLoop(onLoopThread = false, runDispatchedInline = false)
+        val loop = owned(FakeLoop(onLoopThread = false, runDispatchedInline = false))
         val standing = RecordingListener()
         loop.addParticipant(standing)
         assertNull(
@@ -122,7 +122,7 @@ internal class JoinRefusalTest : AbstractReadinessEventLoopFixture() {
     fun `a queued arm refused gives back the registration it did add`() {
         // The other half, or the test above passes for a release that never
         // runs at all.
-        val loop = FakeLoop(onLoopThread = false, runDispatchedInline = false)
+        val loop = owned(FakeLoop(onLoopThread = false, runDispatchedInline = false))
         val listener = RecordingListener()
         assertNull(loop.joinLoop(listener, FD, Interest.READ, listener))
         loop.failArmCallback = true

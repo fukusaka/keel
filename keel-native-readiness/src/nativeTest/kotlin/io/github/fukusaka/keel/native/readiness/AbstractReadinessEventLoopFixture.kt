@@ -24,6 +24,7 @@ import platform.posix.pthread_equal
 import platform.posix.pthread_self
 import platform.posix.pthread_t
 import kotlin.coroutines.CoroutineContext
+import kotlin.test.AfterTest
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -33,8 +34,13 @@ import kotlin.time.Duration.Companion.seconds
  * The fixture shared by the [AbstractReadinessEventLoop] tests.
  *
  * Holds what the split would otherwise have duplicated five times: the seven
- * test doubles, the `loopTest` / `suspendOn` / `chainOf` helpers, and the
- * constants. The transport seam fixture extends this too, for [FakeLoop] —
+ * test doubles, the `loopTest` / `suspendOn` / `chainOf` helpers, the
+ * constants, and the teardown that asks each loop a case built whether its
+ * scratch came back. A loop gets back to it four ways: [onRelease] for a
+ * fixture that has one to give back, the `loopTest` helpers, which close the
+ * loop they hand out, [owned] for a case that built its own, and a `finally`
+ * a case writes itself. The check does not care which -- it asks the scratch,
+ * not the route. The transport seam fixture extends this too, for [FakeLoop] —
  * one loop double serving both families rather than a near-copy per family.
  *
  * All `protected` and nested rather than hoisted to package scope, which is
@@ -46,6 +52,159 @@ import kotlin.time.Duration.Companion.seconds
  */
 @OptIn(InternalReadinessEngineApi::class)
 internal abstract class AbstractReadinessEventLoopFixture {
+
+    /**
+     * Fails a case that built a loop double and did not give it back.
+     *
+     * A loop takes its native gather scratch in its constructor, so one left
+     * open is a leak this suite could not see before — a whole class of cases
+     * stayed green while leaking, and the omission was found by a reviewer
+     * rather than here (#1073). [OpenTestLoops] records them; this is what
+     * reads the record.
+     *
+     * **The `a` in the name is load-bearing.** Kotlin/Native runs the
+     * `@AfterTest`s a class declares itself first, in declaration order, and
+     * the ones it inherits without overriding after those, sorted by function
+     * name -- the suite-building lowering splits on `isFakeOverride` and sorts
+     * that half by name on purpose, because their order is otherwise
+     * unspecified. Measured to match on both hosts, varying declaration order
+     * and name independently. Cases
+     * live in subclasses, so this check and any `@AfterTest` a fixture in
+     * between adds are both inherited by the case, and the name alone
+     * decides which runs first. The runner stops at the first one that
+     * throws. A fixture teardown called `closeLoop` therefore sorts ahead of
+     * a check whose name begins with `e`, which is what this one was called,
+     * and takes it with it when that teardown throws: measured, one hundred
+     * and twenty-nine transport cases ran with this check never reaching
+     * them and not one loop reported. Sorting first is what stops that, and
+     * the rule for what it stops is the whole rule, not a list: an inherited
+     * `@AfterTest` beats this one exactly when its name sorts lower in UTF-16
+     * order. That is worth stating as the rule because a list of examples read
+     * as a set, and the set was wrong twice -- `addLoopRelease` beats it, and a
+     * review built one and watched a case leak in silence while the next case
+     * took the blame. What it does buy, counted: the seven other `@AfterTest`
+     * names in this repository (`tearDown` twenty-one times, five `cleanup...`,
+     * `resetPool`) all sort after it, as does `closeLoop`. What sorts before it
+     * includes `after`, `afterAll`, `afterEach` -- a prefix of this name, and
+     * what JUnit calls the same thing -- anything starting with a capital or an
+     * underscore, and, worth its own line, most of what a second check beside
+     * this one would be called: `afterEachLoopIsClosed`, `afterEachLoopIsFreed`
+     * and `afterEachLedgerIsEmpty` all sort before it. Naming a sibling after
+     * this one is the likeliest way to lose the check, not the safest. A smaller premise, not an enforced property; enforcing
+     * it would take a rule that fails the build on a second `@AfterTest` in
+     * this source set.
+     *
+     * Nothing pins any of this. A test cannot assert that an `@AfterTest`
+     * failed -- the runner reports that failure as the case's own -- so the
+     * check's own teeth are measured by mutation rather than held by a case
+     * here, and the ordering above by probes rather than by anything in the
+     * tree. Said once so that the next reader knows it is absent by
+     * construction, not by oversight.
+     *
+     * Registration rather than a second `@AfterTest` or an overridable hook.
+     * A fixture closing its own loop in an `@AfterTest` would be racing this
+     * check on spelling: called `tearDown` it runs after and is reported as
+     * leaking the loop it just closed; called `closeLoop` it runs before and
+     * can take the check with it. Both measured. An overridable hook settles
+     * the order and buys a different problem: an override that forgets `super`
+     * silently drops what its parent was releasing, and that is a rule living
+     * in one file again. What a fixture registers in [onRelease] cannot be
+     * forgotten by the one below it, and races nothing.
+     *
+     * Releasers run in registration order, which is the runner's `@BeforeTest`
+     * order -- the same rule as above, so a case's own first and inherited ones
+     * by name. Nothing here depends on it: each releaser is guarded and all of
+     * them run whatever the others do.
+     *
+     * **When this line fails, whatever failed earlier in the case is not
+     * reported** -- its own assertion, its `@BeforeTest`. The Native runner
+     * keeps the exception from `@AfterTest` and drops the earlier one, so there
+     * is no "see the real failure above". A case that fails on its own and
+     * leaves nothing behind is reported normally; it is only when this line
+     * also fails that the earlier one is lost. The message says so rather than sending a reader after
+     * output that was never written.
+     */
+    @AfterTest
+    fun afterEachLoopIsGivenBack() {
+        val closeFailures = mutableListOf<Throwable>()
+        val left: List<AbstractReadinessEventLoop>
+        try {
+            // Each guarded, and none allowed to skip the rest: a releaser that
+            // threw would otherwise leave every later one and every loop this
+            // case handed over unreleased, and the drain would then clear the
+            // record of them -- a real leak that nothing reports. Their
+            // failures are answered together.
+            releasers.forEach { release -> runCatching { release() }.onFailure { closeFailures += it } }
+            ownedLoops.forEach { loop -> runCatching { loop.close() }.onFailure { closeFailures += it } }
+        } finally {
+            // The drain is the one of these three that matters across cases:
+            // the runner builds a fresh fixture per case (`TestCase.instance`
+            // is `by lazy { suite.createInstance() }`), so the two lists are
+            // this case's alone while the record is global. Left undrained,
+            // this case's loops stay in it and the next case is blamed.
+            ownedLoops.clear()
+            releasers.clear()
+            left = OpenTestLoops.drain()
+        }
+        // Answered first, because a close that failed is why the scratch would
+        // still be out: reporting the leak ahead of it would tell a case that
+        // already handed its loop over to hand it over.
+        assertTrue(
+            closeFailures.isEmpty(),
+            "giving back what this case and its fixture built failed: $closeFailures. " +
+                "Anything that failed earlier in the case is not in the report either, and " +
+                "nor is a loop still holding its scratch -- the record is drained by now.",
+        )
+        assertTrue(
+            left.isEmpty(),
+            "a loop double still holds its gather scratch: ${left.map { it::class.simpleName }} — " +
+                "close it, or hand it to owned() where it is built. If anything else in this case " +
+                "failed first -- its own assertion, or its @BeforeTest -- that failure is not in " +
+                "the report: the runner keeps this one instead, so look at what the case was " +
+                "doing rather than at this line.",
+        )
+    }
+
+    private val releasers = mutableListOf<() -> Unit>()
+
+    /**
+     * Registers something the fixture itself built, to be given back ahead of
+     * the check above.
+     *
+     * A fixture that owns a loop or a descriptor registers its release from
+     * `@BeforeTest` rather than overriding anything: there is no `super` for a
+     * fixture below it to forget, and every registration runs whatever the
+     * others do. See [afterEachLoopIsGivenBack] for why not an `@AfterTest` of
+     * its own.
+     */
+    protected fun onRelease(block: () -> Unit) {
+        releasers += block
+    }
+
+    private val ownedLoops = mutableListOf<AbstractReadinessEventLoop>()
+
+    /**
+     * Hands a loop to the fixture to close after the case.
+     *
+     * For the cases that build one at the top and drive it throughout, where a
+     * `finally` would be more unwind than test. **Not the fixture tidying up
+     * quietly**: a loop that goes through neither this nor a close of its own
+     * still fails [afterEachLoopIsGivenBack]. What this changes is that the case
+     * says whose the loop is, in one word, where it builds it.
+     *
+     * A case that means to end with its scratch checked out *and to be let
+     * through* would need neither this nor a close, and would have to say so
+     * where the teardown asks. There is none. The one case that ends holding
+     * scratch it re-took after closing is not that: it is given back by this
+     * handover, which is what makes it pass. Nothing here can hang, and that is a fact about the two
+     * doubles rather than about the bound: their closes free the scratch and do
+     * nothing else. A loop reaching this from somewhere else would owe its own
+     * account of what its close does.
+     */
+    protected fun <L : AbstractReadinessEventLoop> owned(loop: L): L {
+        ownedLoops += loop
+        return loop
+    }
 
     /**
      * Records what would have been armed instead of issuing a syscall.
@@ -70,6 +229,13 @@ internal abstract class AbstractReadinessEventLoopFixture {
         /** Off for the transport seam tests, whose `flush()` must drain inline. */
         override val flushCoalescing: Boolean = true,
     ) : AbstractReadinessEventLoop() {
+
+        init {
+            // Recorded from here, not from a factory: the cases build these
+            // with a constructor call, so a factory would only watch the ones
+            // that remembered to use it. See [OpenTestLoops].
+            OpenTestLoops.opened(this)
+        }
 
         /** No thread of its own; the fixture drives the ledger and the sweep directly. */
         override fun start() = Unit
@@ -483,6 +649,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
      */
     protected class RealQueueLoop(var onLoopThread: Boolean = true) : AbstractReadinessEventLoop() {
 
+        init {
+            OpenTestLoops.opened(this)
+        }
+
         /** Whether anything is still sitting on the base's task queue. */
         fun queueHoldsWork(): Boolean = hasTasksPending()
 
@@ -605,6 +775,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
     protected fun loopTestWith(loop: FakeLoop, block: suspend CoroutineScope.(FakeLoop) -> Unit) = runBlocking {
         withTimeout(TEST_BUDGET) {
             val waiters = CoroutineScope(coroutineContext + Job())
+            var closeFailure: Throwable? = null
             try {
                 waiters.block(loop)
             } finally {
@@ -620,6 +791,18 @@ internal abstract class AbstractReadinessEventLoopFixture {
                 // bare join() throws at once.
                 waiters.cancel()
                 withContext(NonCancellable) { waiters.coroutineContext.job.join() }
+                // The loop this helper handed out is the helper's to give
+                // back. Here rather than after the lock checks below, so a case
+                // that fails one of them still returns the scratch -- and
+                // caught, like the teardown catches its own closes, so a throw
+                // does not stand in for whatever the case was really reporting
+                // or take those two checks with it. Kept, also like the
+                // teardown: swallowing it would be safe only for a close that
+                // failed before freeing, and [OpenTestLoops] names the other
+                // shape among its premises -- a close that grew a second duty
+                // returns the scratch and then fails, and the teardown has
+                // nothing left to notice. Fifty-two cases go quiet, measured.
+                closeFailure = runCatching { loop.close() }.exceptionOrNull()
             }
             // The lock outlives every test: nothing frees it, so a fake that
             // reports a failure means this class broke its own exclusion. The
@@ -630,6 +813,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
                 assertFalse(loop.lockBroken(), "no test may leave the registration lock broken")
             }
             assertTrue(loop.lockFree(), "no test may leave the registration lock held")
+            // Last, so the checks above run first and a case's own failure is
+            // never displaced by this one.
+            val failedClose = closeFailure
+            if (failedClose != null) throw failedClose
         }
     }
 

@@ -508,7 +508,7 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
         // for -- so anything the notification queued was dropped on the floor.
         // Teardown does queue: it cancels a flush continuation whose resume
         // lands on this very queue, and this is the last drain there will be.
-        val loop = FakeLoop(runDispatchedInline = false)
+        val loop = owned(FakeLoop(runDispatchedInline = false))
         var queuedRan = false
         loop.addParticipant(
             object : LoopParticipant {
@@ -530,7 +530,7 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
         // others -- nor escape the sweep's frame.
         // Fails either way when unguarded: the throw either reaches this caller
         // or the healthy listener never hears, depending on iteration order.
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val healthy = RecordingListener()
         loop.addParticipant(
             object : LoopParticipant {
@@ -557,7 +557,7 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
         // that form left all tests green. Identity survives the shared
         // derivation: under a collision the slot holds the *wrong* listener,
         // whichever key reaches it.
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         val readListener = RecordingListener()
         val writeListener = RecordingListener()
         loop.registerCallback(-1, Interest.READ, readListener)
@@ -581,7 +581,7 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
         // attributes, so it is not recursive. Moving the notification inside the
         // lock does not fail this test -- it hangs it, and every pipeline
         // transport with it, which is the point.
-        val loop = FakeLoop()
+        val loop = owned(FakeLoop())
         var reEntered = false
         loop.addParticipant(
             object : LoopParticipant {
@@ -612,7 +612,7 @@ internal class ReadinessLoopPipelineTest : AbstractReadinessEventLoopFixture() {
             // continuation whose resume comes back through this dispatch().
             // Cancelling only queues that resume -- if the loop stops without
             // draining again, the caller is cancelled and still parked.
-            val loop = FakeLoop(runDispatchedInline = false)
+            val loop = owned(FakeLoop(runDispatchedInline = false))
             val waiters = CoroutineScope(coroutineContext + Job())
             try {
                 val resumed = CompletableDeferred<Unit>()
