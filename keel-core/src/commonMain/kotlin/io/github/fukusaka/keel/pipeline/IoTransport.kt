@@ -359,17 +359,19 @@ interface IoTransport {
      * bytes, and [awaitPendingFlush] is where the reason is asked for.
      *
      * Whatever else the flush throws is not contained — a drain that also
-     * could not release its buffers, or could not finish winding down,
-     * re-raises the refusal carrying that as a suppressed cause, and that
-     * cause is what leaves the half-close. Where it goes follows the drain,
-     * exactly as the refusal does: this call receives it only when the drain
-     * ran inside it — not when the implementation defers the drain, which
-     * the readiness engines do by default, and not when the half-close was
-     * handed to the transport's own context and this call has already
-     * returned. The implementation reports it in those cases. Unlike the
-     * refusal, this is a fault rather than an answer to the caller's
-     * question, and the rule for those is to reach whoever can act — never
-     * to be dropped.
+     * could not release its buffers re-raises the refusal carrying that as a
+     * suppressed cause, and that cause is what leaves the half-close. Where
+     * it goes follows the drain, exactly as the refusal does: this call
+     * receives it only when the drain ran inside it — not when the
+     * implementation defers the drain, which the readiness engines do by
+     * default, and not when the half-close was handed to the transport's own
+     * context and this call has already returned. The implementation reports
+     * it in those cases. Unlike the refusal, this is a fault rather than an
+     * answer to the caller's question, and the rule for those is to reach
+     * whoever can act — never to be dropped. A failure of the wind-down that
+     * follows the refusal is the exception: it happens after the refusal was
+     * handed to its waiters, so it rides nothing and reaches no caller — the
+     * implementation's own log is its record.
      */
     fun shutdownOutput()
 

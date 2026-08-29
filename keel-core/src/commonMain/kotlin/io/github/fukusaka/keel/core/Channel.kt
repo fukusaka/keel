@@ -298,13 +298,15 @@ interface Channel : AutoCloseable {
      * still answers the wait but is not an error to report.
      *
      * A failure that is not the refusal is not contained — a drain that also
-     * could not release its buffers, or could not finish winding the
-     * connection down. It follows the drain, like the refusal does: this
-     * call receives it only when the drain ran inside it, which it does not
-     * under flush coalescing — on by default in the readiness engines — and
-     * does not for a caller off the engine's thread, whose half-close is
-     * handed to that thread and runs after this call has returned. The
-     * engine reports it in both of those.
+     * could not release its buffers. It follows the drain, like the refusal
+     * does: this call receives it only when the drain ran inside it, which
+     * it does not under flush coalescing — on by default in the readiness
+     * engines — and does not for a caller off the engine's thread, whose
+     * half-close is handed to that thread and runs after this call has
+     * returned. The engine reports it in both of those. A failure of the
+     * wind-down that follows the refusal reaches this call on no
+     * configuration: it happens after the refusal was handed to its waiters,
+     * so it rides nothing — the engine's own log is its record.
      */
     fun shutdownOutput()
 

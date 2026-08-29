@@ -371,6 +371,10 @@ class ReadinessIoTransport(
                 eventLoop.logger.warn(notifyFailure) {
                     "reporting the failed connection inactive threw as well: fd=$fd"
                 }
+                // Already true -- [notifyInactive] records the failure before
+                // every rethrow, and that copy is the load-bearing one (four
+                // other callers rely on it). Set again so this catch stands
+                // alone; do not deduplicate by removing the inner one.
                 windDownFailed = true
             }
         }
@@ -1905,8 +1909,11 @@ class ReadinessIoTransport(
      * it: [registerWriteCallback] raises a failed arm as a refused send, and
      * `runStage` folds that refusal in as a rider on the failure already
      * leaving. A rider rather than a settlement, deliberately — the primary
-     * failure owns this frame: the funnel's catch has already answered the
-     * waiters with it, and its catchers own what happens next, so the
+     * failure owns this frame: the funnel's catch is what will answer the
+     * waiters with it (every caller of this raise runs inside the drain,
+     * before that answer — a rider attached here is attached before the
+     * publication, which is the only side of it the published-instance rule
+     * allows), and the funnel's catchers own what happens next, so the
      * refusal stays where the head's check and the re-raises can name it.
      * What the rider does not do is run the refused-send pipeline itself —
      * that double-failure edge is tracked with the other suppressed-rider
@@ -1969,9 +1976,12 @@ class ReadinessIoTransport(
      * The register's short-circuit: runs the drain the coalesced tick had
      * scheduled, now that the waiter is stored — contained like the tick it
      * replaces, and caught outright on top: this can run inline inside the
-     * suspend builder, where a re-raise from a failed wind-down would be
+     * suspend builder, where the containment's re-raise — the connection's
+     * own failure, raised again because its wind-down failed — would be
      * thrown over a continuation the funnel already resumed. There is no
-     * backstop above that frame to hand it to; the warning is the report.
+     * backstop above that frame to hand it to; the warning is the report
+     * (of the drain failure — the wind-down's own failure has its own warn
+     * in the containment).
      */
     @Suppress("TooGenericExceptionCaught")
     private fun drainScheduledForWaiter() {
@@ -1979,8 +1989,8 @@ class ReadinessIoTransport(
             containReadinessFailure(WHAT_DEFERRED_FLUSH) {
                 drainAndNotifyIfComplete()
             }
-        } catch (windDownFailure: Throwable) {
-            eventLoop.logger.warn(windDownFailure) {
+        } catch (reraisedFailure: Throwable) {
+            eventLoop.logger.warn(reraisedFailure) {
                 "ending the connection after a failed awaited flush threw as well: fd=$fd"
             }
         }

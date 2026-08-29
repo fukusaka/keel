@@ -509,9 +509,12 @@ abstract class AbstractIoTransport(
      *   a parked waiter. Raising it here would answer one caller twice and
      *   another not at all, depending on where the drain ran.
      * - **Anything it carried: carried out of this frame.** A failed release
-     *   or an unfinished wind-down has no other reporter, so it is not
-     *   contained. Where it lands follows the drain: out to the caller when
-     *   the drain ran in this call, and to whatever ran the drain otherwise.
+     *   has no other reporter, so it is not contained. Where it lands
+     *   follows the drain: out to the caller when the drain ran in this
+     *   call, and to whatever ran the drain otherwise. Only what the drain
+     *   attached before the refusal was published rides — a failure of the
+     *   wind-down that follows the refusal does not, and its record is the
+     *   transport's own warn.
      *
      * Both only apply when the drain ran here at all. An implementation that
      * defers it — which the readiness engines do by default — meets the
@@ -559,8 +562,11 @@ abstract class AbstractIoTransport(
             // whenever a dead peer coincided with one. A failure of the
             // wind-down itself is the one thing that no longer rides: it
             // happens after the refusal was published to its waiters, and
-            // nothing appends to a published instance -- its record is the
-            // transport's own warn beside the catch that met it.
+            // the wind-down does not append to what it has handed out -- its
+            // record is the transport's own warn beside the catch that met
+            // it. (Scoped to the wind-down: the flatten below and the close
+            // teardown's stage carry still append riders within a graph a
+            // reader may hold -- the wider audit is tracked, not solved.)
             // Reported before the rider check, not after it: what is rethrown
             // below is the rider, which carries no way back to the refusal --
             // so a refusal that happened to arrive with company would
