@@ -77,17 +77,26 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * and takes it with it when that teardown throws: measured, one hundred
      * and twenty-nine transport cases ran with this check never reaching
      * them and not one loop reported. Sorting first is what stops that, and
-     * what it buys was counted rather than assumed: it sorts ahead of all nine
-     * `@AfterTest` names in this repository (`tearDown`, `cleanup...`,
-     * `resetPool`, `checkProperty`) and ahead of `closeLoop`. What beats it is
-     * `after`, `afterAll` and `afterEach` -- the last being both a prefix of
-     * this name and what JUnit calls the same thing, and enough on its own to
-     * reproduce the silence above -- along with `afterEach` followed by a
-     * capital `A` through `K`, which is the shape of every camelCase sibling
-     * one would write next to this one, and any name starting with a capital
-     * or an underscore, since the sort is over UTF-16 units. A smaller premise,
-     * not an enforced property; enforcing it would take a rule that fails the
-     * build on a second `@AfterTest` in this source set.
+     * the rule for what it stops is the whole rule, not a list: an inherited
+     * `@AfterTest` beats this one exactly when its name sorts lower in UTF-16
+     * order. That is worth stating as the rule because a list of examples read
+     * as a set, and the set was wrong twice -- `addLoopRelease` beats it, and a
+     * review built one and watched a case leak in silence while the next case
+     * took the blame. What it does buy, counted: the seven other `@AfterTest`
+     * names in this repository (`tearDown` twenty-one times, five `cleanup...`,
+     * `resetPool`) all sort after it, as does `closeLoop`. What sorts before it
+     * includes `after`, `afterAll`, `afterEach` -- a prefix of this name, and
+     * what JUnit calls the same thing -- and anything starting with a capital
+     * or an underscore. A smaller premise, not an enforced property; enforcing
+     * it would take a rule that fails the build on a second `@AfterTest` in
+     * this source set.
+     *
+     * Nothing pins any of this. A test cannot assert that an `@AfterTest`
+     * failed -- the runner reports that failure as the case's own -- so the
+     * check's own teeth are measured by mutation rather than held by a case
+     * here, and the ordering above by probes rather than by anything in the
+     * tree. Said once so that the next reader knows it is absent by
+     * construction, not by oversight.
      *
      * Registration rather than a second `@AfterTest` or an overridable hook.
      * A fixture closing its own loop in an `@AfterTest` would be racing this
