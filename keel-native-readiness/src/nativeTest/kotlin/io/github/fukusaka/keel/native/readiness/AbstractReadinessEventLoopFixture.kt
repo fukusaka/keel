@@ -76,9 +76,15 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * a check whose name begins with `e`, which is what this one was called,
      * and takes it with it when that teardown throws: measured, one hundred
      * and twenty-nine transport cases ran with this check never reaching
-     * them and not one loop reported. Sorting first is what stops that. It
-     * is not a guarantee -- a sibling named earlier still wins -- but it
-     * puts the check ahead of the names anyone reaches for.
+     * them and not one loop reported. Sorting first is what stops that, and
+     * what it buys was measured rather than assumed: it sorts ahead of every
+     * `@AfterTest` name in this repository (`tearDown` twenty-one times,
+     * `cleanup...`, `resetPool`) and ahead of `closeLoop`. It loses to
+     * `afterEach` -- what JUnit calls the same thing, and enough on its own to
+     * reproduce the silence above -- and to any `afterEach...` sorting between
+     * `a` and `k`, so a second check named after this one would beat it.
+     * A smaller premise, not an enforced property; enforcing it would take a
+     * rule that fails the build on a second `@AfterTest` in this source set.
      *
      * Registration rather than a second `@AfterTest` or an overridable hook.
      * A fixture closing its own loop in an `@AfterTest` would be racing this
@@ -116,9 +122,11 @@ internal abstract class AbstractReadinessEventLoopFixture {
             releasers.forEach { release -> runCatching { release() }.onFailure { closeFailures += it } }
             ownedLoops.forEach { loop -> runCatching { loop.close() }.onFailure { closeFailures += it } }
         } finally {
-            // Drained whatever happened above, or this case's loops would stay
-            // in a record the next case reads as its own -- one case broken and
-            // the following one blamed for it.
+            // The drain is the one of these three that matters across cases:
+            // the runner builds a fresh fixture per case (`TestCase.instance`
+            // is `by lazy { suite.createInstance() }`), so the two lists are
+            // this case's alone while the record is global. Left undrained,
+            // this case's loops stay in it and the next case is blamed.
             ownedLoops.clear()
             releasers.clear()
             left = OpenTestLoops.drain()
@@ -129,7 +137,8 @@ internal abstract class AbstractReadinessEventLoopFixture {
         assertTrue(
             closeFailures.isEmpty(),
             "giving back what this case and its fixture built failed: $closeFailures. " +
-                "Anything that failed earlier in the case is not in the report either.",
+                "Anything that failed earlier in the case is not in the report either, and " +
+                "nor is a loop still holding its scratch -- the record is drained by now.",
         )
         assertTrue(
             left.isEmpty(),
