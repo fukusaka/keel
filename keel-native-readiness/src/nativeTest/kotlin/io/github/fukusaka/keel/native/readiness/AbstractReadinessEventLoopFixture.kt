@@ -86,8 +86,11 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * names in this repository (`tearDown` twenty-one times, five `cleanup...`,
      * `resetPool`) all sort after it, as does `closeLoop`. What sorts before it
      * includes `after`, `afterAll`, `afterEach` -- a prefix of this name, and
-     * what JUnit calls the same thing -- and anything starting with a capital
-     * or an underscore. A smaller premise, not an enforced property; enforcing
+     * what JUnit calls the same thing -- anything starting with a capital or an
+     * underscore, and, worth its own line, most of what a second check beside
+     * this one would be called: `afterEachLoopIsClosed`, `afterEachLoopIsFreed`
+     * and `afterEachLedgerIsEmpty` all sort before it. Naming a sibling after
+     * this one is the likeliest way to lose the check, not the safest. A smaller premise, not an enforced property; enforcing
      * it would take a rule that fails the build on a second `@AfterTest` in
      * this source set.
      *
