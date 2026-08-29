@@ -198,6 +198,10 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
                 eventLoop.warnings.any { "reporting the failed connection inactive threw as well" in it },
                 "the wind-down failure is kept in the log: ${eventLoop.warnings}",
             )
+            assertIs<InjectedFault>(
+                eventLoop.logger.causeOfWarning("reporting the failed connection inactive threw as well"),
+                "and the warn carries the failure itself, which is its only record now",
+            )
             fake.assertAllConsumed()
             eventLoop.drainDispatched()
             tracker.assertNoLeaks()

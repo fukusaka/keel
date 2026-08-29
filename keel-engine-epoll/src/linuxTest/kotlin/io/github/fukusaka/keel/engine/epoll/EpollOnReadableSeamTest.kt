@@ -589,7 +589,7 @@ class EpollOnReadableSeamTest {
                 emptyList(),
                 thrown.suppressedExceptions,
                 "nothing appends to the raised failure after the wind-down -- nobody holds this " +
-                    "instance here, but the rule is one rule, and the refused release stays in the warn log",
+                    "instance here, but the rule is one rule (the readiness seam tests pin the log record)",
             )
             assertEquals(1, reportedInactive, "the notification itself succeeded")
             assertEquals(1, queued.refusedReleases)
@@ -858,7 +858,7 @@ class EpollOnReadableSeamTest {
             assertEquals(
                 emptyList(),
                 thrown.suppressedExceptions,
-                "nothing appends to the raised failure; the wind-down's own throw is logged instead",
+                "nothing appends to the raised failure after the wind-down",
             )
             assertFalse(transport.isOpen, "the connection is still ended")
         }

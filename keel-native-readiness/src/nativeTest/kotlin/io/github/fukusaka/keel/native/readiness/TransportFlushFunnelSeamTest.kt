@@ -2,6 +2,7 @@
 
 package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
@@ -16,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
+import platform.posix.EPIPE
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -242,7 +244,11 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             )
             assertTrue(
                 eventLoop.warnings.any { "reporting the failed connection inactive threw as well" in it },
-                "the wind-down failure is kept in the log instead",
+                "the wind-down failure is kept in the log instead: ${eventLoop.warnings}",
+            )
+            assertIs<InjectedFault>(
+                eventLoop.logger.causeOfWarning("reporting the failed connection inactive threw as well"),
+                "and the warn carries the failure itself, which is its only record now",
             )
 
             failing.releaseUnderlying()
@@ -282,12 +288,54 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             )
             assertTrue(
                 eventLoop.warnings.any { "closing the failed connection threw as well" in it },
-                "the wind-down failure is kept in the log instead",
+                "the wind-down failure is kept in the log instead: ${eventLoop.warnings}",
+            )
+            assertIs<InjectedFault>(
+                eventLoop.logger.causeOfWarning("closing the failed connection threw as well"),
+                "and the warn carries the failure itself, which is its only record now",
             )
             assertTrue(inactive, "the inactive report itself still went out")
 
             failing.releaseUnderlying()
             stranded.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a loop-driven refusal whose wind-down failed passes the funnel twice without repeating it`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The double pass the sticky flag's note describes: the
+            // settlement runs the funnel inside the drain's catch, and the
+            // rethrow that leaves the drain lands in the outer containment,
+            // which runs it again with the same instance. Pinned here
+            // because the wind-down failure makes the difference observable:
+            // a second pass that repeated the wind-down would call the
+            // failed notification again and warn for it twice.
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            var notifyCalls = 0
+            transport.onReadClosed = {
+                notifyCalls++
+                throw InjectedFault("inactive report refused")
+            }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            val waiter = parkFlushWaiter(transport)
+            assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
+
+            val escaped = assertFailsWith<RefusedWriteException> { transport.onReady(Interest.WRITE) }
+
+            val awaited = waiter.await().exceptionOrNull()
+            assertIs<RefusedWriteException>(awaited, "the waiter must see the refusal")
+            assertSame(escaped, awaited, "both passes rethrow the very instance the waiter holds")
+            assertEquals(1, notifyCalls, "the second pass must not call the failed notification again")
+            assertEquals(
+                1,
+                eventLoop.warnings.count { "reporting the failed connection inactive threw as well" in it },
+                "and must not warn for it again: ${eventLoop.warnings}",
+            )
+
             tracker.assertNoLeaks()
         }
     }
