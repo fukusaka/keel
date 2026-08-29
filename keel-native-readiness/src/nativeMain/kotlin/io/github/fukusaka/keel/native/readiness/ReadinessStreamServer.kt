@@ -69,7 +69,17 @@ class ReadinessStreamServer(
     @Volatile
     private var _active = true
 
-    override val isActive: Boolean get() = _active
+    // The loop's state as well as this server's, which is what the pipelined
+    // sibling in this engine already answers and what this one did not: a boss
+    // that has stopped polling will never accept again, whatever this server
+    // was told. An engine close stops the loops and leaves the servers to their
+    // owner, so the descriptor stays bound -- a peer's connect still completes
+    // into a backlog nobody drains, and this answer is the only thing that says
+    // so. The port is a second question: it is released by this server's own
+    // [close], not the engine's. [_active] keeps its own meaning below, where
+    // the accept/close interlock reads it under the loop's registration lock;
+    // widening that would change which answer the interlock is asking for.
+    override val isActive: Boolean get() = _active && !bossLoop.isFinishing()
 
     /**
      * Suspends until an incoming connection arrives, then accepts it.
@@ -145,12 +155,16 @@ class ReadinessStreamServer(
                             // apart: close() cleared `_active`, so the
                             // predicate above declined; or the loop swept and
                             // closed its ledgers under a server that never
-                            // closed, leaving `isActive` true. The second
-                            // happens on every path that ends the loop --
-                            // engine.close() as much as a fatal poll errno --
-                            // because the sweep runs from loop()'s finally.
-                            // Naming only the first would blame a state this
-                            // server may well not be in.
+                            // closed. The second happens on every path that
+                            // ends the loop -- engine.close() as much as a
+                            // fatal poll errno -- because the sweep runs from
+                            // loop()'s finally. Naming only the first would
+                            // blame a state this server may well not be in.
+                            // Both leave `isActive` false now, the second
+                            // because that answer reads the loop, so a caller
+                            // that asks after this failure is told the same
+                            // thing either way -- which is what it needs to
+                            // stop asking, not which of the two it was.
                             val cause = "accept unavailable: StreamServer closed or its EventLoop stopped"
                             cont.resumeWithException(CancellationException(cause))
                             return@suspendCancellableCoroutine
