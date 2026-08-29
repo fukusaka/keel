@@ -1595,7 +1595,10 @@ class ReadinessIoTransport(
         // reach is a transport fully torn down: every entry that could touch
         // the fd or the ledger declines on `opened`, and what remains answers
         // from recorded state (an emptied `flush()`, the register's
-        // closed-transport arm) or cancels an already-cancelled timer. The
+        // closed-transport arm) or cancels an already-cancelled timer —
+        // except [scheduleDeadline], which has no guard at all and can still
+        // arm a timer that retains this transport (true under the old order
+        // too; tracked, not solved here). The
         // answer's own contract does not order it against the withdraw
         // duties. The stage's failure takes [runDetachedStage] for the same
         // reason the attaches stop here: each refused resume was error-logged
