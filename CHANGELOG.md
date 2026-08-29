@@ -132,6 +132,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll` / `engine-kqueue`: a Channel-mode server whose event loop has stopped reports
+  `isActive` false, as its pipelined sibling already did (#1075)
 - `engine-epoll` / `engine-kqueue`: a connection whose initial read arm the kernel refuses is
   dropped, not left joined and deaf to its peer (#1073)
 - `engine-epoll` / `engine-kqueue`: a listener whose accept arm the kernel refuses now ends —
