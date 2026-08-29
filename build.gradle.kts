@@ -277,6 +277,19 @@ subprojects {
     group = "io.github.fukusaka.keel"
     version = "0.4.3-SNAPSHOT"
 
+    // The custom rules' own suite rides along with every jvmTest run. The
+    // rules module is plain JVM, so its task is `test` and no KMP aggregate
+    // matches it -- without this wiring the suite that pins the rules'
+    // behaviour ran nowhere, and a rule that silently stops matching keeps
+    // every detekt task green. Wired here rather than enumerated in CI steps
+    // and gate commands: every caller of jvmTest -- CI, both host gates, a
+    // developer's plain invocation -- pulls it without knowing it exists.
+    // Outside the detekt guard on purpose: a first placement inside it left
+    // `:benchmark:jvmTest` and `:sample:jvmTest` outside "every", measured.
+    tasks.matching { it.name == "jvmTest" }.configureEach {
+        dependsOn(":detekt-rules:test")
+    }
+
     // Apply detekt to production modules
     if (name !in setOf("benchmark", "sample", "detekt-rules")) {
         apply(plugin = "io.gitlab.arturbosch.detekt")
@@ -308,8 +321,10 @@ subprojects {
         // Hence the explicit source. Two limits worth stating rather than
         // discovering later:
         //
-        // - Lint-only, with no classpath. The three custom rules are unaffected
-        //   (none consults a `bindingContext`), but the run as a whole is not:
+        // - Lint-only, with no classpath. The custom rules are unaffected
+        //   (none consults a `bindingContext` -- a count-free claim on purpose:
+        //   an added rule must keep it true or lose the lint-only tasks), but
+        //   the run as a whole is not:
         //   detekt skips every rule that requires type resolution, so the test
         //   sources are held to a weaker standard than `jvmMain`, which
         //   `detektJvmMain` analyses with types. Giving this task a classpath
@@ -372,7 +387,7 @@ subprojects {
         // carry the "with type resolution" suffix and no others do), while
         // `detektJsMain`, `detektMetadata*Main` and `detekt<NativeTarget>Main`
         // are lint-only and already run the custom rules today. Nor can those
-        // rules behave differently without it — none of the three consults a
+        // rules behave differently without it — none of them consults a
         // `bindingContext`; they are purely syntactic. (The former comment here
         // gave "custom rules produce false positives without type resolution"
         // as the reason for the exclusion; that is not what the rules do.)

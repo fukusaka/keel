@@ -153,4 +153,16 @@ keel:
     active: true
   StableRefLeak:
     active: true
+  # Why the ban exists is the rule's own KDoc. What is config-local: the
+  # `includes` IS the scoping -- the rule fires nowhere else, so the many
+  # tearDown()s in other modules stay legal, and a renamed or moved source
+  # set silently un-scopes it (update the pattern with it). `src/*Test` and
+  # not `src/nativeTest`: every test source set of this module compiles into
+  # the same test binaries, so a sibling set added later races the same check.
+  SecondAfterTest:
+    active: true
+    includes:
+      - '**/keel-native-readiness/src/*Test/**'
+    allowedNames:
+      - 'afterEachLoopIsGivenBack'
 
