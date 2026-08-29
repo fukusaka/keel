@@ -62,10 +62,13 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * rather than here (#1073). [OpenTestLoops] records them; this is what
      * reads the record.
      *
-     * **The `a` in the name is load-bearing.** Kotlin/Native runs a case's
-     * own `@AfterTest`s first, in the order they are declared, and every
-     * inherited one after those, in order of function name -- measured on
-     * both hosts, varying declaration order and name independently. Cases
+     * **The `a` in the name is load-bearing.** Kotlin/Native runs the
+     * `@AfterTest`s a class declares itself first, in declaration order, and
+     * the ones it inherits without overriding after those, sorted by function
+     * name -- the suite-building lowering splits on `isFakeOverride` and sorts
+     * that half by name on purpose, because their order is otherwise
+     * unspecified. Measured to match on both hosts, varying declaration order
+     * and name independently. Cases
      * live in subclasses, so this check and any `@AfterTest` a fixture in
      * between adds are both inherited by the case, and the name alone
      * decides which runs first. The runner stops at the first one that
