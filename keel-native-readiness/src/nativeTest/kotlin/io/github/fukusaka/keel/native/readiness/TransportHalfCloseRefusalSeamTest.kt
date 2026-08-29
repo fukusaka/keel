@@ -177,6 +177,34 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a half-close contains a refusal whose wind-down failed and the log keeps the failure`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The sibling above rethrows what rode on the refusal -- riders
+            // the drain attached before the refusal was published. A failure
+            // of the wind-down itself arrives after that publication, so it
+            // may not ride (nothing appends to a published instance): the
+            // half-close's catch reads an empty list and contains the refusal
+            // as an ordinary dead peer, and the wind-down failure's record is
+            // the warn beside the catch that met it.
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.onReadClosed = { throw InjectedFault("inactive report refused") }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            transport.shutdownOutput()
+
+            assertFalse(transport.isOpen, "the refusal still ends the connection")
+            assertTrue(
+                eventLoop.warnings.any { "reporting the failed connection inactive threw as well" in it },
+                "the wind-down failure is kept in the log: ${eventLoop.warnings}",
+            )
+            fake.assertAllConsumed()
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `an off-loop half-close reports its refusal too`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The other arm: a caller off the transport's context has the

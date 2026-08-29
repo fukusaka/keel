@@ -553,9 +553,10 @@ class KqueueOnReadableSeamTest {
 
             assertTrue(thrown is OutOfMemoryError, "the readiness failure is what is raised, got $thrown")
             assertEquals(
-                listOf<String?>("release refused by FailingReleaseIoBuf"),
-                thrown.suppressedExceptions.map { it.message },
-                "the failure that ended the wind-down travels with the one that started it",
+                emptyList(),
+                thrown.suppressedExceptions,
+                "nothing appends to the raised failure after the wind-down -- nobody holds this " +
+                    "instance here, but the rule is one rule, and the refused release stays in the warn log",
             )
             assertEquals(1, reportedInactive, "the notification itself succeeded")
             assertEquals(1, queued.refusedReleases)
@@ -811,19 +812,20 @@ class KqueueOnReadableSeamTest {
             transport.onReadClosed = failsOnceLikeProduction("the teardown failed too")
             transport.readEnabled = true
 
-            // The readiness failure is what is raised, with the wind-down's own
-            // failure suppressed onto it: the allocator is the cause and the
-            // notification threw reacting to it. Here they are two exceptions;
-            // on the peer-close path they are one, which is the case that used
-            // to be swallowed.
+            // The readiness failure is what is raised, unchanged. The funnel
+            // hands this same instance to a flush waiter before it rethrows on
+            // the paths that have one, and suppressed lists are unsynchronized,
+            // so nothing appends to it afterwards -- the notification's own
+            // throw stays in the loop's warn log. Nobody holds this one, but
+            // the rule is one rule, and quieter is the safe direction.
             val thrown = onLoopCatching { transport.onReady(Interest.READ) }
 
             assertTrue(thrown is OutOfMemoryError, "expected the allocator's failure, got $thrown")
             assertEquals("no buffer for you", thrown.message)
             assertEquals(
-                listOf("the teardown failed too"),
-                thrown.suppressedExceptions.map { it.message },
-                "the failure that ended the wind-down travels with the one that started it",
+                emptyList(),
+                thrown.suppressedExceptions,
+                "nothing appends to the raised failure; the wind-down's own throw is logged instead",
             )
             assertFalse(transport.isOpen, "the connection is still ended")
         }

@@ -552,12 +552,15 @@ abstract class AbstractIoTransport(
             // caller twice on one path and another nothing on the other.
             //
             // Only the refusal itself, though. A drain that also failed to
-            // release its buffers, or whose wind-down did not finish, carries
-            // that along as a suppressed cause and re-raises the refusal to
-            // say so. Those are not "the peer refused"; nothing else reports
-            // them, and containing them because of the company they keep
-            // would make a leak silent whenever a dead peer coincided with
-            // one.
+            // release its buffers carries that along as a suppressed cause
+            // and re-raises the refusal to say so. Those are not "the peer
+            // refused"; nothing else reports them, and containing them
+            // because of the company they keep would make a leak silent
+            // whenever a dead peer coincided with one. A failure of the
+            // wind-down itself is the one thing that no longer rides: it
+            // happens after the refusal was published to its waiters, and
+            // nothing appends to a published instance -- its record is the
+            // transport's own warn beside the catch that met it.
             // Reported before the rider check, not after it: what is rethrown
             // below is the rider, which carries no way back to the refusal --
             // so a refusal that happened to arrive with company would

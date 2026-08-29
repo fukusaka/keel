@@ -78,9 +78,11 @@ internal class HeadHandler(
             // the record's cause, errno and all, for a reader who goes
             // looking, and a caller that waits on the flush is answered with
             // the same instance. What rode along on it is not an outcome --
-            // a buffer that would not release, a wind-down step that threw --
-            // and nothing else will name those, so they make the record loud
-            // and are carried by it. Without this the same connection read
+            // a buffer the drain could not release -- and nothing else will
+            // name those, so they make the record loud and are carried by
+            // it. (A wind-down step that threw does not ride: it happens
+            // after the instance was published, so its record is the
+            // transport's own warn.) Without this the same connection read
             // as routine with a bridge installed and as a problem without
             // one; the engine's own containment still warns for the deferred
             // drain on the shipping default, which is where a reader who
