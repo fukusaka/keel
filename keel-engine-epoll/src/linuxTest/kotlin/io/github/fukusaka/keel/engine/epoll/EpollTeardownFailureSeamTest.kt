@@ -40,8 +40,8 @@ import kotlin.time.Duration.Companion.seconds
  * The seam for a teardown whose own work fails.
  *
  * `teardownOnEventLoop` owes several things — drain a deferred flush, release
- * the queued buffers, wake a caller parked in `awaitPendingFlush`, withdraw the
- * registrations and close the fd — and each of them can throw: the drain
+ * the queued buffers, withdraw the registrations, close the fd and, last,
+ * wake a caller parked in `awaitPendingFlush` — and each of them can throw: the drain
  * reaches an allocator and a raw pointer, and a release reaches whatever
  * allocator produced the buffer. None of that was reachable from a test, so the
  * only check on it was reading the code, which over three attempts kept

@@ -1327,11 +1327,14 @@ class ReadinessIoTransport(
      * Ends every waiter in [snapshot] through [end], one guard per waiter so a
      * refusal cannot strand the waiters behind it in an already-taken
      * snapshot — and then rethrows the first refusal, later ones suppressed.
-     * The rethrow is the difference from [answerFlushWaiter]: these run inside
-     * a teardown stage whose aggregate reaches the closer, and a close that
-     * could not deliver an answer must not report clean. The single-slot shape
-     * carried such a refusal the same way; the loop is what made carrying and
-     * continuing two separate duties.
+     * The rethrow is the difference from [answerFlushWaiter]: a close that
+     * could not deliver an answer must not report clean. How far the
+     * aggregate travels is the stage's decision, not this helper's — the
+     * stopped-loop teardown carries it to the closer, and the on-loop one
+     * carries it only when nothing else is carried ([runDetachedStage]),
+     * every refusal having been error-logged here first. The single-slot
+     * shape carried such a refusal the same way; the loop is what made
+     * carrying and continuing two separate duties.
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun endFlushWaiters(
@@ -1587,13 +1590,18 @@ class ReadinessIoTransport(
         // failure's graph to the waiters' threads, and the carried failure can
         // be a rider inside that graph -- the deferred drain's catch above
         // raises one when the drain's refusal became the record -- so every
-        // attach onto it must already be done. What a resumed caller can reach
-        // is a transport fully torn down, and every entry declines on
-        // `opened`; the answer's own contract does not order it against the
-        // withdraw duties. The stage's failure takes [runDetachedStage] for
-        // the same reason the attaches stop here: each refused resume was
-        // error-logged where it happened, so dropping the aggregate when
-        // something is already carried loses no record.
+        // attach onto it must already be done, and a stage added below this
+        // one would need the same detached rule. What a resumed caller can
+        // reach is a transport fully torn down: every entry that could touch
+        // the fd or the ledger declines on `opened`, and what remains answers
+        // from recorded state (an emptied `flush()`, the register's
+        // closed-transport arm) or cancels an already-cancelled timer. The
+        // answer's own contract does not order it against the withdraw
+        // duties. The stage's failure takes [runDetachedStage] for the same
+        // reason the attaches stop here: each refused resume was error-logged
+        // where it happened (the snapshot-taking before the per-waiter guards
+        // cannot throw), so dropping the aggregate when something is already
+        // carried loses no record.
         failure = runDetachedStage(failure) {
             endFlushWaiters(
                 takeFlushWaiters(),
