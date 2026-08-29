@@ -32,11 +32,15 @@ import kotlin.test.assertTrue
  *
  * The descriptor is deliberately still open in these cases. Releasing it is
  * this server's own `close()`, not the engine's, and the answer is worth
- * having precisely while the port is still bound: that is the window in which
- * a caller can be told not to keep asking.
+ * having precisely while the descriptor is still there: that is the window in
+ * which a caller can be told not to keep asking.
  *
- * Both cases drive a teardown, so both are bounded by [withTimeout]
- * (wall-clock: `runBlocking` builder, per the project's timeout rule).
+ * The three cases pin the three answers this property could have been written
+ * against: the loop's state alone, this server's flag alone, and quiescence
+ * rather than the moment polling stops. Each is bounded by [withTimeout]
+ * (wall-clock: `runBlocking` builder, per the project's timeout rule) -- the
+ * first two drive a teardown, and the third must not, which its own comment
+ * gives the reason for.
  */
 @OptIn(ExperimentalForeignApi::class)
 internal class ServerLoopDeathSeamTest : AbstractReadinessEventLoopFixture() {
@@ -79,7 +83,7 @@ internal class ServerLoopDeathSeamTest : AbstractReadinessEventLoopFixture() {
             val fd = newListenerFd()
             val server = server(boss, worker, fd, TEST_PORT)
             try {
-                assertTrue(server.isActive, "bound, with a loop that still polls")
+                assertTrue(server.isActive, "open, with a loop that still polls")
 
                 boss.closeAsStoppedLoop()
 
@@ -90,7 +94,7 @@ internal class ServerLoopDeathSeamTest : AbstractReadinessEventLoopFixture() {
                 )
                 assertTrue(
                     stillOpen(fd),
-                    "while the descriptor stays bound, which is what makes the answer worth having",
+                    "while the descriptor stays open, which is what makes the answer worth having",
                 )
             } finally {
                 server.close()
@@ -108,11 +112,51 @@ internal class ServerLoopDeathSeamTest : AbstractReadinessEventLoopFixture() {
             val worker = owned(FakeLoop())
             val fd = newListenerFd()
             val server = server(boss, worker, fd, TEST_PORT + 1)
+            try {
+                server.close()
 
-            server.close()
+                assertFalse(server.isActive, "closed is closed, on a loop that is still polling")
+                assertFalse(stillOpen(fd), "and the descriptor goes back")
+            } finally {
+                if (stillOpen(fd)) close(fd)
+            }
+        }
+    }
 
-            assertFalse(server.isActive, "closed is closed, on a loop that is still polling")
-            assertFalse(stillOpen(fd), "and the descriptor goes back")
+    @Test
+    fun `a server whose loop has finished but not yet swept is not listening`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The third answer this could have been written against, and the
+            // one the two cases above do not tell apart: a loop publishes
+            // "finished" when it stops polling and "quiescent" only after its
+            // final drain and stop sweep have run. Between them the sweep's
+            // own work runs -- participants told, waiters cancelled, and the
+            // coroutines those resume -- so a server reading quiescence would
+            // answer "listening" throughout, which is the window the loop's
+            // own documentation warns a parking caller about. Reading
+            // `isFinishing` is what closes it, and only this case says so:
+            // measured, an implementation reading `isStopped` passes the other
+            // two.
+            val boss = owned(FakeLoop(onLoopThread = false, runDispatchedInline = false))
+            val worker = owned(FakeLoop())
+            val fd = newListenerFd()
+            try {
+                val server = server(boss, worker, fd, TEST_PORT + 2)
+                assertTrue(server.isActive, "still polling")
+
+                boss.stageFinishedNotQuiescent()
+
+                assertFalse(
+                    server.isActive,
+                    "a loop that has stopped polling will not accept again, whether or not its " +
+                        "sweep has finished running",
+                )
+            } finally {
+                // Not through the server: its close hands the release to the
+                // loop and waits for quiescence this case deliberately never
+                // publishes, so the wait is the one thing that must not run.
+                close(fd)
+            }
         }
     }
 
