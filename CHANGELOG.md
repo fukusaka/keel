@@ -135,6 +135,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll` / `engine-kqueue`: a wind-down failure is no longer appended to a failure
+  instance already published to flush waiters — an unsynchronized suppressed list a waiter may
+  be reading; it stays in the warn log instead (#1078)
 - `engine-epoll` / `engine-kqueue`: a Channel-mode server whose event loop has stopped reports
   `isActive` false, as its pipelined sibling already did (#1075)
 - `engine-epoll` / `engine-kqueue`: a connection whose initial read arm the kernel refuses is

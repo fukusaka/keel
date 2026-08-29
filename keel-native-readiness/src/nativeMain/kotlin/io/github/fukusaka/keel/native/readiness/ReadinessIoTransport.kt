@@ -107,13 +107,14 @@ class ReadinessIoTransport(
     // "nothing has failed yet" and find no evidence to the contrary -- the
     // close it runs is a no-op by then, so it cannot produce any.
     //
-    // No containment path reaches that second entry today: every entry's body
-    // no-ops once `opened` is false (the readiness dispatch and the peer close
-    // through their own guards, the deferred-flush and half-close entries
-    // through the checks inside the work they run).
-    // This is what keeps the invariant true if a fourth is added -- the guard's
-    // own documentation invites new call sites -- so it is deliberately not
-    // reachable from the seam, and no test pins it.
+    // The second entry is real: a loop-driven refusal passes through twice
+    // with one instance -- the settlement runs the funnel inside the drain's
+    // catch, and the rethrow that leaves [performFlush] lands in the outer
+    // containment, which runs it again in the same task. That pass is
+    // harmless by construction (the record no-ops, the notification
+    // short-circuits, `markClosing` spends the close), and this flag is what
+    // keeps the rethrow decision truthful across it. A *later* entry cannot
+    // happen: every entry's body no-ops once `opened` is false.
     private var windDownFailed = false
 
     /**
@@ -331,11 +332,29 @@ class ReadinessIoTransport(
      * notification does not close — a Coroutine-mode channel — the close here
      * is the whole teardown, and swallowing its failure loses everything above.
      *
-     * What is raised is the original failure with anything the wind-down added
-     * suppressed onto it, in the order they happened: the readiness failure is
-     * the cause, a throw from the notification or the close is a consequence of
-     * reacting to it. On the paths above the first two are the same object, and
-     * then there is only the one.
+     * What is raised is the original failure, unchanged. By the time either
+     * catch below runs, the instance can be out of this transport's hands:
+     * the funnel publishes it to the parked waiters ([performFlush] answers
+     * before it throws, the settlement before it ends the connection), a
+     * refusal was handed to the pipeline by the report, and the close's own
+     * waiter stage resumes a late waiter inline with the recorded failure —
+     * mid-wind-down, between these two catches. Suppressed lists are
+     * unsynchronized, so an append here is a write into a list another
+     * thread may be reading. The funnel path's deferred resume happened to
+     * order the old appends ahead of its publication; the inline hand-overs
+     * did not, and the rule is one rule — auditing the ordering per path is
+     * exactly what it exists to end.
+     *
+     * The wind-down's own failures are warn-logged in the catch that meets
+     * them and go nowhere else, and the consumers of the raised instance now
+     * rely on that: the loop-side guards log it as the connection's reason;
+     * the half-close's catch and the head's and tail's records read its
+     * suppressed list and so act only on what the drain attached before
+     * publication. Losing the wind-down failure from the *log* takes a
+     * logger configured above WARN, and that is the configuration's call.
+     * The direction is fail-safe: not appending is correct on a published
+     * instance and merely quieter on one nobody holds, so a future path that
+     * reaches here before any hand-over asks nothing new of this method.
      */
     @Suppress("TooGenericExceptionCaught")
     private fun endConnectionAfterFailure(readinessFailure: Throwable) {
@@ -348,10 +367,14 @@ class ReadinessIoTransport(
             try {
                 notifyInactive()
             } catch (notifyFailure: Throwable) {
+                // Logged, not attached: the KDoc's published-instance rule.
                 eventLoop.logger.warn(notifyFailure) {
                     "reporting the failed connection inactive threw as well: fd=$fd"
                 }
-                readinessFailure.addSuppressed(notifyFailure)
+                // Already true -- [notifyInactive] records the failure before
+                // every rethrow, and that copy is the load-bearing one (four
+                // other callers rely on it). Set again so this catch stands
+                // alone; do not deduplicate by removing the inner one.
                 windDownFailed = true
             }
         }
@@ -360,8 +383,8 @@ class ReadinessIoTransport(
             // point is the mode where it did not.
             close()
         } catch (closeFailure: Throwable) {
+            // Logged, not attached, like the notification's.
             eventLoop.logger.warn(closeFailure) { "closing the failed connection threw as well: fd=$fd" }
-            readinessFailure.addSuppressed(closeFailure)
             windDownFailed = true
         }
         if (windDownFailed) throw readinessFailure
@@ -398,14 +421,13 @@ class ReadinessIoTransport(
      * the dead peer. Answering a waiter with one of those would name the
      * consequence and lose the cause.
      *
-     * **What is recorded carries the failure as its cause, and that failure is
-     * still being written to.** The wind-down below appends to it whatever
-     * fails alongside, while a teardown stage may already have handed this
-     * record to a waiter on another thread, inline — and a `Throwable`'s
-     * suppressed list is unsynchronised here. The same hazard the drain's own
-     * answer defers its resume to avoid; this path does not, and the widening
-     * from refusals to every contained failure widens it. Worth naming, since
-     * what it costs is a reader of the suppressed list, not the reason itself.
+     * **What is recorded carries the failure as its cause, and nothing
+     * appends to that failure after this line.** A teardown stage hands this
+     * record to a waiter on another thread, inline, while the wind-down is
+     * still running — and a `Throwable`'s suppressed list is unsynchronised
+     * here, so the wind-down reporting its own failures by appending to the
+     * cause used to be a write into that waiter's read. It warn-logs them
+     * instead; see [endConnectionAfterFailure].
      *
      * An end the transport decides on without a failure — the idle timeout
      * reclaiming a connection nobody is using — is deliberately not recorded:
@@ -1204,8 +1226,8 @@ class ReadinessIoTransport(
         // the connection survives. Gated on `opened` because a teardown's
         // own deferred drain arrives here with the connection already
         // ending: starting a second wind-down there would run an application
-        // callback inside the close, and its throw would ride out on this
-        // failure as though the teardown had left something undone. The
+        // callback inside the close, and a throw from it would read as the
+        // teardown's own failure to whoever staged the drain. The
         // loop-driven entries reach the same end through their containment;
         // this makes the direct callers reach it too, and the second call
         // is a no-op because `markClosing` flips `opened` once.
@@ -1351,13 +1373,13 @@ class ReadinessIoTransport(
      * **The resume is dispatched, not inline.** The snapshot is taken here —
      * so the teardown's answer stage and the register's membership check see
      * these answers as taken — but the waiters receive [drainFailure] from a
-     * later loop task. The entry point above this funnel may still attach
-     * suppressed failures to the same instance during its wind-down, and this
-     * platform's `Throwable` keeps that list unsynchronized: an off-loop
-     * waiter resumed inline could observe it mid-append the moment its own
-     * thread prints the failure. Every attach this transport makes happens
-     * in the current task, and the queued resume runs strictly after all of
-     * them — per drain passage: a caller-cached singleton exception thrown
+     * later loop task. This platform's `Throwable` keeps the suppressed list
+     * unsynchronized, and an off-loop waiter resumed inline could observe it
+     * mid-append the moment its own thread prints the failure. Every attach
+     * this transport makes happens in the current task before the funnel's
+     * throw — the wind-down no longer appends at all; see
+     * [endConnectionAfterFailure] — and the queued resume runs strictly
+     * after all of them — per drain passage: a caller-cached singleton exception thrown
      * across two passages shares the instance by the caller's own hand, an
      * exposure that predates the deferral — as does handing one instance to
      * several waiters at once, which the list multiplied and is tracked with
@@ -1887,8 +1909,11 @@ class ReadinessIoTransport(
      * it: [registerWriteCallback] raises a failed arm as a refused send, and
      * `runStage` folds that refusal in as a rider on the failure already
      * leaving. A rider rather than a settlement, deliberately — the primary
-     * failure owns this frame: the funnel's catch has already answered the
-     * waiters with it, and its catchers own what happens next, so the
+     * failure owns this frame: the funnel's catch is what will answer the
+     * waiters with it (every caller of this raise runs inside the drain,
+     * before that answer — a rider attached here is attached before the
+     * publication, which is the only side of it the published-instance rule
+     * allows), and the funnel's catchers own what happens next, so the
      * refusal stays where the head's check and the re-raises can name it.
      * What the rider does not do is run the refused-send pipeline itself —
      * that double-failure edge is tracked with the other suppressed-rider
@@ -1951,9 +1976,12 @@ class ReadinessIoTransport(
      * The register's short-circuit: runs the drain the coalesced tick had
      * scheduled, now that the waiter is stored — contained like the tick it
      * replaces, and caught outright on top: this can run inline inside the
-     * suspend builder, where a re-raise from a failed wind-down would be
+     * suspend builder, where the containment's re-raise — the connection's
+     * own failure, raised again because its wind-down failed — would be
      * thrown over a continuation the funnel already resumed. There is no
-     * backstop above that frame to hand it to; the warning is the report.
+     * backstop above that frame to hand it to; the warning is the report
+     * (of the drain failure — the wind-down's own failure has its own warn
+     * in the containment).
      */
     @Suppress("TooGenericExceptionCaught")
     private fun drainScheduledForWaiter() {
@@ -1961,8 +1989,8 @@ class ReadinessIoTransport(
             containReadinessFailure(WHAT_DEFERRED_FLUSH) {
                 drainAndNotifyIfComplete()
             }
-        } catch (windDownFailure: Throwable) {
-            eventLoop.logger.warn(windDownFailure) {
+        } catch (reraisedFailure: Throwable) {
+            eventLoop.logger.warn(reraisedFailure) {
                 "ending the connection after a failed awaited flush threw as well: fd=$fd"
             }
         }

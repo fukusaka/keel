@@ -2,6 +2,7 @@
 
 package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
@@ -16,12 +17,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
+import platform.posix.EPIPE
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -202,6 +205,137 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             assertFalse(transport.isOpen)
 
             failing.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a throwing inactive report is not appended to the answer the waiter already holds`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The retry's drain failure is handed to the parked waiter before
+            // the wind-down runs, so a failure *of* the wind-down arrives
+            // after the hand-over. Suppressed lists are unsynchronized, so
+            // appending to the handed-over instance is a write into a list
+            // the waiter may be reading; the wind-down failure is warn-logged
+            // where it happens and must go nowhere else. The empty-list
+            // asserts below are scenario-specific: a rider the drain attaches
+            // *before* the hand-over (a failed FIN report, a failed re-arm)
+            // is legitimate, and neither scenario here produces one.
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Written(5))
+            val transport = transport()
+            transport.onReadClosed = { throw InjectedFault("inactive report refused") }
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            val waiter = parkFlushWaiter(transport)
+            assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
+
+            // The containment rethrows when the wind-down itself failed; the
+            // loop's guard is the production consumer of that throw.
+            val escaped = assertFailsWith<InjectedFault> { transport.onReady(Interest.WRITE) }
+
+            val awaited = waiter.await().exceptionOrNull()
+            assertIs<InjectedFault>(awaited, "the waiter must see the drain failure")
+            assertSame(escaped, awaited, "the rethrow carries the very instance the waiter holds")
+            assertEquals(
+                emptyList(),
+                awaited.suppressedExceptions,
+                "the answer keeps the suppressed list it was published with -- empty on this path",
+            )
+            assertTrue(
+                eventLoop.warnings.any { "reporting the failed connection inactive threw as well" in it },
+                "the wind-down failure is kept in the log instead: ${eventLoop.warnings}",
+            )
+            assertIs<InjectedFault>(
+                eventLoop.logger.causeOfWarning("reporting the failed connection inactive threw as well"),
+                "and the warn carries the failure itself, which is its only record now",
+            )
+
+            failing.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a throwing close stage is not appended to the answer the waiter already holds`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The other wind-down stage. A second failing buffer stays queued
+            // past the drain failure, so releasing the queue inside the
+            // wind-down's close throws too — again after the drain failure
+            // was handed to the waiter. Two queued buffers drain through
+            // writev, which the fake scripts separately from write.
+            fake.enqueueWritev(fd, WriteResult.WouldBlock, WriteResult.Written(5))
+            val transport = transport()
+            var inactive = false
+            transport.onReadClosed = { inactive = true }
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            val stranded = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+            transport.write(stranded)
+
+            val waiter = parkFlushWaiter(transport)
+            assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
+
+            val escaped = assertFailsWith<InjectedFault> { transport.onReady(Interest.WRITE) }
+
+            val awaited = waiter.await().exceptionOrNull()
+            assertIs<InjectedFault>(awaited, "the waiter must see the drain failure")
+            assertSame(escaped, awaited, "the rethrow carries the very instance the waiter holds")
+            assertEquals(
+                emptyList(),
+                awaited.suppressedExceptions,
+                "the answer keeps the suppressed list it was published with -- empty on this path",
+            )
+            assertTrue(
+                eventLoop.warnings.any { "closing the failed connection threw as well" in it },
+                "the wind-down failure is kept in the log instead: ${eventLoop.warnings}",
+            )
+            assertIs<InjectedFault>(
+                eventLoop.logger.causeOfWarning("closing the failed connection threw as well"),
+                "and the warn carries the failure itself, which is its only record now",
+            )
+            assertTrue(inactive, "the inactive report itself still went out")
+
+            failing.releaseUnderlying()
+            stranded.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a loop-driven refusal whose wind-down failed passes the funnel twice without repeating it`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The double pass the sticky flag's note describes: the
+            // settlement runs the funnel inside the drain's catch, and the
+            // rethrow that leaves the drain lands in the outer containment,
+            // which runs it again with the same instance. Pinned here
+            // because the wind-down failure makes the difference observable:
+            // a second pass that repeated the wind-down would call the
+            // failed notification again and warn for it twice.
+            fake.enqueueWrite(fd, WriteResult.WouldBlock, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            var notifyCalls = 0
+            transport.onReadClosed = {
+                notifyCalls++
+                throw InjectedFault("inactive report refused")
+            }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            val waiter = parkFlushWaiter(transport)
+            assertFalse(transport.flush(), "the first attempt blocks and arms WRITE")
+
+            val escaped = assertFailsWith<RefusedWriteException> { transport.onReady(Interest.WRITE) }
+
+            val awaited = waiter.await().exceptionOrNull()
+            assertIs<RefusedWriteException>(awaited, "the waiter must see the refusal")
+            assertSame(escaped, awaited, "both passes rethrow the very instance the waiter holds")
+            assertEquals(1, notifyCalls, "the second pass must not call the failed notification again")
+            assertEquals(
+                1,
+                eventLoop.warnings.count { "reporting the failed connection inactive threw as well" in it },
+                "and must not warn for it again: ${eventLoop.warnings}",
+            )
+
             tracker.assertNoLeaks()
         }
     }
