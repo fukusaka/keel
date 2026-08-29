@@ -23,6 +23,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -390,6 +391,37 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             )
 
             failing.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a close that cannot deliver its answer does not report clean`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The detached stage's other arm: with nothing else carried, the
+            // waiter stage's aggregate is what the closer must hear. (With
+            // something carried it is dropped, which the sibling above pins
+            // -- this case is what keeps that drop from becoming "always
+            // drop".)
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+            val refusing = RefusingDispatcher()
+            var refusedOutcome: Result<Unit>? = null
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                refusedOutcome = runCatching { transport.awaitPendingFlush() }
+            }
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the close")
+
+            val thrown = runCatching { transport.close() }.exceptionOrNull()
+
+            assertNotNull(thrown, "a close that could not deliver its answer must not report clean")
+            assertEquals(1, refusing.attempts, "the refused waiter's dispatcher was consulted")
+            assertNull(refusedOutcome, "nothing can reach the refused waiter")
+            assertTrue(
+                eventLoop.errors.any { "ending the flush waiter of the closing transport" in it },
+                "and the refusal is still reported where it happened: ${eventLoop.errors}",
+            )
+            assertFalse(transport.isOpen)
             tracker.assertNoLeaks()
         }
     }
