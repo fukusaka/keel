@@ -5,11 +5,13 @@ import io.gitlab.arturbosch.detekt.api.RuleSet
 import io.gitlab.arturbosch.detekt.api.RuleSetProvider
 
 /**
- * Provides keel-specific detekt rules for resource leak detection.
+ * Provides keel-specific detekt rules.
  *
- * Rules detect common patterns where POSIX/cinterop resources
+ * The leak rules detect common patterns where POSIX/cinterop resources
  * (IoBuf, Arena, StableRef) are allocated without corresponding
- * release in try-finally.
+ * release in try-finally. [SecondAfterTestRule] guards a test-fixture
+ * invariant instead: a source set that centralises teardown in one
+ * inherited `@AfterTest` check bans siblings that would race it.
  */
 class KeelRuleSetProvider : RuleSetProvider {
     override val ruleSetId: String = "keel"
@@ -20,6 +22,7 @@ class KeelRuleSetProvider : RuleSetProvider {
             IoBufLeakRule(config),
             ArenaLeakRule(config),
             StableRefLeakRule(config),
+            SecondAfterTestRule(config),
         ),
     )
 }

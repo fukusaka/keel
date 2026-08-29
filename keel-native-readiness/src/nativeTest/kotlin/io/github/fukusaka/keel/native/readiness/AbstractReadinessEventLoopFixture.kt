@@ -90,11 +90,18 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * underscore, and, worth its own line, most of what a second check beside
      * this one would be called: `afterEachLoopIsClosed`, `afterEachLoopIsFreed`
      * and `afterEachLedgerIsEmpty` all sort before it. Naming a sibling after
-     * this one is the likeliest way to lose the check, not the safest. A smaller premise, not an enforced property; enforcing
-     * it would take a rule that fails the build on a second `@AfterTest` in
-     * this source set.
+     * this one is the likeliest way to lose the check, not the safest.
      *
-     * Nothing pins any of this. A test cannot assert that an `@AfterTest`
+     * So the race is banned rather than run: the `SecondAfterTest` lint rule
+     * fails the `detektTestSources` task -- the gate and CI lint, not a plain
+     * module test run -- on any other `@AfterTest` in this module's test
+     * sources, measured to fire on exactly the sibling that caused the
+     * silence above. The name stays as it is because the rule has premises of
+     * its own, listed beside it, and sorting early is the layer that still
+     * works when those give.
+     *
+     * Nothing in this tree pins the ordering facts or this check's own
+     * teeth -- the sibling ban above is the one enforced piece. A test cannot assert that an `@AfterTest`
      * failed -- the runner reports that failure as the case's own -- so the
      * check's own teeth are measured by mutation rather than held by a case
      * here, and the ordering above by probes rather than by anything in the
