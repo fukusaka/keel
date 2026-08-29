@@ -172,7 +172,10 @@ class ReadinessStreamServer(
                             // reached any other way would close the ledgers on
                             // a loop still reporting itself live, and this
                             // refusal would then meet an `isActive` of true.
-                            // Only a test fixture can do that today.
+                            // A test fixture is the only thing that does that
+                            // today -- the sweep is `protected` on a class
+                            // callers can subclass, so "does" is what the tree
+                            // shows and "can" is not what it stops.
                             val cause = "accept unavailable: StreamServer closed or its EventLoop stopped"
                             cont.resumeWithException(CancellationException(cause))
                             return@suspendCancellableCoroutine

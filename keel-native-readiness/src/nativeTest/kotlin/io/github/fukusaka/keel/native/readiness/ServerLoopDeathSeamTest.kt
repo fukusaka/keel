@@ -161,7 +161,11 @@ internal class ServerLoopDeathSeamTest : AbstractReadinessEventLoopFixture() {
     }
 
     private companion object {
-        /** Never bound: no accept completes in these cases. */
+        /**
+         * Carried into the address these servers report, and nothing else:
+         * `newListenerFd` calls `socket(2)` and never `bind(2)`, so the number
+         * reaches no kernel and cannot collide with anything.
+         */
         const val TEST_PORT = 18301
     }
 }
