@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `AbstractIoTransport` parks, sweeps and answers the callers waiting on a flush — one
+  implementation for the three transports that wait this way, and eight `protected` members a
+  subclass outside the tree gains with them (#1076)
 - `native-readiness`: `LoopParticipant.onInitialArmRefused` — the loop tells a participant when the
   arm it joined with was withdrawn before it ever fired (#1073)
 - `core`: `PipelinedStreamServer.activeLocalAddresses` — the subset of bound addresses still able

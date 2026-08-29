@@ -5,9 +5,11 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
+import kotlinx.coroutines.CancellableContinuation
 import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.coroutines.resume
 
 /**
  * Base class for [IoTransport] implementations with shared defaults.
@@ -27,6 +29,8 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
  * - **Open state**: [opened] flag with [isOpen] property for idempotent close.
  * - **Callback properties**: [onRead], [onReadClosed], [onFlushComplete],
  *   [onWritabilityChanged] initialized to `null`.
+ * - **Flush waiters**: the list a caller parks on in `awaitPendingFlush`, its
+ *   sweep, snapshot and guarded resume.
  * - **Defaults**: [awaitPendingFlush] = no-op, [awaitClosed] = no-op.
  *
  * Engine implementations extend this class and override platform-specific
@@ -851,6 +855,156 @@ abstract class AbstractIoTransport(
             val blockedRun = if (drainOutcomesRecorded) " max_blocked_run=$maxConsecutiveBlockedDrains" else ""
             "transport stats: $fdLabel flush=$flushCount partial=$partialWriteCount ratio_bp=$ratioBp" + blockedRun
         }
+    }
+
+    // --- Flush waiters ---
+
+    /**
+     * The callers parked in [awaitPendingFlush], or null until one parks.
+     *
+     * Three of the transports that extend this base park here; the rest do
+     * not -- Netty holds a future, the Network.framework one a completion, and
+     * the others never wait at all. So the list is built on first use rather
+     * than with the transport: a transport is per connection, and an empty
+     * list every connection carries and never reads is the kind of allocation
+     * the ones that do park are written to avoid. Said as a shape rather than
+     * a count, because the count moves whenever a subclass is added and the
+     * shape does not.
+     *
+     * A list, in arrival order -- which nothing here pins: reversing the park
+     * to insert at the head fails no case in any of the three suites, measured
+     * -- rather than the single slot this replaces:
+     * nothing in the contract makes the wait exclusive -- two coroutines
+     * flushing one channel overlap here naturally -- and the slot lost one of
+     * them, its second park's store evicting the first, whose hang no answer
+     * path could end.
+     *
+     * There is deliberately **no cancellation hook**. The one the slot
+     * installed ran on the cancelling caller's thread -- an off-loop write to
+     * loop-confined state -- and, being shared, cleared whichever waiter the
+     * slot held. A cancelled waiter stays listed instead, until the next
+     * answer resumes it: the coroutine machinery ignores a resume attempt on a
+     * cancelled continuation: `CancellableContinuationImpl.resumeImpl` takes its
+     * `CancelledContinuation` branch and returns. That branch returns rather
+     * than throwing only when it wins the state's `makeResumed` compare-and-
+     * set -- a *second* resume of the same cancelled continuation does reach
+     * the already-resumed error -- so what keeps the guard from firing is that
+     * no listed waiter is answered twice: every answer path either takes the
+     * list and clears it or forgets the one entry before resuming it. Dead
+     * entries leave at [parkFlushWaiter], on the owning
+     * thread -- without that sweep a stalled socket under a timeout-and-retry
+     * flusher grew one retained continuation per timeout for the connection's
+     * life, since no answer ever comes to a queue nothing drains. Every
+     * teardown path still answers and clears the whole list.
+     *
+     * Owning-thread-confined, like [pendingWrites], but not on identical
+     * terms: that one is a `val`, so its reference is safely published and only
+     * its contents need the quiescence edge. This is a plain `var` written by
+     * the owning thread at the first park, so the reference needs that edge
+     * too. Every off-thread reader in the tree asks emptiness or a count, and
+     * an unpublished reference answers those the same way an empty list does.
+     */
+    private var flushWaiters: MutableList<CancellableContinuation<Unit>>? = null
+
+    /** Whether anyone is parked -- dead entries included, as [parkedFlushWaiterCount] says. */
+    protected val hasFlushWaiters: Boolean get() = !flushWaiters.isNullOrEmpty()
+
+    /**
+     * How many entries the list holds, dead ones included. The park-time
+     * sweep is a memory bound, and a count is the only observation that can
+     * see it work: the readers that ask emptiness cannot, since the sweep
+     * never changes it. [isFlushWaiterParked] and [takeFlushWaiters] read more
+     * than emptiness, but neither is asked in order to watch the sweep.
+     */
+    protected val parkedFlushWaiterCount: Int get() = flushWaiters?.size ?: 0
+
+    /**
+     * Parks one waiter, sweeping dead entries first.
+     *
+     * A named member rather than an inline `add` at each register: detekt
+     * 1.23.8's type resolution crashes analysing that add inside the suspend
+     * builder (`findPackage`, message null), measured by bisection in the NIO
+     * transport and carried unmeasured to the io_uring one, whose register has
+     * the same shape. Two of the three needed it; the readiness register kept
+     * its add inline and the analyser was content. The call shape is the
+     * workaround, not a design point, and it is here because this is where the
+     * list is now, not because all three asked for it.
+     */
+    protected fun parkFlushWaiter(cont: CancellableContinuation<Unit>) {
+        val waiters = flushWaiters ?: ArrayList<CancellableContinuation<Unit>>(1).also { flushWaiters = it }
+        waiters.removeAll { it.isCancelled }
+        waiters.add(cont)
+    }
+
+    /** Whether [cont] is still listed -- asked by a register that ran a drain inline. */
+    protected fun isFlushWaiterParked(cont: CancellableContinuation<Unit>): Boolean =
+        flushWaiters?.contains(cont) == true
+
+    /**
+     * Forgets [cont] and nobody else. An answer that touches one waiter's
+     * entry is the property here: clearing another's stranded it for good,
+     * measured, back when this was a single slot cleared whole.
+     *
+     * By identity in practice rather than by construction: this is
+     * `MutableList.remove`, which asks `equals`, and it comes out as identity
+     * because `CancellableContinuationImpl` declares neither `equals` nor
+     * `hashCode`. The same is true of [isFlushWaiterParked]. A continuation
+     * implementation that defined value equality would make both of them touch
+     * a waiter they were not asked about.
+     */
+    protected fun forgetFlushWaiter(cont: CancellableContinuation<Unit>) {
+        flushWaiters?.remove(cont)
+    }
+
+    /**
+     * Takes every parked waiter, leaving none: the caller answers the
+     * snapshot it gets back. Snapshot-and-clear rather than iterate-in-place
+     * because an answer can run user code that parks a new waiter inline --
+     * the newcomer lands on the emptied list for the *next* answer, not in
+     * the middle of this sweep.
+     */
+    protected fun takeFlushWaiters(): List<CancellableContinuation<Unit>> {
+        val waiters = flushWaiters ?: return emptyList()
+        if (waiters.isEmpty()) return emptyList()
+        val snapshot = waiters.toList()
+        waiters.clear()
+        return snapshot
+    }
+
+    /**
+     * Resumes every waiter in [snapshot], one guard per waiter: the resume
+     * rides each waiter's dispatcher, which can refuse it, and the snapshot
+     * is already taken -- an unguarded throw would abort the loop, strand
+     * every waiter behind the refusal, and skip the completion duties the
+     * caller runs after this.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    protected fun resumeFlushWaiters(snapshot: List<CancellableContinuation<Unit>>) {
+        for (cont in snapshot) {
+            try {
+                cont.resume(Unit)
+            } catch (refusal: Throwable) {
+                reportFlushWaiterResumeRefused(refusal)
+            }
+        }
+    }
+
+    /**
+     * Says that a waiter's dispatcher refused the resume and nothing can
+     * reach that waiter, while the rest go on.
+     *
+     * The default does nothing, for the reason
+     * [reportContainedHalfCloseRefusal] gives: the transport that met the
+     * refusal is the one holding a logger, so it is the one asked. And on the
+     * same terms as that one, the empty default is correct only while a
+     * transport that does not override this also never calls
+     * [resumeFlushWaiters] -- true of every transport but two today. A caller
+     * that adopts the guarded resume without this loses the refusal with no
+     * record anywhere, so overriding it is part of adopting that resume, not
+     * an option alongside it.
+     */
+    protected open fun reportFlushWaiterResumeRefused(refusal: Throwable) {
+        // Overridden where a logger exists; see the KDoc.
     }
 
     // --- Defaults ---

@@ -43,7 +43,6 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.plus
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -1482,61 +1481,14 @@ internal class IoUringIoTransport(
     private var asyncFlushesInFlight = 0
 
     /**
-     * Every caller parked in [awaitPendingFlush], in arrival order. Loop
-     * confined. A list rather than a slot because nothing in the contract
-     * makes the wait exclusive — two coroutines flushing one channel overlap
-     * here naturally — and a slot loses one of them: the second park's store
-     * evicts the first, whose hang no answer path can end. No cancellation
-     * hook, deliberately: the hook ran on the cancelling caller's thread (an
-     * off-loop write to loop-confined state), and a cancelled waiter's entry
-     * is answered harmlessly instead — the coroutine machinery ignores a
-     * resume attempt on a cancelled continuation — and swept out when the
-     * next waiter parks, so a timeout-and-retry flusher on a stalled socket
-     * cannot grow the list. Same design as the readiness transport's list;
-     * the contract is shared.
+     * Says a waiter's dispatcher refused its resume. The list, the park, the
+     * snapshot and the guarded resume are the base's now -- three transports
+     * carried the same copy -- and this is the half that needs a logger.
      */
-    private val flushWaiters = ArrayList<CancellableContinuation<Unit>>(1)
-
-    /**
-     * Parks one waiter. A named seam rather than an inline `add` because
-     * detekt 1.23.8's type resolution crashes analysing the add inside the
-     * suspend builder's register (`findPackage`, message null). Measured by
-     * bisection in the NIO twin of this site and carried here unmeasured:
-     * the register shapes are identical and the crash is the analyzer's, so
-     * the twin's measurement is borrowed rather than repeated. The call
-     * shape is the workaround, not a design point.
-     */
-    private fun parkFlushWaiter(cont: CancellableContinuation<Unit>) {
-        flushWaiters.removeAll { it.isCancelled }
-        flushWaiters.add(cont)
-    }
-
-    /**
-     * Resumes every waiter in [snapshot], one guard per waiter: the resume
-     * rides each waiter's dispatcher, which can refuse it, and the snapshot
-     * is already taken — an unguarded throw would abort the loop, strand
-     * every waiter behind the refusal, and skip the completion duties the
-     * caller runs after this.
-     */
-    @Suppress("TooGenericExceptionCaught")
-    private fun resumeFlushWaiters(snapshot: List<CancellableContinuation<Unit>>) {
-        for (cont in snapshot) {
-            try {
-                cont.resume(Unit)
-            } catch (refusal: Throwable) {
-                eventLoop.logger.error(refusal) {
-                    "resuming a drained flush waiter threw; nothing can reach that waiter, the rest go on"
-                }
-            }
+    override fun reportFlushWaiterResumeRefused(refusal: Throwable) {
+        eventLoop.logger.error(refusal) {
+            "resuming a drained flush waiter threw; nothing can reach that waiter, the rest go on"
         }
-    }
-
-    /** Takes every parked waiter, leaving none; the caller answers the snapshot. */
-    private fun takeFlushWaiters(): List<CancellableContinuation<Unit>> {
-        if (flushWaiters.isEmpty()) return emptyList()
-        val snapshot = flushWaiters.toList()
-        flushWaiters.clear()
-        return snapshot
     }
 
     /**
@@ -1560,7 +1512,7 @@ internal class IoUringIoTransport(
      * Suspends until all pending async flush operations complete.
      *
      * Dispatches the check+register lambda to the EventLoop so the
-     * [asyncFlushesInFlight] check and [flushWaiters] store are atomic
+     * [asyncFlushesInFlight] check and the waiter store are atomic
      * with the write-CQE handler that decrements it. If the flush already
      * completed before the lambda executes, [cont] is resumed immediately
      * rather than stored, avoiding a TOCTOU deadlock.
