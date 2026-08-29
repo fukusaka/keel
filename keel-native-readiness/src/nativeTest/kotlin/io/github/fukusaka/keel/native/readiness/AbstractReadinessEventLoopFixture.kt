@@ -36,10 +36,11 @@ import kotlin.time.Duration.Companion.seconds
  * Holds what the split would otherwise have duplicated five times: the seven
  * test doubles, the `loopTest` / `suspendOn` / `chainOf` helpers, the
  * constants, and the teardown that asks each loop a case built whether its
- * scratch came back. A loop reaches that teardown three ways: [owned] for a
- * case that built its own, [onRelease] for a fixture that has one to give
- * back, and the `loopTest` helpers, which close the loop they hand out -- the
- * last covering half the cases here. The transport seam fixture extends this too, for [FakeLoop] —
+ * scratch came back. A loop gets back to it four ways: [onRelease] for a
+ * fixture that has one to give back, the `loopTest` helpers, which close the
+ * loop they hand out, [owned] for a case that built its own, and a `finally`
+ * a case writes itself. The check does not care which -- it asks the scratch,
+ * not the route. The transport seam fixture extends this too, for [FakeLoop] —
  * one loop double serving both families rather than a near-copy per family.
  *
  * All `protected` and nested rather than hoisted to package scope, which is
@@ -61,29 +62,35 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * rather than here (#1073). [OpenTestLoops] records them; this is what
      * reads the record.
      *
-     * Registration rather than a second `@AfterTest` or an overridable hook.
-     * Two `@AfterTest`s run in an order the runner is free to pick, and the one
-     * it picks is not the chain anyone would guess: measured over three levels
-     * it runs the leaf, then this base, then the fixture in between. So a
-     * fixture that closed its own loop in an `@AfterTest` of its own would run
-     * *after* this check and be reported as leaking it -- constructed and
-     * reproduced, not a worry about what some runner might do. A second
-     * `@AfterTest` on *this* class is worse and is the reason not to add one
-     * here either: two on one class do not run in the order they are declared,
-     * so one that throws can take this check with it -- a review built both
-     * orders and saw exactly that. An overridable
-     * hook fixes the order and buys a different problem: an override that
-     * forgets `super` silently drops what its parent was releasing, and that is
-     * a rule living in one file again. What a fixture registers in [onRelease]
-     * cannot be forgotten by the one below it -- and it must not become an `@AfterTest` again, for
-     * the reason [OpenTestLoops] gives among its premises.
+     * **The `a` in the name is load-bearing.** Kotlin/Native runs a case's
+     * own `@AfterTest`s first, in the order they are declared, and every
+     * inherited one after those, in order of function name -- measured on
+     * both hosts, varying declaration order and name independently. Cases
+     * live in subclasses, so this check and any `@AfterTest` a fixture in
+     * between adds are both inherited by the case, and the name alone
+     * decides which runs first. The runner stops at the first one that
+     * throws. A fixture teardown called `closeLoop` therefore sorts ahead of
+     * a check whose name begins with `e`, which is what this one was called,
+     * and takes it with it when that teardown throws: measured, one hundred
+     * and twenty-nine transport cases ran with this check never reaching
+     * them and not one loop reported. Sorting first is what stops that. It
+     * is not a guarantee -- a sibling named earlier still wins -- but it
+     * puts the check ahead of the names anyone reaches for.
      *
-     * They run in registration order, and that order is whatever the runner's
-     * `@BeforeTest` order is -- measured as leaf, then base, then the fixture
-     * in between, which is nobody's mental model of a hierarchy. Nothing here
-     * depends on it: each releaser is guarded and all of them run whatever the
-     * others do. Written down because an order this surprising is one a later
-     * reader would otherwise assume, and assume wrongly.
+     * Registration rather than a second `@AfterTest` or an overridable hook.
+     * A fixture closing its own loop in an `@AfterTest` would be racing this
+     * check on spelling: called `tearDown` it runs after and is reported as
+     * leaking the loop it just closed; called `closeLoop` it runs before and
+     * can take the check with it. Both measured. An overridable hook settles
+     * the order and buys a different problem: an override that forgets `super`
+     * silently drops what its parent was releasing, and that is a rule living
+     * in one file again. What a fixture registers in [onRelease] cannot be
+     * forgotten by the one below it, and races nothing.
+     *
+     * Releasers run in registration order, which is the runner's `@BeforeTest`
+     * order -- the same rule as above, so a case's own first and inherited ones
+     * by name. Nothing here depends on it: each releaser is guarded and all of
+     * them run whatever the others do.
      *
      * **When this line fails, whatever failed earlier in the case is not
      * reported** -- its own assertion, its `@BeforeTest`. The Native runner
@@ -94,7 +101,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * output that was never written.
      */
     @AfterTest
-    fun everyLoopWasGivenBack() {
+    fun afterEachLoopIsGivenBack() {
         val closeFailures = mutableListOf<Throwable>()
         val left: List<AbstractReadinessEventLoop>
         try {
@@ -140,7 +147,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * A fixture that owns a loop or a descriptor registers its release from
      * `@BeforeTest` rather than overriding anything: there is no `super` for a
      * fixture below it to forget, and every registration runs whatever the
-     * others do. See [everyLoopWasGivenBack] for why not an `@AfterTest` of
+     * others do. See [afterEachLoopIsGivenBack] for why not an `@AfterTest` of
      * its own.
      */
     protected fun onRelease(block: () -> Unit) {
@@ -155,7 +162,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * For the cases that build one at the top and drive it throughout, where a
      * `finally` would be more unwind than test. **Not the fixture tidying up
      * quietly**: a loop that goes through neither this nor a close of its own
-     * still fails [everyLoopWasGivenBack]. What this changes is that the case
+     * still fails [afterEachLoopIsGivenBack]. What this changes is that the case
      * says whose the loop is, in one word, where it builds it.
      *
      * A case that means to end with its scratch checked out *and to be let
