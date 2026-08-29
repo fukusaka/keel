@@ -164,7 +164,15 @@ class ReadinessStreamServer(
                             // because that answer reads the loop, so a caller
                             // that asks after this failure is told the same
                             // thing either way -- which is what it needs to
-                            // stop asking, not which of the two it was.
+                            // stop asking, not which of the two it was. That
+                            // rests on an ordering nothing here enforces: the
+                            // ledgers are closed only by the stop sweep, the
+                            // sweep runs only from the loop's terminate(), and
+                            // terminate() publishes finished before it. A sweep
+                            // reached any other way would close the ledgers on
+                            // a loop still reporting itself live, and this
+                            // refusal would then meet an `isActive` of true.
+                            // Only a test fixture can do that today.
                             val cause = "accept unavailable: StreamServer closed or its EventLoop stopped"
                             cont.resumeWithException(CancellationException(cause))
                             return@suspendCancellableCoroutine
