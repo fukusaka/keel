@@ -341,6 +341,97 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
     }
 
     @Test
+    fun `a stage failing after the teardown handed out the reason does not append to its graph`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The teardown's own deferred drain meets a rider-carrying
+            // refusal, which becomes the recorded reason; the waiter stage
+            // hands that same instance out, and a later duty's failure --
+            // here the aggregate of a refused resume -- must not be appended
+            // into the graph the waiters now hold. Suppressed lists are
+            // unsynchronized, and each refused resume is already error-logged
+            // where it happens.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            val failing = FailingReleaseIoBuf(tracker.allocate(16).apply { writerIndex = 5 })
+            transport.write(failing)
+
+            val answered = parkFlushWaiter(transport)
+            val refusing = RefusingDispatcher()
+            var refusedOutcome: Result<Unit>? = null
+            CoroutineScope(refusing).launch(start = CoroutineStart.UNDISPATCHED) {
+                refusedOutcome = runCatching { transport.awaitPendingFlush() }
+            }
+            assertFalse(transport.flush(), "coalescing defers the drain to a tick the close will run instead")
+
+            // The teardown's deferred drain raises the rider out of close();
+            // the refused resume's aggregate is logged, not attached.
+            val closeThrow = assertFailsWith<InjectedFault> { transport.close() }
+            assertEquals(
+                "release refused by FailingReleaseIoBuf",
+                closeThrow.message,
+                "the rider still reaches the closer",
+            )
+
+            val received = answered.await().exceptionOrNull()
+            assertIs<RefusedWriteException>(received, "the parked waiter is told the recorded refusal")
+            val rider = received.suppressedExceptions.single()
+            assertSame(closeThrow, rider, "the closer's throw is the same rider the waiters' graph carries")
+            assertEquals(
+                emptyList(),
+                rider.suppressedExceptions,
+                "nothing is appended into the handed-out graph after the hand-over",
+            )
+            assertEquals(1, refusing.attempts, "the refused waiter's dispatcher was consulted")
+            assertNull(refusedOutcome, "nothing can reach the refused waiter")
+            assertTrue(
+                eventLoop.errors.any { "ending the flush waiter of the closing transport" in it },
+                "the refused resume is reported where it happened: ${eventLoop.errors}",
+            )
+
+            failing.releaseUnderlying()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `the funnel's answer rides a later loop task instead of the throwing frame`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // Pins the deferral the funnel's prose rests on: every attach the
+            // transport makes to the instance happens in the current task,
+            // and the queued resume runs strictly after them, so this path's
+            // publication cannot observe a list mid-append. The discriminator
+            // is the window between the throwing flush and the drain of the
+            // dispatched task -- an inline resume would complete the waiter
+            // at the yield below.
+            rebuildLoop(onLoopThread = true, runDispatchedInline = false, flushCoalescing = false)
+            fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
+            val transport = transport()
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            val waiter = parkFlushWaiter(transport)
+            assertTrue(transport.hasFlushWaiter(), "the waiter must be parked before the drain")
+
+            assertFailsWith<RefusedWriteException> { transport.flush() }
+
+            assertFalse(transport.hasFlushWaiter(), "the answer was taken with the snapshot")
+            yield()
+            assertFalse(
+                waiter.isCompleted,
+                "the answer must not arrive from the throwing frame -- it rides a later loop task",
+            )
+
+            eventLoop.drainDispatched()
+            assertIs<RefusedWriteException>(
+                waiter.await().exceptionOrNull(),
+                "the dispatched task is what delivers it",
+            )
+
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
     fun `a drained short-circuit sends the deferred FIN before running the completion callbacks`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             rebuildLoop(runDispatchedInline = false)
