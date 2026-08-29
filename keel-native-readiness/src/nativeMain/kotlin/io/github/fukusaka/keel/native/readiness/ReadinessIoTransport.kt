@@ -57,14 +57,17 @@ import kotlin.coroutines.resumeWithException
 @OptIn(ExperimentalForeignApi::class)
 @InternalReadinessEngineApi
 // LargeClass: the transport owns the whole per-connection readiness
-// lifecycle, the same surface its io_uring twin suppresses this for. One
-// extraction has already been taken (the gather scratch and the flush-wait
-// answers); the waiter-list code added for the multi-waiter contract puts
-// the class back over the threshold — code lines, not comments: detekt's
-// linesOfCode counts no comment or KDoc line. The right shrink is hoisting
-// that machinery, declared identically in three transports, into the shared
-// base — tracked, and it takes this suppression with it — rather than an
-// extraction invented inside a bug-fix change.
+// lifecycle, the same surface its io_uring twin suppresses this for. The
+// note here used to say the waiter machinery was what put it over and that
+// hoisting that machinery would take this suppression with it. The hoist has
+// happened, and it did not: six hundred and forty-seven code lines against a
+// threshold of six hundred -- detekt counts no comment or KDoc line. Measured
+// by sweeping the threshold until the finding flips, which is the analyser's
+// own count rather than a reimplementation of how it counts; the first attempt
+// reimplemented it and was seven lines out. What the hoist removed was mostly the KDoc that
+// explained the same list three times. Whatever the next shrink is, it is a
+// larger extraction than this one, and the claim is not repeated here without
+// a measurement behind it.
 @Suppress("LargeClass")
 class ReadinessIoTransport(
     /**
@@ -565,7 +568,7 @@ class ReadinessIoTransport(
      * treat a `true` as "was parked", which is all the tests need.
      */
     @InternalReadinessEngineApi
-    fun hasFlushWaiter(): Boolean = flushWaiters.isNotEmpty()
+    fun hasFlushWaiter(): Boolean = hasFlushWaiters
 
     /**
      * How many entries the waiter list holds, dead ones included. Behind the
@@ -574,7 +577,7 @@ class ReadinessIoTransport(
      * work — every other seam reads emptiness, which the sweep never changes.
      */
     @InternalReadinessEngineApi
-    fun flushWaiterCount(): Int = flushWaiters.size
+    fun flushWaiterCount(): Int = parkedFlushWaiterCount
 
     /**
      * The write ledger's current byte count.
@@ -1421,7 +1424,7 @@ class ReadinessIoTransport(
      * a refusal report still says which one.
      */
     private fun resumeDrainedWaiter(cont: CancellableContinuation<Unit>, what: String) {
-        flushWaiters.remove(cont)
+        forgetFlushWaiter(cont)
         answerFlushWaiter(what) {
             cont.resume(Unit)
         }
@@ -1945,44 +1948,6 @@ class ReadinessIoTransport(
     // --- Async write readiness ---
 
     /**
-     * Every caller parked in [awaitPendingFlush], in arrival order. Loop
-     * confined, like the ledger it waits on. A list rather than a slot
-     * because nothing in the contract makes the wait exclusive — two
-     * coroutines flushing one channel overlap here naturally — and the slot
-     * this replaces lost one of them: the second park's store evicted the
-     * first, whose hang no answer path could end.
-     *
-     * There is deliberately **no cancellation hook**. The one the slot
-     * installed ran on the cancelling caller's thread — an off-loop write to
-     * loop-confined state — and, being shared, cleared whichever waiter the
-     * slot held. A cancelled waiter stays listed instead, until the next
-     * answer resumes it: `CancellableContinuationImpl.resumeImpl` ignores a
-     * resume attempt on a cancelled continuation (its `CancelledContinuation`
-     * branch — distinct from the double-resume throw), so the answer is a
-     * no-op and the guard around it never fires. Dead entries are swept when
-     * the next waiter parks, on the loop — without that sweep a stalled
-     * socket under a timeout-and-retry flusher grew one retained continuation
-     * per timeout for the connection's life, since no answer ever comes to a
-     * queue nothing drains. Every teardown path still answers and clears the
-     * whole list.
-     */
-    private val flushWaiters = ArrayList<CancellableContinuation<Unit>>(1)
-
-    /**
-     * Takes every parked waiter, leaving none: the caller answers the
-     * snapshot it gets back. Snapshot-and-clear rather than iterate-in-place
-     * because an answer can run user code that parks a new waiter inline —
-     * the newcomer lands on the emptied list for the *next* answer, not in
-     * the middle of this sweep.
-     */
-    private fun takeFlushWaiters(): List<CancellableContinuation<Unit>> {
-        if (flushWaiters.isEmpty()) return emptyList()
-        val snapshot = flushWaiters.toList()
-        flushWaiters.clear()
-        return snapshot
-    }
-
-    /**
      * The register's short-circuit: runs the drain the coalesced tick had
      * scheduled, now that the waiter is stored — contained like the tick it
      * replaces, and caught outright on top: this can run inline inside the
@@ -2291,9 +2256,9 @@ class ReadinessIoTransport(
                         // The park is also where dead entries leave: a
                         // cancelled waiter's resume is ignored, but its entry
                         // holds the continuation until something answers, and
-                        // on a stalled socket nothing does — see [flushWaiters].
-                        flushWaiters.removeAll { it.isCancelled }
-                        flushWaiters.add(cont)
+                        // on a stalled socket nothing does — see the base's
+                        // park, which sweeps them.
+                        parkFlushWaiter(cont)
                         // If a coalesced flush is already queued to run on the next
                         // EL tick, run it now instead of waiting for the tick to fire.
                         // The awaitFlushComplete path is the backpressure gate under
@@ -2311,7 +2276,7 @@ class ReadinessIoTransport(
                             // funnel, or answered by a containment close?
                             // Then this caller is no longer listed, and the
                             // register has nothing left to do for it.
-                            if (cont !in flushWaiters) return@Runnable
+                            if (!isFlushWaiterParked(cont)) return@Runnable
                         } else if (drainPoisoned && !eventLoop.hasCallbackRegistration(fd, Interest.WRITE)) {
                             // Queued bytes whose last drain threw, with the
                             // throw contained upstream -- the pipeline's flush
@@ -2325,7 +2290,7 @@ class ReadinessIoTransport(
                             // what keeps every legitimate park (a waiter
                             // arriving before the producer's flush) parked.
                             drainScheduledForWaiter()
-                            if (cont !in flushWaiters) return@Runnable
+                            if (!isFlushWaiterParked(cont)) return@Runnable
                         }
                         // Re-read before answering anything below: the first
                         // arm's read is stale across a whole drain by now, and
@@ -2339,7 +2304,7 @@ class ReadinessIoTransport(
                         // runs after this task. Answer for the close, inline,
                         // like the arm above.
                         if (!opened) {
-                            flushWaiters.remove(cont)
+                            forgetFlushWaiter(cont)
                             answerFlushWaiter(
                                 "answering the flush waiter of a closing transport for, while the wind-down goes on,",
                             ) {
@@ -2365,7 +2330,7 @@ class ReadinessIoTransport(
                             )
                             return@Runnable
                         }
-                        // No cancellation hook -- see [flushWaiters]: a
+                        // No cancellation hook -- see the base's list: a
                         // cancelled entry stays until the next answer, whose
                         // resume the machinery ignores.
                     }
