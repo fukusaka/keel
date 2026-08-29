@@ -77,14 +77,17 @@ internal abstract class AbstractReadinessEventLoopFixture {
      * and takes it with it when that teardown throws: measured, one hundred
      * and twenty-nine transport cases ran with this check never reaching
      * them and not one loop reported. Sorting first is what stops that, and
-     * what it buys was measured rather than assumed: it sorts ahead of every
-     * `@AfterTest` name in this repository (`tearDown` twenty-one times,
-     * `cleanup...`, `resetPool`) and ahead of `closeLoop`. It loses to
-     * `afterEach` -- what JUnit calls the same thing, and enough on its own to
-     * reproduce the silence above -- and to any `afterEach...` sorting between
-     * `a` and `k`, so a second check named after this one would beat it.
-     * A smaller premise, not an enforced property; enforcing it would take a
-     * rule that fails the build on a second `@AfterTest` in this source set.
+     * what it buys was counted rather than assumed: it sorts ahead of all nine
+     * `@AfterTest` names in this repository (`tearDown`, `cleanup...`,
+     * `resetPool`, `checkProperty`) and ahead of `closeLoop`. What beats it is
+     * `after`, `afterAll` and `afterEach` -- the last being both a prefix of
+     * this name and what JUnit calls the same thing, and enough on its own to
+     * reproduce the silence above -- along with `afterEach` followed by a
+     * capital `A` through `K`, which is the shape of every camelCase sibling
+     * one would write next to this one, and any name starting with a capital
+     * or an underscore, since the sort is over UTF-16 units. A smaller premise,
+     * not an enforced property; enforcing it would take a rule that fails the
+     * build on a second `@AfterTest` in this source set.
      *
      * Registration rather than a second `@AfterTest` or an overridable hook.
      * A fixture closing its own loop in an `@AfterTest` would be racing this
