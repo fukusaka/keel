@@ -32,10 +32,10 @@ import kotlin.test.assertTrue
  * a production reword is a one-line edit here — and so the negative matchers
  * provably test the same string the positive ones prove against production.
  */
-private const val CLOSING_REFUSAL_REPORT = "found the peer gone while closing"
+private const val CLOSING_REFUSAL_REPORT = "ended in a refusal while closing"
 
 /** The [CLOSING_REFUSAL_REPORT] variant for a refusal that arrived carrying riders. */
-private const val CLOSING_REFUSAL_REPORT_WITH_RIDER = "found the peer gone while closing, and did not finish cleaning up"
+private const val CLOSING_REFUSAL_REPORT_WITH_RIDER = "ended in a refusal while closing, and something failed with it"
 
 /**
  * Pins what the write path does when the kernel refuses.
@@ -360,7 +360,7 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
             assertFalse(transport.isOpen)
             assertTrue(
                 eventLoop.warnings.any { it.contains(CLOSING_REFUSAL_REPORT) },
-                "the gone peer is reported, got: ${eventLoop.warnings}",
+                "the refusal is reported, got: ${eventLoop.warnings}",
             )
             assertFalse(
                 eventLoop.warnings.any { it.contains(CLOSING_REFUSAL_REPORT_WITH_RIDER) },
@@ -743,7 +743,7 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
             assertFalse(transport.isOpen, "the teardown still ends the connection")
             assertTrue(
                 eventLoop.warnings.any { it.contains(CLOSING_REFUSAL_REPORT_WITH_RIDER) },
-                "the gone peer is still reported alongside, got: ${eventLoop.warnings}",
+                "the refusal is still reported alongside, got: ${eventLoop.warnings}",
             )
             fake.assertAllConsumed()
 

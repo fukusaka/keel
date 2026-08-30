@@ -24,10 +24,10 @@ import kotlin.test.assertTrue
  * production reword is a one-line edit here — and so the negative matchers
  * provably test the same string the positive ones prove against production.
  */
-private const val REFUSAL_REPORT = "the half-close found the peer gone"
+private const val REFUSAL_REPORT = "the half-close's drain ended in a refusal"
 
 /** The [REFUSAL_REPORT] variant for a refusal that arrived carrying riders. */
-private const val REFUSAL_REPORT_WITH_RIDER = "the half-close found the peer gone, and did not finish cleaning up"
+private const val REFUSAL_REPORT_WITH_RIDER = "the half-close's drain ended in a refusal, and something failed with it"
 
 /**
  * Pins what a half-close answers when the send it orders its FIN behind is
