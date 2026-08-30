@@ -114,12 +114,13 @@ interface IoEngine : CoroutineScope {
      * engine is closed and returns.
      *
      * The epoll and kqueue engines release their dispatcher threads and OS
-     * resources anyway, and the cost is that a child suspended mid-unwind
-     * is never resumed — the thread that would resume it has stopped — so
-     * whatever it still held goes with that thread. The other engines do
-     * not release at all on that path; the descriptors and threads stay
-     * held for the life of the process, with nobody able to ask again.
-     * Prefer letting this call finish.
+     * resources anyway; what that costs is written on their own close. The
+     * five that do their release after an unguarded join — NIO, Netty,
+     * io_uring, Node.js and Network.framework — skip it entirely, and
+     * because the flag is already set nobody can ask again, so whatever
+     * each of them holds is held until the process ends. Only an
+     * implementation with no suspension point at all is indifferent to
+     * this. Prefer letting this call finish.
      *
      * Idempotent: subsequent calls are a no-op.
      */

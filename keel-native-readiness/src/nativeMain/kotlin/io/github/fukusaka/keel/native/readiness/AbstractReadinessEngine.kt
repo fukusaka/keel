@@ -689,31 +689,43 @@ abstract class AbstractReadinessEngine(
      * threads no budget can cut — so a timeout that expires is the moment this
      * stops waiting for other people's coroutines, not the moment it returns.
      *
-     * What an interrupted join costs is a leak rather than corruption. The
-     * join is also what used to let this engine's children finish unwinding
-     * before the loops went; skip it and a child suspended mid-unwind is never
-     * resumed, because what would resume it is a loop that has stopped — so
-     * whatever it still held goes with that loop. The gathers themselves stay
-     * safe either way: they run only on the loop's own thread, and each loop
-     * joins that thread before it frees the scratch, so nothing reads memory
-     * after it is given back.
+     * What an interrupted join costs is a leak rather than corruption, and a
+     * narrower one than it first looks. The join is what used to let this
+     * engine's children finish unwinding before the loops went. Skipping it
+     * does not strand them wholesale: the cancel that precedes the join has
+     * already queued each loop-confined child's resumption, and a stopping loop
+     * drains its tasks, sweeps, then drains again — so those run and unwind.
+     * A child on some other dispatcher is not this loop's to resume at all.
+     * What is stranded is the child that suspends *again* past that last drain:
+     * nothing reads that loop's queue afterwards, so whatever it still held
+     * goes with the loop.
+     *
+     * The gathers stay safe, but by quiescence rather than by confinement —
+     * the scratch says so itself. A loop that started a thread joins it before
+     * freeing; one that never started a thread has nothing to be concurrent
+     * with and reports itself stopped instead. Either way nothing reads that
+     * memory after it is given back.
      *
      * **One such caller is served less completely than the rest.** Work
      * confined to one of this engine's own loops — that loop is the dispatcher
      * a channel hands out — runs the release on that loop's thread, and a loop
      * refuses to join itself: it reports at error level and returns, holding
      * its descriptors, its arena and its gather scratch. The other loops are
-     * still released, and this call still reports success, so the log line is
-     * the only account of it. Closing that gap is not this method's to do; it
-     * belongs where the self-join is refused.
+     * still released, and nothing names the one that was not — an engine child
+     * gets its cancellation back and work merely confined to a loop gets a
+     * normal return, so in both cases the error line is the only account of it.
+     * Closing that gap is not this method's to do; it belongs where the
+     * self-join is refused.
      */
     override suspend fun close() {
         if (!closed) {
             closed = true
             // Read out here on purpose: inside the block below `coroutineContext`
-            // resolves to the block's own scope rather than this engine's, so
-            // cancelling and joining "this engine's job" there would reach the
-            // uncancellable one and stop none of this engine's work.
+            // resolves to the scope `withContext` builds, not to this engine --
+            // measured, and it is that scope rather than the uncancellable job
+            // the context carries. Cancelling and joining "this engine's job"
+            // there would stop none of this engine's work, and would cancel the
+            // release block itself.
             val engineWork = coroutineContext.job
             // Held rather than propagated here: the release below owes nothing
             // to this caller's job and has to run either way. Re-raised after
