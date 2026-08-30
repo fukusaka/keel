@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `core`: `AbstractIoTransport` parks, sweeps and answers the callers waiting on a flush — one
   implementation for the three transports that wait this way, and eight `protected` members a
   subclass outside the tree gains with them (#1076)
+- `native-readiness`: `FdReadyListener.armsCloseOnly` — a listener says whether its READ arm should
+  wake for the peer's close alone, so the engines read the width off the listener rather than
+  being told at each arm. Defaults to `false` (#1084)
 - `native-readiness`: `LoopParticipant.onInitialArmRefused` — the loop tells a participant when the
   arm it joined with was withdrawn before it ever fired (#1073)
 - `core`: `PipelinedStreamServer.activeLocalAddresses` — the subset of bound addresses still able
@@ -135,6 +138,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll` / `engine-kqueue`: a connection whose reads are disabled keeps hearing its peer
+  close. The read arm is one-shot, so unread data spent it and the interest was withdrawn; the
+  back-pressure path now re-arms for the close alone instead (#1084)
 - `engine-epoll` / `engine-kqueue`: `close()` finishes releasing the accept loop and the worker
   group even when the coroutine that called it is cancelled — the join between the closed flag
   and the release is a suspension point, and a caller cancelled there left every loop holding

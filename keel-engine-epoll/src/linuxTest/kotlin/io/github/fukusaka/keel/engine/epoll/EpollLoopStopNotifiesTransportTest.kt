@@ -18,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -160,13 +161,20 @@ class EpollLoopStopNotifiesTransportTest {
 
     @Test
     fun `a connection holding no registration is told when its EventLoop stops`() = runBlocking {
-        // The connection the participant registry exists for. `init` arms READ
-        // once; with `readEnabled` still false (nothing has called read()), the
-        // first readiness event pops that one-shot entry and `onReadable`
-        // declines to re-arm -- so the ledger holds nothing for this fd and the
-        // kernel interest is taken back. A notification keyed on the ledger
-        // walked straight past this state; keyed on the registry, the transport
-        // is told all the same.
+        // A connection whose only readiness event was declined, and what it
+        // keeps. `init` arms READ once; with `readEnabled` still false the
+        // first event pops that one-shot entry, and the declined wake
+        // re-registers narrowed -- an arm the peer's close wakes and arriving
+        // data does not -- so the fd stays in the ledger rather than losing its
+        // interest.
+        //
+        // It used to lose it, and this case was written for that state: a stop
+        // notification keyed on the ledger walked past a connection holding
+        // nothing, so the registry keys it instead. That keying is still what
+        // the engine does, but the state is no longer reachable from here --
+        // the seam builds it directly, in the case about a sweep telling a
+        // participant that holds no registration at all. What is left to
+        // check here is the pair this engine actually produces now.
         withTimeout(BODY_TIMEOUT_S.seconds) {
             val engine = EpollEngine()
             val server = engine.bind(LOOPBACK_HOST, 0)
@@ -186,17 +194,21 @@ class EpollLoopStopNotifiesTransportTest {
             serverCh.write(buf)
             serverCh.flush()
 
-            // Wait for the ledger to actually empty -- a signal, not a sleep.
-            val empty = withTimeoutOrNull(PARK_TIMEOUT_S.seconds) {
-                while (
-                    engine.hasWorkerRegistration(transport.fd, Interest.READ) ||
-                    engine.hasWorkerRegistration(transport.fd, Interest.WRITE)
-                ) {
+            // Wait for the wake to have been declined -- a signal, not a
+            // sleep. The write side is what the declined wake never wanted, so
+            // its absence is the edge that says the event has been handled.
+            val declined = withTimeoutOrNull(PARK_TIMEOUT_S.seconds) {
+                while (engine.hasWorkerRegistration(transport.fd, Interest.WRITE)) {
                     delay(PARK_POLL_MS)
                 }
                 true
             }
-            assertNotNull(empty, "the declined wake must leave the ledger empty for this fd")
+            assertNotNull(declined, "the readiness event must be handled before the loop is stopped")
+            assertTrue(
+                engine.hasWorkerRegistration(transport.fd, Interest.READ),
+                "the declined wake keeps a read registration rather than giving the interest up -- that is " +
+                    "what lets this connection still hear its peer close",
+            )
             assertFalse(closedSignal.isCompleted, "nothing has closed this connection yet")
 
             engine.close()

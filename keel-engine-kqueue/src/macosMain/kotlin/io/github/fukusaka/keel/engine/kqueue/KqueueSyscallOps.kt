@@ -74,6 +74,37 @@ internal interface KqueueSyscallOps {
     fun addReadFilter(kqFd: Int, fd: Int): Int
 
     /**
+     * Registers [fd] with [kqFd] for peer close alone — an `EVFILT_READ` that
+     * arriving data does not wake, but a peer FIN does (`EV_EOF`).
+     *
+     * There is no EOF filter of its own on this kernel; EOF is a flag on the
+     * read filter. What separates the two here is `NOTE_LOWAT`, a per-filter
+     * low-water mark: the filter stays quiet until that many bytes are
+     * readable, while the EOF check inside it runs first and returns regardless.
+     * Set above anything the socket can hold, it yields a registration that
+     * only a close can wake. Measured on this kernel: with the mark above the
+     * receive buffer, 1 KiB and 200 KiB of unread data both left it quiet, and
+     * a peer `shutdown(SHUT_WR)` woke it with `EV_EOF`.
+     *
+     * **Where it stops** is not this filter. The kernel clamps the mark to the
+     * receive buffer's high-water mark, so in principle a full buffer reaches
+     * it — but TCP stalls the sender a few kilobytes short of that mark, so the
+     * clamped value is never met: measured across eleven buffer sizes from the
+     * default down to 2 KiB, set before and after `connect`, this filter stayed
+     * quiet in every one. What is lost at a full buffer is the FIN itself, not
+     * the wake — a zero receive window leaves the peer unable to send it — so
+     * nothing is missing that another mechanism could have had. `EPOLLRDHUP` on
+     * the sibling engine was measured to stop at the same place.
+     *
+     * Re-registering the same fd is idempotent, and replaces whatever interest
+     * it held — including a full [addReadFilter], which is how a connection
+     * that re-enables reads gets its data wakes back.
+     *
+     * @return `0` on success; positive errno on failure.
+     */
+    fun addCloseOnlyReadFilter(kqFd: Int, fd: Int): Int
+
+    /**
      * Registers [fd] with [kqFd] for write-readiness (`EV_ADD` +
      * `EVFILT_WRITE`).
      *

@@ -151,7 +151,15 @@ internal class FakeKqueueSyscallOps(
 
     // --- addReadFilter / addWriteFilter / deleteReadFilter / deleteWriteFilter ---
 
-    enum class FilterKind { READ, WRITE }
+    /**
+     * Which filter an add / delete asked for.
+     *
+     * [CLOSE_ONLY_READ] is the same `EVFILT_READ` as [READ] at the kernel,
+     * narrowed by a low-water mark. Recorded apart because that narrowing is
+     * the whole of what a caller asking for it wants, and a case that could
+     * not tell the two apart would pass on an arm that wakes on data.
+     */
+    enum class FilterKind { READ, CLOSE_ONLY_READ, WRITE }
     data class AddFilterCall(val kqFd: Int, val fd: Int, val filter: FilterKind)
     data class DeleteFilterCall(val kqFd: Int, val fd: Int, val filter: FilterKind)
 
@@ -167,6 +175,12 @@ internal class FakeKqueueSyscallOps(
     override fun addReadFilter(kqFd: Int, fd: Int): Int {
         if (fd == watchedFd) lastAddFilterThreadId = currentThreadId()
         addFilterCalls.add(AddFilterCall(kqFd, fd, FilterKind.READ))
+        return if (addFilterResults.isEmpty()) 0 else addFilterResults.removeFirst()
+    }
+
+    override fun addCloseOnlyReadFilter(kqFd: Int, fd: Int): Int {
+        if (fd == watchedFd) lastAddFilterThreadId = currentThreadId()
+        addFilterCalls.add(AddFilterCall(kqFd, fd, FilterKind.CLOSE_ONLY_READ))
         return if (addFilterResults.isEmpty()) 0 else addFilterResults.removeFirst()
     }
 

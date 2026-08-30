@@ -17,9 +17,27 @@ package io.github.fukusaka.keel.native.readiness
  * never enabled reads (a write-only push client with `readEnabled = false`).
  * That connection reaches this callback because the readiness transport arms
  * READ when its channel attaches, regardless of `readEnabled`, not because the
- * callback works without an arm.
+ * callback works without an arm. It keeps reaching it after data arrives,
+ * because the transport re-arms narrowed rather than going quiet — an arm the
+ * peer's FIN wakes and arriving data does not.
  */
 interface FdReadyListener {
+    /**
+     * Whether this listener's READ arm should wake for the peer's close alone.
+     *
+     * Read by the engines when they arm, so the width follows the listener's
+     * own state rather than the call site's. Five places re-arm the readiness
+     * transport's registration — the attach, the read re-enable, the
+     * back-pressure wake, and the two after a read returns bytes or would
+     * block — and a flag threaded through each of them is a flag they can
+     * disagree about; asked here they cannot.
+     *
+     * `false` by default: an arm that also wakes on data is what a listener
+     * wants unless it has said otherwise, and a listener that never says
+     * otherwise behaves exactly as before.
+     */
+    val armsCloseOnly: Boolean get() = false
+
     /**
      * Ready for [interest]: data available (READ), space available (WRITE),
      * accept queue non-empty (server fd READ).

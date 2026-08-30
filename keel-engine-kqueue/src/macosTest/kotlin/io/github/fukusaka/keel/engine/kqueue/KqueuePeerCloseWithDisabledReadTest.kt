@@ -8,6 +8,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.time.Duration.Companion.seconds
 
@@ -91,9 +92,10 @@ class KqueuePeerCloseWithDisabledReadTest {
      * Back-pressure invariant: when the user keeps `readEnabled = false`
      * and the peer sends data (no FIN), the always-armed `EVFILT_READ`
      * fires but the listener must NOT consume the data. The kernel `rcvbuf`
-     * retains the bytes and applies TCP back-pressure to the peer; the
-     * `dispatchReady` "no re-register" branch removes the kqueue filter so
-     * the engine does not busy-loop on every `kevent()` call.
+     * retains the bytes and applies TCP back-pressure to the peer; the wake
+     * re-registers narrowed — an arm the peer's FIN wakes and arriving data
+     * does not — so the engine neither busy-loops on the unread bytes nor
+     * gives up the close notification.
      *
      * This is the symmetric guarantee to `peer FIN fires onReadClosed`:
      * the always-arm semantic added for peer-close detection must not
@@ -152,6 +154,76 @@ class KqueuePeerCloseWithDisabledReadTest {
         } finally {
             client.close()
             serverCh.close()
+            server.close()
+            engine.close()
+        }
+    }
+
+    /**
+     * The sequence the always-armed guarantee used to lose: **data first, then
+     * the close.**
+     *
+     * The two cases above cover a peer that only closes, and a peer that only
+     * sends. Between them sits the one that does both, and it was the gap: the
+     * arm is one-shot, so the data wake consumed it, and a connection with
+     * reads disabled had no way to ask for another — only `readEnabled = true`
+     * re-armed. The interest was withdrawn and the close that came afterwards
+     * reached nobody, leaving a write-only client in CLOSE-WAIT until the
+     * keep-alive timer (~2 hours).
+     *
+     * The back-pressure path now re-registers narrowed instead of going quiet,
+     * so this asks the kernel to honour that: quiet while the unread bytes sit
+     * there, awake on the FIN behind them.
+     *
+     * Red-Green: without the narrowed re-arm the await below times out; with
+     * it the signal arrives in about a millisecond on loopback.
+     */
+    @Test
+    fun `peer FIN fires onReadClosed after unread data has already woken the connection`() = runBlocking {
+        val engine = KqueueEngine()
+        val server = engine.bind(LOOPBACK_HOST, 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val client = engine.connect(LOOPBACK_HOST, port)
+        val serverCh = server.accept()
+
+        try {
+            val transport = (client as AbstractPipelinedChannel).transport
+            transport.readEnabled = false
+
+            var clientBytesReceived = 0
+            transport.onRead = { buf ->
+                clientBytesReceived += buf.readableBytes
+                buf.release()
+            }
+            val closedSignal = CompletableDeferred<Unit>()
+            transport.onReadClosed = { closedSignal.complete(Unit) }
+
+            // Send first, and let it be delivered and declined. This is the
+            // wake that used to spend the connection's only registration.
+            val outBuf = DefaultAllocator.allocate(PAYLOAD_BYTES)
+            for (i in 0 until PAYLOAD_BYTES) outBuf.writeByte((i and 0xFF).toByte())
+            serverCh.write(outBuf)
+            serverCh.flush()
+            delay(SETTLE_MS)
+
+            assertEquals(
+                0,
+                clientBytesReceived,
+                "precondition: back-pressure still holds, so the bytes are in the kernel buffer and " +
+                    "the wake that delivered them was declined",
+            )
+
+            // Now the close, on a connection whose data wake has already been
+            // spent. Small enough that the receive buffer is nowhere near full,
+            // so the FIN can actually be delivered -- a peer that filled it
+            // could not send one at all, which is TCP's limit rather than the
+            // engine's.
+            serverCh.close()
+
+            withTimeout(EOF_DETECT_TIMEOUT_S.seconds) { closedSignal.await() }
+        } finally {
+            client.close()
             server.close()
             engine.close()
         }

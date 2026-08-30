@@ -329,8 +329,18 @@ internal class KqueueEventLoop(
      */
     override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener): Throwable? {
         assertInEventLoop("submitArmCallback")
+        // This kernel has no filter for EOF on its own -- EOF is a flag on the
+        // read filter -- so a close-only READ is the same `EVFILT_READ` with a
+        // low-water mark above anything the socket can hold. Re-registering
+        // replaces whatever the fd held, so this both narrows a full arm and
+        // widens back when reads are re-enabled.
         val kevErr = when (interest) {
-            Interest.READ -> syscallOps.addReadFilter(kqFd, fd)
+            Interest.READ ->
+                if (listener.armsCloseOnly) {
+                    syscallOps.addCloseOnlyReadFilter(kqFd, fd)
+                } else {
+                    syscallOps.addReadFilter(kqFd, fd)
+                }
             Interest.WRITE -> syscallOps.addWriteFilter(kqFd, fd)
         }
         if (kevErr != 0) {

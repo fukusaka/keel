@@ -312,15 +312,53 @@ internal class EpollEventLoop(
      */
     override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener): Throwable? {
         assertInEventLoop("submitArmCallback")
-        val events = when (interest) {
-            Interest.READ -> EPOLLIN or EPOLLRDHUP
-            Interest.WRITE -> EPOLLOUT
+        // A close-only READ is `EPOLLRDHUP` on its own: the peer's FIN wakes
+        // it, arriving data does not. It cannot go through [addOrModifyEpoll],
+        // which only ever widens -- what this needs is to take `EPOLLIN` away
+        // and leave the hangup bit, so it sets the mask instead.
+        val err = if (listener.armsCloseOnly && interest == Interest.READ) {
+            narrowReadToHangup(fd)
+        } else {
+            val events = when (interest) {
+                Interest.READ -> EPOLLIN or EPOLLRDHUP
+                Interest.WRITE -> EPOLLOUT
+            }
+            addOrModifyEpoll(fd, events)
         }
-        val err = addOrModifyEpoll(fd, events)
         if (err != 0) {
             return withdrawFailedCallbackArm(fd, interest, key, listener, "epoll_ctl", err)
         }
         return null
+    }
+
+    /**
+     * Sets [fd]'s mask so the read side wakes on the peer's hangup alone,
+     * leaving any write interest as it is.
+     *
+     * `EPOLLRDHUP` has to be *added* as well as `EPOLLIN` removed: the caller
+     * may be narrowing an fd that carries neither yet, and a mask of `0` is not
+     * the same as being out of the interest list — `EPOLLERR` / `EPOLLHUP` come
+     * back from every wait whether or not they were asked for, so an fd left
+     * with an empty mask spins. `ADD` first and `MOD` on `EEXIST`, the same
+     * order [addOrModifyEpoll] uses, because the fd may not be registered yet.
+     */
+    private fun narrowReadToHangup(fd: Int): Int {
+        val updated = withRegLock {
+            val current = fdEvents[fd] ?: 0
+            val narrowed = (current and EPOLLIN.inv()) or EPOLLRDHUP
+            fdEvents[fd] = narrowed
+            narrowed
+        }
+        var err = syscallOps.epollAdd(epFd, fd, updated)
+        if (err == EEXIST) {
+            err = syscallOps.epollMod(epFd, fd, updated)
+            if (err != 0) {
+                logger.debug { "epoll_ctl(MOD, fd=$fd, close-only) failed: ${errnoMessage(err)}" }
+            }
+        } else if (err != 0) {
+            logger.debug { "epoll_ctl(ADD, fd=$fd, close-only) failed: ${errnoMessage(err)}" }
+        }
+        return err
     }
 
     /**
@@ -476,7 +514,26 @@ internal class EpollEventLoop(
                 // which returns 0 and triggers onReadClosed → propagateInactive
                 // → bridge close → keep-alive loop exits → finally cleanup.
                 val evFlags = ev.events
-                val readReady = (evFlags and (EPOLLIN or EPOLLERR or EPOLLHUP)) != 0
+                // `EPOLLRDHUP` is in here, and has to be: a close-only arm asks
+                // for that bit alone, and epoll reports only what a
+                // registration asked for (plus `ERR` / `HUP`, which come
+                // unasked) -- so a mask with `EPOLLIN` removed can never report
+                // it, whatever the kernel would otherwise have set. Measured:
+                // with both bits registered a graceful half-close does set
+                // `EPOLLIN`; with only `EPOLLRDHUP` registered it does not, and
+                // the old derivation could not dispatch the result. A peer
+                // reset was always covered, since `ERR` / `HUP` are in the
+                // derivation already. Left out, such a registration came back
+                // from every
+                // level-triggered wait with nothing able to dispatch it -- which
+                // is exactly the 100% spin `removeInterest` documents from the
+                // days when the disarm cleared `EPOLLIN` and left this armed.
+                // What keeps it from returning is not the dispatch -- a
+                // listener may re-arm from inside one, and the narrowed arm
+                // does -- but that the transport withdraws this interest when
+                // it reports the close, since the bit describes a condition
+                // that never clears. Measured both ways.
+                val readReady = (evFlags and (EPOLLIN or EPOLLERR or EPOLLHUP or EPOLLRDHUP)) != 0
                 val writeReady = (evFlags and EPOLLOUT) != 0
                 // Surface peer-FIN / peer-RST so listeners can fire
                 // onReadClosed even when read interest was never armed by user

@@ -288,6 +288,16 @@ internal abstract class AbstractReadinessEventLoopFixture {
         val armedCallbacks = mutableListOf<Pair<Int, Interest>>()
 
         /**
+         * The subset of those arms that asked for close only.
+         *
+         * Recorded apart because the narrowing is the whole of what a caller
+         * asking for it wants: the ledger key, the listener and the dispatch
+         * are identical either way, so a case that could not tell the two apart
+         * would pass on an arm that still wakes on data.
+         */
+        val closeOnlyArms = mutableListOf<Pair<Int, Interest>>()
+
+        /**
          * The keys [submitArmCallback] was handed.
          *
          * Recorded because the real overrides are the parameter's only
@@ -384,6 +394,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
             // the base's, in registerCallback, and a stub that re-implemented it
             // would be what the tests asserted on instead.
             armedCallbackKeys.add(key)
+            if (listener.armsCloseOnly) closeOnlyArms.add(fd to interest)
             if (failArmCallback || fd == failArmCallbackForFd) {
                 return withdrawFailedCallbackArm(fd, interest, key, listener, "fake-arm", ENOMEM)
             }
@@ -394,6 +405,9 @@ internal abstract class AbstractReadinessEventLoopFixture {
 
         /** [registrationKey] is protected on the base; this is the subclass reaching it. */
         fun keyFor(fd: Int, interest: Interest): Long = registrationKey(fd, interest)
+
+        /** [hasCallbackFor] is protected on the base; this is the subclass reaching it. */
+        fun holdsCallback(fd: Int, interest: Interest): Boolean = hasCallbackFor(fd, interest)
 
         /** [popCallbackIfCurrent] is protected on the base; this is the subclass reaching it. */
         fun popIfCurrent(key: Long, listener: FdReadyListener): Boolean =
@@ -689,6 +703,9 @@ internal abstract class AbstractReadinessEventLoopFixture {
         /** What [submitArmCallback] armed, so a test can see the real queue deliver it. */
         val armedCallbacks = mutableListOf<Pair<Int, Interest>>()
 
+        /** The subset of [armedCallbacks] that asked for close only. */
+        val closeOnlyArms = mutableListOf<Pair<Int, Interest>>()
+
         /** Counts the wakeups [dispatch] issues, which only an off-loop caller earns. */
         var wakeups: Int = 0
             private set
@@ -728,6 +745,7 @@ internal abstract class AbstractReadinessEventLoopFixture {
 
         override fun submitArmCallback(fd: Int, interest: Interest, key: Long, listener: FdReadyListener): Throwable? {
             armedCallbacks.add(fd to interest)
+            if (listener.armsCloseOnly) closeOnlyArms.add(fd to interest)
             return null
         }
 

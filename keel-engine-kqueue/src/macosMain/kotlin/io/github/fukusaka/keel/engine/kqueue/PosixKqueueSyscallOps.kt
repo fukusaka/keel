@@ -19,6 +19,7 @@ import platform.darwin.EVFILT_READ
 import platform.darwin.EVFILT_WRITE
 import platform.darwin.EV_ADD
 import platform.darwin.EV_DELETE
+import platform.darwin.NOTE_LOWAT
 import platform.darwin.kevent
 import platform.darwin.kqueue
 import platform.posix.EAGAIN
@@ -193,6 +194,9 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
     override fun addReadFilter(kqFd: Int, fd: Int): Int =
         submitEventAdd(kqFd, fd, EVFILT_READ)
 
+    override fun addCloseOnlyReadFilter(kqFd: Int, fd: Int): Int =
+        submitEventAdd(kqFd, fd, EVFILT_READ, fflags = NOTE_LOWAT.convert(), data = CLOSE_ONLY_LOW_WATER_MARK)
+
     override fun addWriteFilter(kqFd: Int, fd: Int): Int =
         submitEventAdd(kqFd, fd, EVFILT_WRITE)
 
@@ -253,7 +257,7 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
         }
     }
 
-    private fun submitEventAdd(kqFd: Int, fd: Int, filter: Int): Int {
+    private fun submitEventAdd(kqFd: Int, fd: Int, filter: Int, fflags: UInt = 0u, data: Long = 0): Int {
         memScoped {
             val ev = alloc<kevent>()
             keel_ev_set(
@@ -261,8 +265,8 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
                 fd.convert(),
                 filter.convert(),
                 EV_ADD.convert(),
-                0u,
-                0,
+                fflags,
+                data,
                 null,
             )
             val rc = kevent(kqFd, ev.ptr, 1, null, 0, null)
@@ -290,5 +294,17 @@ internal class PosixKqueueSyscallOps(private val logger: Logger) : KqueueSyscall
     private companion object {
         const val MILLIS_PER_SEC = 1_000L
         const val NANOS_PER_MILLI = 1_000_000L
+
+        /**
+         * The low-water mark that makes a read filter close-only.
+         *
+         * Any value the socket cannot reach will do; this kernel clamps the
+         * mark to the receive buffer's high-water mark anyway, so the number
+         * chosen only has to be above every buffer size a socket may be given.
+         * `Int.MAX_VALUE` is that with room to spare and needs no knowledge of
+         * the buffer, which the caller does not have and which the kernel may
+         * grow under it.
+         */
+        const val CLOSE_ONLY_LOW_WATER_MARK = Int.MAX_VALUE.toLong()
     }
 }

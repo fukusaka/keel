@@ -465,6 +465,27 @@ class ReadinessIoTransport(
     override fun onPeerClosed(interest: Interest) {
         if (interest != Interest.READ) return
         if (!opened) return
+        // The interest goes with the report, and it has to. A peer's close is
+        // not an event but a condition: both loops are level-triggered, so once
+        // the FIN is in, every wait reports this fd again. The declined-wake
+        // re-arm above runs before this callback and cannot know the close came
+        // with it, so without this withdrawal the loop would hand the wake over,
+        // find the listener back in the ledger, keep the interest, and meet a
+        // condition that has not changed -- 100% of the worker's core for as
+        // long as the application leaves the channel open. Measured: ~1.15 s of
+        // CPU per wall-clock second, against 0.0015 s before this narrowing
+        // existed.
+        //
+        // Safe to drop because there is nothing left to hear. `notifyInactive`
+        // reports at most once for the whole transport, and read-closed is
+        // terminal -- a second FIN is not a thing. What still needs waking, the
+        // write side, is a different key and is untouched.
+        //
+        // Before the report rather than after: the report runs application
+        // code, which may throw, and the withdrawal must not be what a throw
+        // skips.
+        eventLoop.unregisterCallback(fd, Interest.READ)
+        closeInterestOnly = false
         containReadinessFailure(WHAT_PEER_CLOSE) { notifyInactive() }
     }
 
@@ -646,6 +667,11 @@ class ReadinessIoTransport(
                 // containment ends the connection with the reason instead,
                 // like every other frame that meets this raise.
                 containReadinessFailure(WHAT_READ_REENABLE) {
+                    // Cleared before the arm, not after: the engine reads the
+                    // flag while arming, so a re-enable that widened afterwards
+                    // would have armed narrow and left this connection deaf to
+                    // the data it just asked for.
+                    closeInterestOnly = false
                     armRead()
                 }
             } else if (!value) {
@@ -737,23 +763,25 @@ class ReadinessIoTransport(
         // `EPOLL_CTL_ADD` on epoll — and on epoll not even that when the bits
         // already match.
         //
-        // The registration is one-shot, so this covers the connection only
-        // until something first fires on it. A peer that sends data before
-        // closing takes the back-pressure path in [onReadable], which declines
-        // to re-arm; unless a suspend waiter is queued on the same key, the
-        // withdrawal (`EV_DELETE` on kqueue; on epoll a `MOD` down to what is
-        // left, or a `DEL` once nothing is)
-        // then drops the interest and readEnabled = true is the only thing that
-        // arms it again. A write-only client that receives
-        // nothing keeps the arm for its whole lifetime and is fully covered —
-        // one that receives anything at all is not, and a later close reaches
-        // it only once it reads. Closing that gap needs a close-only interest.
-        // `EVFILT_READ` cannot express one — it wakes on data too, so leaving it
-        // armed under back-pressure is a busy loop. epoll can: `EPOLLRDHUP` is
-        // its own bit. What stops us using it is on our side, not the kernel's —
-        // the loop derives read readiness from `EPOLLIN|EPOLLERR|EPOLLHUP`, so an
-        // RDHUP-only registration would return from every wait with nothing able
-        // to dispatch it.
+        // The registration is one-shot, but the cover does not end with the
+        // first event. A peer that sends data before closing takes the
+        // back-pressure path in [onReadable], which re-registers narrowed: an
+        // arm the peer's FIN wakes and arriving data does not. So a connection
+        // that never enables reads keeps a close notification for its whole
+        // lifetime whether or not anything was sent to it.
+        //
+        // Both engines express that narrowing, and were measured to answer the
+        // same way. On epoll it is `EPOLLRDHUP` with `EPOLLIN` taken away; on
+        // kqueue, whose read filter carries EOF and has no EOF filter of its
+        // own, it is that same filter with `NOTE_LOWAT` set above anything the
+        // socket can hold.
+        //
+        // Where the cover stops is the same on both, and is TCP's rather than
+        // either kernel's: a peer that fills the receive buffer and then closes
+        // cannot send the FIN at all through a zero receive window, so that
+        // close is not announced until the application reads. No mechanism
+        // improves on that -- the narrowed arm itself stays quiet throughout,
+        // measured on both, so what is missing is the FIN and not the wake.
         // Joined and armed by [onChannelAttached], not here: the registry
         // decides who is told when the loop stops, and until the channel has
         // wired the callbacks there is nobody to tell.
@@ -806,38 +834,59 @@ class ReadinessIoTransport(
         }
     }
 
+    /**
+     * Whether this connection's READ arm should wake for the close alone.
+     *
+     * Set when a wake finds reads disabled, cleared when they are enabled
+     * again. Kept here rather than passed at each arm because five places arm
+     * the same registration — the channel attach, the read re-enable, the
+     * back-pressure wake, and the two re-arms after a read returns bytes or
+     * would block — and the engine asks this at whichever of them ran. The
+     * last two run only with reads enabled, where this is false; counting
+     * them anyway is the point, since the argument is that no site can
+     * disagree with another rather than that only some of them matter.
+     *
+     * Not simply `!readEnabled`: the attach arms in full while reads are still
+     * off, because nothing has declined them yet. Only a wake that was
+     * declined narrows.
+     */
+    override val armsCloseOnly: Boolean get() = closeInterestOnly
+
+    private var closeInterestOnly = false
+
     private fun onReadable() {
         if (!opened) return
 
-        // Back-pressure path: if data is ready but the user has disabled
-        // read, do not consume the data and do not re-arm. dispatchReady's
-        // "no re-register" branch withdraws the interest (`EV_DELETE` on
-        // kqueue; on epoll a `MOD` down to what is left, or a `DEL` once
-        // nothing is — an fd left registered with an empty mask still comes
-        // back from every wait, because `EPOLLERR` / `EPOLLHUP` are reported
-        // whether or not they were asked for) so the readiness loop does not
-        // busy-loop — unless a suspend waiter is queued on the same key, which
-        // still needs it armed. The kernel rcvbuf retains the data and applies
-        // back-pressure to the peer (TCP window). The setter's armRead()
-        // call arms it again when readEnabled is flipped back to true.
+        // Back-pressure path: data is ready and the user has disabled read, so
+        // do not consume it. The kernel rcvbuf retains it and applies
+        // back-pressure to the peer (TCP window).
         //
-        // Returning here also gives up peer-close detection until read is
-        // re-enabled. On kqueue the filter carries EOF, so deleting it deletes
-        // the only path a close could arrive on. On epoll the hangup bits
-        // arrive unasked, so what closes that path is the `DEL` — leaving the
-        // fd registered with an empty mask would keep delivering them with no
-        // handler left. Either way the registration is one-shot, so nothing
-        // re-delivers it.
+        // What this must not do is go quiet. A full READ arm cannot be left in
+        // place here -- the loop is level-triggered, so the same unread bytes
+        // would wake it on every turn -- and letting dispatchReady withdraw the
+        // interest instead takes peer-close detection with it, since the arm is
+        // one-shot and only `readEnabled = true` brings it back. That is the
+        // gap: a connection whose reads are off would never hear its peer close
+        // again, and a client that never enables reads at all would sit in
+        // CLOSE-WAIT until the keep-alive timer.
         //
-        // A close arriving *with* this wake is a different matter.
-        // dispatchReady pops the listener into a local before it calls
-        // anything, so returning here does not stop the onPeerClosed that
-        // follows on the same event —
-        // it fires, and that is how a reads-disabled connection learns of a
-        // FIN that arrived behind the data. What is lost is a close arriving
-        // *later*: the registration is gone by then, and only armRead() brings
-        // it back, with the pending FIN making the fd readable.
-        if (!readEnabled) return
+        // So re-register narrowed instead: an arm the peer's FIN wakes and
+        // arriving data does not. The width comes off this transport rather
+        // than the call -- [armsCloseOnly], which the flag below sets -- so the
+        // ordinary arm does it. Registering from inside the dispatch is what
+        // keeps it: dispatchReady asks whether the ledger holds a listener
+        // *after* this returns, and finding one it leaves the interest alone
+        // rather than withdrawing it.
+        //
+        // A close arriving *with* this wake is separate and already worked:
+        // dispatchReady pops the listener into a local before calling anything,
+        // so returning here does not stop the onPeerClosed that follows on the
+        // same event.
+        if (!readEnabled) {
+            closeInterestOnly = true
+            armRead()
+            return
+        }
 
         if (!readPoolRegistered) {
             // Idempotent; on the EventLoop thread that owns the allocator.
