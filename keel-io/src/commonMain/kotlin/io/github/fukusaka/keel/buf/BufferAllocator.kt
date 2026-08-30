@@ -282,10 +282,19 @@ interface BufferAllocator {
      * returning to the pool. The implementation may log a warning naming
      * the in-use count.
      *
-     * Implementations must be **idempotent** — a second [close] is a
-     * no-op. Calling [allocate] or [createChild] after [close]
-     * throws [IllegalStateException]. The default body is a no-op,
-     * covering pool-less allocators ([DefaultAllocator], JS).
+     * Implementations must be **idempotent** — a second [close] is a no-op.
+     * One arriving while the first is still running is asked for the same,
+     * and [PooledAllocator] gives it on both platforms: a teardown running
+     * twice is what leaves the second caller reaching for something the
+     * first has already taken apart, and on Native that something is a
+     * `pthread_mutex_t`. [TrackingAllocator] is exempt from both, sequential
+     * and racing alike: it counts closes on purpose, which a no-op second
+     * call would drop, and its own contract says it is single-threaded. Calling [allocate] or
+     * [createChild] after [close] throws [IllegalStateException]. The
+     * default body is a no-op, covering pool-less allocators
+     * ([DefaultAllocator], JS). A decorator holding a delegate has to
+     * forward instead: inheriting the no-op swallows the delegate's
+     * teardown, which is a live gap for the two profiling wrappers here.
      *
      * Not declared on [AutoCloseable] — adding that supertype changes
      * the Kotlin/JS name mangling of every interface method that takes
