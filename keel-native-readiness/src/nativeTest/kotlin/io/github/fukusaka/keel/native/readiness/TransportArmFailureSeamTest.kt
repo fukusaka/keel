@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.core.ConnectionFailureException
 import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.native.posix.ReadResult
 import io.github.fukusaka.keel.native.posix.WriteResult
+import io.github.fukusaka.keel.testing.InjectedFault
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -13,6 +14,8 @@ import kotlin.test.Test
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -114,6 +117,54 @@ internal class TransportArmFailureSeamTest : TransportSeamFixture() {
             )
             assertTrue(inactive, "the pipeline hears the end; nothing else would ever say it")
             assertFalse(transport.isOpen, "bytes with no future leave nothing to send on")
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refusal hidden under a completion callback's throw still settles the connection`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The double-failure edge the sibling above leaves open: the
+            // completion callback writes new bytes and throws, so the
+            // group's primary failure is the callback's own -- and the
+            // re-arm for those new bytes is refused. Unsettled, the refusal
+            // rides suppressed under a failure whose type nobody tests, the
+            // caller gets the callback's throw on a connection still open,
+            // and the new bytes sit on a queue with no arm, no tick and no
+            // poisoned mark -- with the write-idle timer off by default,
+            // stranded for the connection's lifetime, every later waiter
+            // with them.
+            fake.enqueueWrite(fd, WriteResult.Written(8))
+            val transport = transport()
+            var inactive = false
+            transport.onReadClosed = { inactive = true }
+            val fault = InjectedFault("completion callback failed")
+            transport.onFlushComplete = {
+                transport.write(tracker.allocate(16).apply { writerIndex = 8 })
+                eventLoop.failArmCallback = true
+                throw fault
+            }
+            transport.write(tracker.allocate(16).apply { writerIndex = 8 })
+            val parked = parkFlushWaiter(transport)
+
+            val thrown = assertFailsWith<InjectedFault> { transport.flush() }
+            assertSame(fault, thrown, "the primary failure still owns the frame")
+            assertIs<RefusedWriteException>(
+                thrown.suppressedExceptions.singleOrNull(),
+                "with the arm's refusal riding it: ${thrown.suppressedExceptions}",
+            )
+
+            assertNull(
+                parked.await().exceptionOrNull(),
+                "the first episode completed before the callback threw, and its waiter heard so",
+            )
+            assertTrue(inactive, "the pipeline hears the end; nothing else would ever say it")
+            assertFalse(transport.isOpen, "bytes with no arm leave nothing to send on")
+            val late = runCatching { transport.awaitPendingFlush() }.exceptionOrNull()
+            assertIs<RefusedWriteException>(
+                late,
+                "a wait beginning after is told the refusal, not parked on a dead queue: $late",
+            )
             tracker.assertNoLeaks()
         }
     }
