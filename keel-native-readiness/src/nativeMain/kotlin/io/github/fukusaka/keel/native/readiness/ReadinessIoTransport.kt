@@ -1327,11 +1327,13 @@ class ReadinessIoTransport(
      * Ends every waiter in [snapshot] through [end], one guard per waiter so a
      * refusal cannot strand the waiters behind it in an already-taken
      * snapshot — and then rethrows the first refusal, later ones suppressed.
-     * The rethrow is the difference from [answerFlushWaiter]: these run inside
-     * a teardown stage whose aggregate reaches the closer, and a close that
-     * could not deliver an answer must not report clean. The single-slot shape
-     * carried such a refusal the same way; the loop is what made carrying and
-     * continuing two separate duties.
+     * The rethrow is the difference from [answerFlushWaiter]: a close that
+     * could not deliver an answer must not report clean. How far the
+     * aggregate travels is the calling stage's decision, not this helper's —
+     * every refusal is error-logged here first, and the stage combinators
+     * say what they do with the rethrow. The single-slot shape carried such
+     * a refusal the same way; the loop is what made carrying and continuing
+     * two separate duties.
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun endFlushWaiters(
@@ -1500,7 +1502,9 @@ class ReadinessIoTransport(
         // `finally` discards the exception that entered it: a later failure
         // would replace the one that started the teardown, and the connection
         // would die logging the wrong cause. The first failure propagates and
-        // the rest are attached to it.
+        // the rest are attached to it -- except the waiter stage's own, which
+        // runs after the graph was handed out and is logged instead (see the
+        // stage itself, last below).
         var failure: Throwable? = null
         // Same-tick send→close: drain deferred writes before releasing.
         //
@@ -1559,16 +1563,6 @@ class ReadinessIoTransport(
         failure = runStage(failure) { cancelIdleTimeout() }
         failure = runStage(failure) { cancelWriteIdleTimeout() }
         failure = runStage(failure) { releaseAllPendingWrites() }
-        // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
-        // The transport's own cause, not the stopped-loop one -- this teardown
-        // is one the loop still runs (its own final drain included), and the
-        // wait ends because the transport closed.
-        failure = runStage(failure) {
-            endFlushWaiters(
-                takeFlushWaiters(),
-                "ending the flush waiter of the closing transport for, while the teardown goes on,",
-            ) { endWaitForClosedTransport(it, fd, transportFailure) }
-        }
         // Withdraw the registrations before dropping the fd. The map is keyed by
         // fd number, so one left behind keeps this transport — and the channel
         // and pipeline graph it references — reachable until that number comes
@@ -1586,8 +1580,54 @@ class ReadinessIoTransport(
         // the line above says the close reports rather than throws, and the
         // difference between the two should not rest on which logger call it is.
         failure = runStage(failure) { logTransportStatsOnClose(eventLoop.logger, "fd=$fd") }
+        // Unblock any caller suspended in awaitPendingFlush(): the data is gone.
+        // The transport's own cause, not the stopped-loop one -- this teardown
+        // is one the loop still runs (its own final drain included), and the
+        // wait ends because the transport closed.
+        //
+        // Last among the stages, deliberately: the resume hands the recorded
+        // failure's graph to the waiters' threads, and the carried failure can
+        // be a rider inside that graph -- the deferred drain's catch above
+        // raises one when the drain's refusal became the record -- so every
+        // attach onto it must already be done, and a stage added below this
+        // one would need the same detached rule. What a resumed caller can
+        // reach is a transport fully torn down: every entry that could touch
+        // the fd or the ledger declines on `opened`, and what remains answers
+        // from recorded state (an emptied `flush()`, the register's
+        // closed-transport arm) or cancels an already-cancelled timer --
+        // except [scheduleDeadline], which has no guard at all and can still
+        // arm a timer that retains this transport (true under the old order
+        // too; tracked, not solved here). The answer's own contract does not
+        // order it against the withdraw duties. The stage's failure takes
+        // [runDetachedStage]; the per-waiter error logs inside the stage (and
+        // the snapshot-taking, which cannot throw) satisfy its logging debt.
+        failure = runDetachedStage(failure) {
+            endFlushWaiters(
+                takeFlushWaiters(),
+                "ending the flush waiter of the closing transport for",
+            ) { endWaitForClosedTransport(it, fd, transportFailure) }
+        }
         failure?.let { throw it }
     }
+
+    /**
+     * [runStage] for a stage that runs after the recorded failure's graph has
+     * been handed out: its failure must not be appended onto [carried] — the
+     * carried failure can be a rider inside that graph, and a suppressed list
+     * another thread holds is not one to write to — so it becomes the carried
+     * failure only when there was none, and is otherwise dropped, its parts
+     * already logged where they happened. The caller owes that logging: a
+     * stage run through this without its own per-failure report loses the
+     * dropped failure entirely.
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun runDetachedStage(carried: Throwable?, crossinline stage: () -> Unit): Throwable? =
+        try {
+            stage()
+            carried
+        } catch (stageFailure: Throwable) {
+            carried ?: stageFailure
+        }
 
     /**
      * Runs [stage] and returns the failure carried so far.

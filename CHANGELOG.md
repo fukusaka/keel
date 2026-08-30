@@ -135,6 +135,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll` / `engine-kqueue`: the on-loop close teardown answers its flush waiters last,
+  so a later stage's failure is never appended into the failure graph the waiters already hold;
+  a refused resume stays in the error log (#1079)
 - `engine-epoll` / `engine-kqueue`: a wind-down failure is no longer appended to a failure
   instance already published to flush waiters — an unsynchronized suppressed list a waiter may
   be reading; it stays in the warn log instead (#1078)

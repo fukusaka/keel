@@ -564,9 +564,9 @@ abstract class AbstractIoTransport(
             // happens after the refusal was published to its waiters, and
             // the wind-down does not append to what it has handed out -- its
             // record is the transport's own warn beside the catch that met
-            // it. (Scoped to the wind-down: the flatten below and the close
-            // teardown's stage carry still append riders within a graph a
-            // reader may hold -- the wider audit is tracked, not solved.)
+            // it. (Scoped to the wind-down: the flatten below still appends
+            // riders within a graph the pipeline report may have handed on
+            // -- that last audit is tracked, not solved.)
             // Reported before the rider check, not after it: what is rethrown
             // below is the rider, which carries no way back to the refusal --
             // so a refusal that happened to arrive with company would
