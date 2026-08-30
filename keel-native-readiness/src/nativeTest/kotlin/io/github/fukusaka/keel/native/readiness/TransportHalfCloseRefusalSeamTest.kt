@@ -16,7 +16,18 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
+
+/**
+ * The half-close report's wording, shared by every matcher in this suite so a
+ * production reword is a one-line edit here — and so the negative matchers
+ * provably test the same string the positive ones prove against production.
+ */
+private const val REFUSAL_REPORT = "the half-close found the peer gone"
+
+/** The [REFUSAL_REPORT] variant for a refusal that arrived carrying riders. */
+private const val REFUSAL_REPORT_WITH_RIDER = "the half-close found the peer gone, and did not finish cleaning up"
 
 /**
  * Pins what a half-close answers when the send it orders its FIN behind is
@@ -122,15 +133,15 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
             transport.shutdownOutput()
 
             assertTrue(
-                eventLoop.warnings.any { "the half-close found the peer gone" in it },
+                eventLoop.warnings.any { REFUSAL_REPORT in it },
                 "the refusal must be reported, not silent: ${eventLoop.warnings}",
             )
             assertIs<RefusedWriteException>(
-                eventLoop.logger.causeOfWarning("the half-close found the peer gone"),
+                eventLoop.logger.causeOfWarning(REFUSAL_REPORT),
                 "and the report must carry the refusal, or the errno is not in the log",
             )
             assertFalse(
-                eventLoop.warnings.any { "the half-close found the peer gone, and did not finish" in it },
+                eventLoop.warnings.any { REFUSAL_REPORT_WITH_RIDER in it },
                 "and must not claim cleanup failed when it did not: ${eventLoop.warnings}",
             )
             fake.assertAllConsumed()
@@ -160,17 +171,64 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
             )
 
             assertTrue(
-                eventLoop.warnings.any { "the half-close found the peer gone, and did not finish" in it },
+                eventLoop.warnings.any { REFUSAL_REPORT_WITH_RIDER in it },
                 "the report must say this is not the whole story: ${eventLoop.warnings}",
             )
             assertIs<RefusedWriteException>(
-                eventLoop.logger.causeOfWarning("the half-close found the peer gone, and did not finish"),
+                eventLoop.logger.causeOfWarning(REFUSAL_REPORT_WITH_RIDER),
                 "and must still carry the refusal it names",
             )
 
             assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
             fake.assertAllConsumed()
             failing.releaseUnderlying()
+            eventLoop.drainDispatched()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a half-close rethrows the first rider unrewritten and leaves the rest on the refusal`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The input that reaches this catch with more than one rider
+            // today is a refusal application code minted: the transport's
+            // own drain folds its failures to at most one before raising,
+            // but a flush-run callback can throw a refusal carrying any
+            // number -- instances the application still holds. The catch
+            // used to fold the later riders onto the one it rethrows,
+            // rewriting those instances; now the first leaves as it
+            // arrived and the rest stay on the refusal the report carries.
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            val firstRider = InjectedFault("first rider")
+            val laterRider = InjectedFault("later rider")
+            val minted = RefusedWriteException("application-minted refusal").apply {
+                addSuppressed(firstRider)
+                addSuppressed(laterRider)
+            }
+            transport.onFlushComplete = { throw minted }
+            transport.write(tracker.allocate(16).apply { writerIndex = 5 })
+
+            val thrown = assertFailsWith<InjectedFault> { transport.shutdownOutput() }
+
+            assertSame(firstRider, thrown, "the first rider is what leaves the frame")
+            assertTrue(
+                thrown.suppressedExceptions.isEmpty(),
+                "and it leaves as it arrived -- the later rider is not folded onto it: ${thrown.suppressedExceptions}",
+            )
+            assertEquals(
+                listOf<Throwable>(firstRider, laterRider),
+                minted.suppressedExceptions,
+                "the refusal keeps its own riders, unrewritten",
+            )
+            assertSame(
+                minted,
+                eventLoop.logger.causeOfWarning(REFUSAL_REPORT_WITH_RIDER),
+                "and the report carries the refusal, which is the later riders' record",
+            )
+            assertTrue(transport.isOpen, "a refusal the transport did not mint settles nothing")
+            fake.assertAllConsumed()
+            transport.close()
             eventLoop.drainDispatched()
             tracker.assertNoLeaks()
         }
@@ -225,7 +283,7 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
             eventLoop.drainDispatched()
 
             assertTrue(
-                eventLoop.warnings.any { "the half-close found the peer gone" in it },
+                eventLoop.warnings.any { REFUSAL_REPORT in it },
                 "the dispatched half-close must report it too: ${eventLoop.warnings}",
             )
             assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
@@ -253,7 +311,7 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
             runCatching { eventLoop.drainDispatched() }
 
             assertTrue(
-                eventLoop.warnings.any { "the half-close found the peer gone, and did not finish" in it },
+                eventLoop.warnings.any { REFUSAL_REPORT_WITH_RIDER in it },
                 "the refusal must still be named on this arm: ${eventLoop.warnings}",
             )
             assertTrue(
@@ -295,7 +353,7 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
             // this the case is satisfied by either configuration and does
             // not hold the one it is named for.
             assertFalse(
-                eventLoop.warnings.any { "the half-close found the peer gone" in it },
+                eventLoop.warnings.any { REFUSAL_REPORT in it },
                 "the deferred drain never enters that guard: ${eventLoop.warnings}",
             )
             assertEquals(0, fake.shutdownCalls, "no FIN may follow bytes the peer never saw")
