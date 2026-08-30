@@ -9,6 +9,7 @@ import io.github.fukusaka.keel.native.posix.NativeSocket
 import io.github.fukusaka.keel.native.posix.WriteResult
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.buf.FailingReleaseIoBuf
+import io.github.fukusaka.keel.testing.buf.ReleaseHookIoBuf
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
@@ -23,7 +24,18 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
+
+/**
+ * The closing drain's report wording, shared by every matcher in this suite so
+ * a production reword is a one-line edit here — and so the negative matchers
+ * provably test the same string the positive ones prove against production.
+ */
+private const val CLOSING_REFUSAL_REPORT = "found the peer gone while closing"
+
+/** The [CLOSING_REFUSAL_REPORT] variant for a refusal that arrived carrying riders. */
+private const val CLOSING_REFUSAL_REPORT_WITH_RIDER = "found the peer gone while closing, and did not finish cleaning up"
 
 /**
  * Pins what the write path does when the kernel refuses.
@@ -347,11 +359,11 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
 
             assertFalse(transport.isOpen)
             assertTrue(
-                eventLoop.warnings.any { it.contains("found the peer gone while closing") },
+                eventLoop.warnings.any { it.contains(CLOSING_REFUSAL_REPORT) },
                 "the gone peer is reported, got: ${eventLoop.warnings}",
             )
             assertFalse(
-                eventLoop.warnings.any { it.contains("did not finish cleaning up") },
+                eventLoop.warnings.any { it.contains(CLOSING_REFUSAL_REPORT_WITH_RIDER) },
                 "and not as teardown incompleteness, got: ${eventLoop.warnings}",
             )
             fake.assertAllConsumed()
@@ -653,10 +665,56 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
             // Reported, not silent — the errno itself travels on the
             // throwable, which the recording logger drops by design.
             assertTrue(
-                eventLoop.warnings.any { it.contains("found the peer gone while closing") },
+                eventLoop.warnings.any { it.contains(CLOSING_REFUSAL_REPORT) },
                 "the refusal is reported, not silent, got: ${eventLoop.warnings}",
             )
             fake.assertAllConsumed()
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `the closing drain rethrows the first rider unrewritten and leaves the rest on the refusal`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The closing drain releases its buffers through a seam, so a
+            // refusal minted there -- carrying instances the application
+            // still holds -- can be what the teardown's catch meets. The
+            // catch used to fold the later riders onto the one it rethrows,
+            // rewriting those instances; now the first leaves as it arrived
+            // and the rest stay on the refusal the warn carries.
+            rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
+            fake.enqueueWrite(fd, WriteResult.Written(5))
+            val transport = transport()
+            val firstRider = InjectedFault("first rider")
+            val laterRider = InjectedFault("later rider")
+            val minted = RefusedWriteException("refusal minted by a release").apply {
+                addSuppressed(firstRider)
+                addSuppressed(laterRider)
+            }
+            val refusing = ReleaseHookIoBuf(tracker.allocate(16).apply { writerIndex = 5 }) { throw minted }
+            transport.write(refusing)
+            assertFalse(transport.flush(), "coalescing defers the drain to the teardown")
+
+            val thrown = assertFailsWith<InjectedFault> { transport.close() }
+
+            assertSame(firstRider, thrown, "the first rider is what reaches the caller of the close")
+            assertTrue(
+                thrown.suppressedExceptions.isEmpty(),
+                "and it arrives as it was thrown -- the later rider is not folded onto it: ${thrown.suppressedExceptions}",
+            )
+            assertEquals(
+                listOf<Throwable>(firstRider, laterRider),
+                minted.suppressedExceptions,
+                "the refusal keeps its own riders, unrewritten",
+            )
+            assertSame(
+                minted,
+                eventLoop.logger.causeOfWarning(CLOSING_REFUSAL_REPORT_WITH_RIDER),
+                "and the warn carries the refusal, which is the later riders' record",
+            )
+            assertFalse(transport.isOpen, "the teardown still ends the connection")
+            fake.assertAllConsumed()
+            refusing.releaseUnderlying()
             tracker.assertNoLeaks()
         }
     }
@@ -684,7 +742,7 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
             assertEquals(1, failing.refusedReleases, "the drain must have reached the release")
             assertFalse(transport.isOpen, "the teardown still ends the connection")
             assertTrue(
-                eventLoop.warnings.any { it.contains("did not finish cleaning up") },
+                eventLoop.warnings.any { it.contains(CLOSING_REFUSAL_REPORT_WITH_RIDER) },
                 "the gone peer is still reported alongside, got: ${eventLoop.warnings}",
             )
             fake.assertAllConsumed()

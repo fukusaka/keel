@@ -1553,8 +1553,28 @@ class ReadinessIoTransport(
                         eventLoop.logger.warn(refused) {
                             "the deferred flush found the peer gone while closing, and did not finish cleaning up: fd=$fd"
                         }
+                        // Only the first, and unrewritten -- the same rule as
+                        // the half-close's catch. Publication is not the
+                        // reason here (a refusal met by a teardown's own
+                        // drain is unpublished until the waiter stage, last
+                        // and detached, hands the recorded reason out):
+                        // ownership is. The drain releases buffers through a
+                        // seam even while closing, and a refusal minted
+                        // there carries instances the application still
+                        // holds -- folding later riders onto the first
+                        // rewrote them. The transport's own drain folds its
+                        // failures to at most one, so for its refusals the
+                        // folding was dead (resting on the funnel's FIN
+                        // report not raising -- keel's own guarded code);
+                        // later riders stay on the refusal the warn above
+                        // carries. Unrewritten by this frame, that is: the
+                        // rider then rides the stage carry, where a later
+                        // stage's own failure still attaches -- the staged
+                        // teardown's aggregation, kept off the published
+                        // graph by the detached waiter stage.
+                        // Local val: detekt's SwallowedException accepts a
+                        // thrown local, not the inline expression.
                         val first = alsoIncomplete.first()
-                        alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
                         throw first
                     }
                 }
