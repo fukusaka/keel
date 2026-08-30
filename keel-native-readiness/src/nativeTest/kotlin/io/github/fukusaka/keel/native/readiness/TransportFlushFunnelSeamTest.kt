@@ -367,12 +367,9 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
 
             // The teardown's deferred drain raises the rider out of close();
             // the refused resume's aggregate is logged, not attached.
+            // Type and identity pin everything: the assertSame below says the
+            // closer's throw IS the graph's rider.
             val closeThrow = assertFailsWith<InjectedFault> { transport.close() }
-            assertEquals(
-                "release refused by FailingReleaseIoBuf",
-                closeThrow.message,
-                "the rider still reaches the closer",
-            )
 
             val received = answered.await().exceptionOrNull()
             assertIs<RefusedWriteException>(received, "the parked waiter is told the recorded refusal")
@@ -388,6 +385,12 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             assertTrue(
                 eventLoop.errors.any { "ending the flush waiter of the closing transport" in it },
                 "the refused resume is reported where it happened: ${eventLoop.errors}",
+            )
+            // The report must carry the throwable -- with the aggregate
+            // dropped, this error's cause is the refusal's only record.
+            assertNotNull(
+                eventLoop.logger.causeOfError("ending the flush waiter of the closing transport"),
+                "and the report carries the refusal itself",
             )
 
             failing.releaseUnderlying()
@@ -415,11 +418,19 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             val thrown = runCatching { transport.close() }.exceptionOrNull()
 
             assertNotNull(thrown, "a close that could not deliver its answer must not report clean")
+            assertTrue(
+                generateSequence(thrown) { it.cause }.any { it is InjectedFault },
+                "and the throw derives from the refused resume, not some other stage: $thrown",
+            )
             assertEquals(1, refusing.attempts, "the refused waiter's dispatcher was consulted")
             assertNull(refusedOutcome, "nothing can reach the refused waiter")
             assertTrue(
                 eventLoop.errors.any { "ending the flush waiter of the closing transport" in it },
                 "and the refusal is still reported where it happened: ${eventLoop.errors}",
+            )
+            assertNotNull(
+                eventLoop.logger.causeOfError("ending the flush waiter of the closing transport"),
+                "with the report carrying the refusal itself",
             )
             assertFalse(transport.isOpen)
             tracker.assertNoLeaks()
@@ -435,7 +446,11 @@ internal class TransportFlushFunnelSeamTest : TransportSeamFixture() {
             // publication cannot observe a list mid-append. The discriminator
             // is the window between the throwing flush and the drain of the
             // dispatched task -- an inline resume would complete the waiter
-            // at the yield below.
+            // at the yield below. The sibling further down pins the same
+            // deferral from the retry's non-refusal branch; this one takes
+            // the refusal branch (the settlement's answer) and the
+            // direct-flush frame, where the throw escapes to the caller
+            // while the answer still rides -- neither is covered there.
             rebuildLoop(onLoopThread = true, runDispatchedInline = false, flushCoalescing = false)
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()

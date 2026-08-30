@@ -554,6 +554,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
         fun causeOfWarning(fragment: String): Throwable? =
             records.firstOrNull { it.first == LogLevel.WARN && fragment in it.second }?.third
 
+        /** The ERROR twin of [causeOfWarning], for the reports that are the failure's only record. */
+        fun causeOfError(fragment: String): Throwable? =
+            records.firstOrNull { it.first == LogLevel.ERROR && fragment in it.second }?.third
+
         override fun isLoggable(level: LogLevel) = true
 
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {
