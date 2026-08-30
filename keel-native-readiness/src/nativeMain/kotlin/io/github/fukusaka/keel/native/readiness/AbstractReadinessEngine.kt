@@ -678,6 +678,24 @@ abstract class AbstractReadinessEngine(
      * caller can take over, and no timeout above can cut a wait that does not
      * answer to one. Measured. What that caller gets instead is the
      * cancellation, after the release below has run.
+     *
+     * What an interrupted join costs is a leak rather than corruption. The
+     * join is also what used to let this engine's children finish unwinding
+     * before the loops went; skip it and a child suspended mid-unwind is never
+     * resumed, because what would resume it is a loop that has stopped — so
+     * whatever it still held goes with that loop. The gathers themselves stay
+     * safe either way: they run only on the loop's own thread, and each loop
+     * joins that thread before it frees the scratch, so nothing reads memory
+     * after it is given back.
+     *
+     * **One such caller is served less completely than the rest.** Work
+     * confined to one of this engine's own loops — that loop is the dispatcher
+     * a channel hands out — runs the release on that loop's thread, and a loop
+     * refuses to join itself: it reports at error level and returns, holding
+     * its descriptors, its arena and its gather scratch. The other loops are
+     * still released, and this call still reports success, so the log line is
+     * the only account of it. Closing that gap is not this method's to do; it
+     * belongs where the self-join is refused.
      */
     override suspend fun close() {
         if (!closed) {
