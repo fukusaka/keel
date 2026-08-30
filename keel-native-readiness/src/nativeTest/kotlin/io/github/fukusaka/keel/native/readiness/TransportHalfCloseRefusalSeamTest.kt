@@ -142,7 +142,7 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
             )
             assertFalse(
                 eventLoop.warnings.any { REFUSAL_REPORT_WITH_RIDER in it },
-                "and must not claim cleanup failed when it did not: ${eventLoop.warnings}",
+                "and must not report a rider when none came with it: ${eventLoop.warnings}",
             )
             fake.assertAllConsumed()
             eventLoop.drainDispatched()
@@ -156,7 +156,7 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
             // The refusal is contained because it is already reported. A
             // release that failed on the way out is not: it rides along as a
             // suppressed cause, nothing else names it, and the buffer it
-            // names left the queue -- so containing it because a dead peer
+            // names left the queue -- so containing it because a refusal
             // happened to coincide would make the leak silent.
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
@@ -237,13 +237,13 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
     @Test
     fun `a half-close contains a refusal whose wind-down failed and the log keeps the failure`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            // The sibling above rethrows what rode on the refusal -- riders
-            // the drain attached before the refusal was published. A failure
-            // of the wind-down itself arrives after that publication, so it
-            // may not ride (nothing appends to a published instance): the
-            // half-close's catch reads an empty list and contains the refusal
-            // as an ordinary dead peer, and the wind-down failure's record is
-            // the warn beside the catch that met it.
+            // The siblings above rethrow what the refusal carried when it
+            // reached the catch. A failure of the wind-down itself arrives
+            // after that refusal was published, so it may not ride (nothing
+            // appends to a published instance): the half-close's catch reads
+            // an empty list and contains the refusal with nothing riding on
+            // it, and the wind-down failure's record is the warn beside the
+            // catch that met it.
             fake.enqueueWrite(fd, WriteResult.Failed(EPIPE))
             val transport = transport()
             transport.onReadClosed = { throw InjectedFault("inactive report refused") }

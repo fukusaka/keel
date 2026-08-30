@@ -504,10 +504,13 @@ abstract class AbstractIoTransport(
      * **This is a guard over the drain, and it answers for two failures
      * differently.** What each loses, in the transport fault model's terms:
      *
-     * - **The refusal: reports and continues.** Nothing is lost by not
-     *   raising it — it has already ended the connection and been offered to
-     *   a parked waiter. Raising it here would answer one caller twice and
-     *   another not at all, depending on where the drain ran.
+     * - **The refusal: reports and continues.** A refusal the transport
+     *   minted has already ended the connection and been offered to a parked
+     *   waiter, so raising it here would answer one caller twice and another
+     *   not at all, depending on where the drain ran. One minted by
+     *   application code inside the flush has had neither done for it — the
+     *   report below is its only record, which is why it is made for every
+     *   refusal rather than only the transport's own.
      * - **The first thing it carried: carried out of this frame.** A failed
      *   release has no other reporter, so it is not contained. Where it
      *   lands follows the drain: out to the caller when the drain ran in
@@ -532,9 +535,10 @@ abstract class AbstractIoTransport(
      *
      * Not raising the refusal is what makes the answer independent of where
      * the drain ran — in place, or on a later tick when the implementation
-     * coalesces, which the caller neither chose nor can read. The connection
-     * has ended either way, no FIN follows bytes the peer never saw, and
-     * [awaitPendingFlush] is how a caller asks for the reason.
+     * coalesces, which the caller neither chose nor can read. No FIN follows
+     * bytes the peer never saw, and [awaitPendingFlush] is how a caller asks
+     * a transport-minted refusal's reason — the end that refusal already
+     * brought about.
      *
      * Idempotent. Subclasses provide the FIN itself via [sendFin].
      */
@@ -553,10 +557,14 @@ abstract class AbstractIoTransport(
         try {
             flush()
         } catch (refused: RefusedWriteException) {
-            // Contained, not discarded. Before unwinding to here the drain
-            // recorded this as the reason the connection ended and offered it
-            // to a parked flush waiter, so raising it again would tell one
-            // caller twice on one path and another nothing on the other.
+            // Contained, not discarded. A refusal the transport minted was
+            // recorded as the reason the connection ended and offered to a
+            // parked flush waiter before unwinding to here, so raising it
+            // again would tell one caller twice on one path and another
+            // nothing on the other. One application code minted inside the
+            // flush arrives with neither done, and this frame cannot tell
+            // the two apart -- so it contains both and reports both, which
+            // is what makes the report below the minted one's only record.
             //
             // Only the refusal itself, though. A drain that also failed to
             // release its buffers carries that along as a suppressed cause
@@ -565,8 +573,9 @@ abstract class AbstractIoTransport(
             // because of the company they keep would make a failure silent
             // whenever a refusal happened to coincide with one. A failure of the
             // wind-down itself is the one thing that no longer rides: it
-            // happens after the refusal was published to its waiters, and
-            // the wind-down does not append to what it has handed out -- its
+            // happens after a wind-down's refusal was published to its
+            // waiters (there is no wind-down without one), and it does not
+            // append to what it has handed out -- its
             // record is the transport's own warn beside the catch that met
             // it.
             // Reported before the rider check, not after it: what is rethrown
@@ -606,20 +615,21 @@ abstract class AbstractIoTransport(
     }
 
     /**
-     * Says that a half-close met a refused send and did not raise it.
+     * Says that a half-close met a refusal and did not raise it.
      *
      * Not raising is what makes the answer the same on both drain paths, but
      * it also means a caller with nothing parked on the flush is told nothing
-     * at all: `write(); shutdownOutput(); close()` would end a dead connection
+     * at all: `write(); shutdownOutput(); close()` would leave a refusal
      * without exception, log or cause. That is the silence this exists to
      * break, and the transport that met the refusal is the one holding a
      * logger, so it is the one asked.
      *
      * Called for every refusal the half-close contains, including one that
-     * arrived carrying a suppressed cause. That cause is rethrown, but it
-     * holds no reference back to the refusal, so leaving this to whoever
-     * catches it would lose the refusal exactly when something else had
-     * failed alongside it.
+     * arrived carrying suppressed causes. The first of those is rethrown and
+     * holds no reference back to the refusal, and any after it stay on the
+     * refusal itself — so leaving this to whoever catches the rethrown one
+     * would lose the refusal, and its remaining riders, exactly when
+     * something else had failed alongside it.
      *
      * [hasRiders] says whether it arrived carrying suppressed causes, so the
      * report can say that this is not the whole story. Without it a reader of

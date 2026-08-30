@@ -364,7 +364,7 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
             )
             assertFalse(
                 eventLoop.warnings.any { it.contains(CLOSING_REFUSAL_REPORT_WITH_RIDER) },
-                "and not as teardown incompleteness, got: ${eventLoop.warnings}",
+                "and without a rider, since nothing rode along: ${eventLoop.warnings}",
             )
             fake.assertAllConsumed()
             tracker.assertNoLeaks()
@@ -722,12 +722,12 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
     @Test
     fun `a refused release during the closing drain still reaches the caller`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
-            // A gone peer is contained because close() was asked to discard
+            // A refusal is contained because close() was asked to discard
             // those bytes anyway. A release that refuses during the same drain
             // is a different thing -- the teardown did not finish -- and it
             // rides along as a suppressed cause on the very type the
             // containment matches. Containing it because of the company it
-            // keeps would make a leak silent exactly when a dead peer
+            // keeps would make a leak silent exactly when a refusal
             // coincides with one.
             rebuildLoop(runDispatchedInline = false, flushCoalescing = true)
             fake.enqueueWritev(fd, WriteResult.Failed(EPIPE))
