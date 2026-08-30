@@ -32,7 +32,8 @@ import kotlinx.coroutines.CoroutineScope
  * engine cancels every such child and joins its completion before
  * shutting the underlying dispatcher threads down, preserving the
  * structured-concurrency invariant "a dispatcher outlives every
- * coroutine that runs on it".
+ * coroutine that runs on it" — for a caller that lives long enough to
+ * see the join through. What happens when it does not is on [close].
  *
  * **Dispatcher invariant**: the engine's own [coroutineContext] does
  * NOT carry a default dispatcher. Callers MUST pass an explicit
@@ -103,6 +104,23 @@ interface IoEngine : CoroutineScope {
      * cancellation via the normal kotlinx.coroutines resume path while
      * their dispatcher is still alive, so every continuation unwinds
      * through `CancellationException`.
+     *
+     * **The join belongs to the caller.** It is a suspension point, so it
+     * answers to the calling coroutine's job rather than the engine's, and
+     * a caller that is cancelled — or that runs out of its own timeout —
+     * loses it. What each implementation does then differs, and the
+     * difference matters because this call commits before it does the
+     * work: whichever implementation it is, a second caller is told the
+     * engine is closed and returns.
+     *
+     * The epoll and kqueue engines release their dispatcher threads and OS
+     * resources anyway; what that costs is written on their own close. The
+     * five that do their release after an unguarded join — NIO, Netty,
+     * io_uring, Node.js and Network.framework — skip it entirely, and
+     * because the flag is already set nobody can ask again, so whatever
+     * each of them holds is held until the process ends. Only an
+     * implementation with no suspension point at all is indifferent to
+     * this. Prefer letting this call finish.
      *
      * Idempotent: subsequent calls are a no-op.
      */

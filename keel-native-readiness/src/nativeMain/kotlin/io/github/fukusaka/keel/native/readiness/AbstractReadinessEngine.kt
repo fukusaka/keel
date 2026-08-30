@@ -32,9 +32,11 @@ import io.github.fukusaka.keel.native.posix.closeFdSafely
 import io.github.fukusaka.keel.native.posix.errnoMessage
 import io.github.fukusaka.keel.pipeline.PipelinedStreamServer
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.job
+import kotlinx.coroutines.withContext
 import platform.posix.errno
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
@@ -659,32 +661,111 @@ abstract class AbstractReadinessEngine(
      * connection it holds, which a Pipeline-mode connection surfaces as
      * read-closed / EOF; a Coroutine-mode caller still closes its own channels.
      * Idempotent — safe to call multiple times.
+     *
+     * The loops are released whenever the join *ends*, however it ends. What
+     * this does not do is get the caller past a join that never ends: a caller
+     * with no budget of its own, waiting on a child that does not answer
+     * cancellation, still parks here with the flag set and the loops held —
+     * unchanged by this method, and worth knowing because the shutdown helper
+     * that calls it has no budget. The flag above commits
+     * before any of the work, so every later caller returns believing this
+     * happened; the join between them is a suspension point, and a suspension
+     * point answers to the caller's job rather than this engine's, so a caller
+     * cancelled there used to leave the accept loop and every loop in the
+     * worker group holding their descriptors with nobody able to ask again.
+     *
+     * The join itself stays interruptible, and that is not an oversight. This
+     * engine's own contract asks callers to launch their work as children of
+     * it, so a shutdown path reaching here from inside one is a supported
+     * caller — and it is a child of the very job being joined. A job does not
+     * complete while a child of it runs, so a join that child could not
+     * abandon would wait for itself, permanently: the flag is set, no second
+     * caller can take over, and no timeout above can cut a wait that does not
+     * answer to one. Measured. What that caller gets instead is the
+     * cancellation, after the release below has run.
+     *
+     * A caller's own timeout therefore ends its wait *for the children*. It
+     * does not bound the release below, which answers to nothing and joins
+     * threads no budget can cut — so a timeout that expires is the moment this
+     * stops waiting for other people's coroutines, not the moment it returns.
+     *
+     * What an interrupted join costs is a leak rather than corruption, and a
+     * narrower one than it first looks. The join is what used to let this
+     * engine's children finish unwinding before the loops went. Skipping it
+     * does not strand them wholesale: the cancel that precedes the join has
+     * already queued each loop-confined child's resumption, and a stopping loop
+     * drains its tasks, sweeps, then drains again — so those run and unwind.
+     * A child on some other dispatcher is not this loop's to resume at all.
+     * What is stranded is the child that suspends *again* past that last drain:
+     * nothing reads that loop's queue afterwards, so whatever it still held
+     * goes with the loop.
+     *
+     * The gathers stay safe, but by quiescence rather than by confinement —
+     * the scratch says so itself. A loop that started a thread joins it before
+     * freeing; one that never started a thread has nothing to be concurrent
+     * with and reports itself stopped instead. Either way nothing reads that
+     * memory after it is given back.
+     *
+     * **One such caller is served less completely than the rest.** Work
+     * confined to one of this engine's own loops — that loop is the dispatcher
+     * a channel hands out — runs the release on that loop's thread, and a loop
+     * refuses to join itself: it reports at error level and returns, holding
+     * its descriptors, its arena and its gather scratch. The other loops are
+     * still released, and nothing names the one that was not — an engine child
+     * gets its cancellation back and work merely confined to a loop gets a
+     * normal return, so in both cases the error line is the only account of it.
+     * Closing that gap is not this method's to do; it belongs where the
+     * self-join is refused.
      */
     override suspend fun close() {
         if (!closed) {
             closed = true
-            coroutineContext.job.cancelAndJoin()
-            // The group is closed whatever the boss did. `closed` is already
-            // true, so a throw from the first would leave every worker loop
-            // holding its descriptors with no second caller able to retry --
-            // the same reason the group closes each of its own loops
-            // independently. Barely reachable (the boss is always started, so
-            // it takes the join path, and it is built with the no-op default
-            // allocator) and guarded for the same reason the group's is.
-            var failure: Throwable? = null
+            // Read out here on purpose: inside the block below `coroutineContext`
+            // resolves to the scope `withContext` builds, not to this engine --
+            // measured, and it is that scope rather than the uncancellable job
+            // the context carries. Cancelling and joining "this engine's job"
+            // there would stop none of this engine's work, and would cancel the
+            // release block itself.
+            val engineWork = coroutineContext.job
+            // Held rather than propagated here: the release below owes nothing
+            // to this caller's job and has to run either way. Re-raised after
+            // it, so a caller that was cancelled still learns it was.
+            var joinInterrupted: Throwable? = null
             try {
-                bossLoop.close()
-            } catch (bossFailure: Throwable) {
-                failure = bossFailure
+                engineWork.cancelAndJoin()
+            } catch (interrupted: Throwable) {
+                joinInterrupted = interrupted
             }
-            try {
-                workerGroup.close()
-            } catch (groupFailure: Throwable) {
-                val first = failure
-                if (first == null) failure = groupFailure else first.addSuppressed(groupFailure)
+            withContext(NonCancellable) {
+                // The group is closed whatever the boss did. `closed` is already
+                // true, so a throw from the first would leave every worker loop
+                // holding its descriptors with no second caller able to retry --
+                // the same reason the group closes each of its own loops
+                // independently. Barely reachable (the boss is always started, so
+                // it takes the join path, and it is built with the no-op default
+                // allocator) and guarded for the same reason the group's is.
+                var failure: Throwable? = null
+                try {
+                    bossLoop.close()
+                } catch (bossFailure: Throwable) {
+                    failure = bossFailure
+                }
+                try {
+                    workerGroup.close()
+                } catch (groupFailure: Throwable) {
+                    val first = failure
+                    if (first == null) failure = groupFailure else first.addSuppressed(groupFailure)
+                }
+                failure?.let { throw it }
+                logger.debug { "Engine closed" }
             }
-            failure?.let { throw it }
-            logger.debug { "Engine closed" }
+            // Only when the release said nothing. A teardown that failed is the
+            // more actionable of the two and is already on its way up; the
+            // cancellation it displaces is not lost to the caller, whose job is
+            // still cancelled and will say so at its next suspension point.
+            // Neither exception is written into the other -- the one minted by
+            // the cancellation is not ours to carry riders on.
+            joinInterrupted?.let { throw it }
         }
     }
 

@@ -22,7 +22,12 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    every coroutine launched on the engine scope and joins their
  *    completion before tearing the dispatcher threads down. This closes
  *    the structured-concurrency contract at the engine boundary even if
- *    the grace timeout was hit above.
+ *    the grace timeout was hit above — provided this call is left to
+ *    finish. The join answers to *this* coroutine, so cancelling the
+ *    shutdown gives it up; what each engine does with the rest of its
+ *    teardown then is written on [IoEngine.close]. Note also that this
+ *    step is outside both budgets above, so [timeoutMillis] does not
+ *    bound it.
  *
  * Designed for HTTP-style servers where every accepted connection runs
  * its handler on the engine scope and stop is requested by completing a

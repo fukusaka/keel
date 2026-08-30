@@ -135,6 +135,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll` / `engine-kqueue`: `close()` finishes releasing the accept loop and the worker
+  group even when the coroutine that called it is cancelled — the join between the closed flag
+  and the release is a suspension point, and a caller cancelled there left every loop holding
+  its descriptors with nobody able to ask again (#1083)
 - `io`: a second `PooledAllocator.close()` racing the first now returns instead of tearing down
   alongside it — the teardown destroys the arena lock, and on Native the loser reached it after it
   was gone (#1082)
