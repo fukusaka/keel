@@ -662,7 +662,12 @@ abstract class AbstractReadinessEngine(
      * read-closed / EOF; a Coroutine-mode caller still closes its own channels.
      * Idempotent — safe to call multiple times.
      *
-     * The loops are released whatever the join does. The flag above commits
+     * The loops are released whenever the join *ends*, however it ends. What
+     * this does not do is get the caller past a join that never ends: a caller
+     * with no budget of its own, waiting on a child that does not answer
+     * cancellation, still parks here with the flag set and the loops held —
+     * unchanged by this method, and worth knowing because the shutdown helper
+     * that calls it has no budget. The flag above commits
      * before any of the work, so every later caller returns believing this
      * happened; the join between them is a suspension point, and a suspension
      * point answers to the caller's job rather than this engine's, so a caller
@@ -678,6 +683,11 @@ abstract class AbstractReadinessEngine(
      * caller can take over, and no timeout above can cut a wait that does not
      * answer to one. Measured. What that caller gets instead is the
      * cancellation, after the release below has run.
+     *
+     * A caller's own timeout therefore ends its wait *for the children*. It
+     * does not bound the release below, which answers to nothing and joins
+     * threads no budget can cut — so a timeout that expires is the moment this
+     * stops waiting for other people's coroutines, not the moment it returns.
      *
      * What an interrupted join costs is a leak rather than corruption. The
      * join is also what used to let this engine's children finish unwinding
