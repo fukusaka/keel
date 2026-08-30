@@ -687,6 +687,7 @@ class ReadinessIoTransport(
                     // would have armed narrow and left this connection deaf to
                     // the data it just asked for.
                     closeInterestOnly = false
+                    readsWereEnabled = true
                     armRead()
                 }
             } else if (!value) {
@@ -872,6 +873,24 @@ class ReadinessIoTransport(
 
     private var closeInterestOnly = false
 
+    /**
+     * Whether reads have ever been enabled on this connection.
+     *
+     * A one-way latch, and the line between the two connections that both
+     * reach the back-pressure branch. A connection that has never enabled
+     * reads has taken no bytes, so nothing is buffered above it and a close
+     * reported now costs nothing. One that enabled reads and then paused --
+     * a consumer at its watermark -- may have a queue the pipeline is still
+     * going to hand over, and reporting the close there is destructive: the
+     * bridge releases that queue and answers EOF, and a Pipeline-mode channel
+     * closes outright. Measured against the wiring this engine ships.
+     *
+     * So only the first kind narrows. The second keeps the behaviour it had
+     * before the narrowing existed: the interest is withdrawn, and the close
+     * is found when reads resume and the drain reaches EOF.
+     */
+    private var readsWereEnabled = false
+
     private fun onReadable() {
         if (!opened) return
 
@@ -891,7 +910,9 @@ class ReadinessIoTransport(
         // So re-register narrowed instead: an arm the peer's FIN wakes and
         // arriving data does not. The width comes off this transport rather
         // than the call -- [armsCloseOnly], which the flag below sets -- so the
-        // ordinary arm does it. Registering from inside the dispatch is what
+        // ordinary arm does it. Only for a connection that has never read,
+        // though; see [readsWereEnabled] for the one that has, and why hearing
+        // the close early would cost it data. Registering from inside the dispatch is what
         // keeps it: dispatchReady asks whether the ledger holds a listener
         // *after* this returns, and finding one it leaves the interest alone
         // rather than withdrawing it.
@@ -917,7 +938,7 @@ class ReadinessIoTransport(
             // 0.0010 after. What it costs there is the close notification for a
             // connection whose buffer is full and whose application is not
             // reading -- the same thing TCP's zero window costs anyway.
-            if (!closeInterestOnly) {
+            if (!closeInterestOnly && !readsWereEnabled) {
                 closeInterestOnly = true
                 armRead()
             }

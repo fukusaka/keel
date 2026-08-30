@@ -131,6 +131,45 @@ internal class TransportBackPressureCloseInterestSeamTest : TransportSeamFixture
     }
 
     @Test
+    fun `a connection that has read before does not narrow when it pauses`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The line between the two connections that both reach the
+            // back-pressure branch, and the reason it is drawn.
+            //
+            // A connection that has never enabled reads has taken no bytes, so
+            // nothing is buffered above it and hearing the close early costs
+            // nothing -- that is the whole feature. A consumer that read and
+            // then paused at its watermark is the other case: the bridge above
+            // it may still hold a queue it is going to hand over, and the close
+            // report is destructive there. It releases that queue and answers
+            // EOF, and a Pipeline-mode channel closes outright, so a peer that
+            // sends more than the watermark and then closes would lose whatever
+            // had not been consumed.
+            //
+            // So that connection keeps the behaviour it had before: the
+            // interest is withdrawn, and the close is found when reads resume
+            // and the drain reaches EOF.
+            val transport = transport()
+            try {
+                transport.onChannelAttached()
+                transport.readEnabled = true
+                transport.readEnabled = false
+
+                eventLoop.dispatchReadyFor(fd, Interest.READ, eofFlag = false)
+
+                assertTrue(
+                    eventLoop.closeOnlyArms.isEmpty(),
+                    "a connection that has read before does not narrow -- the close it would hear early is " +
+                        "reported as end of stream, and there may be a queue above it that has not been " +
+                        "handed over",
+                )
+            } finally {
+                transport.close()
+            }
+        }
+    }
+
+    @Test
     fun `the wake that carries the close does not leave an arm behind`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The half that turns the narrowing into a spin if it is missed.
