@@ -465,27 +465,42 @@ class ReadinessIoTransport(
     override fun onPeerClosed(interest: Interest) {
         if (interest != Interest.READ) return
         if (!opened) return
-        // The interest goes with the report, and it has to. A peer's close is
-        // not an event but a condition: both loops are level-triggered, so once
-        // the FIN is in, every wait reports this fd again. The declined-wake
-        // re-arm above runs before this callback and cannot know the close came
-        // with it, so without this withdrawal the loop would hand the wake over,
-        // find the listener back in the ledger, keep the interest, and meet a
-        // condition that has not changed -- 100% of the worker's core for as
-        // long as the application leaves the channel open. Measured: ~1.15 s of
-        // CPU per wall-clock second, against 0.0015 s before this narrowing
-        // existed.
+        // A narrowed arm has to go with the report, and only a narrowed one.
         //
-        // Safe to drop because there is nothing left to hear. `notifyInactive`
-        // reports at most once for the whole transport, and read-closed is
-        // terminal -- a second FIN is not a thing. What still needs waking, the
-        // write side, is a different key and is untouched.
+        // Why it has to go: a peer's close is not an event but a condition.
+        // Both loops are level-triggered, so once the FIN is in, every wait
+        // reports this fd again -- and the declined-wake re-arm runs before
+        // this callback, so it cannot know the close came with the wake it
+        // answered. Left in place, the loop hands the wake over, finds the
+        // listener back in the ledger, keeps the interest, and meets a
+        // condition that has not changed: 100% of the worker's core for as
+        // long as the application leaves the channel open. Measured, CPU
+        // seconds per wall-clock second, 1.12 against 0.0010.
         //
-        // Before the report rather than after: the report runs application
-        // code, which may throw, and the withdrawal must not be what a throw
-        // skips.
-        eventLoop.unregisterCallback(fd, Interest.READ)
-        closeInterestOnly = false
+        // Why only a narrowed one: a wake can carry data *and* the close, and
+        // [onReadable] runs first. With reads enabled it takes a buffer, hands
+        // it on, and re-arms because more bytes are waiting -- a wide arm,
+        // whose condition clears as the connection drains. Popping that one
+        // truncated the inbound stream at a single read buffer, silently, on
+        // exactly the half-close this engine leaves the channel open for.
+        // Measured: 8192 of 65536 bytes delivered, against all of them once
+        // the withdrawal was made conditional.
+        //
+        // Nothing is lost by dropping the narrow one: `notifyInactive` reports
+        // at most once for the whole transport and read-closed is terminal, so
+        // a second FIN is not a thing. The write side is a different key and is
+        // untouched either way.
+        //
+        // Before the report rather than after, though nothing measured depends
+        // on it: a throwing `onReadClosed` does reach this frame, but the
+        // ledger ends empty either way, because the dispatch pops a listener
+        // that threw and the teardown withdraws READ as its own stage. Kept in
+        // this order because it reads as the sequence it is -- stop asking,
+        // then tell -- not because a throw would otherwise skip it.
+        if (closeInterestOnly) {
+            eventLoop.unregisterCallback(fd, Interest.READ)
+            closeInterestOnly = false
+        }
         containReadinessFailure(WHAT_PEER_CLOSE) { notifyInactive() }
     }
 
@@ -842,9 +857,12 @@ class ReadinessIoTransport(
      * the same registration — the channel attach, the read re-enable, the
      * back-pressure wake, and the two re-arms after a read returns bytes or
      * would block — and the engine asks this at whichever of them ran. The
-     * last two run only with reads enabled, where this is false; counting
-     * them anyway is the point, since the argument is that no site can
-     * disagree with another rather than that only some of them matter.
+     * last two usually run with reads enabled, where this is false — but not
+     * always: `onRead` is application code, and the one this engine ships
+     * pauses reads at its high watermark, so the re-arm on the next line can
+     * be wide with reads already off. That costs one redundant wake, which the
+     * next decline narrows. Counting every site is the point: the argument is
+     * that none of them can disagree with another, not that only some matter.
      *
      * Not simply `!readEnabled`: the attach arms in full while reads are still
      * off, because nothing has declined them yet. Only a wake that was
@@ -883,8 +901,26 @@ class ReadinessIoTransport(
         // so returning here does not stop the onPeerClosed that follows on the
         // same event.
         if (!readEnabled) {
-            closeInterestOnly = true
-            armRead()
+            // Only the first decline narrows. A wake arriving *on* the narrowed
+            // arm is one the narrowing did not intend -- it asks the kernel for
+            // the close, and the close reports through [onPeerClosed], which
+            // withdraws. Anything else that raises it is a condition the
+            // narrowing cannot make quiet, so re-arming into it is the same
+            // busy loop by another door.
+            //
+            // Reachable on one kernel: kqueue has no EOF filter of its own, so
+            // the narrowing is a low-water mark, and the mark is clamped to the
+            // receive buffer's high-water mark. TCP stalls its sender short of
+            // that, but a unix-domain socket has no window to stall it with, so
+            // a full buffer meets the mark and wakes with no EOF. Measured at
+            // 1.09 CPU seconds per wall-clock second before this guard, and
+            // 0.0010 after. What it costs there is the close notification for a
+            // connection whose buffer is full and whose application is not
+            // reading -- the same thing TCP's zero window costs anyway.
+            if (!closeInterestOnly) {
+                closeInterestOnly = true
+                armRead()
+            }
             return
         }
 

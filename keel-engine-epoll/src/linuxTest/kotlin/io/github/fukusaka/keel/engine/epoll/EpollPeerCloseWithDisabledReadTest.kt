@@ -7,9 +7,11 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -184,9 +186,85 @@ class EpollPeerCloseWithDisabledReadTest {
         }
     }
 
+    /**
+     * The tail of a stream that arrived with the close.
+     *
+     * A wake can carry data *and* the FIN, and the read side runs first: it
+     * takes one buffer, hands it on, and re-arms because more bytes are
+     * waiting. That arm is wide, and its condition clears as the connection
+     * drains — so the close report must leave it alone. Popping it truncated
+     * the inbound stream at a single read buffer, silently, on exactly the
+     * half-close this engine keeps the channel open for ("the peer did
+     * `shutdown(SHUT_WR)` but can still receive a final response").
+     *
+     * Measured before the guard: 8192 of 65536 bytes delivered. The control is
+     * the same connection with the peer still open, which always drained fully
+     * — that is what makes this a defect rather than a policy.
+     */
+    @Test
+    fun `a stream that arrives with the close is delivered in full`(): Unit = runBlocking {
+        val engine = EpollEngine()
+        val server = engine.bind(LOOPBACK_HOST, 0)
+        val port = (server.localAddress as InetSocketAddress).port
+
+        val client = engine.connect(LOOPBACK_HOST, port)
+        val serverCh = server.accept()
+
+        try {
+            val transport = (client as AbstractPipelinedChannel).transport
+            transport.readEnabled = false
+
+            var received = 0
+            transport.onRead = { buf ->
+                received += buf.readableBytes
+                buf.release()
+            }
+            transport.onReadClosed = { }
+
+            // More than one read buffer's worth, so a truncation at the first
+            // is visible, and well under the receive buffer so the FIN can
+            // follow it in.
+            val outBuf = DefaultAllocator.allocate(TAIL_BYTES)
+            for (i in 0 until TAIL_BYTES) outBuf.writeByte((i and 0xFF).toByte())
+            serverCh.write(outBuf)
+            serverCh.flush()
+            delay(SETTLE_MS)
+            serverCh.close()
+            delay(SETTLE_MS)
+
+            // Now drain. The close has already arrived, so this is the shape
+            // where the report and the read side's re-arm meet.
+            transport.readEnabled = true
+            val drained = withTimeoutOrNull(DRAIN_TIMEOUT_S.seconds) {
+                while (received < TAIL_BYTES) delay(DRAIN_POLL_MS)
+                true
+            }
+            assertNotNull(
+                drained,
+                "every byte the peer sent before closing reaches the application; got $received of " +
+                    "$TAIL_BYTES -- a close report that takes the read side's own re-arm loses the tail",
+            )
+        } finally {
+            client.close()
+            server.close()
+            engine.close()
+        }
+    }
+
     private companion object {
         private const val SETTLE_MS = 100L
         private const val EOF_DETECT_TIMEOUT_S = 1
         private const val PAYLOAD_BYTES = 1024
+
+        /**
+         * More than one engine read buffer, so a truncation at the first is
+         * visible, and far below any reasonable receive buffer so the FIN can
+         * follow the bytes in rather than being blocked by a zero window.
+         */
+        private const val TAIL_BYTES = 65536
+
+        /** How long the drain may take, and how often it is polled. */
+        private const val DRAIN_TIMEOUT_S = 5
+        private const val DRAIN_POLL_MS = 10L
     }
 }

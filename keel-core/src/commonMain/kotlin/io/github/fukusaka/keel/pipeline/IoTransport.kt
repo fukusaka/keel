@@ -167,6 +167,14 @@ interface IoTransport {
      * When set to `false`, the transport deregisters read interest. Useful
      * for backpressure: stop reading when the pipeline is overloaded.
      *
+     * **Must be set on the transport's I/O thread**, the same requirement
+     * [pauseReads] and [resumeReads] already carry — they are this property.
+     * Said here because it is the property a caller reaches for: an engine may
+     * read this to decide the shape of the interest it registers, and a write
+     * from another thread races that read, which can leave the registration
+     * describing a state the transport is no longer in. The channel's own read
+     * path already sets it under the I/O dispatcher.
+     *
      * Initial value: `false` (read loop not started until explicitly enabled).
      */
     var readEnabled: Boolean

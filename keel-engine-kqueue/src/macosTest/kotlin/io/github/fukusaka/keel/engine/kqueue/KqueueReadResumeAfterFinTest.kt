@@ -34,9 +34,14 @@ import kotlin.time.Duration.Companion.seconds
  * as one event carrying EOF, the close is reported, and a correct engine fails
  * the assertion.
  *
- * A client that keeps read disabled after receiving data therefore never learns
- * of the close. Fixing that needs a close-only interest the engine can hold
- * without waking on data; the engines cannot express one symmetrically today.
+ * A client that keeps read disabled after receiving data used to never learn of
+ * the close, because the arm that carried both was spent by the data and only
+ * `readEnabled = true` brought it back. It does now: the declined wake
+ * re-registers narrowed — an arm the peer's FIN wakes and arriving data does
+ * not — which both engines express, and which the cases in the
+ * peer-close-with-disabled-read suite pin. This case stays as it was: it is
+ * about the *resume* reporting a FIN that arrived earlier, which holds either
+ * way.
  */
 class KqueueReadResumeAfterFinTest {
 

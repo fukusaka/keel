@@ -194,16 +194,20 @@ class KqueueLoopStopNotifiesTransportTest {
             serverCh.write(buf)
             serverCh.flush()
 
-            // Wait for the wake to have been declined -- a signal, not a
-            // sleep. The write side is what the declined wake never wanted, so
-            // its absence is the edge that says the event has been handled.
-            val declined = withTimeoutOrNull(PARK_TIMEOUT_S.seconds) {
-                while (engine.hasWorkerRegistration(transport.fd, Interest.WRITE)) {
-                    delay(PARK_POLL_MS)
-                }
-                true
-            }
-            assertNotNull(declined, "the readiness event must be handled before the loop is stopped")
+            // A settle, and named as one. The case this replaced waited for the
+            // ledger to empty, which was a real edge; keeping the registration
+            // is the whole change, so that edge is gone and this connection
+            // offers no other -- it holds a READ entry before the wake and
+            // after it, and registers nothing else. The declined wake is
+            // established by construction and given time, not detected.
+            //
+            // What that costs is only in the passing direction: too short a
+            // settle and the assertion below reads the attach's registration
+            // rather than the re-arm's, and passes for the wrong reason. It
+            // cannot produce a false failure, and the property this case is
+            // really here for -- the notification at the bottom -- does not
+            // depend on it at all.
+            delay(SETTLE_MS)
             assertTrue(
                 engine.hasWorkerRegistration(transport.fd, Interest.READ),
                 "the declined wake keeps a read registration rather than giving the interest up -- that is " +

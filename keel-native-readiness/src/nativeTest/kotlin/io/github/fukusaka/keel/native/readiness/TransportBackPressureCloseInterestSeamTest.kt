@@ -88,6 +88,49 @@ internal class TransportBackPressureCloseInterestSeamTest : TransportSeamFixture
     }
 
     @Test
+    fun `a second declined wake does not arm again`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The other way the narrowing can become a spin, and the one the
+            // close report cannot catch.
+            //
+            // A wake arriving *on* the narrowed arm is one the narrowing did
+            // not intend: it asked the kernel for the close, and a close
+            // reports through onPeerClosed, which withdraws. Anything else that
+            // raises it is a condition the narrowing cannot quieten, so arming
+            // into it again is the same busy loop by another door.
+            //
+            // Reachable on one kernel. kqueue has no EOF filter of its own, so
+            // the narrowing is a low-water mark, clamped to the receive
+            // buffer's high-water mark. TCP stalls its sender short of that; a
+            // unix-domain socket has no window to stall it with, so a full
+            // buffer meets the mark and wakes with no EOF. Review measured that
+            // at 1.09 CPU seconds per wall-clock second.
+            //
+            // Asserted on the count of narrowing arms, because that is the
+            // thing that must not grow once per wake.
+            val transport = transport()
+            try {
+                transport.onChannelAttached()
+                eventLoop.dispatchReadyFor(fd, Interest.READ, eofFlag = false)
+                assertEquals(1, eventLoop.closeOnlyArms.size, "precondition: the first decline narrows")
+
+                // A second wake with no close on it -- what a full receive
+                // buffer produces where the mark can be met.
+                eventLoop.dispatchReadyFor(fd, Interest.READ, eofFlag = false)
+
+                assertEquals(
+                    1,
+                    eventLoop.closeOnlyArms.size,
+                    "the narrowed arm is issued once per back-pressure episode, not once per wake -- " +
+                        "re-arming into a condition it cannot quieten is a busy loop",
+                )
+            } finally {
+                transport.close()
+            }
+        }
+    }
+
+    @Test
     fun `the wake that carries the close does not leave an arm behind`() = runBlocking {
         withTimeout(FUNNEL_TIMEOUT_MS) {
             // The half that turns the narrowing into a spin if it is missed.
