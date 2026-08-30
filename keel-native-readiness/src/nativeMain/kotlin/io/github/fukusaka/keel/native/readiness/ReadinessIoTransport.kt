@@ -1329,12 +1329,11 @@ class ReadinessIoTransport(
      * snapshot — and then rethrows the first refusal, later ones suppressed.
      * The rethrow is the difference from [answerFlushWaiter]: a close that
      * could not deliver an answer must not report clean. How far the
-     * aggregate travels is the stage's decision, not this helper's — the
-     * stopped-loop teardown carries it to the closer, and the on-loop one
-     * carries it only when nothing else is carried ([runDetachedStage]),
-     * every refusal having been error-logged here first. The single-slot
-     * shape carried such a refusal the same way; the loop is what made
-     * carrying and continuing two separate duties.
+     * aggregate travels is the calling stage's decision, not this helper's —
+     * every refusal is error-logged here first, and the stage combinators
+     * say what they do with the rethrow. The single-slot shape carried such
+     * a refusal the same way; the loop is what made carrying and continuing
+     * two separate duties.
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun endFlushWaiters(
@@ -1595,16 +1594,13 @@ class ReadinessIoTransport(
         // reach is a transport fully torn down: every entry that could touch
         // the fd or the ledger declines on `opened`, and what remains answers
         // from recorded state (an emptied `flush()`, the register's
-        // closed-transport arm) or cancels an already-cancelled timer —
+        // closed-transport arm) or cancels an already-cancelled timer --
         // except [scheduleDeadline], which has no guard at all and can still
         // arm a timer that retains this transport (true under the old order
-        // too; tracked, not solved here). The
-        // answer's own contract does not order it against the withdraw
-        // duties. The stage's failure takes [runDetachedStage] for the same
-        // reason the attaches stop here: each refused resume was error-logged
-        // where it happened (the snapshot-taking before the per-waiter guards
-        // cannot throw), so dropping the aggregate when something is already
-        // carried loses no record.
+        // too; tracked, not solved here). The answer's own contract does not
+        // order it against the withdraw duties. The stage's failure takes
+        // [runDetachedStage]; the per-waiter error logs inside the stage (and
+        // the snapshot-taking, which cannot throw) satisfy its logging debt.
         failure = runDetachedStage(failure) {
             endFlushWaiters(
                 takeFlushWaiters(),
