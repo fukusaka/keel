@@ -144,53 +144,67 @@ internal class EngineCloseUnderCancellationSeamTest : AbstractReadinessEventLoop
 
     @Test
     fun `a close whose caller runs out of time does not wait for the engine's children`() = runBlocking {
-        val boss = FakeLoop()
-        val worker = FakeLoop()
-        val engine = TestEngine(boss, worker)
-        // A child that will not be hurried: the join is over application
-        // coroutines, so whatever they do the shutdown inherits. Held here so
-        // the case can wait for it rather than leave it running.
-        //
-        // Waited for before closing, and that is what gives this case its
-        // teeth. Without the signal the close can reach the join before this
-        // child has started, and a child cancelled before it runs makes the
-        // join return at once -- measured: the case passed against a join that
-        // could not be interrupted, because there was nothing to wait for.
-        val childRunning = CompletableDeferred<Unit>()
-        val stubborn = engine.launch(Dispatchers.Default) {
-            withContext(NonCancellable) {
-                childRunning.complete(Unit)
-                delay(CHILD_UNWIND_MS)
+        // Bounded like its siblings, and with its own budget because it is the
+        // one case that deliberately waits: the stubborn child below runs its
+        // full span whatever happens to the engine, and the `finally` waits for
+        // it. Everything unbounded in here -- the start signal, that join --
+        // would otherwise hang the suite instead of failing it.
+        withTimeout(STUBBORN_CASE_TIMEOUT_MS) {
+            val boss = FakeLoop()
+            val worker = FakeLoop()
+            val engine = TestEngine(boss, worker)
+            // A child that will not be hurried: the join is over application
+            // coroutines, so whatever they do the shutdown inherits. Held here so
+            // the case can wait for it rather than leave it running.
+            //
+            // Waited for before closing, and that is what gives this case its
+            // teeth. Without the signal the close can reach the join before this
+            // child has started, and a child cancelled before it runs makes the
+            // join return at once -- measured: the case passed against a join that
+            // could not be interrupted, because there was nothing to wait for.
+            val childRunning = CompletableDeferred<Unit>()
+            val stubborn = engine.launch(Dispatchers.Default) {
+                withContext(NonCancellable) {
+                    childRunning.complete(Unit)
+                    delay(CHILD_UNWIND_MS)
+                }
             }
-        }
-        childRunning.await()
+            childRunning.await()
 
-        try {
-            // The budget that has to hold. Make the join uninterruptible and
-            // this returns after the child does instead -- measured, and the
-            // reason it matters is that the server's own shutdown puts
-            // `close()` in a `finally` with no budget of its own, so a caller's
-            // timeout is the only bound there is.
-            val startedAt = TimeSource.Monotonic.markNow()
-            withTimeoutOrNull(CALLER_BUDGET_MS) { engine.close() }
-            val elapsed = startedAt.elapsedNow()
+            try {
+                // The budget that has to hold. Make the join uninterruptible and
+                // this returns after the child does instead -- measured, and the
+                // reason it matters is that the server's own shutdown puts
+                // `close()` in a `finally` with no budget of its own, so a caller's
+                // timeout is the only bound there is.
+                val startedAt = TimeSource.Monotonic.markNow()
+                withTimeoutOrNull(CALLER_BUDGET_MS) { engine.close() }
+                val elapsed = startedAt.elapsedNow()
 
-            assertTrue(
-                elapsed < CHILD_UNWIND_MS.milliseconds,
-                "the caller's timeout still ends its wait; it took $elapsed against a child that takes " +
-                    "$CHILD_UNWIND_MS ms",
-            )
-            assertFalse(
-                boss.writevScratch.owned,
-                "and the loops are released on the way out, which is the whole point of not simply giving up",
-            )
-            assertFalse(worker.writevScratch.owned, "the worker group too")
-        } finally {
-            // Awaited, not abandoned: it holds no loop, but leaving a live
-            // coroutine behind lets it outlive the case and land in another.
-            stubborn.join()
-            boss.close()
-            worker.close()
+                // Against a value *between* the two budgets, not against the
+                // child's. `startedAt` is marked after the start signal, so the
+                // child's own clock began fractionally earlier; measuring against
+                // its full span leaves the failing direction with no margin at all
+                // -- a run where the signal's resume latency exceeds the release's
+                // would pass with the mutation this case exists to catch. Between
+                // them, each direction has hundreds of milliseconds to spare.
+                assertTrue(
+                    elapsed < DISCRIMINATOR_MS.milliseconds,
+                    "the caller's ${CALLER_BUDGET_MS} ms timeout ended its wait, not the child's " +
+                        "$CHILD_UNWIND_MS ms; it took $elapsed",
+                )
+                assertFalse(
+                    boss.writevScratch.owned,
+                    "and the loops are released on the way out, which is the whole point of not simply giving up",
+                )
+                assertFalse(worker.writevScratch.owned, "the worker group too")
+            } finally {
+                // Awaited, not abandoned: it holds no loop, but leaving a live
+                // coroutine behind lets it outlive the case and land in another.
+                stubborn.join()
+                boss.close()
+                worker.close()
+            }
         }
     }
 
@@ -248,5 +262,19 @@ internal class EngineCloseUnderCancellationSeamTest : AbstractReadinessEventLoop
          */
         const val CHILD_UNWIND_MS = 2_000L
         const val CALLER_BUDGET_MS = 300L
+
+        /**
+         * What the elapsed time is compared against: between the two budgets,
+         * so whichever of them ended the wait is legible with margin on both
+         * sides rather than only on the passing one.
+         */
+        const val DISCRIMINATOR_MS = 1_000L
+
+        /**
+         * Wall-clock bound for the case that waits on purpose. Comfortably
+         * above the child's own span plus the release, so it fires only for a
+         * wait that is not going to end.
+         */
+        const val STUBBORN_CASE_TIMEOUT_MS = 15_000L
     }
 }
