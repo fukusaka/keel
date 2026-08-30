@@ -135,6 +135,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-epoll` / `engine-kqueue`: a refused write-readiness re-arm now ends the connection even
+  when a completion callback's own failure is carried alongside — previously the refusal rode
+  suppressed and the queue was stranded with no arm and no retry (#1080)
 - `engine-epoll` / `engine-kqueue`: the on-loop close teardown answers its flush waiters last,
   so a later stage's failure is never appended into the failure graph the waiters already hold;
   a refused resume stays in the error log (#1079)

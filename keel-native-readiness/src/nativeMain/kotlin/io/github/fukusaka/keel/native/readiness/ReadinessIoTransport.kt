@@ -1948,16 +1948,18 @@ class ReadinessIoTransport(
      * The arm's own failure joins the one being raised rather than replacing
      * it: [registerWriteCallback] raises a failed arm as a refused send, and
      * `runStage` folds that refusal in as a rider on the failure already
-     * leaving. A rider rather than a settlement, deliberately — the primary
-     * failure owns this frame: the funnel's catch is what will answer the
-     * waiters with it (every caller of this raise runs inside the drain,
-     * before that answer — a rider attached here is attached before the
-     * publication, which is the only side of it the published-instance rule
-     * allows), and the funnel's catchers own what happens next, so the
-     * refusal stays where the head's check and the re-raises can name it.
-     * What the rider does not do is run the refused-send pipeline itself —
-     * that double-failure edge is tracked with the other suppressed-rider
-     * edges.
+     * leaving. A rider rather than a settlement — not because the primary
+     * failure owns the frame (the group's exit settles its arm refusal under
+     * a carried primary for exactly that reason,
+     * [registerWriteCallbackSettlingRefusal]), but because this raise cannot
+     * strand: every caller runs inside the drain, so the funnel's catch
+     * answers the parked waiters with the composite and marks the queue
+     * poisoned, and a later wait re-drives it — the bound the group's exit
+     * has no equivalent of. The rider is attached before the funnel
+     * publishes, the only side of it the published-instance rule allows, and
+     * the refusal stays where the head's check and the re-raises can name
+     * it. What the rider does not do is run the refused-send pipeline
+     * itself; the bound above is what makes that acceptable here.
      */
     private fun raiseLeavingRemainderArmed(failure: Throwable): Nothing {
         if (pendingWrites.isEmpty() || flushScheduled) throw failure
@@ -2232,32 +2234,51 @@ class ReadinessIoTransport(
                 }
             }
             if (pendingWrites.isNotEmpty() && !flushScheduled) {
-                failure = runStage(failure) { registerWriteCallback() }
+                failure = runStage(failure) { registerWriteCallbackSettlingRefusal() }
             }
-            failure?.let { groupFailure ->
-                // The re-arm above is the one refusal [performFlush]'s funnel
-                // never sees: it runs after the drain returned. Unsettled, it
-                // escaped a direct `flush()` with the waiters still parked,
-                // nothing recorded and nothing left to drive the queue again
-                // -- the same stranding the raise exists to end, reachable
-                // under the coalescing opt-out where this frame is the only
-                // containment. So it takes the helper the drain's refusal
-                // takes: the FIN it can no longer keep reported, the waiters
-                // answered, the reason recorded and the connection ended --
-                // then raised, as every funnel exit raises. A refusal riding
-                // *suppressed* under an earlier stage failure is not settled
-                // here: the primary failure owns this frame and its caller's
-                // containment, which keeps this check one type test -- the
-                // double-failure edge is tracked with the other
-                // suppressed-rider edges.
-                if (groupFailure is RefusedWriteException) {
-                    answerRefusedSend(groupFailure)
-                }
-                throw groupFailure
-            }
+            // Raised as every funnel exit raises. No settle here, resting on
+            // three premises. The re-arm is the only stage that *mints* a
+            // transport refusal, and it settles its own: [sendFin] reports a
+            // refused shutdown rather than raising (the FIN-stage note above
+            // allows for a future send that does raise -- one would need
+            // this settle decision revisited); the re-arm escapes only as a
+            // refusal (its timer arm precedes [registerWriteCallback]'s
+            // wrap and is keel's own non-seam code); and a refusal escaping
+            // the *report* is either application-minted -- ending the
+            // connection over it would be misclassification -- or a nested
+            // drain's own, which arrives already settled by its funnel and
+            // needs nothing from this frame.
+            failure?.let { throw it }
             return emptied
         } finally {
             draining = false
+        }
+    }
+
+    /**
+     * Arms write readiness for the group's exit, settling the arm's own
+     * refusal on the spot — whether or not the group already carries another
+     * failure.
+     *
+     * The re-arm is the one refusal [performFlush]'s funnel never sees: it
+     * runs after the drain returned, and unsettled it escaped a direct
+     * `flush()` with the waiters still parked, nothing recorded and nothing
+     * left to drive the queue again — no arm, no tick, no poisoned mark, so
+     * with the write-idle timer off by default the queue and every later
+     * waiter were stranded for the connection's lifetime. A primary failure
+     * that owns the frame does not change what the dead arm costs, so the
+     * settle does not wait to become the group's primary: [answerRefusedSend]
+     * runs here, and the rethrow lets the stage combinator fold the settled
+     * instance onto whatever the group carries. Its delivery is already the
+     * settle's own doing — the report, the answered waiters, the recorded
+     * reason — so riding a carried failure to the caller loses nothing.
+     */
+    private fun registerWriteCallbackSettlingRefusal() {
+        try {
+            registerWriteCallback()
+        } catch (armRefusal: RefusedWriteException) {
+            answerRefusedSend(armRefusal)
+            throw armRefusal
         }
     }
 

@@ -27,9 +27,11 @@ import platform.linux.EPOLLOUT
 import platform.posix.AF_INET
 import platform.posix.EAGAIN
 import platform.posix.EBADF
+import platform.posix.EEXIST
 import platform.posix.EINTR
 import platform.posix.EMFILE
 import platform.posix.ENOSPC
+import platform.posix.EPERM
 import platform.posix.F_GETFD
 import platform.posix.SOCK_STREAM
 import platform.posix.fcntl
@@ -81,6 +83,15 @@ class EpollEventLoopSeamTest {
      * `onPeerClosed` default-no-op method.
      */
     private object NoOpListener : FdReadyListener {
+        override fun onReady(interest: Interest) { /* no-op */ }
+    }
+
+    /**
+     * A second identity for re-registration cases: the loop withdraws a
+     * failed arm by listener identity, so a retry that reuses [NoOpListener]
+     * can be popped by the first arm's in-flight withdrawal.
+     */
+    private object SecondNoOpListener : FdReadyListener {
         override fun onReady(interest: Interest) { /* no-op */ }
     }
 
@@ -292,7 +303,7 @@ class EpollEventLoopSeamTest {
             scriptEventfdCreateFd(fd = 1001)
             scriptAddResult(0) // init ADD succeeds
             // The next ADD returns EEXIST so MOD fallback kicks in.
-            scriptAddResult(platform.posix.EEXIST)
+            scriptAddResult(EEXIST)
             scriptModResult(0)
         }
         fake.liveMode = true
@@ -313,6 +324,54 @@ class EpollEventLoopSeamTest {
             assertEquals(2000, ctl[1].fd)
             assertEquals(FakeEpollSyscallOps.CtlOp.MOD, ctl[2].op)
             assertEquals(2000, ctl[2].fd)
+        } finally {
+            el.close()
+        }
+    }
+
+    @Test
+    fun `a failed MOD fallback rolls the bookkeeping back so the next arm retries`() {
+        // The rollback in addOrModifyEpoll is what keeps one failed arm from
+        // silently disabling every later one: the merged mask is written
+        // optimistically, and without the undo a retry for the same interest
+        // would see "no change" and skip its epoll_ctl entirely. The success
+        // half of the fallback is pinned above; this drives the failure half
+        // through the real loop and observes the rollback the only way it
+        // can be observed -- the retry issues syscalls again.
+        val fake = FakeEpollSyscallOps().apply {
+            scriptEpollCreateFd(fd = 1000)
+            scriptEventfdCreateFd(fd = 1001)
+            scriptAddResult(0) // init ADD succeeds
+            scriptAddResult(EEXIST)
+            scriptModResult(EPERM) // the fallback fails; bookkeeping must roll back
+            scriptAddResult(EEXIST)
+            scriptModResult(0) // the retry's fallback succeeds
+        }
+        fake.liveMode = true
+        fake.watchedFd = 2000
+        val el = EpollEventLoop(logger, syscallOps = fake)
+        try {
+            el.registerCallback(fd = 2000, interest = Interest.READ, listener = NoOpListener)
+            el.start()
+            awaitCtlCalls(fake, expected = 3)
+
+            // Without the rollback this second arm reads the optimistic mask,
+            // sees no change, and never reaches the syscall seam -- the await
+            // below then times out at 3 calls.
+            //
+            // A fresh listener, deliberately: the count above is published on
+            // the fake's syscall entry, so the first arm's identity-based
+            // withdrawal can still be in flight on the loop thread -- with
+            // the same listener object it would pop this registration too,
+            // and the retry would skip its syscall for the wrong reason.
+            el.registerCallback(fd = 2000, interest = Interest.READ, listener = SecondNoOpListener)
+            awaitCtlCalls(fake, expected = 5)
+
+            val ctl = fake.ctlCalls
+            assertEquals(FakeEpollSyscallOps.CtlOp.ADD, ctl[3].op)
+            assertEquals(2000, ctl[3].fd)
+            assertEquals(FakeEpollSyscallOps.CtlOp.MOD, ctl[4].op)
+            assertEquals(2000, ctl[4].fd)
         } finally {
             el.close()
         }
