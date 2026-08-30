@@ -504,24 +504,27 @@ abstract class AbstractIoTransport(
      * **This is a guard over the drain, and it answers for two failures
      * differently.** What each loses, in the transport fault model's terms:
      *
-     * - **The refusal: reports and continues.** A refusal the transport
-     *   minted has already ended the connection and been offered to a parked
-     *   waiter, so raising it here would answer one caller twice and another
-     *   not at all, depending on where the drain ran. One minted by
-     *   application code inside the flush has had neither done for it — the
-     *   report below is its only record, which is why it is made for every
-     *   refusal rather than only the transport's own.
+     * - **The refusal: reports and continues.** One met inside the drain
+     *   arrives settled — recorded as the reason and offered to a parked
+     *   waiter, whoever minted it — so raising it here would answer one
+     *   caller twice and another not at all, depending on where the drain
+     *   ran. One that escapes the completion report instead is deliberately
+     *   not settled, and arrives with none of that done. This frame cannot
+     *   tell the two apart, so it reports both: for the unsettled one the
+     *   report is the only record an overriding transport leaves.
      * - **The first thing it carried: carried out of this frame.** A failed
-     *   release has no other reporter, so it is not contained. Where it
+     *   release has no reporter of its own, so it is not contained. Where it
      *   lands follows the drain: out to the caller when the drain ran in
-     *   this call, and to whatever ran the drain otherwise. Only what the
+     *   this call, and to whatever ran the drain otherwise — unless the
+     *   deferred FIN below raises on the way out, which replaces it, on the
+     *   one implementation that raises a refused shutdown. Only what the
      *   refusal carried when it unwound to here rides — a failure of
      *   the wind-down that follows the refusal does not, and its record is
      *   the transport's own warn. Riders past the first stay on the refusal
      *   the report carries, unrewritten: folding them onto the rethrown one
      *   wrote into instances this frame does not own — handed on with the
-     *   report for a transport-minted refusal, the application's own for a
-     *   minted one.
+     *   report where the drain settled the refusal, the application's own
+     *   where it minted the riders itself.
      *
      * Both only apply when the drain ran here at all. An implementation that
      * defers it — which the readiness engines do by default — meets the
@@ -537,8 +540,9 @@ abstract class AbstractIoTransport(
      * the drain ran — in place, or on a later tick when the implementation
      * coalesces, which the caller neither chose nor can read. No FIN follows
      * bytes the peer never saw, and [awaitPendingFlush] is how a caller asks
-     * a transport-minted refusal's reason — the end that refusal already
-     * brought about.
+     * for the reason a settled refusal recorded — the end it already brought
+     * about. An unsettled one recorded nothing, so that wait answers
+     * normally and the report below is what names it.
      *
      * Idempotent. Subclasses provide the FIN itself via [sendFin].
      */
@@ -557,14 +561,16 @@ abstract class AbstractIoTransport(
         try {
             flush()
         } catch (refused: RefusedWriteException) {
-            // Contained, not discarded. A refusal the transport minted was
+            // Contained, not discarded. A refusal met inside the drain was
             // recorded as the reason the connection ended and offered to a
-            // parked flush waiter before unwinding to here, so raising it
+            // parked flush waiter before unwinding to here -- the drain
+            // settles on the type, not on who minted it -- so raising it
             // again would tell one caller twice on one path and another
-            // nothing on the other. One application code minted inside the
-            // flush arrives with neither done, and this frame cannot tell
-            // the two apart -- so it contains both and reports both, which
-            // is what makes the report below the minted one's only record.
+            // nothing on the other. One that escaped the completion report
+            // instead is deliberately left unsettled, and arrives with
+            // neither done. This frame cannot tell the two apart, so it
+            // contains both and reports both: for the unsettled one that
+            // report is the only record an overriding transport leaves.
             //
             // Only the refusal itself, though. A drain that also failed to
             // release its buffers carries that along as a suppressed cause
@@ -572,10 +578,10 @@ abstract class AbstractIoTransport(
             // refusal; nothing else reports them, and containing them
             // because of the company they keep would make a failure silent
             // whenever a refusal happened to coincide with one. A failure of the
-            // wind-down itself is the one thing that no longer rides: it
-            // happens after a wind-down's refusal was published to its
-            // waiters (there is no wind-down without one), and it does not
-            // append to what it has handed out -- its
+            // wind-down itself is the one thing that no longer rides: a
+            // wind-down logs its own failures rather than appending them,
+            // whatever started it, so nothing it meets reaches this list --
+            // its
             // record is the transport's own warn beside the catch that met
             // it.
             // Reported before the rider check, not after it: what is rethrown

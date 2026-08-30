@@ -712,6 +712,14 @@ internal class TransportWriteFailureSeamTest : TransportSeamFixture() {
                 eventLoop.logger.causeOfWarning(CLOSING_REFUSAL_REPORT_WITH_RIDER),
                 "and the warn carries the refusal, which is the later riders' record",
             )
+            // Counted, because being *the* record is the property: a second
+            // warn would say the same failure happened twice, and every
+            // other matcher here reads the first match and would not see it.
+            assertEquals(
+                1,
+                eventLoop.warnings.count { CLOSING_REFUSAL_REPORT in it },
+                "reported once, got: ${eventLoop.warnings}",
+            )
             assertFalse(transport.isOpen, "the teardown still ends the connection")
             fake.assertAllConsumed()
             refusing.releaseUnderlying()

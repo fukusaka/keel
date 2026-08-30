@@ -226,6 +226,14 @@ internal class TransportHalfCloseRefusalSeamTest : TransportSeamFixture() {
                 eventLoop.logger.causeOfWarning(REFUSAL_REPORT_WITH_RIDER),
                 "and the report carries the refusal, which is the later riders' record",
             )
+            // Counted, because being *the* record is the property: a second
+            // report would say the same failure happened twice, and every
+            // other matcher here reads the first match and would not see it.
+            assertEquals(
+                1,
+                eventLoop.warnings.count { REFUSAL_REPORT in it },
+                "reported once, got: ${eventLoop.warnings}",
+            )
             assertTrue(transport.isOpen, "a refusal the transport did not mint settles nothing")
             fake.assertAllConsumed()
             transport.close()
