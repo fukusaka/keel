@@ -48,11 +48,17 @@ package io.github.fukusaka.keel.buf
  * snapshot [close] takes — and cascade-closed with it — or refused. Nothing
  * wider than that is promised. [createUntrackedChild] deliberately takes no
  * lock, so its closed check is a plain read and a child can be handed out while
- * the parent is already closing. [close] is single-threaded, as
- * [BufferAllocator.close] states: two concurrent closers are check-then-set on
- * one flag, and on Native the second blocks on a mutex the first destroys. And
- * using any child while its parent is being closed is outside the contract —
- * close a parent only once the work on its children has stopped.
+ * the parent is already closing. [close] asks for a single thread, as
+ * [BufferAllocator.close] states; a second one closing the *same* instance
+ * gets a claimed-once teardown body and returns rather than reaching into
+ * what the winner is tearing down. **That return says the teardown was
+ * claimed, not that it finished** — the loser comes back after one volatile
+ * write, with no edge to the winner's work, so a caller that closes and then
+ * reads this allocator's own accounting can see it mid-teardown. Closing a
+ * parent and its children from two threads at once is a different question
+ * and still outside the contract, as is using any child while its parent is
+ * being closed — close a parent only once the work on its children has
+ * stopped.
  *
  * @param maxTotalBytes Safety valve: an upper bound on the total bytes the cache
  *   may commit across all classes (worst case, every slot full). The default
@@ -228,6 +234,32 @@ abstract class PooledAllocator internal constructor(
      */
     @kotlin.concurrent.Volatile
     private var closed: Boolean = false
+
+    /**
+     * Claimed once, by whichever thread runs the teardown body in [close].
+     *
+     * Separate from [closed] because the two answer different questions and
+     * only one of them can be a plain flag. [closed] is read on the hot path
+     * and only ever turns one way, so a racing writer costs nothing. The
+     * teardown body is the opposite: it destroys the arena's lock, and a
+     * second thread that read [closed] as false a moment earlier reaches
+     * that lock after it is gone. What it gets there is the platform's
+     * answer — measured: macOS refuses the call and the failure surfaces as
+     * `pthread_mutex_lock() failed`, Linux has been seen to park every
+     * thread in `futex_wait_queue` and stay there. On the JVM the same race
+     * is harmless, because the arena lock is reentrant there and its close
+     * is a no-op, so a JVM-only check reports this clean.
+     *
+     * The contract still says teardown is single-threaded; this is what a
+     * caller outside it gets instead of a wedge. Both limits of that are on
+     * the class, where a caller reads them: the loser's return says the
+     * teardown was claimed rather than finished, and nothing here orders a
+     * parent against a child another thread is closing — the cascade below
+     * calls `close()` on each tracked child, and losing that child's claim
+     * returns at once, leaving the root to tear down the shared arena while
+     * the other thread is still inside that child's freelist drain.
+     */
+    private val teardownClaimed = kotlin.concurrent.atomics.AtomicInt(0)
 
     /**
      * Per-EventLoop children produced by [createChild]. The parent's
@@ -881,7 +913,8 @@ abstract class PooledAllocator internal constructor(
 
     /**
      * Closes this allocator and every child produced by
-     * [createChild]. Idempotent — a second call is a no-op.
+     * [createChild]. Idempotent — a second call is a no-op, including one
+     * racing the first (see [teardownClaimed]).
      *
      * Order: children are closed first (matching construction direction),
      * then this instance's freelists are drained (each pooled buffer's
@@ -900,8 +933,15 @@ abstract class PooledAllocator internal constructor(
      * path is handled by the closed-flag branch in [returnToPool].
      */
     final override fun close() {
-        if (closed) return
+        // The flag first and unconditionally: a release arriving while the
+        // teardown runs must see it and free directly, and a second closer
+        // setting it again costs nothing.
         closed = true
+        // The body once, whoever wins the claim. Reading the flag and then
+        // setting it is two steps, and two closers that both read it as false
+        // both ran this — the second one into the arena lock the first was
+        // destroying (see [teardownClaimed]).
+        if (!teardownClaimed.compareAndSet(0, 1)) return
         // Let a sharded allocator drain its cross-thread return queue and free those
         // buffers' backing now: the owner EventLoop is stopped and will never drain
         // them otherwise. Runs after the closed flag is set, so any later

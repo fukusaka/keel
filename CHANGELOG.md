@@ -135,6 +135,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `io`: a second `PooledAllocator.close()` racing the first now returns instead of tearing down
+  alongside it — the teardown destroys the arena lock, and on Native the loser reached it after it
+  was gone (#1082)
 - `core`: the half-close's catch no longer folds a contained refusal's later riders onto the
   first one it rethrows — the fold rewrote exception instances the frame does not own, observable
   with an application-minted refusal carrying more than one rider (#1081)

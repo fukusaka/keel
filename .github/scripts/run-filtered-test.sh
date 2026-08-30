@@ -11,7 +11,7 @@
 # applied to both because the caller should not have to know which is which.
 #
 # The Native half is not the macOS half: `linuxX64Test` is Kotlin/Native too, so
-# six of this workflow's ten invocations are exposed, not three.
+# eight of this workflow's twelve invocations are exposed, not four.
 #
 # Without it, renaming a stress class turns every one of these invocations into a
 # silent no-op that reports success.
@@ -80,6 +80,16 @@ results="${module}/build/test-results/${task}"
 
 # A previous invocation's XML would satisfy the count below, so the directory
 # starts empty. Fresh CI runners have nothing here; local reruns do.
+#
+# Kept rather than deleted, because a workflow may invoke one module:task more
+# than once — keel-io's two allocator stress cases do — and the second run
+# would otherwise take the first's report out of the uploaded artifact. The
+# copy lands beside it under the same `build/test-results/` root the upload
+# globs, so a passing run's timings survive the run after it.
+if [ -d "$results" ] && [ -n "$(ls -A "$results" 2>/dev/null)" ]; then
+    kept="${module}/build/test-results/${task}-before-$(date +%s%N)"
+    mv "$results" "$kept"
+fi
 rm -rf "$results"
 
 ./gradlew "$spec" --tests "$pattern"
