@@ -343,12 +343,20 @@ internal class EpollEventLoop(
      * order [addOrModifyEpoll] uses, because the fd may not be registered yet.
      */
     private fun narrowReadToHangup(fd: Int): Int {
-        val updated = withRegLock {
+        var previous = 0
+        val (updated, changed) = withRegLock {
             val current = fdEvents[fd] ?: 0
+            previous = current
             val narrowed = (current and EPOLLIN.inv()) or EPOLLRDHUP
             fdEvents[fd] = narrowed
-            narrowed
+            narrowed to (narrowed != current)
         }
+        // Both halves below are [addOrModifyEpoll]'s, for its reasons. The skip
+        // matters more here than there: this runs on every wake a
+        // back-pressured connection declines, and the mask it wants is the one
+        // the previous decline already set, so without it a connection being
+        // streamed at pays two syscalls a turn to ask for what it has.
+        if (!changed) return 0
         var err = syscallOps.epollAdd(epFd, fd, updated)
         if (err == EEXIST) {
             err = syscallOps.epollMod(epFd, fd, updated)
@@ -357,6 +365,15 @@ internal class EpollEventLoop(
             }
         } else if (err != 0) {
             logger.debug { "epoll_ctl(ADD, fd=$fd, close-only) failed: ${errnoMessage(err)}" }
+        }
+        if (err != 0) {
+            // Undo the optimistic bookkeeping, or a later widening arm reads
+            // the narrowed value as the truth and computes its change against
+            // it -- the same trap the sibling names, reached from the other
+            // direction.
+            withRegLock {
+                if (previous == 0) fdEvents.remove(fd) else fdEvents[fd] = previous
+            }
         }
         return err
     }
