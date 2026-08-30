@@ -21,6 +21,12 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * `close()` flipping the transport's flag) whose interleaving the test
  * pins. Bounded exactly like [FailingReleaseIoBuf]: one refusal, then
  * delegation, with [releaseUnderlying] for the test's own cleanup.
+ *
+ * A hook that throws refuses the release with its own throwable instead —
+ * the refusal below is then unreachable. The bound still holds: the flag is
+ * set before the hook runs, so the second call delegates either way. That is
+ * how a test reaches a release refused with an instance it holds, whose
+ * suppressed graph it means to assert on.
  */
 @OptIn(ExperimentalForeignApi::class)
 public class ReleaseHookIoBuf(

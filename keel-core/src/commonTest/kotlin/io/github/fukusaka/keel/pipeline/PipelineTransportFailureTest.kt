@@ -11,6 +11,12 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
+ * The head's record wording, shared by the matchers below so a production
+ * reword is a one-line edit here.
+ */
+private const val ENDED_AT_HEAD = "ended at the head before any handler had it"
+
+/**
  * Pins the decisions this module makes about a transport-forced failure,
  * in this module — where they are written.
  *
@@ -280,7 +286,7 @@ class PipelineTransportFailureTest {
 
         assertEquals(
             1,
-            log.warnings.count { "contained before any handler had it" in it },
+            log.warnings.count { ENDED_AT_HEAD in it },
             "nothing is installed, so the head is the only reporter: ${log.warnings}",
         )
     }
@@ -300,7 +306,7 @@ class PipelineTransportFailureTest {
 
         assertEquals(
             1,
-            log.records.count { it.first == LogLevel.DEBUG && "contained before any handler had it" in it.second },
+            log.records.count { it.first == LogLevel.DEBUG && ENDED_AT_HEAD in it.second },
             "nothing installed can receive it, and it is there to be found: ${log.records}",
         )
     }
@@ -316,7 +322,7 @@ class PipelineTransportFailureTest {
 
         runCatching { ch.requestFlush() }
 
-        val carried = log.causeOf("contained before any handler had it")
+        val carried = log.causeOf(ENDED_AT_HEAD)
         assertSame(transport.refusal, carried, "the warning carries the refusal itself")
         assertTrue(
             carried?.suppressedExceptions?.any { it === rider } == true,
@@ -344,7 +350,7 @@ class PipelineTransportFailureTest {
         runCatching { ch.requestFlush() }
 
         assertTrue(
-            log.warnings.none { "contained before any handler had it" in it },
+            log.warnings.none { ENDED_AT_HEAD in it },
             "the rider arrived attached to the reported refusal: ${log.warnings}",
         )
     }

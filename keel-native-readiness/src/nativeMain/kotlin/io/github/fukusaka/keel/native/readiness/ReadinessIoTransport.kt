@@ -967,13 +967,13 @@ class ReadinessIoTransport(
         }
     }
 
-    override fun reportContainedHalfCloseRefusal(refused: RefusedWriteException, cleanupAlsoFailed: Boolean) {
-        if (cleanupAlsoFailed) {
+    override fun reportContainedHalfCloseRefusal(refused: RefusedWriteException, hasRiders: Boolean) {
+        if (hasRiders) {
             eventLoop.logger.warn(refused) {
-                "the half-close found the peer gone, and did not finish cleaning up: fd=$fd"
+                "the half-close's drain ended in a refusal, and something failed with it: fd=$fd"
             }
         } else {
-            eventLoop.logger.warn(refused) { "the half-close found the peer gone: fd=$fd" }
+            eventLoop.logger.warn(refused) { "the half-close's drain ended in a refusal: fd=$fd" }
         }
     }
 
@@ -1535,8 +1535,8 @@ class ReadinessIoTransport(
                 } catch (refused: RefusedWriteException) {
                     // Not carried to `close()`'s caller. Every other failure
                     // here says the teardown itself is incomplete, which the
-                    // caller can act on; this one says the peer is gone while
-                    // we were discarding the bytes anyway -- which is what
+                    // caller can act on; this one says the bytes were refused
+                    // while we were discarding them anyway -- which is what
                     // `close()` documents it does with them, and the ordinary
                     // outcome for the connection this stage exists to end.
                     //
@@ -1545,16 +1545,36 @@ class ReadinessIoTransport(
                     // along as a suppressed cause, and those *are* teardown
                     // incompleteness -- containing them because of the
                     // company they keep would make a leak silent whenever a
-                    // dead peer happened to coincide with it.
+                    // refusal happened to coincide with it.
                     val alsoIncomplete = refused.suppressedExceptions
                     if (alsoIncomplete.isEmpty()) {
-                        eventLoop.logger.warn(refused) { "the deferred flush found the peer gone while closing: fd=$fd" }
+                        eventLoop.logger.warn(refused) { "the deferred flush ended in a refusal while closing: fd=$fd" }
                     } else {
                         eventLoop.logger.warn(refused) {
-                            "the deferred flush found the peer gone while closing, and did not finish cleaning up: fd=$fd"
+                            "the deferred flush ended in a refusal while closing, and something failed with it: fd=$fd"
                         }
+                        // Only the first, and unrewritten -- the same rule as
+                        // the half-close's catch. Publication is not the
+                        // reason here (a refusal met by a teardown's own
+                        // drain is unpublished until the waiter stage, last
+                        // and detached, hands the recorded reason out):
+                        // ownership is. The drain releases buffers through a
+                        // seam even while closing, and a refusal minted
+                        // there carries instances the application still
+                        // holds -- folding later riders onto the first
+                        // rewrote them. The transport's own drain folds its
+                        // failures to at most one, so for its refusals the
+                        // folding was dead (resting on the funnel's FIN
+                        // report not raising -- keel's own guarded code);
+                        // later riders stay on the refusal the warn above
+                        // carries. Unrewritten by this frame, that is: the
+                        // rider then rides the stage carry, where a later
+                        // stage's own failure still attaches -- the staged
+                        // teardown's aggregation, kept off the published
+                        // graph by the detached waiter stage.
+                        // Local val: detekt's SwallowedException accepts a
+                        // thrown local, not the inline expression.
                         val first = alsoIncomplete.first()
-                        alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
                         throw first
                     }
                 }

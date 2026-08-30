@@ -558,6 +558,10 @@ internal abstract class AbstractReadinessEventLoopFixture {
         fun causeOfError(fragment: String): Throwable? =
             records.firstOrNull { it.first == LogLevel.ERROR && fragment in it.second }?.third
 
+        /** The DEBUG twin of [causeOfWarning], for the quiet records the head leaves to be found. */
+        fun causeOfDebug(fragment: String): Throwable? =
+            records.firstOrNull { it.first == LogLevel.DEBUG && fragment in it.second }?.third
+
         override fun isLoggable(level: LogLevel) = true
 
         override fun rawLog(level: LogLevel, throwable: Throwable?, message: Any?) {

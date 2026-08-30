@@ -98,14 +98,20 @@ internal class HeadHandler(
             // that -- it arrives either way, and where the failure came from
             // this chain, handing a handler its own throw would invite an
             // answer that throws again.
+            // "Ended at the head", not "was contained": this frame cannot
+            // see whether a settlement ran. A transport-minted refusal
+            // arrives settled; one minted by application code inside the
+            // flush (a completion callback throwing the public type) arrives
+            // unsettled and unrecorded, and claiming containment for it
+            // would be the record lying about the one case it exists for.
             if (!pipeline.handlersAreGettingTransportFailure(refused)) {
                 if (refused.suppressedExceptions.isEmpty()) {
                     pipeline.logger.debug(refused) {
-                        "a refused send was contained before any handler had it"
+                        "a refusal ended at the head before any handler had it"
                     }
                 } else {
                     pipeline.logger.warn(refused) {
-                        "a refused send was contained before any handler had it, and something failed with it"
+                        "a refusal ended at the head before any handler had it, and something failed with it"
                     }
                 }
             }

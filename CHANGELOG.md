@@ -135,6 +135,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: the half-close's catch no longer folds a contained refusal's later riders onto the
+  first one it rethrows — the fold rewrote exception instances the frame does not own, observable
+  with an application-minted refusal carrying more than one rider (#1081)
+- `core`: the pipeline head's record of a refusal that reached no handler now says it ended at
+  the head rather than claiming containment — whether a settlement ran is not visible from that
+  frame, and a refusal minted by application code arrives without one (#1081)
+- `engine-epoll` / `engine-kqueue`: the closing drain's catch stops folding later riders the same
+  way, and the half-close and closing-drain warnings now say the drain ended in a refusal — and,
+  when riders came with it, that something failed with it — instead of claiming a gone peer or an
+  unfinished cleanup the frame cannot see (#1081)
 - `engine-epoll` / `engine-kqueue`: a refused write-readiness re-arm now ends the connection even
   when a completion callback's own failure is carried alongside — previously the refusal rode
   suppressed and the queue was stranded with no arm and no retry (#1080)

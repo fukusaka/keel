@@ -504,17 +504,27 @@ abstract class AbstractIoTransport(
      * **This is a guard over the drain, and it answers for two failures
      * differently.** What each loses, in the transport fault model's terms:
      *
-     * - **The refusal: reports and continues.** Nothing is lost by not
-     *   raising it — it has already ended the connection and been offered to
-     *   a parked waiter. Raising it here would answer one caller twice and
-     *   another not at all, depending on where the drain ran.
-     * - **Anything it carried: carried out of this frame.** A failed release
-     *   has no other reporter, so it is not contained. Where it lands
-     *   follows the drain: out to the caller when the drain ran in this
-     *   call, and to whatever ran the drain otherwise. Only what the drain
-     *   attached before the refusal was published rides — a failure of the
-     *   wind-down that follows the refusal does not, and its record is the
-     *   transport's own warn.
+     * - **The refusal: reports and continues.** One met inside the drain
+     *   arrives settled — recorded as the reason and offered to a parked
+     *   waiter, whoever minted it — so raising it here would answer one
+     *   caller twice and another not at all, depending on where the drain
+     *   ran. One that escapes the completion report instead is deliberately
+     *   not settled, and arrives with none of that done. This frame cannot
+     *   tell the two apart, so it reports both: for the unsettled one the
+     *   report is the only record an overriding transport leaves.
+     * - **The first thing it carried: carried out of this frame.** A failed
+     *   release has no reporter of its own, so it is not contained. Where it
+     *   lands follows the drain: out to the caller when the drain ran in
+     *   this call, and to whatever ran the drain otherwise — unless the
+     *   deferred FIN below raises on the way out, which replaces it, on the
+     *   one implementation that raises a refused shutdown. Only what the
+     *   refusal carried when it unwound to here rides — a failure of
+     *   the wind-down that follows the refusal does not, and its record is
+     *   the transport's own warn. Riders past the first stay on the refusal
+     *   the report carries, unrewritten: folding them onto the rethrown one
+     *   wrote into instances this frame does not own — handed on with the
+     *   report where the drain settled the refusal, the application's own
+     *   where it minted the riders itself.
      *
      * Both only apply when the drain ran here at all. An implementation that
      * defers it — which the readiness engines do by default — meets the
@@ -528,9 +538,11 @@ abstract class AbstractIoTransport(
      *
      * Not raising the refusal is what makes the answer independent of where
      * the drain ran — in place, or on a later tick when the implementation
-     * coalesces, which the caller neither chose nor can read. The connection
-     * has ended either way, no FIN follows bytes the peer never saw, and
-     * [awaitPendingFlush] is how a caller asks for the reason.
+     * coalesces, which the caller neither chose nor can read. No FIN follows
+     * bytes the peer never saw, and [awaitPendingFlush] is how a caller asks
+     * for the reason a settled refusal recorded — the end it already brought
+     * about. An unsettled one recorded nothing, so that wait answers
+     * normally and the report below is what names it.
      *
      * Idempotent. Subclasses provide the FIN itself via [sendFin].
      */
@@ -549,33 +561,55 @@ abstract class AbstractIoTransport(
         try {
             flush()
         } catch (refused: RefusedWriteException) {
-            // Contained, not discarded. Before unwinding to here the drain
-            // recorded this as the reason the connection ended and offered it
-            // to a parked flush waiter, so raising it again would tell one
-            // caller twice on one path and another nothing on the other.
+            // Contained, not discarded. A refusal met inside the drain was
+            // recorded as the reason the connection ended and offered to a
+            // parked flush waiter before unwinding to here -- the drain
+            // settles on the type, not on who minted it -- so raising it
+            // again would tell one caller twice on one path and another
+            // nothing on the other. One that escaped the completion report
+            // instead is deliberately left unsettled, and arrives with
+            // neither done. This frame cannot tell the two apart, so it
+            // contains both and reports both: for the unsettled one that
+            // report is the only record an overriding transport leaves.
             //
             // Only the refusal itself, though. A drain that also failed to
             // release its buffers carries that along as a suppressed cause
-            // and re-raises the refusal to say so. Those are not "the peer
-            // refused"; nothing else reports them, and containing them
-            // because of the company they keep would make a leak silent
-            // whenever a dead peer coincided with one. A failure of the
-            // wind-down itself is the one thing that no longer rides: it
-            // happens after the refusal was published to its waiters, and
-            // the wind-down does not append to what it has handed out -- its
+            // and re-raises the refusal to say so. The riders are not the
+            // refusal; nothing else reports them, and containing them
+            // because of the company they keep would make a failure silent
+            // whenever a refusal happened to coincide with one. A failure of the
+            // wind-down itself is the one thing that no longer rides: a
+            // wind-down logs its own failures rather than appending them,
+            // whatever started it, so nothing it meets reaches this list --
+            // its
             // record is the transport's own warn beside the catch that met
-            // it. (Scoped to the wind-down: the flatten below still appends
-            // riders within a graph the pipeline report may have handed on
-            // -- that last audit is tracked, not solved.)
+            // it.
             // Reported before the rider check, not after it: what is rethrown
-            // below is the rider, which carries no way back to the refusal --
-            // so a refusal that happened to arrive with company would
-            // otherwise be the one thing nobody names.
+            // below is the first rider, which carries no way back to the
+            // refusal -- so a refusal that happened to arrive with company
+            // would otherwise be the one thing nobody names. Only the first,
+            // and unrewritten: every instance in the graph is somebody
+            // else's by now -- the refusal's riders were handed on with the
+            // pipeline report above, and a refusal application code minted
+            // arrives with instances the application still holds -- so
+            // folding later riders onto the rethrown one wrote into a graph
+            // this frame does not own. A transport-minted refusal carries at
+            // most one direct rider (the drain folds its own failures to
+            // one), so there the folding was dead; an application-minted one
+            // can arrive carrying any number, and those are exactly the
+            // instances the fold rewrote. (The one rider rests on the
+            // funnel's FIN report not raising -- keel's own guarded code; a
+            // throw there would ride the same combinator onto the refusal as
+            // a second direct rider.) Later riders stay on the refusal,
+            // whose only remaining record is the report above -- and a
+            // transport whose reporter is the no-op default drops that
+            // record, as the reporter's own contract says.
             val alsoIncomplete = refused.suppressedExceptions
             reportContainedHalfCloseRefusal(refused, alsoIncomplete.isNotEmpty())
             if (alsoIncomplete.isNotEmpty()) {
+                // Local val: detekt's SwallowedException accepts a thrown
+                // local, not the inline expression.
                 val first = alsoIncomplete.first()
-                alsoIncomplete.drop(1).forEach { first.addSuppressed(it) }
                 throw first
             }
         } finally {
@@ -587,34 +621,39 @@ abstract class AbstractIoTransport(
     }
 
     /**
-     * Says that a half-close met a refused send and did not raise it.
+     * Says that a half-close met a refusal and did not raise it.
      *
      * Not raising is what makes the answer the same on both drain paths, but
      * it also means a caller with nothing parked on the flush is told nothing
-     * at all: `write(); shutdownOutput(); close()` would end a dead connection
+     * at all: `write(); shutdownOutput(); close()` would leave a refusal
      * without exception, log or cause. That is the silence this exists to
      * break, and the transport that met the refusal is the one holding a
      * logger, so it is the one asked.
      *
      * Called for every refusal the half-close contains, including one that
-     * arrived carrying a suppressed cause. That cause is rethrown, but it
-     * holds no reference back to the refusal, so leaving this to whoever
-     * catches it would lose the refusal exactly when something else had
-     * failed alongside it.
+     * arrived carrying suppressed causes. The first of those is rethrown and
+     * holds no reference back to the refusal, and any after it stay on the
+     * refusal itself — so leaving this to whoever catches the rethrown one
+     * would lose the refusal, and its remaining riders, exactly when
+     * something else had failed alongside it.
      *
-     * [cleanupAlsoFailed] says whether it arrived that way, so the report can
-     * say that this is not the whole story. Without it a reader of the log
-     * sees one line about a gone peer and cannot tell that an exception is
-     * also propagating, or that the two came from the same drain.
+     * [hasRiders] says whether it arrived carrying suppressed causes, so the
+     * report can say that this is not the whole story. Without it a reader of
+     * the log sees one line about a refusal and cannot tell that an exception
+     * is also propagating alongside it.
      *
-     * The default does nothing, which is correct only while a transport that
-     * does not override this also never raises [RefusedWriteException] — true
-     * of every transport but the readiness ones today. Overriding it is part
-     * of adopting that failure, not an option alongside it.
+     * The default does nothing, which is correct only while no refusal
+     * reaches the guard of a transport that does not override this. The
+     * transports themselves mint refusals only on the readiness engines
+     * today — but a refusal application code minted inside a flush-run
+     * callback can reach the guard on any transport whose drain runs in
+     * place, and there the default drops the record, riders past the first
+     * included. Overriding it is part of adopting that failure, not an
+     * option alongside it.
      */
     protected open fun reportContainedHalfCloseRefusal(
         refused: RefusedWriteException,
-        cleanupAlsoFailed: Boolean,
+        hasRiders: Boolean,
     ) {
         // Overridden where a logger exists; see the KDoc for why the default
         // is empty rather than this being abstract.
