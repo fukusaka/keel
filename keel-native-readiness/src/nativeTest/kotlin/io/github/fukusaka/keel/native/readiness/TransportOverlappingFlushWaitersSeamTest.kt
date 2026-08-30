@@ -2,6 +2,7 @@
 
 package io.github.fukusaka.keel.native.readiness
 
+import io.github.fukusaka.keel.core.RefusedWriteException
 import io.github.fukusaka.keel.native.posix.WriteResult
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.CoroutineDispatcher
@@ -15,6 +16,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
@@ -153,6 +155,49 @@ internal class TransportOverlappingFlushWaitersSeamTest : TransportSeamFixture()
                 closeOutcome.exceptionOrNull(),
                 "and the close still carries the refusal it could not deliver, rather than reporting clean",
             )
+            tracker.assertNoLeaks()
+        }
+    }
+
+    @Test
+    fun `a refused re-arm answers every parked waiter and passes a cancelled one over`() = runBlocking {
+        withTimeout(FUNNEL_TIMEOUT_MS) {
+            // The refused-send settlement against the full list shape: two
+            // live waiters with a cancelled one parked between them. The
+            // funnel's answer must reach both live waiters -- the sweep of
+            // the dead entry is a memory bound, not permission to stop the
+            // walk -- and the cancelled one keeps its own cancellation
+            // rather than being resumed over it.
+            fake.enqueueWrite(fd, WriteResult.WouldBlock)
+            val transport = transport()
+            var inactive = false
+            transport.onReadClosed = { inactive = true }
+            transport.write(tracker.allocate(16).apply { writerIndex = 8 })
+
+            val first = parkFlushWaiter(transport)
+            val cancelled = parkFlushWaiter(transport)
+            val last = parkFlushWaiter(transport)
+            cancelled.cancel()
+            eventLoop.onArmCallback = { eventLoop.failArmCallback = true }
+
+            assertFailsWith<RefusedWriteException>("the group raises like every funnel exit") {
+                transport.flush()
+            }
+
+            assertIs<RefusedWriteException>(
+                first.await().exceptionOrNull(),
+                "the first live waiter is told the refusal",
+            )
+            assertIs<RefusedWriteException>(
+                last.await().exceptionOrNull(),
+                "and the one behind the cancelled entry -- the dead entry must not stop the walk",
+            )
+            // The cancelled entry's own ending is the language's to keep --
+            // a resume of a cancelled continuation is a no-op by kotlinx
+            // contract, so no assert here could detect a transport that
+            // tried; what this case detects is the walk not stopping at it.
+            assertTrue(inactive, "the pipeline hears the end")
+            assertFalse(transport.isOpen)
             tracker.assertNoLeaks()
         }
     }
