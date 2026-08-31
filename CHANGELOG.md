@@ -135,6 +135,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: `PipelinedChannel.close()` walks the pipeline instead of calling the transport directly,
+  so handlers receive `onClose` and can release what they hold; a repeated close walks once, and a
+  closed transport no longer stops the walk (#1085)
+- `tls`: `TlsHandler` releases the TLS session, its partial-record buffer and its handshake deadline
+  when the connection closes — previously only a protocol switch reached them, leaking an `SSL*` and
+  its `BIO` per connection on the native backends (#1085)
 - `engine-epoll` / `engine-kqueue`: `close()` finishes releasing the accept loop and the worker
   group even when the coroutine that called it is cancelled — the join between the closed flag
   and the release is a suspension point, and a caller cancelled there left every loop holding
