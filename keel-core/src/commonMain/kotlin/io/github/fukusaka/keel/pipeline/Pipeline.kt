@@ -99,7 +99,21 @@ interface Pipeline {
     /** Requests a flush through the pipeline. */
     fun requestFlush(): Pipeline
 
-    /** Requests a close through the pipeline. */
+    /**
+     * Requests a close through the pipeline.
+     *
+     * The request travels outbound to the head, which closes the transport.
+     * **The transport is closed whether or not the request arrives there** — a
+     * handler that throws from [PipelineHandler.onClose], that overrides it
+     * without propagating, or that removes itself mid-walk stops the walk, and
+     * none of those is a reason to leave a descriptor open.
+     *
+     * **Throws what the transport's teardown refuses.** That failure is the
+     * answer to this request, so it is raised here rather than reported to the
+     * handlers as an error — the same exception a caller closing the transport
+     * directly would see. A handler's own failure is unchanged: it still
+     * travels the chain inbound and does not surface here.
+     */
     fun requestClose(): Pipeline
 
     /** Convenience: requestWrite + requestFlush. */
