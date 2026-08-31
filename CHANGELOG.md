@@ -135,6 +135,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: `Pipeline.requestClose()` releases the descriptor even when a handler throws from `onClose`,
+  does not propagate, or removes itself mid-walk; a transport teardown that refuses now reaches the
+  caller instead of becoming a warning at the end of the inbound chain (#1086)
 - `engine-epoll` / `engine-kqueue`: `close()` finishes releasing the accept loop and the worker
   group even when the coroutine that called it is cancelled — the join between the closed flag
   and the release is a suspension point, and a caller cancelled there left every loop holding
