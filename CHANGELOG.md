@@ -135,6 +135,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `tls`: `TlsHandler` releases the TLS session, its partial-record buffer and its handshake deadline
+  when the connection ends, and stops using the session afterwards; previously only a protocol switch
+  reached them, leaking an `SSL*` and its `BIO` per connection on the native backends (#1087)
 - `engine-epoll` / `engine-kqueue`: `close()` finishes releasing the accept loop and the worker
   group even when the coroutine that called it is cancelled — the join between the closed flag
   and the release is a suspension point, and a caller cancelled there left every loop holding
