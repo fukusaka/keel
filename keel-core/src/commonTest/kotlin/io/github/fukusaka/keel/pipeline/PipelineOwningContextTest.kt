@@ -3,9 +3,6 @@ package io.github.fukusaka.keel.pipeline
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Runnable
-import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -20,18 +17,6 @@ import kotlin.test.assertTrue
  * before the call returns — what these assert is the *routing decision*, which
  * is the part the pipeline owns. The engine tests cover a real EventLoop.
  */
-private object RunImmediately : CoroutineDispatcher() {
-    override fun dispatch(context: CoroutineContext, block: Runnable): Unit = block.run()
-}
-
-/**
- * Accepts every dispatch and runs none of them — a stopped EventLoop's queue.
- * Needed where [RunImmediately] would hide the defect by running the very block
- * a dead loop never would.
- */
-private object NeverRuns : CoroutineDispatcher() {
-    override fun dispatch(context: CoroutineContext, block: Runnable): Unit = Unit
-}
 
 /**
  * Outbound funnel behaviour, driven through a transport that can be told it is
