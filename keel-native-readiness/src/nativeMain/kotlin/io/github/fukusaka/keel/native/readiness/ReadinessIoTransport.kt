@@ -935,9 +935,17 @@ class ReadinessIoTransport(
             // that, but a unix-domain socket has no window to stall it with, so
             // a full buffer meets the mark and wakes with no EOF. Measured at
             // 1.09 CPU seconds per wall-clock second before this guard, and
-            // 0.0010 after. What it costs there is the close notification for a
-            // connection whose buffer is full and whose application is not
-            // reading -- the same thing TCP's zero window costs anyway.
+            // 0.0010 after.
+            //
+            // What it costs is worth stating exactly, because it is easy to
+            // price wrongly. Returning without registering leaves the ledger
+            // empty, so the loop withdraws the interest -- and on a unix-domain
+            // socket the FIN behind that full buffer *is* deliverable, so the
+            // close is genuinely not heard, permanently, until reads are
+            // enabled. That is not a regression: before this narrowing existed,
+            // every declined wake gave the interest up the same way. It is
+            // where the improvement stops, and it stops there only on that one
+            // kernel and family.
             if (!closeInterestOnly && !readsWereEnabled) {
                 closeInterestOnly = true
                 armRead()

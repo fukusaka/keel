@@ -106,6 +106,11 @@ internal class TransportBackPressureCloseInterestSeamTest : TransportSeamFixture
             // buffer meets the mark and wakes with no EOF. Review measured that
             // at 1.09 CPU seconds per wall-clock second.
             //
+            // Not arming leaves the ledger empty, so the loop withdraws the
+            // interest and that connection stops hearing the close -- which is
+            // what every declined wake did before the narrowing existed, so it
+            // is where the improvement stops rather than a loss it causes.
+            //
             // Asserted on the count of narrowing arms, because that is the
             // thing that must not grow once per wake.
             val transport = transport()

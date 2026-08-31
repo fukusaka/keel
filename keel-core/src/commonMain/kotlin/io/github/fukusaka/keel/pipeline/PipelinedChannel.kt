@@ -63,7 +63,14 @@ interface PipelinedChannel : Channel {
      * When `true`, the transport registers for read events and delivers
      * data via the pipeline. When `false`, read events are deregistered.
      *
-     * Delegates to [IoTransport.readEnabled].
+     * **Set this on the channel's I/O thread** — from a pipeline handler, or
+     * under [ioDispatcher]. An engine reads this while deciding the shape of
+     * the interest it registers, so a write racing that read can leave the
+     * registration describing a state the channel has already left, and
+     * nothing later re-examines it. The channel's own `read()` already sets it
+     * under that dispatcher.
+     *
+     * Delegates to [IoTransport.readEnabled], which states the same.
      */
     var readEnabled: Boolean
 
@@ -73,12 +80,17 @@ interface PipelinedChannel : Channel {
      * within a bounded overshoot, no data loss, FIN detection may be
      * delayed). The default delegates to [readEnabled]; the abstract
      * implementation routes to the transport's real pause.
+     *
+     * Carries [readEnabled]'s thread requirement, being that property.
      */
     fun pauseReads() {
         readEnabled = false
     }
 
-    /** Resumes inbound consumption after [pauseReads]. */
+    /**
+     * Resumes inbound consumption after [pauseReads]. Carries
+     * [readEnabled]'s thread requirement, being that property.
+     */
     fun resumeReads() {
         readEnabled = true
     }
