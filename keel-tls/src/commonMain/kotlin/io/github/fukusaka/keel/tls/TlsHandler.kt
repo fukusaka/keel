@@ -85,12 +85,30 @@ class TlsHandler(
     }
 
     override fun handlerRemoved(ctx: PipelineHandlerContext) {
+        releaseTlsResources()
+        this.ctx = null
+    }
+
+    /**
+     * Gives back everything this handler holds outside the managed heap.
+     *
+     * Called from both of the ways a TLS handler stops being responsible for
+     * a connection — the connection closing, and the handler being taken out
+     * of the pipeline for a protocol switch — because either can be the last
+     * one to happen. Idempotent for the same reason: on an ordinary close
+     * both run, in that order.
+     *
+     * The session is the costly one. On the native backends it is an `SSL*`,
+     * its `BIO`, and a manually allocated context, none of which the garbage
+     * collector will ever come back for; [TlsCodec.close] is documented to
+     * tolerate being called again.
+     */
+    private fun releaseTlsResources() {
         handshakeDeadline?.cancel()
         handshakeDeadline = null
         accumulate?.release()
         accumulate = null
         codec.close()
-        this.ctx = null
     }
 
     // --- Inbound: ciphertext → plaintext ---
@@ -426,8 +444,16 @@ class TlsHandler(
     }
 
     override fun onClose(ctx: PipelineHandlerContext) {
-        // Send close_notify via protect.
-        codec.close()
+        // Everything, not just the session: the buffer holding a half-read
+        // record and the handshake deadline are held on exactly the same
+        // terms, and this is now a path connections actually take.
+        //
+        // The session's own close writes a close_notify into its BIO, and
+        // nothing here drains it — the walk continues to the head, which
+        // closes the descriptor. Telling the peer we are done is a separate
+        // piece of work, filed; what is settled here is that the memory is
+        // given back.
+        releaseTlsResources()
         ctx.propagateClose()
     }
 
