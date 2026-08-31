@@ -26,7 +26,7 @@ import kotlinx.coroutines.CoroutineDispatcher
  *   ensureBridge()          → installs SuspendBridgeHandler (no read arming)
  *   readEnabled             → transport.readEnabled
  *   shutdownOutput()        → transport.shutdownOutput()
- *   close()                 → transport.close()
+ *   close()                 → pipeline.requestClose() → … → transport.close()
  * ```
  */
 abstract class AbstractPipelinedChannel(
@@ -138,7 +138,26 @@ abstract class AbstractPipelinedChannel(
         transport.awaitClosed()
     }
 
+    /**
+     * Closes this channel through its pipeline.
+     *
+     * Through it rather than past it: the handlers hold things the transport
+     * cannot reach — a TLS session's native memory, buffers queued for a
+     * reader — and `onClose` travelling to the head is what asks them to give
+     * those back. The head's whole job at the end of that walk is the
+     * `transport.close()` this used to call directly, so the descriptor is
+     * released either way; what was missing was everything above it.
+     *
+     * A close asked for twice walks once ([Pipeline.requestClose] holds that
+     * claim), and a close that cannot reach the chain at all still releases
+     * the descriptor and says so.
+     *
+     * Takes effect for its caller before it returns — `isOpen` answers
+     * `false` — on whichever thread asks, which [Pipeline.requestClose] keeps
+     * even when the walk itself has to be handed to the owning context. The
+     * teardown may still outlive the call; [awaitClosed] waits for that.
+     */
     override fun close() {
-        transport.close()
+        pipeline.requestClose()
     }
 }

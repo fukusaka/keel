@@ -109,6 +109,27 @@ internal class DefaultPipeline(
     private var inactiveObserved: Boolean = false
 
     /**
+     * Whether a close has already been asked of this pipeline.
+     *
+     * Set by [requestClose] before it walks, so the handlers' `onClose` runs
+     * at most once however many times the close is asked for — and a close
+     * *is* asked for more than once in the ordinary run of things: the
+     * channel closes itself on peer FIN and the application closes it too.
+     * Handlers release things there, and a second release is not a second
+     * no-op.
+     *
+     * Scoped to that one entrance. [closeWithoutChain] runs under the same
+     * claim, since it is that entrance's other branch; a handler's own
+     * `ctx.close()` is not, for the reason given at the claim.
+     *
+     * Read and written on the owning context like the flags above it, save
+     * for the one case where there is no owning context left to reach —
+     * where the claim is taken on the caller's thread and the pipeline is
+     * being torn down, not raced for.
+     */
+    private var closeRequested: Boolean = false
+
+    /**
      * Lifecycle "head fired" flags — track whether each lifecycle
      * event has actually propagated through the inbound chain
      * (distinct from "the engine reported the event", which is
@@ -460,8 +481,123 @@ internal class DefaultPipeline(
     }
 
     override fun requestClose(): Pipeline {
-        if (!onOwningContext { tail.invokeOnClose() }) closeWithoutChain()
+        // Claimed before the walk, not after, because the walk can come back
+        // here: a handler is free to close the channel from inside its own
+        // `onClose`, and the transport's peer-close wiring asks for a close
+        // immediately after the inactivation the handlers are still being
+        // told about. Claiming first makes those the no-ops they read as.
+        // It also covers the dispatching branch below, where the second
+        // caller would otherwise arrive before the first walk has run at all.
+        //
+        // What this does *not* cover: a handler calling `ctx.close()`, which
+        // starts its own walk from that handler towards the head. That is the
+        // ordinary outbound shape -- the same as `ctx.write` -- and it is not
+        // this entrance. A handler between the two sees `onClose` from each.
+        if (closeRequested) return this
+        closeRequested = true
+        if (transport.inOwningContext) {
+            closeThroughChain()
+        } else if (transport.canDispatchToOwningContext) {
+            // Claimed here, on the calling thread, and this is the only branch
+            // that needs it. Handlers may only run on the owning context, so
+            // this caller's walk is handed over — while `close()` is required
+            // to take effect for the caller that asked, on the thread that
+            // asked, which is what the transport's own claim is documented to
+            // give. The head's call at the end of the handed-over walk then
+            // finds it taken and does nothing.
+            //
+            // What this costs is one ordering: on this branch the descriptor
+            // can go before the handlers are told. What they are asked for —
+            // a session, a buffer — does not depend on it, but anything that
+            // would need to *write* on the way out cannot be built here.
+            //
+            // The other two branches close in the right order without help:
+            // one runs the walk inline, the other reproduces the head.
+            transport.close()
+            ioDispatcher.dispatch(EmptyCoroutineContext) { closeThroughChain() }
+        } else {
+            closeWithoutChain()
+        }
         return this
+    }
+
+    /**
+     * Reaches the owning context for a close, which a closed transport does
+     * not disqualify.
+     *
+     * [onOwningContext] refuses one, and is right to for the outbound work it
+     * carries: bytes handed to a transport that has closed are bytes going
+     * nowhere, so refusing is how the caller learns to release them. A close
+     * is the opposite errand. The descriptor being gone is no reason to keep
+     * the news from the handlers — they are holding a TLS session's native
+     * memory and buffers queued for a reader, and the transport closing is
+     * precisely when nothing else is going to ask them for it.
+     *
+     * That case is reachable: the transport ends connections on its own when
+     * one fails, and the application's own `close()` arrives afterwards.
+     * Measured before this existed — the handlers heard nothing.
+     *
+     * Used by the hops of the walk. [requestClose] spells the same three
+     * answers out for itself, because one of them has to claim the close
+     * before handing the walk over and a shared helper cannot know that.
+     *
+     * A hop reached from the owning context — which is where a walk that
+     * started there or was handed there runs — takes the first branch and
+     * never asks. What the rest is for is a close propagated from somewhere
+     * else: measured on a double that answers off-context throughout, gating
+     * the hops on [onOwningContext] refuses the walk one handler in and takes
+     * the [closeWithoutChain] jump to the head, with the handlers in between
+     * skipped.
+     *
+     * What remains a refusal is a context that cannot be reached at all, and
+     * that is the one [closeWithoutChain] is written for.
+     */
+    private inline fun onOwningContextForClose(crossinline block: () -> Unit): Boolean {
+        if (transport.inOwningContext) {
+            block()
+            return true
+        }
+        if (!transport.canDispatchToOwningContext) return false
+        ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
+        return true
+    }
+
+    /**
+     * The close every handler hears, and the buffers none of them will.
+     *
+     * The journal's reads are pooled, and the pipeline is the only thing that
+     * can reach them — the teardown inside `close()` belongs to the transport.
+     * A close reaching a chain that never got its first handler is where they
+     * would otherwise stay held: [closeWithoutChain] released them on the
+     * branch this replaced, so not releasing them here would lose that.
+     *
+     * Only the reads. The rest of the journal is the reason a connection
+     * ended, and a handler added after the close is a supported way to be
+     * told it — the replay exists for exactly that, and discarding the
+     * journal wholesale here took the reason away from it. Measured: three
+     * cases covering the transport's own refusal reporting.
+     */
+    private fun closeThroughChain() {
+        releaseJournalledReads()
+        tail.invokeOnClose()
+    }
+
+    /**
+     * Hands back the journal's pooled reads, leaving the rest of it alone.
+     *
+     * Not [discardPreAttachJournal]: that one ends the journal, promoting its
+     * flags and reporting its errors as delivered to nobody. This says only
+     * that these particular buffers are not going to be read.
+     */
+    private fun releaseJournalledReads() {
+        if (pendingReads.isEmpty()) return
+        logger.warn {
+            "Releasing ${pendingReads.size} journalled read(s) — this connection is closing before any " +
+                "handler arrived to receive them"
+        }
+        while (pendingReads.isNotEmpty()) {
+            ReferenceCountUtil.safeRelease(pendingReads.removeFirst())
+        }
     }
 
     /**
@@ -488,6 +624,12 @@ internal class DefaultPipeline(
      * during a shutdown *in progress* would instead send this caller into the
      * loop hand-off's wait — turning an ordinary `close()` into a spin on an
      * arbitrary thread, inside application teardown.
+     *
+     * That assumption is now the only way in. This used to be reached for a
+     * closed transport as well — a live loop, quiescent about nothing — and on
+     * that route it skipped the handlers of every connection the transport
+     * itself had ended. [onOwningContextForClose] does not refuse those, so
+     * what is left here is the stopped context this paragraph is about.
      */
     private fun closeWithoutChain() {
         if (transport.isOpen) {
@@ -770,7 +912,12 @@ internal class DefaultPipeline(
         }
 
         override fun propagateClose() {
-            if (!pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnClose() }) {
+            // The close funnel, for the reason given there — and it is needed
+            // at every hop, not only at the entrance. Each of these re-enters,
+            // so a funnel that refuses a closed transport refuses the whole
+            // walk one handler in, and the fallback below then jumps to the
+            // head with every handler between here and it skipped.
+            if (!pipelineRef.onOwningContextForClose { findPrevOutbound()?.invokeOnClose() }) {
                 pipelineRef.closeWithoutChain()
             }
         }
