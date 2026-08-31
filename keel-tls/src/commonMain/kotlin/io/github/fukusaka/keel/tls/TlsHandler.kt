@@ -1,6 +1,7 @@
 package io.github.fukusaka.keel.tls
 
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.DuplexHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
@@ -33,8 +34,16 @@ import io.github.fukusaka.keel.pipeline.TimerHandle
  * Only when [unprotect] returns [TlsResult.NEED_MORE_INPUT] are unconsumed
  * bytes copied into an accumulate buffer for the next [onRead].
  *
+ * **One instance per connection, and not reusable.** Once this handler has
+ * given its session back — the connection ending, or the handler being taken
+ * out of the pipeline — it stays that way: the session is closed and cannot be
+ * reopened, so a re-added instance would drop everything it is given rather
+ * than fail. Build a new one, with a new codec.
+ *
  * @param codec The TLS codec for this connection. Ownership transferred to handler;
- *              [TlsCodec.close] is called in [handlerRemoved].
+ *              [TlsCodec.close] is called when this handler stops being
+ *              responsible for the connection — the connection ending, or
+ *              this handler being taken out of the pipeline.
  */
 class TlsHandler(
     private val codec: TlsCodec,
@@ -85,12 +94,118 @@ class TlsHandler(
     }
 
     override fun handlerRemoved(ctx: PipelineHandlerContext) {
-        handshakeDeadline?.cancel()
+        try {
+            releaseTlsResources()
+        } finally {
+            this.ctx = null
+        }
+    }
+
+    /**
+     * Whether this handler has given back what it holds.
+     *
+     * Read before every use of the session, because the release and those
+     * uses are not sequential. The inactivation travels inbound and this
+     * handler sits near the head, so handlers *after* it are still running
+     * when its own `onInactive` returns — and anything they write travels
+     * back outbound through here. The server cancels its connection scope on
+     * that same signal, but cancellation is cooperative: a request already
+     * past its last suspension point still writes its response.
+     */
+    private var released = false
+
+    /** Whether the first outbound message dropped after the release has been named. */
+    private var droppedWriteReported = false
+
+    /**
+     * Gives back everything this handler holds outside the managed heap.
+     *
+     * Called from each of the ways this handler stops being responsible for a
+     * connection — the connection ending, and the handler being taken out of
+     * the pipeline for a protocol switch — because either can be the last one
+     * to happen, and on a connection whose protocol was switched both do.
+     * Idempotent for that reason.
+     *
+     * The session is the costly one. On the native backends it is an `SSL*`,
+     * its `BIO`, and a manually allocated context, none of which the garbage
+     * collector will ever come back for, and this handler is the only caller
+     * of [TlsCodec.close] in the library's own sources (the backend tests call
+     * it directly on codecs they build).
+     */
+    private fun releaseTlsResources() {
+        if (released) return
+        released = true
+        // Each step guarded against the ones after it, which is what makes
+        // this safe -- not the order. The latch is already spent by the time
+        // the first step runs, so a step that threw would take every later
+        // step with it permanently, and there is no second chance at any of
+        // them: the session is GC-invisible and the buffer is pooled. Listed
+        // with the session first because it is the costliest to lose, but a
+        // reader should not read the order as load-bearing. The first failure
+        // is what the caller gets; the rest ride on it, the way the engine's
+        // own staged teardown reports its stages.
+        var failure: Throwable? = null
+        try {
+            codec.close()
+        } catch (sessionFailure: Throwable) {
+            failure = sessionFailure
+        }
+        try {
+            handshakeDeadline?.cancel()
+        } catch (deadlineFailure: Throwable) {
+            failure = failure?.also { it.addSuppressed(deadlineFailure) } ?: deadlineFailure
+        }
         handshakeDeadline = null
-        accumulate?.release()
+        // Taken out of the field before the release, so a throw cannot leave
+        // the handler holding a buffer it has already handed back.
+        val held = accumulate
         accumulate = null
-        codec.close()
-        this.ctx = null
+        try {
+            held?.release()
+        } catch (bufferFailure: Throwable) {
+            failure = failure?.also { it.addSuppressed(bufferFailure) } ?: bufferFailure
+        }
+        failure?.let { throw it }
+    }
+
+    /**
+     * Gives the session back when the connection ends.
+     *
+     * The signal that arrives on the endings that matter: a peer's FIN, a
+     * failed connection, an idle reclamation. Before this, the only route to
+     * [TlsCodec.close] was the handler being removed from the pipeline, which
+     * only a protocol switch does — so an ordinary TLS connection ended with
+     * its session still allocated.
+     *
+     * **A connection closed locally still reaches none of this.** `close()`
+     * goes to the transport without passing the handlers at all, so that
+     * ending releases nothing here; it is a separate change.
+     */
+    override fun onInactive(ctx: PipelineHandlerContext) = reportConnectionEnded(ctx)
+
+    /**
+     * Releases, then tells the handlers below the connection has ended.
+     *
+     * Both directions of that news come through here. One arrives from the
+     * head as [onInactive]; the other this handler reports itself, when the
+     * codec answers [TlsResult.CLOSED] because the peer sent a close_notify.
+     * The second kind does **not** come back round to [onInactive] — an
+     * inbound event propagated from a handler travels away from it — so a
+     * release hung only on [onInactive] would miss every ending the codec is
+     * the one to notice. A peer is allowed to close_notify without a TCP FIN,
+     * and on that ending nothing else would have released the session.
+     *
+     * In a `finally` because a release that throws must not stop the news:
+     * the invoker would turn the throw into an error event, and the suspend
+     * bridge does not listen for those, so its queued buffers would stay held
+     * and a parked reader would never be woken.
+     */
+    private fun reportConnectionEnded(ctx: PipelineHandlerContext) {
+        try {
+            releaseTlsResources()
+        } finally {
+            ctx.propagateInactive()
+        }
     }
 
     // --- Inbound: ciphertext → plaintext ---
@@ -123,6 +238,9 @@ class TlsHandler(
      * silently disabling the defence.
      */
     private fun armHandshakeDeadlineIfNeeded(ctx: PipelineHandlerContext) {
+        // A connection that has ended gets no new deadline: the timer would
+        // outlive it and close a channel that is already gone.
+        if (released) return
         if (handshakeDeadlineArmed || handshakeTimeoutMillis <= 0 || handshakeNotified) return
         handshakeDeadlineArmed = true
         val handle = ctx.channel.scheduleDeadline(handshakeTimeoutMillis) {
@@ -144,7 +262,18 @@ class TlsHandler(
         // Slow path: append to accumulate buffer, then unprotect from accumulate.
         val input = mergeWithAccumulate(ctx, cipherBuf)
 
-        while (input.readableBytes > 0) {
+        // Checked each turn, and before the length: this loop propagates a
+        // decrypted record to the handlers below and they may end the
+        // connection while it does, and `input` can *be* the accumulate
+        // buffer, which the release hands back to the pool.
+        //
+        // Measured: without the flag the suite does not finish. The run that
+        // hangs is the handshake case, and it hangs for the plainer reason of
+        // the two — the codec keeps asking for a wrap while the flush below is
+        // a no-op, so no turn consumes anything. Reading a pooled buffer's
+        // length is the hazard the ordering above answers; it is not what that
+        // measurement exercised.
+        while (!released && input.readableBytes > 0) {
             val plainBuf = ctx.allocator.allocate(plaintextBufferSize)
             val result = try {
                 codec.unprotect(input, plainBuf)
@@ -187,7 +316,7 @@ class TlsHandler(
                 }
                 TlsResult.CLOSED -> {
                     plainBuf.release()
-                    ctx.propagateInactive()
+                    reportConnectionEnded(ctx)
                     return
                 }
             }
@@ -314,8 +443,45 @@ class TlsHandler(
         }
     }
 
+    /**
+     * Names an outbound message this handler could not send.
+     *
+     * Once at warn and the rest at debug: a connection that ends with work in
+     * flight drops a burst, and a line per message would bury the first one.
+     */
+    private fun reportDroppedWrite(ctx: PipelineHandlerContext) {
+        if (droppedWriteReported) {
+            ctx.channel.logger.debug { "another outbound message dropped: the TLS session is gone" }
+            return
+        }
+        droppedWriteReported = true
+        ctx.channel.logger.warn {
+            "outbound message dropped: the TLS session was released when the connection ended, " +
+                "so there is nothing to encrypt it with"
+        }
+    }
+
     private fun processOutbound(ctx: PipelineHandlerContext, plainBuf: IoBuf) {
-        while (plainBuf.readableBytes > 0) {
+        // Said rather than swallowed. There is nothing to encrypt with, and
+        // sending the plaintext on would be worse than dropping it, so the
+        // message ends here -- but a caller that has just been told its write
+        // succeeded is owed the reason it did not. This is reachable exactly
+        // where the flag's own KDoc says: the server's cancellation is
+        // cooperative, so a request past its last suspension point still
+        // writes its response.
+        //
+        // Once, at warn, with the rest at debug: a connection that ends with
+        // work in flight drops a burst, and a line per message would bury the
+        // first one.
+        if (released) {
+            reportDroppedWrite(ctx)
+            return
+        }
+        // Each record goes to the transport, and a transport that fails ends
+        // the connection from inside that call — so the flag is read on every
+        // turn here too. `onWrite`'s `finally` gives the plaintext back either
+        // way.
+        while (!released && plainBuf.readableBytes > 0) {
             val cipherBuf = ctx.allocator.allocate(TLS_CIPHERTEXT_BUF_SIZE)
             val result = try {
                 codec.protect(plainBuf, cipherBuf)
@@ -370,7 +536,7 @@ class TlsHandler(
                     return
                 }
                 TlsResult.CLOSED -> {
-                    ctx.propagateInactive()
+                    reportConnectionEnded(ctx)
                     return
                 }
                 TlsResult.NEED_WRAP -> {
@@ -426,9 +592,20 @@ class TlsHandler(
     }
 
     override fun onClose(ctx: PipelineHandlerContext) {
-        // Send close_notify via protect.
-        codec.close()
-        ctx.propagateClose()
+        // The same set as the other two routes, in a `finally` so a release
+        // that throws does not take the rest of the release and the
+        // propagation with it.
+        //
+        // No close reaches this today — nothing in the library walks the
+        // pipeline to close — so this is consistency with the routes that do
+        // run, not a path under test here. What it is not is a close_notify:
+        // the session's own close writes one into its BIO and nothing drains
+        // it, which needs a write before the walk continues and is filed.
+        try {
+            releaseTlsResources()
+        } finally {
+            ctx.propagateClose()
+        }
     }
 
     // --- Handshake support ---
@@ -448,7 +625,11 @@ class TlsHandler(
         val emptyBuf = ctx.allocator.allocate(0)
         try {
             var iterations = 0
-            while (true) {
+            // Same reason as the two loops above: this one propagates writes
+            // and flushes, either of which can end the connection. Falling
+            // out reports success, and the caller's own loop is guarded, so
+            // it stops on the next turn rather than reading a freed session.
+            while (!released) {
                 val cipherBuf = ctx.allocator.allocate(TLS_CIPHERTEXT_BUF_SIZE)
                 val result = try {
                     codec.protect(emptyBuf, cipherBuf)
@@ -503,7 +684,7 @@ class TlsHandler(
                         return false
                     }
                     TlsResult.CLOSED -> {
-                        ctx.propagateInactive()
+                        reportConnectionEnded(ctx)
                         return false
                     }
                 }
@@ -516,6 +697,14 @@ class TlsHandler(
     }
 
     private fun checkHandshakeComplete(ctx: PipelineHandlerContext) {
+        // Guarding the loops was not enough: all three of them are followed by
+        // this, and the release lands inside them. Reading
+        // `codec.isHandshakeComplete` here would be `SSL_is_init_finished` on a
+        // freed session — and this is the window where it bites, since a
+        // connection that ended before its handshake finished leaves
+        // `handshakeNotified` false, so the condition below does not
+        // short-circuit before the read.
+        if (released) return
         if (!handshakeNotified && codec.isHandshakeComplete) {
             handshakeNotified = true
             // Handshake completed in time — disarm the deadline.
