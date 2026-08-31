@@ -460,8 +460,34 @@ internal class DefaultPipeline(
     }
 
     override fun requestClose(): Pipeline {
-        if (!onOwningContext { tail.invokeOnClose() }) closeWithoutChain()
+        if (!onOwningContext { closeThroughChain() }) closeWithoutChain()
         return this
+    }
+
+    /**
+     * Walks the chain, and releases the descriptor whether or not the walk
+     * arrives.
+     *
+     * Every way a handler can stop the walk is a way to strand a connection,
+     * and none of them is exotic: `onClose` throwing is any cleanup that
+     * fails — the invoker catches it and sends it *inbound*, away from the
+     * head — while overriding `onClose` without propagating, and removing
+     * oneself so the walk finds no previous link, are the documented
+     * extension points. The descriptor is not a handler's to keep, so it is
+     * asked for here as well.
+     *
+     * Idempotent for the ordinary walk that did arrive: the transport's claim
+     * is already taken and the second ask does nothing. For the walk that did
+     * not, this ask is the only one, which is why a refusal from it needs no
+     * unwrapping — nothing has caught it.
+     */
+    private fun closeThroughChain() {
+        try {
+            tail.invokeOnClose()
+        } catch (terminus: TerminusCloseFailure) {
+            throw terminus.cause
+        }
+        transport.close()
     }
 
     /**
@@ -505,7 +531,11 @@ internal class DefaultPipeline(
         // second responsibility added there later has to land on this path too.
         // No re-entry — the head is a DuplexHandler, so this takes the outbound
         // branch straight into its own onClose.
-        head.invokeOnClose()
+        try {
+            head.invokeOnClose()
+        } catch (terminus: TerminusCloseFailure) {
+            throw terminus.cause
+        }
     }
 
     /**
@@ -903,6 +933,12 @@ internal class DefaultPipeline(
             if (h is OutboundHandler) {
                 try {
                     h.onClose(this)
+                } catch (terminus: TerminusCloseFailure) {
+                    // Not this handler's failure — the end of the walk
+                    // refusing, arriving here only because this frame's catch
+                    // surrounds the `propagateClose()` the handler made. Sent
+                    // on to the caller who asked for the close.
+                    throw terminus
                 } catch (e: Throwable) {
                     propagateError(e)
                 }

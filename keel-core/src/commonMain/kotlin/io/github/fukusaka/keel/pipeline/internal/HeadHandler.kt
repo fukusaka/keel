@@ -119,6 +119,27 @@ internal class HeadHandler(
     }
 
     override fun onClose(ctx: PipelineHandlerContext) {
-        transport.close()
+        try {
+            transport.close()
+        } catch (refused: Throwable) {
+            // Wrapped so it can be told from a handler's own failure. A
+            // handler's `onClose` calls `propagateClose()` from inside its own
+            // body, so the invoker's catch is around both — there is no frame
+            // that sees only one of the two, and position cannot separate
+            // them. This one belongs to whoever asked to close: a release that
+            // refused is the answer to their question, not an event for the
+            // chain to be told about.
+            throw TerminusCloseFailure(refused)
+        }
     }
 }
+
+/**
+ * A refusal from the end of the close walk, on its way back to the caller.
+ *
+ * Carried rather than reported, and unwrapped by [DefaultPipeline] before it
+ * leaves: what the caller sees is the transport's own exception, the same one
+ * they saw when they closed the transport themselves. Nothing catches this
+ * type on the way out — that is its whole purpose.
+ */
+internal class TerminusCloseFailure(override val cause: Throwable) : Throwable(cause)
