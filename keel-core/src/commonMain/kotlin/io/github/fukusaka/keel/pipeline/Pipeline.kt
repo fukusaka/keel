@@ -93,6 +93,11 @@ interface Pipeline {
      * that wrote nothing, may report synchronously from inside the flush
      * itself, and one that cannot tell when a write landed need not report at
      * all. A handler that needs certainty waits on the channel instead.
+     *
+     * "Need not report" is not hypothetical: the nio engine reports from the
+     * tick its coalescing schedules, so with coalescing turned off it drains
+     * in place and reports nothing. Measured. A handler must work without the
+     * signal, and treat it as an opportunity rather than a turn it is owed.
      */
     fun notifyFlushComplete(): Pipeline
 
