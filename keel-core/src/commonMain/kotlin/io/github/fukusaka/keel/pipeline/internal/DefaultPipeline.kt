@@ -340,6 +340,17 @@ internal class DefaultPipeline(
         return this
     }
 
+    override fun notifyFlushComplete(): Pipeline {
+        // Dropped, not journalled, before the first handler arrives. The other
+        // pre-attach events are things the connection did that a late handler
+        // still needs to know — bytes that arrived, an activation, an ending.
+        // This one answers a flush, and a pipeline with no handlers has asked
+        // for none: the only writer is the head, and it writes what a handler
+        // gave it.
+        if (preAttachJournalDrained) head.invokeOnFlushComplete()
+        return this
+    }
+
     override fun notifyInactive(): Pipeline {
         // Idempotent: only the first [notifyInactive] propagates through the
         // chain. Subsequent calls (e.g. [AbstractPipelinedChannel.close]
@@ -723,6 +734,11 @@ internal class DefaultPipeline(
             nextCtx.invokeOnReadComplete()
         }
 
+        override fun propagateFlushComplete() {
+            val nextCtx = findNextInbound() ?: return
+            nextCtx.invokeOnFlushComplete()
+        }
+
         override fun propagateInactive() {
             val nextCtx = findNextInbound() ?: return
             nextCtx.invokeOnInactive()
@@ -814,6 +830,19 @@ internal class DefaultPipeline(
                 }
             } else {
                 propagateReadComplete()
+            }
+        }
+
+        internal fun invokeOnFlushComplete() {
+            val h = handler
+            if (h is InboundHandler) {
+                try {
+                    h.onFlushComplete(this)
+                } catch (e: Throwable) {
+                    propagateError(e)
+                }
+            } else {
+                propagateFlushComplete()
             }
         }
 

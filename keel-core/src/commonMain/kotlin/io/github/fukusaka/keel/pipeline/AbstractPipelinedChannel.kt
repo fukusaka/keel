@@ -24,6 +24,7 @@ import kotlin.coroutines.EmptyCoroutineContext
  *   (construction)                 → pipeline.notifyActive()
  *   transport.onRead               → pipeline.notifyRead(buf)
  *   transport.onReadComplete       → pipeline.notifyReadComplete()
+ *   transport.onFlushComplete      → pipeline.notifyFlushComplete()
  *   transport.onReadClosed         → pipeline.notifyInactive() + (Pipeline-mode) close()
  *   transport.onConnectionFailure  → pipeline error path
  *   transport.onWritabilityChanged → pipeline.notifyWritabilityChanged()
@@ -84,6 +85,16 @@ abstract class AbstractPipelinedChannel(
         // with one flush had nothing to hang it on.
         transport.onReadComplete = {
             pipeline.notifyReadComplete()
+        }
+        // The answer to a flush. Every transport in the tree reports one — the
+        // four POSIX and Node ones inline, Netty and NWConnection through a
+        // captured callback in their completion contexts — and until now every
+        // one of them reported into a null: nothing in production ever assigned
+        // this, so a handler streaming something out had no signal that its
+        // last chunk had gone, and `SuspendBridgeHandler.flush`'s own KDoc
+        // described a completion arriving by a route that was not connected.
+        transport.onFlushComplete = {
+            pipeline.notifyFlushComplete()
         }
         transport.onConnectionFailure = { cause ->
             // The transport invokes this before its inactive report and at

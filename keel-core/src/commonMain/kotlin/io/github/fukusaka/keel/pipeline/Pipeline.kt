@@ -79,6 +79,23 @@ interface Pipeline {
     /** Notifies the pipeline that a batch of reads is complete. */
     fun notifyReadComplete(): Pipeline
 
+    /**
+     * Notifies the pipeline that a flush the transport had accepted has now
+     * reached the peer's side of the connection.
+     *
+     * The answer to [requestFlush], which is a request and returns nothing.
+     * A handler that wants to know when its bytes are gone — to release what
+     * it was holding for them, to send the next chunk, to let a producer
+     * continue — has this and nothing else: the transport's own completion is
+     * a callback with one slot, and the pipeline is what shares it out.
+     *
+     * Best-effort, like [notifyReadComplete]. A transport may report a flush
+     * that wrote nothing, may report synchronously from inside the flush
+     * itself, and one that cannot tell when a write landed need not report at
+     * all. A handler that needs certainty waits on the channel instead.
+     */
+    fun notifyFlushComplete(): Pipeline
+
     /** Notifies the pipeline that the channel is now inactive. */
     fun notifyInactive(): Pipeline
 

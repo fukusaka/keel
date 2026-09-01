@@ -91,6 +91,9 @@ interface PipelineHandlerContext {
     fun propagateReadComplete()
 
     /** Propagates a channel-inactive event to the next inbound handler. */
+    /** Passes a flush completion to the next inbound handler. */
+    fun propagateFlushComplete()
+
     fun propagateInactive()
 
     /** Propagates an error to the next inbound handler. */

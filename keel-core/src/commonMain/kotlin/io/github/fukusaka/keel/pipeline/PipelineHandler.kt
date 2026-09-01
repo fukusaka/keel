@@ -64,6 +64,24 @@ interface InboundHandler : PipelineHandler {
     }
 
     /** Called when the channel becomes inactive (disconnected). */
+    /**
+     * Called when a flush this pipeline asked for has reached the peer's side
+     * of the connection.
+     *
+     * Where a handler releases what it was holding for those bytes, or sends
+     * the next chunk of something it is streaming out. The default passes it
+     * on.
+     *
+     * Best-effort: it can report a flush that wrote nothing, it can arrive
+     * synchronously from inside the [onFlush] that caused it, and a transport
+     * that cannot tell when a write landed does not send it. Do not treat it
+     * as an acknowledgement from the peer — it says the bytes left, not that
+     * anything received them.
+     */
+    fun onFlushComplete(ctx: PipelineHandlerContext) {
+        ctx.propagateFlushComplete()
+    }
+
     fun onInactive(ctx: PipelineHandlerContext) {
         ctx.propagateInactive()
     }
