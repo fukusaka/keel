@@ -63,16 +63,22 @@ class FlushCompletionTest {
 
     @Test
     fun `a completion raised from inside the flush arrives after it`() {
-        val transport = TestIoTransport()
+        // A transport whose flush drains in place and answers before it
+        // returns, which the callback's contract explicitly allows: the
+        // completion lands inside the handler's own `onFlush` frame.
+        val transport = object : TestIoTransport() {
+            override fun flush(): Boolean {
+                val drained = super.flush()
+                onFlushComplete?.invoke()
+                return drained
+            }
+        }
         val channel = channelOver(transport)
         val recorder = Recorder()
         channel.pipeline.addLast("recorder", recorder)
         recorder.events.clear()
 
-        // A transport whose flush drains in place answers before it returns,
-        // which the callback's contract allows.
         channel.pipeline.requestFlush()
-        transport.onFlushComplete?.invoke()
 
         assertEquals(listOf("flush", "landed"), recorder.events)
     }
