@@ -248,10 +248,11 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
      * Flushes through the Pipeline outbound path.
      *
      * Non-suspend: propagateFlush triggers IoTransport.flush() and does not
-     * consult the result — completion arrives via the onFlushComplete
-     * callback, which an implementation may fire synchronously from inside
-     * the flush call (see [IoTransport.onFlushComplete]) or later from its
-     * completion path.
+     * consult the result. A completion does travel the pipeline as
+     * `onFlushComplete`, but this handler does not override it and so observes
+     * none — it inherits the default, which passes it on, and it sits last, so
+     * the event reaches the tail. A caller that needs to know its bytes have
+     * gone waits on the channel.
      */
     fun flush() {
         ctx.propagateFlush()

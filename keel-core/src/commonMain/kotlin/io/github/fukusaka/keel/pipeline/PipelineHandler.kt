@@ -63,25 +63,33 @@ interface InboundHandler : PipelineHandler {
         ctx.propagateReadComplete()
     }
 
-    /** Called when the channel becomes inactive (disconnected). */
     /**
-     * Called when a flush this pipeline asked for has reached the peer's side
-     * of the connection.
+     * Called when a flush this pipeline asked for has reached the transport's
+     * far side.
      *
-     * Where a handler releases what it was holding for those bytes, or sends
-     * the next chunk of something it is streaming out. The default passes it
-     * on.
+     * Where a handler releases what it was holding for those bytes, or lets a
+     * producer it had paused continue. The default passes it on.
      *
-     * Best-effort: it can report a flush that wrote nothing, it can arrive
-     * synchronously from inside the [onFlush] that caused it, and a transport
-     * that cannot tell when a write landed does not send it. Do not treat it
-     * as an acknowledgement from the peer — it says the bytes left, not that
-     * anything received them.
+     * **Do not flush from here.** A transport whose flush drains in place
+     * answers before it returns, so a handler that writes the next chunk and
+     * flushes it is calling itself: measured at 1206 frames before a stack
+     * overflow, which this pipeline then catches and reports as an ordinary
+     * error while the chunks that were never written go unmentioned. A
+     * transport that folds the reentrant episode instead — the readiness
+     * engines do — reports no second completion at all, and the same handler
+     * stalls rather than overflowing. Send the next chunk from the writability
+     * signal, which exists for it.
+     *
+     * Best-effort besides: it can report a flush that wrote nothing, it can
+     * arrive synchronously from inside the flush that caused it, and a
+     * transport that cannot tell when a write landed does not send it. It says
+     * the bytes left this side, not that anything received them.
      */
     fun onFlushComplete(ctx: PipelineHandlerContext) {
         ctx.propagateFlushComplete()
     }
 
+    /** Called when the channel becomes inactive (disconnected). */
     fun onInactive(ctx: PipelineHandlerContext) {
         ctx.propagateInactive()
     }

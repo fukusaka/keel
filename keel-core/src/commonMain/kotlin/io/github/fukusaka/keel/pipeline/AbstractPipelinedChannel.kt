@@ -90,9 +90,9 @@ abstract class AbstractPipelinedChannel(
         // four POSIX and Node ones inline, Netty and NWConnection through a
         // captured callback in their completion contexts — and until now every
         // one of them reported into a null: nothing in production ever assigned
-        // this, so a handler streaming something out had no signal that its
-        // last chunk had gone, and `SuspendBridgeHandler.flush`'s own KDoc
-        // described a completion arriving by a route that was not connected.
+        // this, so a handler that wanted to know its bytes had gone, to release
+        // what it held for them or to let a producer continue, had nothing to
+        // ask.
         transport.onFlushComplete = {
             pipeline.notifyFlushComplete()
         }
