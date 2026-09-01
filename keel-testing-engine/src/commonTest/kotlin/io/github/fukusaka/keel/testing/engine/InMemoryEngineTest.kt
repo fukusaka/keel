@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.core.InetSocketAddress
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -79,6 +80,46 @@ class InMemoryEngineTest {
                 }
             }
         }
+
+    @Test
+    fun `a delivered burst is followed by the boundary that closes it`() = runTest {
+        withTimeout(asyncBudget) {
+            val engine = InMemoryEngine()
+            try {
+                val seen = mutableListOf<String>()
+                val boundary = CompletableDeferred<List<String>>()
+                val server = engine.bindPipeline(InetSocketAddress("127.0.0.1", 0)) { channel ->
+                    channel.pipeline.addLast(
+                        "recorder",
+                        object : InboundHandler {
+                            override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                                seen.add("read")
+                                (msg as? IoBuf)?.release()
+                            }
+
+                            override fun onReadComplete(ctx: PipelineHandlerContext) {
+                                seen.add("batchEnd")
+                                boundary.complete(seen.toList())
+                            }
+                        },
+                    )
+                }
+                val client = engine.connect(server.localAddress)
+
+                client.write(bufOf("ping"))
+                client.flush()
+
+                // This transport stands in for a socket engine, so it owes a
+                // handler the same batch boundary one of them would send —
+                // its drain hands over everything the peer had in one pass,
+                // and that pass is the batch.
+                assertEquals(listOf("read", "batchEnd"), boundary.await())
+                client.close()
+            } finally {
+                engine.close()
+            }
+        }
+    }
 
     @Test
     fun `bindPipeline assigns a synthetic ephemeral port when binding to port zero`() = runTest(timeout = 15.seconds) {
