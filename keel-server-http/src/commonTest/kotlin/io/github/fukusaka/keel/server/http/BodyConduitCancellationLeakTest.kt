@@ -93,6 +93,8 @@ private object ThrowingHandlerContext : PipelineHandlerContext {
     override fun propagateActive() = unused()
     override fun propagateRead(msg: Any) = unused()
     override fun propagateReadComplete() = unused()
+
+    override fun propagateFlushComplete() = unused()
     override fun propagateInactive() = unused()
     override fun propagateError(cause: Throwable) = unused()
     override fun propagateUserEvent(event: Any) = unused()
