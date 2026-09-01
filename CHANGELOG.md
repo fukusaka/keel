@@ -8,10 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **BREAKING** (`core`): `Pipeline.notifyFlushComplete` and `PipelineHandler.onFlushComplete` — the
-  answer to a flush, which every transport already reported and nothing received. Source-breaking
-  only for an out-of-tree `PipelineHandlerContext`, which gains `propagateFlushComplete` (#1091)
-
 - `core`: `AbstractIoTransport` parks, sweeps and answers the callers waiting on a flush — one
   implementation for the three transports that wait this way, and eight `protected` members a
   subclass outside the tree gains with them (#1076)
@@ -69,6 +65,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `HttpResponseBodyAggregator`, and the `addHttp1ClientCodec` installer (#962)
 
 ### Changed
+
+- **BREAKING** (`core`): `Pipeline.notifyFlushComplete` and `PipelineHandler.onFlushComplete` — the
+  answer to a flush, which every transport already reported and nothing received. Source-breaking
+  for an out-of-tree `Pipeline` or `PipelineHandlerContext`; the handler callback has a default
+  (#1091)
 
 - **BREAKING** (`engine-netty`): a pipelined server reports `isActive` while any listener still
   accepts, rather than requiring all of them — a multi-address server that lost one channel now
