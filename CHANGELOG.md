@@ -137,6 +137,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `core` / `server-http`: channels now tell their pipeline they are active and that they have
   ended, so the server's connection registry fills and `stop()` closes what it holds (#1088)
+- `core` / `engine-*`: transports now report the end of a batch of reads, so `onReadComplete`
+  reaches handlers and a burst can be answered with one flush (#1089)
 - `engine-epoll` / `engine-kqueue`: `close()` finishes releasing the accept loop and the worker
   group even when the coroutine that called it is cancelled — the join between the closed flag
   and the release is a suspension point, and a caller cancelled there left every loop holding
