@@ -2,6 +2,9 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -16,10 +19,9 @@ import kotlin.test.assertEquals
  * out had no signal that its last chunk had gone.
  *
  * The signal is best-effort by design, and these say what that means: it can
- * arrive from inside the flush that caused it, and one raised before the
- * pipeline has a handler is dropped rather than kept — unlike a read, a
- * completion has no later reader, because a pipeline with no handlers wrote
- * nothing to complete.
+ * arrive from inside the flush that caused it, and one raised while a handler
+ * is installed but the pipeline's drain has not run is held for that drain
+ * rather than lost.
  */
 class FlushCompletionTest {
 
@@ -101,18 +103,41 @@ class FlushCompletionTest {
     }
 
     @Test
-    fun `a completion raised before the first handler is dropped`() {
+    fun `a completion raised before the drain is replayed by it`() {
         val transport = TestIoTransport()
+        val queue = QueueingDispatcher()
+        transport.dispatcher = queue
         val channel = channelOver(transport)
-        transport.onFlushComplete?.invoke()
         val recorder = Recorder()
-
+        // Attached, but the drain its installation scheduled has not run: the
+        // window `callHandlerAdded` opens so a codec stack added back to back
+        // replays once. Nothing gates a flush in it, so a handler that responds
+        // on its activation issues one here.
         channel.pipeline.addLast("recorder", recorder)
+        recorder.events.clear()
 
-        // Deliberately not journalled. The only writer on an empty pipeline is
-        // the head, and it writes what a handler gave it — so there is nothing
-        // this completion could be answering, and a handler installed later did
-        // not ask for it.
-        assertEquals(emptyList<String>(), recorder.events)
+        transport.onFlushComplete?.invoke()
+        transport.onFlushComplete?.invoke()
+
+        assertEquals(emptyList<String>(), recorder.events, "nothing has run on the loop yet")
+
+        queue.runQueued()
+
+        // Both, not one: they are counted rather than folded, because each
+        // answers a flush and a handler pacing itself on them would be short.
+        assertEquals(listOf("landed", "landed"), recorder.events)
+    }
+
+    /** Holds dispatched work until a test asks for it. */
+    private class QueueingDispatcher : CoroutineDispatcher() {
+        private val queued = ArrayDeque<Runnable>()
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            queued.addLast(block)
+        }
+
+        fun runQueued() {
+            while (queued.isNotEmpty()) queued.removeFirst().run()
+        }
     }
 }
