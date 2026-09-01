@@ -13,7 +13,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
  * Replaces the previous flat tuple
  * `(zcHandle, zcPtr, bytesRead, isComplete, failed)` delivery, which
  * used correlated nullables (`zcHandle != null` iff `zcPtr != null`)
- * and forced [NwIoTransport.onReadComplete] to perform a 4-way `when`
+ * and forced [NwIoTransport.onReceiveCompletion] to perform a 4-way `when`
  * on raw flags. Bundling correlated state into one sealed value
  * follows the project convention "相関 nullable は 1 オブジェクトに
  * 束ねる" (avoid `!!` rule).
