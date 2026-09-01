@@ -139,6 +139,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ended, so the server's connection registry fills and `stop()` closes what it holds (#1088)
 - `core` / `engine-*`: transports now report the end of a batch of reads, so `onReadComplete`
   reaches handlers and a burst can be answered with one flush (#1089)
+- `core`: closing a channel now walks the handlers' `onClose`, so a handler holding what the
+  connection owns is told to release it. The descriptor is released independently of the walk, and
+  off the transport's own loop it is released first (#1090)
 - `engine-epoll` / `engine-kqueue`: `close()` finishes releasing the accept loop and the worker
   group even when the coroutine that called it is cancelled — the join between the closed flag
   and the release is a suspension point, and a caller cancelled there left every loop holding
