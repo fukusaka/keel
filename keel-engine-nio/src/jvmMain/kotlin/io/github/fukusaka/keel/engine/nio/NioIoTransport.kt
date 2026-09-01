@@ -227,6 +227,8 @@ internal class NioIoTransport(
                 // pipeline-level buffering, closing the data-loss
                 // caveat that DETECT_PEER_CLOSE previously documented.
                 onRead?.invoke(buf)
+                // One read per selection here, so the batch ends with it.
+                onReadComplete?.invoke()
                 armRead()
             }
             n == -1 -> {

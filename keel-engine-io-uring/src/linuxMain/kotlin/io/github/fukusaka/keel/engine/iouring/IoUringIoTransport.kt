@@ -562,10 +562,11 @@ internal class IoUringIoTransport(
                     res > 0 -> {
                         deliverRecv(ring, res, flags)
                         // Re-arm only if the handler left the transport open
-                        // and reading. `onRead` may have flipped readEnabled
-                        // (whose setter re-arms on the false→true edge and
-                        // sees recvSlot >= 0 once it has) — the recvSlot
-                        // guard keeps the single-live-recv invariant.
+                        // and reading. `onRead` or `onReadComplete` may have
+                        // flipped readEnabled (whose setter re-arms on the
+                        // false→true edge and sees recvSlot >= 0 once it has)
+                        // — the recvSlot guard keeps the single-live-recv
+                        // invariant.
                         val canRearmRecv = opened && readEnabled && !recvStarved && recvSlot < 0
                         if (canRearmRecv) armRecv()
                     }
@@ -635,6 +636,8 @@ internal class IoUringIoTransport(
                         touchIdleTimeout() // progress: refresh the read-idle deadline
                         pending.writerIndex = res
                         onRead?.invoke(pending)
+                        // One completion is one batch.
+                        onReadComplete?.invoke()
                         // Re-arm with a fresh buffer; same gates as the
                         // buffer-select single-shot mode (recvStarved is
                         // always false here — no ring, no starvation).
@@ -677,6 +680,8 @@ internal class IoUringIoTransport(
         } else {
             onRead?.invoke(buf)
         }
+        // One completion is one batch, whichever path delivered it.
+        onReadComplete?.invoke()
     }
 
     /**

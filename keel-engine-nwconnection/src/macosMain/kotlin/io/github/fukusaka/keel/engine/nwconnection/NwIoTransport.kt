@@ -405,6 +405,7 @@ internal class NwIoTransport(
                 // interacts with `readEnabled`.
                 onRead?.invoke(zcBuf)
                 // One receive completion is one batch.
+                onReadComplete?.invoke()
                 armRead()
             }
             is NwReceiveOutcome.Copied -> {
@@ -413,6 +414,7 @@ internal class NwIoTransport(
                 // pre-zero-copy implementation.
                 fallbackBuf.writerIndex += outcome.bytesRead
                 onRead?.invoke(fallbackBuf)
+                onReadComplete?.invoke()
                 armRead()
             }
             is NwReceiveOutcome.Closed -> {
