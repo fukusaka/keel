@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **BREAKING** (`core`): `Pipeline.notifyFlushComplete` and `PipelineHandler.onFlushComplete` — the
+  answer to a flush, which every transport already reported and nothing received. Source-breaking
+  only for an out-of-tree `PipelineHandlerContext`, which gains `propagateFlushComplete` (#1091)
+
 - `core`: `AbstractIoTransport` parks, sweeps and answers the callers waiting on a flush — one
   implementation for the three transports that wait this way, and eight `protected` members a
   subclass outside the tree gains with them (#1076)
