@@ -179,7 +179,7 @@ internal class AbstractPipelinedChannelTest {
     }
 
     @Test
-    fun `local close without prior peer-FIN does not propagate notifyInactive`() {
+    fun `local close without prior peer-FIN tells the pipeline the connection ended`() {
         val (transport, channel) = makeChannel()
         val handler = object : InboundHandler {
             var inactiveCount = 0
@@ -193,10 +193,20 @@ internal class AbstractPipelinedChannelTest {
         // User-initiated close.
         channel.close()
 
-        // [AbstractPipelinedChannel.close] only delegates to transport.close();
-        // it does not synthesise a [pipeline.notifyInactive]. Pipeline-level
-        // inactivation only fires through the engine peer-close path.
-        assertEquals(0, handler.inactiveCount)
+        // It used to be that this only delegated to transport.close(), and
+        // this case asserted the resulting silence. That expectation was a
+        // description of the code rather than a decision about it: the commit
+        // that added it was changing whether a *peer* FIN auto-closes a
+        // channel, and said nothing about a local close notifying; and
+        // `DefaultPipeline.notifyInactive`'s own KDoc names
+        // `AbstractPipelinedChannel.close` as a caller it expects and is
+        // idempotent for.
+        //
+        // The silence was not free. A handler that registers something on
+        // `onActive` has only this to unregister it on, and no transport but
+        // one reports a local close as a read close — so a connection the
+        // server itself drops stayed registered forever.
+        assertEquals(1, handler.inactiveCount, "a local close is an ending, and the handlers hear it once")
         assertFalse(channel.isOpen)
         assertEquals(1, transport.closeCount)
     }

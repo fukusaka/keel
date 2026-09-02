@@ -102,6 +102,17 @@ abstract class AbstractPipelinedChannel(
             pipeline.notifyInactive()
             if (pipelineMode) close()
         }
+        // The channel is assembled and can carry traffic, so its pipeline is
+        // told. Nothing sent this before, so `onActive` never ran on any
+        // connection — and it is the only thing that puts a connection into
+        // the registry a server reads to shut down gracefully, which stayed
+        // empty as a result.
+        //
+        // The pipeline has no handlers yet — a channel builds its own, and a
+        // subclass cannot install one before this runs — so the activation
+        // lands in the pre-attach journal and waits there for the first
+        // handler.
+        pipeline.notifyActive()
         // Notify the transport that all callbacks are wired up. Engines
         // that pre-arm their read primitive (IdleReadPolicy.DETECT_PEER_CLOSE)
         // arm here instead of in their own init { } block — arming earlier
@@ -138,7 +149,23 @@ abstract class AbstractPipelinedChannel(
         transport.awaitClosed()
     }
 
+    /**
+     * Closes this channel, telling its pipeline the connection has ended.
+     *
+     * The other half of the activation sent at construction, and not
+     * separable from it. A handler that registers something on `onActive`
+     * unregisters it on `onInactive`, and no transport signal reports this
+     * ending: only one of them treats a local close as a read close, so
+     * without this a connection the *server* drops — which is what the
+     * deadline handlers do to a client that stalls — would be registered and
+     * never removed.
+     *
+     * Idempotent at the pipeline, which already expected this caller: a close
+     * after a peer FIN finds the inactivation recorded and does nothing, and a
+     * handler still hears it exactly once.
+     */
     override fun close() {
+        pipeline.notifyInactive()
         transport.close()
     }
 }
