@@ -86,13 +86,17 @@ abstract class AbstractPipelinedChannel(
         transport.onReadComplete = {
             pipeline.notifyReadComplete()
         }
-        // The answer to a flush. Every transport in the tree reports one — the
-        // four POSIX and Node ones inline, Netty and NWConnection through a
-        // captured callback in their completion contexts — and until now every
-        // one of them reported into a null: nothing in production ever assigned
-        // this, so a handler that wanted to know its bytes had gone, to release
-        // what it held for them or to let a producer continue, had nothing to
-        // ask.
+        // The answer to a flush, and until now every transport that raised one
+        // raised it into a null: nothing in production ever assigned this, so a
+        // handler that wanted to know its bytes had gone — to release what it
+        // held for them, to let a producer continue — had nothing to ask.
+        //
+        // Which flushes get an answer is the transport's business and is not
+        // uniform: the readiness engines report per drained episode and fold a
+        // reentrant one, io-uring's synchronous fast path returns without
+        // reporting, nio reports from the tick its coalescing schedules and so
+        // not at all with coalescing off. A handler treats a completion as an
+        // opportunity, never as a turn it is owed.
         transport.onFlushComplete = {
             pipeline.notifyFlushComplete()
         }

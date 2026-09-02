@@ -64,8 +64,9 @@ interface InboundHandler : PipelineHandler {
     }
 
     /**
-     * Called when a flush this pipeline asked for has reached the transport's
-     * far side.
+     * Called when the transport considers a flush this pipeline asked for
+     * finished — which is not the same as the peer having the bytes, and on
+     * some engines not the same as the kernel having them.
      *
      * Where a handler releases what it was holding for those bytes, or lets a
      * producer it had paused continue. The default passes it on.
@@ -81,9 +82,10 @@ interface InboundHandler : PipelineHandler {
      * signal, which exists for it.
      *
      * Best-effort besides: it can report a flush that wrote nothing, it can
-     * arrive synchronously from inside the flush that caused it, and a
-     * transport that cannot tell when a write landed does not send it. It says
-     * the bytes left this side, not that anything received them.
+     * arrive synchronously from inside the flush that caused it, a transport
+     * that cannot tell when a write landed does not send it, and the count
+     * does not match the handler's own flushes — each engine batches on its
+     * own terms. Do not read it as an acknowledgement from anyone.
      */
     fun onFlushComplete(ctx: PipelineHandlerContext) {
         ctx.propagateFlushComplete()
