@@ -21,13 +21,16 @@ import kotlin.coroutines.EmptyCoroutineContext
  *   val channel = ReadinessPipelinedChannel(transport, logger, remote, local)
  *
  * AbstractPipelinedChannel wires:
- *   transport.onRead        → pipeline.notifyRead(buf)
- *   transport.onReadClosed  → pipeline.notifyInactive() + (Pipeline-mode) close()
+ *   (construction)                 → pipeline.notifyActive()
+ *   transport.onRead               → pipeline.notifyRead(buf)
+ *   transport.onReadComplete       → pipeline.notifyReadComplete()
+ *   transport.onReadClosed         → pipeline.notifyInactive() + (Pipeline-mode) close()
+ *   transport.onConnectionFailure  → pipeline error path
  *   transport.onWritabilityChanged → pipeline.notifyWritabilityChanged()
- *   ensureBridge()          → installs SuspendBridgeHandler (no read arming)
- *   readEnabled             → transport.readEnabled
- *   shutdownOutput()        → transport.shutdownOutput()
- *   close()                 → transport.close()
+ *   ensureBridge()                 → installs SuspendBridgeHandler (no read arming)
+ *   readEnabled                    → transport.readEnabled
+ *   shutdownOutput()               → transport.shutdownOutput()
+ *   close()                        → pipeline.notifyInactive(), then transport.close()
  * ```
  */
 abstract class AbstractPipelinedChannel(
@@ -66,6 +69,13 @@ abstract class AbstractPipelinedChannel(
         }
         transport.onRead = { buf ->
             pipeline.notifyRead(buf)
+        }
+        // The batch boundary. `notifyReadComplete` has been on [Pipeline]
+        // since it was written and had no caller, so `onReadComplete` never
+        // ran on any connection — a handler that wanted to answer a burst
+        // with one flush had nothing to hang it on.
+        transport.onReadComplete = {
+            pipeline.notifyReadComplete()
         }
         transport.onConnectionFailure = { cause ->
             // The transport invokes this before its inactive report and at

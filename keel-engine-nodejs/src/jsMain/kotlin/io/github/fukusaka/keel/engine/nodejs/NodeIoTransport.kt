@@ -87,6 +87,8 @@ internal class NodeIoTransport(
                 buf.unsafeArray.asDynamic().set(srcView, buf.writerIndex)
                 buf.writerIndex += dataLength
                 onRead?.invoke(buf)
+                // One 'data' event is one batch.
+                onReadComplete?.invoke()
             }
         }
     }

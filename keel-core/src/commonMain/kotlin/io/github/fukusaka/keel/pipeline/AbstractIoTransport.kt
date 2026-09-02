@@ -27,8 +27,9 @@ import kotlin.coroutines.resume
  *   afterwards. Subclasses supply the FIN via [sendFin] and call
  *   [sendFinIfDrained] from their flush-completion paths.
  * - **Open state**: [opened] flag with [isOpen] property for idempotent close.
- * - **Callback properties**: [onRead], [onReadClosed], [onFlushComplete],
- *   [onWritabilityChanged] initialized to `null`.
+ * - **Callback properties**: [onRead], [onReadComplete], [onReadClosed],
+ *   [onFlushComplete], [onWritabilityChanged], [onConnectionFailure]
+ *   initialized to `null`.
  * - **Flush waiters**: the list a caller parks on in `awaitPendingFlush`, its
  *   sweep, snapshot and guarded resume.
  * - **Defaults**: [awaitPendingFlush] = no-op, [awaitClosed] = no-op.
@@ -101,6 +102,7 @@ abstract class AbstractIoTransport(
     // --- Read path callbacks ---
 
     override var onRead: ((IoBuf) -> Unit)? = null
+    override var onReadComplete: (() -> Unit)? = null
     override var onReadClosed: (() -> Unit)? = null
 
     /**

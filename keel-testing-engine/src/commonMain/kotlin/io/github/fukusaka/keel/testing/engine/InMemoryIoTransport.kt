@@ -115,9 +115,16 @@ internal class InMemoryIoTransport(
     private fun drainInbound() {
         val callback = onRead ?: return
         if (!readEnabled) return
+        var delivered = false
         while (inboundQueue.isNotEmpty()) {
             callback(inboundQueue.removeFirst())
+            delivered = true
         }
+        // The drain is this transport's batch: everything the peer had for
+        // this side, handed over in one pass. A handler answering a burst
+        // with one flush needs the same boundary here that a socket engine
+        // gives it, or the in-memory pipe stops standing in for one.
+        if (delivered) onReadComplete?.invoke()
         if (pendingEof) {
             pendingEof = false
             onReadClosed?.invoke()

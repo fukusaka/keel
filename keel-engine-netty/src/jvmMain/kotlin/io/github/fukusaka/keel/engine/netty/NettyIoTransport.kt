@@ -275,6 +275,14 @@ internal class NettyIoTransport(
             }
         }
 
+        override fun channelReadComplete(ctx: ChannelHandlerContext) {
+            // Netty's own batch boundary, which is exactly what this signal
+            // is: the read loop for this wake has finished handing over what
+            // it had.
+            onReadComplete?.invoke()
+            ctx.fireChannelReadComplete()
+        }
+
         override fun channelInactive(ctx: ChannelHandlerContext) {
             fireReadClosed()
         }

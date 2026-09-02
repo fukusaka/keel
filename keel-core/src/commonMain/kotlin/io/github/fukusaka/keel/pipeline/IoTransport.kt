@@ -63,6 +63,42 @@ interface IoTransport {
     var onRead: ((IoBuf) -> Unit)?
 
     /**
+     * Callback invoked when the transport has finished delivering the reads
+     * it had for one readiness or completion event.
+     *
+     * The batch boundary, and the reason a handler can answer a burst with
+     * one flush instead of one per message: it is told when there is no more
+     * to come *for now*, which is what "for now" means on each engine — the
+     * reads drained from a single wake, a single completion, or a single
+     * framework callback.
+     *
+     * Only Netty's boundary closes a loop that ran more than once; the others
+     * read once per event, so their boundary follows a single [onRead]. The
+     * saved flushes come from the same place on all of them: one read carries
+     * however many messages the peer pipelined into it, and a decoder turns
+     * that into many `onRead` calls downstream under one boundary.
+     *
+     * A hint, not a frame delimiter, and the guarantees are correspondingly
+     * thin. It arrives after the reads of its own batch, and that is all a
+     * handler may lean on:
+     *
+     * - **It can arrive with nothing before it.** Netty ends every read cycle
+     *   this way, including a cycle whose first read returned no bytes, so a
+     *   connection that is woken and finds nothing still reports a boundary.
+     * - **It can arrive after the channel has ended.** A handler that closes
+     *   from inside [onRead] gets the inactive first and this afterwards,
+     *   because a transport announces the end of the batch it was in the
+     *   middle of delivering.
+     * - **A transport that cannot tell one batch from the next need not send
+     *   it at all.** A handler with no boundary flushes per message, which is
+     *   what every handler does today.
+     *
+     * `PipelineHandler.onReadComplete` and `Pipeline.notifyReadComplete` have
+     * existed for this since the pipeline was written; nothing sent it.
+     */
+    var onReadComplete: (() -> Unit)?
+
+    /**
      * Pauses inbound consumption for flow control (read-side
      * back-pressure). Contract for every engine: stop consuming new
      * bytes from the underlying source within a bounded overshoot (at

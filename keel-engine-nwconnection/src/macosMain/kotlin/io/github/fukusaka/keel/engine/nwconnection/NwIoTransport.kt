@@ -258,7 +258,7 @@ internal class NwIoTransport(
             // [IdleReadPolicy.DETECT_PEER_CLOSE]: receive is already
             // armed from construction and stays armed for the lifetime
             // of the transport — flipping `readEnabled` only controls
-            // whether [onReadComplete] delivers bytes through [onRead]
+            // whether [onReceiveCompletion] delivers bytes through [onRead]
             // or releases them silently.
             if (value && opened) {
                 // The connection is now waiting to read → the read-side idle timeout
@@ -273,7 +273,7 @@ internal class NwIoTransport(
 
     // Tracks the pending read buffer so close() can release it if the
     // async callback hasn't fired yet. Set in armRead(), cleared in
-    // onReadComplete(). Volatile: armRead() and close() may run on
+    // onReceiveCompletion(). Volatile: armRead() and close() may run on
     // different threads (dispatch queue vs coroutine thread).
     @kotlin.concurrent.Volatile
     private var pendingReadBuf: IoBuf? = null
@@ -363,8 +363,8 @@ internal class NwIoTransport(
      * - [NwReceiveOutcome.Spurious] — 0 bytes, not complete. Fallback
      *   is released and the read is re-armed without delivery.
      */
-    internal fun onReadComplete(fallbackBuf: IoBuf, outcome: NwReceiveOutcome) {
-        assertOnConnQueue("NwIoTransport.onReadComplete")
+    internal fun onReceiveCompletion(fallbackBuf: IoBuf, outcome: NwReceiveOutcome) {
+        assertOnConnQueue("NwIoTransport.onReceiveCompletion")
         pendingReadBuf = null
         if (!opened) {
             fallbackBuf.release()
@@ -404,6 +404,8 @@ internal class NwIoTransport(
                 // KDoc above on idle-read policies for how this
                 // interacts with `readEnabled`.
                 onRead?.invoke(zcBuf)
+                // One receive completion is one batch.
+                onReadComplete?.invoke()
                 armRead()
             }
             is NwReceiveOutcome.Copied -> {
@@ -412,6 +414,7 @@ internal class NwIoTransport(
                 // pre-zero-copy implementation.
                 fallbackBuf.writerIndex += outcome.bytesRead
                 onRead?.invoke(fallbackBuf)
+                onReadComplete?.invoke()
                 armRead()
             }
             is NwReceiveOutcome.Closed -> {
@@ -638,7 +641,7 @@ internal class NwIoTransport(
      * Cancels the NWConnection and releases pending write buffers.
      *
      * The pending read buffer (if any) is released by the async read
-     * callback via [onReadComplete] when it detects [opened] is false.
+     * callback via [onReceiveCompletion] when it detects [opened] is false.
      * Use [awaitClosed] to wait for the callback to complete.
      *
      * Idempotent and thread-safe. The teardown is dispatched onto
@@ -703,7 +706,7 @@ internal class NwIoTransport(
      *
      * After [close], NWConnection delivers the pending read callback
      * with an error on the dispatch queue. This method polls until
-     * [pendingReadBuf] is cleared by [onReadComplete], ensuring all
+     * [pendingReadBuf] is cleared by [onReceiveCompletion], ensuring all
      * buffers are released before the caller checks for leaks.
      *
      * Times out after [AWAIT_CLOSED_TIMEOUT_MS] as a safety net against
@@ -754,7 +757,7 @@ internal class NwIoTransport(
                 isComplete = isComplete != 0,
                 errno = error,
             )
-            readCtx.transport.onReadComplete(readCtx.buf, outcome)
+            readCtx.transport.onReceiveCompletion(readCtx.buf, outcome)
         }
 
         /**
@@ -765,7 +768,7 @@ internal class NwIoTransport(
          * nullable bookkeeping.
          *
          * Branch ordering matches the original flat `when` in
-         * [onReadComplete] before the sealed refactor: terminal
+         * [onReceiveCompletion] before the sealed refactor: terminal
          * conditions (failed / EOF) first, then zero-copy, then
          * multi-region copy, then spurious 0-byte.
          */
@@ -778,7 +781,7 @@ internal class NwIoTransport(
         ): NwReceiveOutcome = when {
             // errno != 0 is a real receive failure; errno == 0 with
             // is_complete + 0 bytes is a clean EOF. Closed carries the
-            // errno so onReadComplete can log the reason.
+            // errno so onReceiveCompletion can log the reason.
             errno != 0 || (bytesRead == 0 && isComplete) -> NwReceiveOutcome.Closed(errno)
             zcHandle != null && bytesRead > 0 -> {
                 val ptr = checkNotNull(zcPtr) {

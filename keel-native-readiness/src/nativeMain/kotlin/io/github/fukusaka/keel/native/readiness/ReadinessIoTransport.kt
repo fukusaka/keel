@@ -864,6 +864,10 @@ class ReadinessIoTransport(
                     touchIdleTimeout() // progress: refresh the idle deadline
                     unreleased = null
                     onRead?.invoke(buf) ?: buf.release()
+                    // One read per wake here, so the batch ends with it. A
+                    // handler answering a burst gets one boundary per wake,
+                    // which is the most this engine can tell it apart.
+                    onReadComplete?.invoke()
                     armRead()
                 }
                 ReadResult.Eof -> {
