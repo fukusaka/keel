@@ -163,6 +163,39 @@ class FlushCompletionTest {
         )
     }
 
+    @Test
+    fun `a completion passes an outbound-only handler on its way in`() {
+        val transport = TestIoTransport()
+        val channel = channelOver(transport)
+        val seen = mutableListOf<String>()
+        // An encoder-shaped handler: outbound only, no inbound callbacks. The
+        // completion must skip past it to the inbound handler below. The skip
+        // happens in the propagation's next-inbound search — the invoke's own
+        // outbound fallback is unreachable, since the head is a duplex handler
+        // and every other delivery target comes from that same search.
+        channel.pipeline.addLast(
+            "encoder",
+            object : OutboundHandler {
+                override fun onWrite(ctx: PipelineHandlerContext, msg: Any) {
+                    ctx.propagateWrite(msg)
+                }
+            },
+        )
+        channel.pipeline.addLast(
+            "sink",
+            object : DuplexHandler {
+                override fun onFlushComplete(ctx: PipelineHandlerContext) {
+                    seen.add("landed")
+                }
+            },
+        )
+        seen.clear()
+
+        transport.onFlushComplete?.invoke()
+
+        assertEquals(listOf("landed"), seen, "the completion is not consumed by a handler with no ear for it")
+    }
+
     /** Holds dispatched work until a test asks for it. */
     private class QueueingDispatcher : CoroutineDispatcher() {
         private val queued = ArrayDeque<Runnable>()
