@@ -1,7 +1,10 @@
 package io.github.fukusaka.keel.pipeline
 
+import io.github.fukusaka.keel.buf.DefaultAllocator
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -23,8 +26,25 @@ class ReadBatchBoundaryTest {
 
     private val logger = PrintLogger("ReadBatchBoundaryTest")
 
+    private val tracker = TrackingAllocator(DefaultAllocator)
+
+    private fun transport(): TestIoTransport = TestIoTransport(tracker)
+
     private fun channelOver(transport: TestIoTransport): PipelinedChannel =
         object : AbstractPipelinedChannel(transport, logger) {}
+
+    /**
+     * That every buffer these cases hand to a read was released.
+     *
+     * The handler propagates rather than consuming, so the release is the
+     * tail's — which is correct, and worth pinning: a boundary must not change
+     * who owns a read, and without this the cases would pass just as well if it
+     * did.
+     */
+    @AfterTest
+    fun everyReadWasReleased() {
+        assertEquals(0, tracker.outstandingCount, "a read this case delivered was not released")
+    }
 
     /** Records reads and the boundaries between them, in order. */
     private open class Recorder : DuplexHandler {
@@ -48,11 +68,10 @@ class ReadBatchBoundaryTest {
 
     @Test
     fun `a transport that finishes a batch of reads tells the pipeline`() {
-        val transport = TestIoTransport()
+        val transport = transport()
         val channel = channelOver(transport)
         val recorder = Recorder()
         channel.pipeline.addLast("recorder", recorder)
-        recorder.events.clear()
 
         // What an engine does at the end of the reads it had for one wake.
         transport.onRead?.invoke(transport.allocator.allocate(8).also { it.writerIndex = 4 })
@@ -68,11 +87,10 @@ class ReadBatchBoundaryTest {
 
     @Test
     fun `two batches are two boundaries`() {
-        val transport = TestIoTransport()
+        val transport = transport()
         val channel = channelOver(transport)
         val recorder = Recorder()
         channel.pipeline.addLast("recorder", recorder)
-        recorder.events.clear()
 
         transport.onRead?.invoke(transport.allocator.allocate(8).also { it.writerIndex = 4 })
         transport.onReadComplete?.invoke()
@@ -84,7 +102,7 @@ class ReadBatchBoundaryTest {
 
     @Test
     fun `the boundary a channel journals before its first handler is replayed once`() {
-        val transport = TestIoTransport()
+        val transport = transport()
         val channel = channelOver(transport)
         // Both arrive while the pipeline is still empty, so the journal holds
         // them and the drain is what delivers them — the path every
@@ -100,7 +118,7 @@ class ReadBatchBoundaryTest {
 
     @Test
     fun `batches journalled before the first handler arrive as one boundary`() {
-        val transport = TestIoTransport()
+        val transport = transport()
         val channel = channelOver(transport)
         repeat(2) {
             transport.onRead?.invoke(transport.allocator.allocate(8).also { it.writerIndex = 4 })
@@ -122,11 +140,10 @@ class ReadBatchBoundaryTest {
 
     @Test
     fun `a boundary with nothing before it still reaches the handler`() {
-        val transport = TestIoTransport()
+        val transport = transport()
         val channel = channelOver(transport)
         val recorder = Recorder()
         channel.pipeline.addLast("recorder", recorder)
-        recorder.events.clear()
 
         // Netty ends every read cycle with its boundary, including a cycle
         // whose first read returned no bytes: `AbstractNioByteChannel.read`
@@ -140,7 +157,7 @@ class ReadBatchBoundaryTest {
 
     @Test
     fun `a handler that closes mid-batch gets the boundary after the ending`() {
-        val transport = TestIoTransport()
+        val transport = transport()
         lateinit var channel: PipelinedChannel
         val recorder = object : Recorder() {
             override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
@@ -150,7 +167,6 @@ class ReadBatchBoundaryTest {
         }
         channel = channelOver(transport)
         channel.pipeline.addLast("recorder", recorder)
-        recorder.events.clear()
 
         transport.onRead?.invoke(transport.allocator.allocate(8).also { it.writerIndex = 4 })
         // The transport is in the middle of delivering a batch and says so
