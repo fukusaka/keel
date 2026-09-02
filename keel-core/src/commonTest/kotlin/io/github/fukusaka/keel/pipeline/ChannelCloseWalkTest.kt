@@ -234,10 +234,10 @@ class ChannelCloseWalkTest {
     }
 
     @Test
-    fun `a close that cannot reach the loop still releases the descriptor`() {
+    fun `a close that cannot reach the loop goes past the handlers`() {
         val transport = TestIoTransport()
         // A loop that has stopped: the pipeline can neither run the walk here
-        // nor hand it over, and falls back to closing the transport itself.
+        // nor hand it over.
         transport.owningContext = false
         transport.owningContextAlive = false
         val channel = channelOver(transport)
@@ -247,6 +247,17 @@ class ChannelCloseWalkTest {
 
         channel.close()
 
+        // The ending still arrives — it is raised where it is, not dispatched.
+        // The close does not: the fallback reproduces the walk's last step and
+        // nothing before it, so the handlers are skipped. Deliberately, and the
+        // reason it is reported rather than done quietly. Asserting only that
+        // the transport ended would say nothing, since this method's own last
+        // line does that whatever the pipeline did.
+        assertEquals(
+            listOf("inactive"),
+            recorder.events,
+            "a stopped loop carries the ending but not the close",
+        )
         assertFalse(transport.isOpen)
     }
 }
