@@ -47,6 +47,35 @@ class ChannelCloseWalkTest {
         }
     }
 
+    @Test
+    fun `two closes off the loop walk the handlers once`() {
+        val transport = TestIoTransport()
+        val queue = QueueingDispatcher()
+        transport.dispatcher = queue
+        val channel = channelOver(transport)
+        val recorder = Recorder()
+        channel.pipeline.addLast("recorder", recorder)
+        queue.runQueued()
+        recorder.events.clear()
+        transport.owningContext = false
+        queue.onRun = { transport.owningContext = true }
+
+        // Both closes run before the loop gets to either hand-off. The flag is
+        // written before the dispatch, so the second close queues no second
+        // walk — a mutation probe showed nothing pinned this: making the
+        // capture always-true survived every case in the tree.
+        channel.close()
+        channel.close()
+
+        queue.runQueued()
+
+        assertEquals(
+            listOf("inactive", "close"),
+            recorder.events,
+            "one ending and one walk, however many times the caller closed before the loop ran",
+        )
+    }
+
     /**
      * Holds dispatched work until a test asks for it, so the queued walk is
      * observable.
