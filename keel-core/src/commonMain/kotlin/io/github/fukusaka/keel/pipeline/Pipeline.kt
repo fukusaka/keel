@@ -79,6 +79,37 @@ interface Pipeline {
     /** Notifies the pipeline that a batch of reads is complete. */
     fun notifyReadComplete(): Pipeline
 
+    /**
+     * Notifies the pipeline that the transport considers a flush finished.
+     *
+     * Not that the peer has the bytes, and on some engines not even that the
+     * kernel does: the Node transport raises one whenever its write returns,
+     * including the backpressured return that leaves the bytes in Node's own
+     * buffer.
+     *
+     * The answer to [requestFlush], which is a request and returns nothing.
+     * A handler that wants to know when its bytes are gone — to release what
+     * it was holding for them, to send the next chunk, to let a producer
+     * continue — has this and nothing else: the transport's own completion is
+     * a callback with one slot, and the pipeline is what shares it out.
+     *
+     * Best-effort, like [notifyReadComplete]. A transport may report a flush
+     * that wrote nothing, may report synchronously from inside the flush
+     * itself, and one that cannot tell when a write landed need not report at
+     * all. Nor do the counts line up with a handler's own flushes: the
+     * readiness engines report per drained episode and fold a reentrant one,
+     * io-uring reports per completion chain, nio per scheduled tick. A handler
+     * that needs certainty waits on the channel instead.
+     *
+     * "Need not report" is not hypothetical. The nio engine reports from the
+     * tick its coalescing schedules, so with coalescing turned off it drains
+     * in place and reports nothing — measured, one flush and no completion.
+     * io-uring's synchronous fast path returns the moment the whole write went
+     * out, without reporting either. A handler must work without the signal,
+     * and treat it as an opportunity rather than a turn it is owed.
+     */
+    fun notifyFlushComplete(): Pipeline
+
     /** Notifies the pipeline that the channel is now inactive. */
     fun notifyInactive(): Pipeline
 

@@ -24,6 +24,7 @@ import kotlin.coroutines.EmptyCoroutineContext
  *   (construction)                 → pipeline.notifyActive()
  *   transport.onRead               → pipeline.notifyRead(buf)
  *   transport.onReadComplete       → pipeline.notifyReadComplete()
+ *   transport.onFlushComplete      → pipeline.notifyFlushComplete()
  *   transport.onReadClosed         → pipeline.notifyInactive() + (Pipeline-mode) close()
  *   transport.onConnectionFailure  → pipeline error path
  *   transport.onWritabilityChanged → pipeline.notifyWritabilityChanged()
@@ -84,6 +85,20 @@ abstract class AbstractPipelinedChannel(
         // with one flush had nothing to hang it on.
         transport.onReadComplete = {
             pipeline.notifyReadComplete()
+        }
+        // The answer to a flush, and until now every transport that raised one
+        // raised it into a null: nothing in production ever assigned this, so a
+        // handler that wanted to know its bytes had gone — to release what it
+        // held for them, to let a producer continue — had nothing to ask.
+        //
+        // Which flushes get an answer is the transport's business and is not
+        // uniform: the readiness engines report per drained episode and fold a
+        // reentrant one, io-uring's synchronous fast path returns without
+        // reporting, nio reports from the tick its coalescing schedules and so
+        // not at all with coalescing off. A handler treats a completion as an
+        // opportunity, never as a turn it is owed.
+        transport.onFlushComplete = {
+            pipeline.notifyFlushComplete()
         }
         transport.onConnectionFailure = { cause ->
             // The transport invokes this before its inactive report and at

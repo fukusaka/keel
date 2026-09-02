@@ -153,6 +153,12 @@ internal class InMemoryIoTransport(
             }
             pw.buf.release()
         }
+        // This pipe stands in for a socket engine, so it owes a handler the
+        // same completion one would send. Raised from inside `flush`, which is
+        // the shape a transport that drains in place has and which the
+        // callback's contract allows — and the reason `onFlushComplete`'s own
+        // KDoc tells a handler not to flush from it.
+        onFlushComplete?.invoke()
         return true
     }
 

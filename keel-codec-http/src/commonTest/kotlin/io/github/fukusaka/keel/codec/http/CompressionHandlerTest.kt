@@ -963,6 +963,8 @@ class CompressionHandlerTest {
         override fun propagateActive() {}
         override fun propagateInactive() {}
         override fun propagateReadComplete() {}
+
+        override fun propagateFlushComplete() {}
         override fun propagateError(cause: Throwable) {}
         override fun propagateUserEvent(event: Any) {}
         override fun propagateWritabilityChanged(isWritable: Boolean) {}

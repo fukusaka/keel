@@ -191,6 +191,14 @@ internal class DefaultPipeline(
     private val pendingReads: ArrayDeque<Any> = ArrayDeque()
     private var pendingActive: Boolean = false
     private var pendingReadComplete: Boolean = false
+
+    /**
+     * Flush completions raised before the drain, replayed by it.
+     *
+     * A count and not a flag: each completion answers one flush, and the
+     * handler that issued them is entitled to as many as it caused.
+     */
+    private var pendingFlushCompletions: Int = 0
     private var pendingWritability: Boolean? = null
     private val pendingUserEvents: ArrayDeque<Any> = ArrayDeque()
     private val pendingErrors: ArrayDeque<Throwable> = ArrayDeque()
@@ -336,6 +344,28 @@ internal class DefaultPipeline(
             // drain-time invocation — handlers treat readComplete as a
             // best-effort "batch boundary" hint, not a per-message signal.
             pendingReadComplete = true
+        }
+        return this
+    }
+
+    override fun notifyFlushComplete(): Pipeline {
+        if (preAttachJournalDrained) {
+            head.invokeOnFlushComplete()
+        } else {
+            // Held, not dropped. "Before the drain" is not the same as "before
+            // any handler": `callHandlerAdded` defers the drain onto the
+            // dispatcher so a codec stack added back to back accumulates into
+            // one replay, and nothing gates a write or a flush in the meantime.
+            // A handler that responds on its activation therefore issues a
+            // flush inside that window, and dropping its answer loses it for
+            // good. Measured before this counter existed: handler attached,
+            // flush issued, completion raised — nothing arrived, then or after
+            // the drain.
+            //
+            // Counted rather than flagged, because completions are not
+            // coalesced: each one answers a flush, and a handler that paced
+            // itself on them would be short.
+            pendingFlushCompletions++
         }
         return this
     }
@@ -723,6 +753,11 @@ internal class DefaultPipeline(
             nextCtx.invokeOnReadComplete()
         }
 
+        override fun propagateFlushComplete() {
+            val nextCtx = findNextInbound() ?: return
+            nextCtx.invokeOnFlushComplete()
+        }
+
         override fun propagateInactive() {
             val nextCtx = findNextInbound() ?: return
             nextCtx.invokeOnInactive()
@@ -814,6 +849,19 @@ internal class DefaultPipeline(
                 }
             } else {
                 propagateReadComplete()
+            }
+        }
+
+        internal fun invokeOnFlushComplete() {
+            val h = handler
+            if (h is InboundHandler) {
+                try {
+                    h.onFlushComplete(this)
+                } catch (e: Throwable) {
+                    propagateError(e)
+                }
+            } else {
+                propagateFlushComplete()
             }
         }
 
@@ -998,6 +1046,10 @@ internal class DefaultPipeline(
             pendingReadComplete = false
             head.invokeOnReadComplete()
         }
+        while (pendingFlushCompletions > 0) {
+            pendingFlushCompletions--
+            head.invokeOnFlushComplete()
+        }
         pendingWritability?.let { writable ->
             pendingWritability = null
             writabilityCurrent = writable
@@ -1087,6 +1139,7 @@ internal class DefaultPipeline(
         }
         pendingUserEvents.clear()
         pendingReadComplete = false
+        pendingFlushCompletions = 0
         // Errors are reported individually, with their cause, the way the
         // journal's own overflow path reports them. Dropping the only record of
         // why a connection failed is the silent failure this codebase forbids.

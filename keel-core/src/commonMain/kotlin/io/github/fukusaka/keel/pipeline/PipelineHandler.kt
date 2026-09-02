@@ -63,6 +63,34 @@ interface InboundHandler : PipelineHandler {
         ctx.propagateReadComplete()
     }
 
+    /**
+     * Called when the transport considers a flush this pipeline asked for
+     * finished — which is not the same as the peer having the bytes, and on
+     * some engines not the same as the kernel having them.
+     *
+     * Where a handler releases what it was holding for those bytes, or lets a
+     * producer it had paused continue. The default passes it on.
+     *
+     * **Do not flush from here.** A transport whose flush drains in place
+     * answers before it returns, so a handler that writes the next chunk and
+     * flushes it is calling itself: measured at 1206 frames before a stack
+     * overflow, which this pipeline then catches and reports as an ordinary
+     * error while the chunks that were never written go unmentioned. A
+     * transport that folds the reentrant episode instead — the readiness
+     * engines do — reports no second completion at all, and the same handler
+     * stalls rather than overflowing. Send the next chunk from the writability
+     * signal, which exists for it.
+     *
+     * Best-effort besides: it can report a flush that wrote nothing, it can
+     * arrive synchronously from inside the flush that caused it, a transport
+     * that cannot tell when a write landed does not send it, and the count
+     * does not match the handler's own flushes — each engine batches on its
+     * own terms. Do not read it as an acknowledgement from anyone.
+     */
+    fun onFlushComplete(ctx: PipelineHandlerContext) {
+        ctx.propagateFlushComplete()
+    }
+
     /** Called when the channel becomes inactive (disconnected). */
     fun onInactive(ctx: PipelineHandlerContext) {
         ctx.propagateInactive()

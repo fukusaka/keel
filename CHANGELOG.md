@@ -66,6 +66,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** (`core`): `Pipeline.notifyFlushComplete` and `PipelineHandler.onFlushComplete` — the
+  answer to a flush, which every transport already reported and nothing received. Source-breaking
+  for an out-of-tree `Pipeline` or `PipelineHandlerContext`; the handler callback has a default
+  (#1091)
+
 - **BREAKING** (`engine-netty`): a pipelined server reports `isActive` while any listener still
   accepts, rather than requiring all of them — a multi-address server that lost one channel now
   reads as active (#1072)

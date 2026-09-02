@@ -255,8 +255,10 @@ interface IoTransport {
      * [flush] drains in place may fire it synchronously, from inside that
      * call. Implementations that allow the synchronous firing must bound a
      * completion-driven pump (write the next chunk and flush from here)
-     * rather than recurse through it. Pipeline [HeadHandler] does not set
-     * this (fire-and-forget).
+     * rather than recurse through it. [AbstractPipelinedChannel] sets this and
+     * routes it into the pipeline, so an implementation that fires
+     * synchronously fires into handler code, and the bound above is what keeps
+     * a handler that flushes from its own completion from calling itself.
      */
     var onFlushComplete: (() -> Unit)?
 
