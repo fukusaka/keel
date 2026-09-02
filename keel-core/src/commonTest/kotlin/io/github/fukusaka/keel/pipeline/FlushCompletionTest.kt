@@ -128,6 +128,41 @@ class FlushCompletionTest {
         assertEquals(listOf("landed", "landed"), recorder.events)
     }
 
+    @Test
+    fun `a handler that throws on a completion sends it down the error path`() {
+        val transport = TestIoTransport()
+        val channel = channelOver(transport)
+        val seen = mutableListOf<String>()
+        channel.pipeline.addLast(
+            "thrower",
+            object : DuplexHandler {
+                override fun onFlushComplete(ctx: PipelineHandlerContext) {
+                    seen.add("landed")
+                    throw IllegalStateException("a handler that cannot finish its completion")
+                }
+            },
+        )
+        channel.pipeline.addLast(
+            "catcher",
+            object : DuplexHandler {
+                override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+                    seen.add("error:" + (cause.message ?: ""))
+                }
+            },
+        )
+        seen.clear()
+
+        transport.onFlushComplete?.invoke()
+
+        // The throw does not escape into the transport's completion path,
+        // whose caller is mid-teardown or mid-drain and has no way to answer
+        // it. It goes where every other handler failure goes.
+        assertEquals(
+            listOf("landed", "error:a handler that cannot finish its completion"),
+            seen,
+        )
+    }
+
     /** Holds dispatched work until a test asks for it. */
     private class QueueingDispatcher : CoroutineDispatcher() {
         private val queued = ArrayDeque<Runnable>()

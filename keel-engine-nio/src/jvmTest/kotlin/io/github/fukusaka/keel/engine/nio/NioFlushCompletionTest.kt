@@ -8,7 +8,6 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
-import kotlin.test.assertTrue
 
 /**
  * That this engine's flush completion reaches a handler, over a real socket.
@@ -59,9 +58,10 @@ class NioFlushCompletionTest {
                 withTimeout(IO_OP_TIMEOUT_MS) { client.read(readBuf) }
                 readBuf.release()
 
+                // The wait is the assertion: this returns when the completion
+                // has come back through the pipeline, and times out when it
+                // never does.
                 withTimeout(IO_OP_TIMEOUT_MS) { streamer.landed.await() }
-
-                assertTrue(streamer.landed.isCompleted, "the completion came back through the pipeline")
             } finally {
                 client.close()
             }
