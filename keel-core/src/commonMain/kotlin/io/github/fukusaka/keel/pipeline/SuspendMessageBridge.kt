@@ -109,11 +109,12 @@ class SuspendMessageBridge<T : Any>(
     /**
      * Closes the channel and releases any buffered-but-undelivered messages.
      *
-     * For a **server-initiated** teardown the transport closes the fd without
-     * delivering a peer-FIN, so the pipeline never fires `inactive` and
-     * neither [onInactive] nor [onError] runs — the close hooks above would
-     * leave a pooled-payload message stranded in the buffer. The sole consumer
-     * calls this from its own teardown to reclaim them. Closing the channel
+     * A server-initiated teardown now does deliver the ending — a channel's
+     * `close()` tells its pipeline — so [onInactive] releases the buffer on
+     * that path too. This remains the consumer's own hook, called from its
+     * teardown, because the consumer can stop before anything closes the
+     * channel, and a message buffered for a consumer that left is stranded
+     * either way. Closing the channel
      * here also makes any *later* [trySend] (a decoder frame the EventLoop
      * delivers after this consumer stopped) fail and take the
      * [releaseUndelivered] path in [onRead] instead of leaking — so this plus

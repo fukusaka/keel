@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.internal.DefaultPipeline
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * Base class for all engine [PipelinedChannel] implementations.
@@ -102,6 +103,17 @@ abstract class AbstractPipelinedChannel(
             pipeline.notifyInactive()
             if (pipelineMode) close()
         }
+        // The channel is assembled and can carry traffic, so its pipeline is
+        // told. Nothing sent this before, so `onActive` never ran on any
+        // connection — and it is the only thing that puts a connection into
+        // the registry a server reads to shut down gracefully, which stayed
+        // empty as a result.
+        //
+        // The pipeline has no handlers yet — a channel builds its own, and a
+        // subclass cannot install one before this runs — so the activation
+        // lands in the pre-attach journal and waits there for the first
+        // handler.
+        pipeline.notifyActive()
         // Notify the transport that all callbacks are wired up. Engines
         // that pre-arm their read primitive (IdleReadPolicy.DETECT_PEER_CLOSE)
         // arm here instead of in their own init { } block — arming earlier
@@ -138,7 +150,35 @@ abstract class AbstractPipelinedChannel(
         transport.awaitClosed()
     }
 
+    /**
+     * Closes this channel, telling its pipeline the connection has ended.
+     *
+     * The other half of the activation sent at construction, and not
+     * separable from it. A handler that registers something on `onActive`
+     * unregisters it on `onInactive`, and no transport signal reports this
+     * ending: only one of them treats a local close as a read close, so
+     * without this a connection the *server* drops — which is what the
+     * deadline handlers do to a client that stalls — would be registered and
+     * never removed.
+     *
+     * Idempotent at the pipeline, which already expected this caller: a close
+     * after a peer FIN finds the inactivation recorded and does nothing, and a
+     * handler still hears it exactly once.
+     */
     override fun close() {
+        // The ending is a pipeline delivery, and every pipeline delivery
+        // belongs to the loop: handlers are written to its confinement — the
+        // registry removal in the server's handler mutates a set its loop
+        // also touches, lock-free, on that assumption. A caller off the loop
+        // (a server's stop coroutine force-closing its connections) hands the
+        // notification over instead of running the chain on its own thread.
+        // A loop that has stopped cannot take the hand-off and cannot race
+        // this caller either, so there the notification runs in place.
+        if (transport.inOwningContext || !transport.canDispatchToOwningContext) {
+            pipeline.notifyInactive()
+        } else {
+            transport.ioDispatcher.dispatch(EmptyCoroutineContext) { pipeline.notifyInactive() }
+        }
         transport.close()
     }
 }

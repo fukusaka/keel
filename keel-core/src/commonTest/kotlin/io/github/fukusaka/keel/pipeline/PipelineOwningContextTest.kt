@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
  * before the call returns — what these assert is the *routing decision*, which
  * is the part the pipeline owns. The engine tests cover a real EventLoop.
  */
-private object RunImmediately : CoroutineDispatcher() {
+internal object RunImmediately : CoroutineDispatcher() {
     override fun dispatch(context: CoroutineContext, block: Runnable): Unit = block.run()
 }
 
@@ -29,7 +29,7 @@ private object RunImmediately : CoroutineDispatcher() {
  * Needed where [RunImmediately] would hide the defect by running the very block
  * a dead loop never would.
  */
-private object NeverRuns : CoroutineDispatcher() {
+internal object NeverRuns : CoroutineDispatcher() {
     override fun dispatch(context: CoroutineContext, block: Runnable): Unit = Unit
 }
 

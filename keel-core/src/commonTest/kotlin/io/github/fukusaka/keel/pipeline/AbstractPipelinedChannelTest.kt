@@ -2,6 +2,9 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -179,7 +182,7 @@ internal class AbstractPipelinedChannelTest {
     }
 
     @Test
-    fun `local close without prior peer-FIN does not propagate notifyInactive`() {
+    fun `local close without prior peer-FIN tells the pipeline the connection ended`() {
         val (transport, channel) = makeChannel()
         val handler = object : InboundHandler {
             var inactiveCount = 0
@@ -193,11 +196,104 @@ internal class AbstractPipelinedChannelTest {
         // User-initiated close.
         channel.close()
 
-        // [AbstractPipelinedChannel.close] only delegates to transport.close();
-        // it does not synthesise a [pipeline.notifyInactive]. Pipeline-level
-        // inactivation only fires through the engine peer-close path.
-        assertEquals(0, handler.inactiveCount)
+        // It used to be that this only delegated to transport.close(), and
+        // this case asserted the resulting silence. That expectation was a
+        // description of the code rather than a decision about it: the commit
+        // that added it was changing whether a *peer* FIN auto-closes a
+        // channel, and said nothing about a local close notifying; and
+        // `DefaultPipeline.notifyInactive`'s own KDoc names
+        // `AbstractPipelinedChannel.close` as a caller it expects and is
+        // idempotent for.
+        //
+        // The silence was not free. A handler that registers something on
+        // `onActive` has only this to unregister it on, and no transport but
+        // one reports a local close as a read close — so a connection the
+        // server itself drops stayed registered forever.
+        assertEquals(1, handler.inactiveCount, "a local close is an ending, and the handlers hear it once")
         assertFalse(channel.isOpen)
         assertEquals(1, transport.closeCount)
+    }
+
+    @Test
+    fun `a close from inside the journal's replay ends the connection once`() {
+        // The drain runs handler code, and the server's own fast paths close
+        // synchronously from a replayed read — a shutdown drain answering a
+        // journalled request. The close's ending goes out through the drained
+        // branch; the drain's own tail replay must notice that and stay quiet.
+        val transport = CountingTransport()
+        val queue = QueueingDispatcher()
+        transport.dispatcher = queue
+        transport.owningContext = false
+        lateinit var channel: PipelinedChannel
+        channel = makeChannel(transport).second
+        transport.onRead?.invoke(transport.allocator.allocate(8).also { it.writerIndex = 4 })
+        val events = mutableListOf<String>()
+        transport.owningContext = true // the drain runs on the loop, as every engine's does
+        channel.pipeline.addLast(
+            "h",
+            object : DuplexHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                    events.add("read")
+                    channel.close()
+                    ctx.propagateRead(msg)
+                }
+
+                override fun onInactive(ctx: PipelineHandlerContext) {
+                    events.add("inactive")
+                    ctx.propagateInactive()
+                }
+            },
+        )
+        queue.runQueued()
+
+        assertEquals(
+            1,
+            events.count { it == "inactive" },
+            "one ending, however it interleaves with the drain: $events",
+        )
+    }
+
+    @Test
+    fun `a close from off the owning thread delivers the ending on the loop`() {
+        // Handlers are written to the loop's confinement — the server's
+        // registry removal mutates a set its loop also touches on that
+        // assumption. A stop coroutine force-closing a connection must not
+        // run the chain on its own thread.
+        val transport = CountingTransport()
+        val queue = QueueingDispatcher()
+        transport.dispatcher = queue
+        val channel = makeChannel(transport).second
+        val events = mutableListOf<String>()
+        channel.pipeline.addLast(
+            "h",
+            object : DuplexHandler {
+                override fun onInactive(ctx: PipelineHandlerContext) {
+                    events.add("inactive")
+                    ctx.propagateInactive()
+                }
+            },
+        )
+        queue.runQueued() // the installation's journal drain
+        transport.owningContext = false
+
+        channel.close()
+
+        assertEquals(emptyList<String>(), events, "nothing runs on the caller's thread")
+        transport.owningContext = true
+        queue.runQueued()
+        assertEquals(listOf("inactive"), events, "the ending arrives where the handlers live")
+    }
+
+    /** Holds dispatched work until the test asks for it. */
+    private class QueueingDispatcher : CoroutineDispatcher() {
+        private val queued = ArrayDeque<Runnable>()
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            queued.addLast(block)
+        }
+
+        fun runQueued() {
+            while (queued.isNotEmpty()) queued.removeFirst().run()
+        }
     }
 }
