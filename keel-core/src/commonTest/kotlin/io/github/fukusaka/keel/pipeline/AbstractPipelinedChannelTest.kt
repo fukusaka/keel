@@ -253,6 +253,37 @@ internal class AbstractPipelinedChannelTest {
         )
     }
 
+    @Test
+    fun `a close from off the owning thread delivers the ending on the loop`() {
+        // Handlers are written to the loop's confinement — the server's
+        // registry removal mutates a set its loop also touches on that
+        // assumption. A stop coroutine force-closing a connection must not
+        // run the chain on its own thread.
+        val transport = CountingTransport()
+        val queue = QueueingDispatcher()
+        transport.dispatcher = queue
+        val channel = makeChannel(transport).second
+        val events = mutableListOf<String>()
+        channel.pipeline.addLast(
+            "h",
+            object : DuplexHandler {
+                override fun onInactive(ctx: PipelineHandlerContext) {
+                    events.add("inactive")
+                    ctx.propagateInactive()
+                }
+            },
+        )
+        queue.runQueued() // the installation's journal drain
+        transport.owningContext = false
+
+        channel.close()
+
+        assertEquals(emptyList<String>(), events, "nothing runs on the caller's thread")
+        transport.owningContext = true
+        queue.runQueued()
+        assertEquals(listOf("inactive"), events, "the ending arrives where the handlers live")
+    }
+
     /** Holds dispatched work until the test asks for it. */
     private class QueueingDispatcher : CoroutineDispatcher() {
         private val queued = ArrayDeque<Runnable>()
