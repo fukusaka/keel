@@ -1009,10 +1009,18 @@ internal class DefaultPipeline(
         while (pendingErrors.isNotEmpty()) {
             head.invokeOnError(pendingErrors.removeFirst())
         }
-        if (inactiveObserved) {
+        if (inactiveObserved && !inactiveFired) {
             // Replay the inactivation through the head so the entire
             // chain (not just the first handler via the per-handler
             // [callHandlerAdded] replay) processes onInactive.
+            //
+            // Guarded on [inactiveFired], not only on the observation: the
+            // drain runs handler code, and a handler that closes the channel
+            // from inside a replayed read sends `notifyInactive` through the
+            // drained branch — the flag is already up by the time control
+            // returns here, and firing again would deliver the one ending
+            // twice. Measured before the guard: `[.., inactive, close, ..,
+            // inactive]` from a close inside the first replayed read.
             inactiveFired = true
             head.invokeOnInactive()
         }

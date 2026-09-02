@@ -2,6 +2,9 @@ package io.github.fukusaka.keel.pipeline
 
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -209,5 +212,57 @@ internal class AbstractPipelinedChannelTest {
         assertEquals(1, handler.inactiveCount, "a local close is an ending, and the handlers hear it once")
         assertFalse(channel.isOpen)
         assertEquals(1, transport.closeCount)
+    }
+
+    @Test
+    fun `a close from inside the journal's replay ends the connection once`() {
+        // The drain runs handler code, and the server's own fast paths close
+        // synchronously from a replayed read — a shutdown drain answering a
+        // journalled request. The close's ending goes out through the drained
+        // branch; the drain's own tail replay must notice that and stay quiet.
+        val transport = CountingTransport()
+        val queue = QueueingDispatcher()
+        transport.dispatcher = queue
+        transport.owningContext = false
+        lateinit var channel: PipelinedChannel
+        channel = makeChannel(transport).second
+        transport.onRead?.invoke(transport.allocator.allocate(8).also { it.writerIndex = 4 })
+        val events = mutableListOf<String>()
+        transport.owningContext = true // the drain runs on the loop, as every engine's does
+        channel.pipeline.addLast(
+            "h",
+            object : DuplexHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                    events.add("read")
+                    channel.close()
+                    ctx.propagateRead(msg)
+                }
+
+                override fun onInactive(ctx: PipelineHandlerContext) {
+                    events.add("inactive")
+                    ctx.propagateInactive()
+                }
+            },
+        )
+        queue.runQueued()
+
+        assertEquals(
+            1,
+            events.count { it == "inactive" },
+            "one ending, however it interleaves with the drain: $events",
+        )
+    }
+
+    /** Holds dispatched work until the test asks for it. */
+    private class QueueingDispatcher : CoroutineDispatcher() {
+        private val queued = ArrayDeque<Runnable>()
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            queued.addLast(block)
+        }
+
+        fun runQueued() {
+            while (queued.isNotEmpty()) queued.removeFirst().run()
+        }
     }
 }

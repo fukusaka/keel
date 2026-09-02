@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.pipeline.internal.DefaultPipeline
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * Base class for all engine [PipelinedChannel] implementations.
@@ -165,7 +166,19 @@ abstract class AbstractPipelinedChannel(
      * handler still hears it exactly once.
      */
     override fun close() {
-        pipeline.notifyInactive()
+        // The ending is a pipeline delivery, and every pipeline delivery
+        // belongs to the loop: handlers are written to its confinement — the
+        // registry removal in the server's handler mutates a set its loop
+        // also touches, lock-free, on that assumption. A caller off the loop
+        // (a server's stop coroutine force-closing its connections) hands the
+        // notification over instead of running the chain on its own thread.
+        // A loop that has stopped cannot take the hand-off and cannot race
+        // this caller either, so there the notification runs in place.
+        if (transport.inOwningContext || !transport.canDispatchToOwningContext) {
+            pipeline.notifyInactive()
+        } else {
+            transport.ioDispatcher.dispatch(EmptyCoroutineContext) { pipeline.notifyInactive() }
+        }
         transport.close()
     }
 }
