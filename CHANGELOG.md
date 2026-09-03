@@ -140,6 +140,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `codec-http`: a close raised from inside a decoder's own parse no longer lets a later request,
+  or another connection, be handed the same pooled `HttpHeaders` (#1092)
 - `core` / `server-http`: channels now tell their pipeline they are active and that they have
   ended, so the server's connection registry fills and `stop()` closes what it holds (#1088)
 - `core` / `engine-*`: transports now report the end of a batch of reads, so `onReadComplete`
