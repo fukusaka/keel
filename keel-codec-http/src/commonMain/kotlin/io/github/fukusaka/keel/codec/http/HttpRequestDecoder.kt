@@ -138,24 +138,11 @@ class HttpRequestDecoder(
     // [HttpRequestHead] at [emitHead]; the downstream
     // [HttpServerHandler] is responsible for calling
     // [HttpHeaders.release] on the emitted instance once the response
-    // has been written. After [emitHead] the field holds a fresh
-    // borrow ready for the next request line.
-    private var headers = HttpHeaders.borrow()
+    // has been written. After [emitHead] the slot holds nothing; the
+    // next write borrows.
+    private val headers = BorrowedHeaders()
+
     private var bodyBytesRemaining: Long = 0L
-
-    // Caller-cache for the per-request header-pool stack. The construction-time
-    // borrow above uses the plain [HttpHeaders.borrow] (lookup-at-release, safe
-    // off the EventLoop thread). Every subsequent re-borrow runs on this
-    // connection's EventLoop scope (from [onReadTyped]), so we resolve the
-    // scope's stack once here and reuse it via [HttpHeadersPool.borrowFrom],
-    // dropping the per-request [headersPoolScope] lookup on both borrow and
-    // release. Confined to one connection (one EventLoop scope for its lifetime).
-    private var pooledStack: ArrayDeque<HttpHeaders>? = null
-
-    private fun reborrowHeaders(): HttpHeaders {
-        val stack = pooledStack ?: headersPoolStack().also { pooledStack = it }
-        return HttpHeadersPool.borrowFrom(stack)
-    }
 
     /**
      * Cumulative byte total `(nameLen + valueLen)` of every header
@@ -189,14 +176,20 @@ class HttpRequestDecoder(
     private var requestStartAnnounced: Boolean = false
 
     override fun onInactive(ctx: PipelineHandlerContext) {
-        // The decoder's current accumulator is borrowed from
-        // [HttpHeadersPool]. On connection close it has not been
-        // transferred to a downstream [HttpRequestHead], so the only
-        // remaining reference is the decoder field itself — release it
-        // back to the pool here, otherwise every closed connection
-        // costs the pool one slot (bounded by `MAX_POOLED` but still
-        // wasteful for short-lived connections).
-        headers.release()
+        // Any accumulator the decoder is still holding is borrowed from
+        // [HttpHeadersPool] and has not reached a [HttpRequestHead], so the
+        // only remaining reference is this field — a connection that closes
+        // part-way through a header block would otherwise cost the pool a
+        // slot. A connection whose last message completed holds nothing here,
+        // and this is a no-op for it.
+        //
+        // The borrow goes back here. It is the same recycle an abandoned
+        // parse performs -- the accumulator never reached a message, so it is
+        // still this decoder's to give back -- and needs no bookkeeping of its
+        // own: a borrow is taken on first use and handed to the message at
+        // [BorrowedHeaders.transfer], so a read after the ending that
+        // completes its message leaves the slot empty on its own.
+        headers.recycle()
         ctx.propagateInactive()
     }
 
@@ -478,8 +471,8 @@ class HttpRequestDecoder(
         // lifetime of the views.
         val hash = HttpHeaders.caseInsensitiveHashOfBuf(buf, start, nameLen)
         val valueLen = valEnd - valStart
-        headers.addRange(buf, hash, start, nameLen, valStart, valueLen)
-        enforceHeaderCountCap(headers.size)
+        headers.get().addRange(buf, hash, start, nameLen, valStart, valueLen)
+        enforceHeaderCountCap(headers.get().size)
         enforceHeaderBytesCap(nameLen + valueLen)
     }
 
@@ -540,8 +533,8 @@ class HttpRequestDecoder(
         val valEnd = trimRightInArr(arr, valStart, end)
         val value = arrAsciiToString(arr, valStart, valEnd)
 
-        headers.add(name, value)
-        enforceHeaderCountCap(headers.size)
+        headers.get().add(name, value)
+        enforceHeaderCountCap(headers.get().size)
         enforceHeaderBytesCap(name.length + value.length)
     }
 
@@ -882,16 +875,16 @@ class HttpRequestDecoder(
     private fun emitHead(ctx: PipelineHandlerContext) {
         val parsedVersion = checkNotNull(version) { "version not parsed" }
         // RFC 7230 §5.4: Host header is mandatory for HTTP/1.1 requests.
-        if (parsedVersion == HttpVersion.HTTP_1_1 && HttpHeaderName.HOST !in headers) {
+        if (parsedVersion == HttpVersion.HTTP_1_1 && HttpHeaderName.HOST !in headers.get()) {
             throw HttpParseException("Missing required Host header (RFC 7230 §5.4)")
         }
         // RFC 9110 §8.6 / RFC 9112 §6.3: reject a malformed or conflicting
         // Content-Length before framing the body (see [rejectInvalidContentLength]).
         // Ordered before the smuggling check to match HttpResponseDecoder.
-        rejectInvalidContentLength(headers)
+        rejectInvalidContentLength(headers.get())
         // RFC 7230 §3.3.3: reject requests with both Content-Length and Transfer-Encoding
         // to prevent HTTP Request Smuggling.
-        if (headers.isChunked && headers.contentLength != null) {
+        if (headers.get().isChunked && headers.get().contentLength != null) {
             throw HttpParseException(
                 "Both Transfer-Encoding and Content-Length present (RFC 7230 §3.3.3)",
             )
@@ -900,16 +893,15 @@ class HttpRequestDecoder(
             checkNotNull(method) { "method not parsed" },
             checkNotNull(uri) { "uri not parsed" },
             parsedVersion,
-            headers,
+            headers.transfer(),
         )
         // Reset parser state before emitting to allow re-entrant pipeline processing.
         // The previous `headers` reference has been transferred to `head`;
-        // downstream owns its lifecycle. We pull a fresh pooled instance
-        // for the next request line on this connection.
+        // downstream owns its lifecycle; the slot holds nothing until the
+        // next write borrows.
         method = null
         uri = null
         version = null
-        headers = reborrowHeaders()
         // [headerByteCount] is **not** reset here — trailer bytes
         // accumulate on top of the header bytes for the same request
         // (a malicious peer cannot bypass the cumulative cap by
@@ -958,9 +950,8 @@ class HttpRequestDecoder(
         version = null
         // Error-path reset: the partially-filled accumulator never
         // reached `emitHead`, so the decoder still owns it. Return it
-        // to the pool before borrowing a fresh one.
-        headers.release()
-        headers = reborrowHeaders()
+        // to the pool; the next write borrows.
+        headers.recycle()
         bodyBytesRemaining = 0L
         chunkTrailers = null
         chunkCrlfSeen = 0

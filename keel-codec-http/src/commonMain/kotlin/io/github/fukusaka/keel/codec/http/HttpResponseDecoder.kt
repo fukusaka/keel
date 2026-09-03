@@ -71,9 +71,10 @@ import kotlin.reflect.KClass
  * consumer (the [HttpResponseBodyAggregator] / terminal handler), which
  * must call [HttpHeaders.release] once it is done with the head; the
  * decoder never releases the emitted instance. The in-progress
- * [HttpHeaders] is borrowed from [HttpHeadersPool] and a fresh instance is
- * re-borrowed after each head — the held-but-unemitted borrow is released
- * on [onInactive] and on the error / truncation reset. On the rare
+ * [HttpHeaders] is borrowed from [HttpHeadersPool] on first use and handed to
+ * the head it filled; the slot then holds nothing until the next write borrows
+ * again. A held-but-unemitted borrow is released on [onInactive] and on the
+ * error / truncation reset. On the rare
  * straddled (fallback) path, names/values are materialised to `String`s
  * via [HttpHeaders.add] (ISO-8859-1 byte-as-char, lossless for RFC 9110
  * obs-text), and chunked trailers are always materialised — neither
@@ -139,22 +140,8 @@ class HttpResponseDecoder(
     // to the emitted [HttpResponseHead] at [emitHead]; the downstream
     // consumer is responsible for calling [HttpHeaders.release] on the
     // emitted instance once the response has been consumed. After
-    // [emitHead] the field holds a fresh borrow ready for the next status
-    // line.
-    private var headers = HttpHeaders.borrow()
-
-    // Caller-cache for the per-connection header-pool stack. The
-    // construction-time borrow above uses the plain [HttpHeaders.borrow]
-    // (lookup-at-release, safe off the EventLoop thread). Every subsequent
-    // re-borrow runs on this connection's EventLoop scope (from [onRead]),
-    // so the scope's stack is resolved once here and reused via
-    // [HttpHeadersPool.borrowFrom]. Confined to one connection.
-    private var pooledStack: ArrayDeque<HttpHeaders>? = null
-
-    private fun reborrowHeaders(): HttpHeaders {
-        val stack = pooledStack ?: headersPoolStack().also { pooledStack = it }
-        return HttpHeadersPool.borrowFrom(stack)
-    }
+    // [emitHead] the slot holds nothing; the next write borrows.
+    private val headers = BorrowedHeaders()
 
     /**
      * Cumulative `(nameLen + valueLen)` bytes of every header and trailer
@@ -237,13 +224,23 @@ class HttpResponseDecoder(
             -> propagateTruncation(ctx, "chunked body")
             State.PASS_THROUGH -> Unit // tunnel teardown is the new protocol's concern
         }
-        // The decoder's current [headers] is a borrow from [HttpHeadersPool]
-        // that was never transferred to an emitted [HttpResponseHead] (the
-        // in-progress or freshly re-borrowed instance). Release it back to
-        // the pool so a closed connection does not cost the pool one slot.
-        // Truncation paths already reset (release + re-borrow) it above; the
-        // release here returns whichever instance the field now holds.
-        headers.release()
+        // Any [headers] the decoder is still holding is a borrow that never
+        // reached an emitted [HttpResponseHead]. Release it so a connection
+        // closing part-way through a header block does not cost the pool a
+        // slot; truncation paths above have already given it back, and a
+        // connection whose last message completed holds nothing.
+        //
+        // The borrow goes back here, for the reason the request decoder's
+        // [onInactive] spells out.
+        //
+        // Redundant as the state table stands: every state that can be holding
+        // a borrow at the ending routes through [propagateTruncation] above,
+        // which resets and so gives it back already. Measured — removing this
+        // line fails no test. It stays as the unconditional guarantee, so a
+        // state added later that does not truncate does not silently keep the
+        // accumulator; the request decoder, whose `onInactive` has no such
+        // routing, relies on this line outright.
+        headers.recycle()
         ctx.propagateInactive()
     }
 
@@ -565,8 +562,8 @@ class HttpResponseDecoder(
         // retained by [HttpHeaders.addRange] for the lifetime of the views.
         val hash = HttpHeaders.caseInsensitiveHashOfBuf(buf, start, nameLen)
         val valueLen = valEnd - valStart
-        headers.addRange(buf, hash, start, nameLen, valStart, valueLen)
-        enforceHeaderCountCap(headers.size)
+        headers.get().addRange(buf, hash, start, nameLen, valStart, valueLen)
+        enforceHeaderCountCap(headers.get().size)
         enforceHeaderBytesCap(nameLen + valueLen)
     }
 
@@ -630,8 +627,8 @@ class HttpResponseDecoder(
         val valStart = trimLeftInArr(arr, colon + 1, end)
         val valEnd = trimRightInArr(arr, valStart, end)
         val value = arrAsciiToString(arr, valStart, valEnd)
-        headers.add(name, value)
-        enforceHeaderCountCap(headers.size)
+        headers.get().add(name, value)
+        enforceHeaderCountCap(headers.get().size)
         enforceHeaderBytesCap(name.length + value.length)
     }
 
@@ -769,14 +766,14 @@ class HttpResponseDecoder(
         val parsedVersion = checkNotNull(version) { "version not parsed" }
         // Latch the framing predicates off `headers` once, before building the
         // head and dispatching it (both are non-trivial getters, and `headers`
-        // is reassigned to a fresh instance below). `chunked` here; `cl` after
+        // is handed to [head] below and this slot holds nothing after it). `chunked` here; `cl` after
         // the Content-Length validity gate so a single evaluation each feeds the
         // smuggling check, the negative-CL check, and the framing decision.
-        val chunked = headers.isChunked
+        val chunked = headers.get().isChunked
         // Reject a malformed / conflicting Content-Length before reading a value
         // (see [rejectInvalidContentLength]).
-        rejectInvalidContentLength(headers)
-        val cl = headers.contentLength
+        rejectInvalidContentLength(headers.get())
+        val cl = headers.get().contentLength
         // RFC 9112 §6.3: both Content-Length and Transfer-Encoding present
         // is a smuggling vector — reject, matching HttpRequestDecoder.
         if (chunked && cl != null) {
@@ -790,14 +787,13 @@ class HttpResponseDecoder(
         if (cl != null && cl < 0L) {
             throw HttpParseException("Invalid Content-Length: $cl (RFC 9110 §8.6)")
         }
-        val head = HttpResponseHead(parsedStatus, parsedVersion, headers)
+        val head = HttpResponseHead(parsedStatus, parsedVersion, headers.transfer())
         val code = parsedStatus.code
         status = null
         version = null
         // The previous `headers` reference has been transferred to `head`;
-        // downstream owns its lifecycle (and must release it). Pull a fresh
-        // pooled instance for the next status line on this connection.
-        headers = reborrowHeaders()
+        // downstream owns its lifecycle (and must release it); the slot holds
+        // nothing until the next write borrows.
 
         when {
             code == SWITCHING_PROTOCOLS_CODE -> {
@@ -878,9 +874,8 @@ class HttpResponseDecoder(
         version = null
         // Error-path reset: the partially-filled `headers` borrow never
         // reached `emitHead`, so the decoder still owns it. Return it to
-        // the pool before borrowing a fresh one.
-        headers.release()
-        headers = reborrowHeaders()
+        // the pool; the next write borrows.
+        headers.recycle()
         bodyBytesRemaining = 0L
         chunkTrailers = null
         chunkCrlfSeen = 0
