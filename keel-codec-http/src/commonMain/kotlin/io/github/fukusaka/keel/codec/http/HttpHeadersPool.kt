@@ -119,8 +119,12 @@ internal object HttpHeadersPool {
     fun borrow(): HttpHeaders =
         // Plain path: resolve the current scope's stack to pop from, but record
         // no caller-cache handle — [giveBack] looks up the stack again at
-        // release. Used for the decoder's construction-time borrow, which may
-        // run off the EventLoop thread (so capture-at-borrow would be unsafe).
+        // release. For a borrow whose release may resolve a different scope
+        // than the borrow did (so capture-at-borrow would be unsafe). The
+        // decoders take theirs on the read path through [borrowFrom]; this is
+        // the safe default for any borrower that cannot make that guarantee,
+        // and it is reachable from outside the module through
+        // [HttpHeaders.borrow].
         borrowImpl(if (bypassPool) null else headersPoolStack(), handle = null)
 
     /**
@@ -128,8 +132,8 @@ internal object HttpHeadersPool {
      * handle, so [giveBack] (from [HttpHeaders.release]) returns it without a
      * per-call [headersPoolScope] lookup. The caller must have resolved [stack]
      * on the same execution scope where the instance will be released — i.e. the
-     * connection's EventLoop scope. Used for per-request re-borrows on the read
-     * path; the decoder resolves [stack] once per connection and reuses it.
+     * connection's EventLoop scope. This is the decoders' only borrow path:
+     * they resolve [stack] once per connection, on the read path, and reuse it.
      */
     fun borrowFrom(stack: ArrayDeque<HttpHeaders>): HttpHeaders =
         borrowImpl(if (bypassPool) null else stack, handle = stack)
