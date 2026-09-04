@@ -342,39 +342,43 @@ class HttpRequestDecoder(
         var effLength = accumulatorSize
         if (effLength > 0 && arr[effLength - 1] == CR) effLength--
         enforceLineSizeCap(effLength)
-        try {
-            when (state) {
-                State.READ_REQUEST_LINE -> {
-                    parseRequestLineFallback(arr, 0, effLength)
-                    state = State.READ_HEADERS
-                }
-                State.READ_HEADERS -> {
-                    if (effLength == 0) {
-                        emitHead(ctx)
-                    } else {
-                        parseHeaderLineFallback(arr, 0, effLength)
-                    }
-                }
-                State.READ_CHUNK_SIZE -> {
-                    val size = parseChunkSizeFromArr(arr, 0, effLength)
-                    bodyBytesRemaining = size
-                    state = if (size == 0L) State.READ_CHUNK_TRAILER else State.READ_CHUNK_DATA
-                }
-                State.READ_CHUNK_TRAILER -> {
-                    if (effLength == 0) {
-                        emitLastWithTrailers(ctx)
-                    } else {
-                        val trailers = chunkTrailers ?: HttpHeaders().also { chunkTrailers = it }
-                        parseTrailerLineFallback(arr, 0, effLength, trailers)
-                    }
-                }
-                State.READ_FIXED_BODY, State.READ_CHUNK_DATA,
-                State.READ_CHUNK_DATA_CRLF,
-                -> Unit // unreachable.
+        // The line is assembled: the accumulator is consumed here, before it
+        // is parsed, so that `accumulatorSize > 0` means exactly "a line is
+        // still pending" -- the invariant the response decoder's ending
+        // relies on, kept the same on both sides. Nothing on this decoder's
+        // ending path reads the size, so here the move changes no behaviour
+        // (measured: with the reset back after the parse, no case fails).
+        // The bytes stay in the array; the parsers below take their length
+        // explicitly.
+        accumulatorSize = 0
+        when (state) {
+            State.READ_REQUEST_LINE -> {
+                parseRequestLineFallback(arr, 0, effLength)
+                state = State.READ_HEADERS
             }
-        } finally {
-            // Reset logical size so subsequent lines can reuse the ByteArray.
-            accumulatorSize = 0
+            State.READ_HEADERS -> {
+                if (effLength == 0) {
+                    emitHead(ctx)
+                } else {
+                    parseHeaderLineFallback(arr, 0, effLength)
+                }
+            }
+            State.READ_CHUNK_SIZE -> {
+                val size = parseChunkSizeFromArr(arr, 0, effLength)
+                bodyBytesRemaining = size
+                state = if (size == 0L) State.READ_CHUNK_TRAILER else State.READ_CHUNK_DATA
+            }
+            State.READ_CHUNK_TRAILER -> {
+                if (effLength == 0) {
+                    emitLastWithTrailers(ctx)
+                } else {
+                    val trailers = chunkTrailers ?: HttpHeaders().also { chunkTrailers = it }
+                    parseTrailerLineFallback(arr, 0, effLength, trailers)
+                }
+            }
+            State.READ_FIXED_BODY, State.READ_CHUNK_DATA,
+            State.READ_CHUNK_DATA_CRLF,
+            -> Unit // unreachable.
         }
     }
 

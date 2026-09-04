@@ -386,40 +386,46 @@ class HttpResponseDecoder(
         var effLength = accumulatorSize
         if (effLength > 0 && arr[effLength - 1] == CR) effLength--
         enforceLineSizeCap(effLength)
-        try {
-            when (state) {
-                State.READ_STATUS_LINE -> {
-                    parseStatusLineFallback(arr, 0, effLength)
-                    state = State.READ_HEADERS
-                }
-                State.READ_HEADERS -> {
-                    if (effLength == 0) {
-                        emitHead(ctx)
-                    } else {
-                        parseHeaderLineFallback(arr, 0, effLength)
-                    }
-                }
-                State.READ_CHUNK_SIZE -> {
-                    val size = chunkSizeInArr(arr, 0, effLength)
-                    if (size < 0L) throwInvalidChunkSizeFromArr(arr, 0, effLength)
-                    bodyBytesRemaining = size
-                    state = if (size == 0L) State.READ_CHUNK_TRAILER else State.READ_CHUNK_DATA
-                }
-                State.READ_CHUNK_TRAILER -> {
-                    if (effLength == 0) {
-                        emitLastWithTrailers(ctx)
-                    } else {
-                        val trailers = chunkTrailers ?: HttpHeaders().also { chunkTrailers = it }
-                        parseTrailerLineFallback(arr, 0, effLength, trailers)
-                    }
-                }
-                State.READ_FIXED_BODY, State.READ_CHUNK_DATA, State.READ_CHUNK_DATA_CRLF,
-                State.READ_UNTIL_CLOSE, State.PASS_THROUGH,
-                -> Unit // unreachable.
+        // The line is assembled: the accumulator is consumed here, before it
+        // is parsed, so that `accumulatorSize > 0` means exactly "a line is
+        // still pending". Parsing the blank line that ends a header block
+        // dispatches the head, and a handler can end the connection from
+        // inside that dispatch; a size left standing until afterwards made
+        // that ending look like a truncated line -- measured, a read boundary
+        // between the CR and LF of that blank line, with a close from the
+        // head, reported a status line cut short for a response that had
+        // decoded whole. The bytes stay in the array; the parsers below take
+        // their length explicitly.
+        accumulatorSize = 0
+        when (state) {
+            State.READ_STATUS_LINE -> {
+                parseStatusLineFallback(arr, 0, effLength)
+                state = State.READ_HEADERS
             }
-        } finally {
-            // Reset logical size so subsequent lines can reuse the ByteArray.
-            accumulatorSize = 0
+            State.READ_HEADERS -> {
+                if (effLength == 0) {
+                    emitHead(ctx)
+                } else {
+                    parseHeaderLineFallback(arr, 0, effLength)
+                }
+            }
+            State.READ_CHUNK_SIZE -> {
+                val size = chunkSizeInArr(arr, 0, effLength)
+                if (size < 0L) throwInvalidChunkSizeFromArr(arr, 0, effLength)
+                bodyBytesRemaining = size
+                state = if (size == 0L) State.READ_CHUNK_TRAILER else State.READ_CHUNK_DATA
+            }
+            State.READ_CHUNK_TRAILER -> {
+                if (effLength == 0) {
+                    emitLastWithTrailers(ctx)
+                } else {
+                    val trailers = chunkTrailers ?: HttpHeaders().also { chunkTrailers = it }
+                    parseTrailerLineFallback(arr, 0, effLength, trailers)
+                }
+            }
+            State.READ_FIXED_BODY, State.READ_CHUNK_DATA, State.READ_CHUNK_DATA_CRLF,
+            State.READ_UNTIL_CLOSE, State.PASS_THROUGH,
+            -> Unit // unreachable.
         }
     }
 
