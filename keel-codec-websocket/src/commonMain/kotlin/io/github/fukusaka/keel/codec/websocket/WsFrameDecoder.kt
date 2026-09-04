@@ -34,6 +34,19 @@ import kotlinx.io.Buffer
  * naturally because the parser already unmasks based on the frame's
  * own mask bit).
  *
+ * **Ending**: once the connection has ended (`onInactive`) the decoder
+ * decodes nothing more. The ending can be raised from inside the decoder's
+ * own downstream dispatch of a frame — a handler closing the channel on the
+ * peer's CLOSE, say — with the parse loop still running; the rest of that
+ * read, later reads, and reads the pipeline replays from its journal are then
+ * left undecoded, no frame is emitted and no pooled payload is allocated for
+ * them, and a frame left part-parsed is dropped. A frame decoded after the
+ * ending would reach nobody who can act on it: the connection is over -- a
+ * server's frame bridge is closed by then and releases it unread, and a bare
+ * consumer would be handed a frame it can no longer answer. A peer's CLOSE precedes its
+ * FIN and reads are delivered before the read side's closing is, so the
+ * closing handshake is decoded before the ending, not after.
+ *
  * The handler is stateful (the kotlinx-io buffer accumulates between
  * onRead callbacks) and thus must run on a single thread — typically
  * the EventLoop of the underlying transport. It is intended as a
@@ -88,22 +101,56 @@ public class WsFrameDecoder(
      */
     private val buffer: Buffer = Buffer()
 
+    /**
+     * Whether the connection has ended. The decoder's only lifecycle state:
+     * set by [onInactive], never cleared, and read at the top of every read,
+     * after every emitted frame -- the ending can be raised from inside that
+     * frame's dispatch, and the loop must not look for the next one -- and
+     * before the fast path stashes a trailing partial frame for a next chunk
+     * that will not come.
+     */
+    private var ended: Boolean = false
+
+    /**
+     * Bytes in the slow-path accumulator: what has been copied in and not
+     * yet parsed. While a read is being drained that includes whole frames
+     * not yet reached; once it is drained, only a frame still incomplete --
+     * or, when a [WsCodecException] aborted the drain, the whole frames
+     * behind the bad one as well, which the next read parses; and from the
+     * ending on, always zero -- the seam the module's tests use to pin that
+     * nothing is held or copied after the connection has ended.
+     */
+    internal val pendingBytes: Long get() = buffer.size
+
+    override fun onInactive(ctx: PipelineHandlerContext) {
+        ended = true
+        // A frame left part-parsed will never complete; the accumulator is
+        // heap-owned, so dropping it is the whole of the release.
+        buffer.clear()
+        ctx.propagateInactive()
+    }
+
     override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
+        // Nothing after the ending is decoded; the read is released by the
+        // base handler as always.
+        if (ended) return
         if (poolDataPayloads && buffer.size == 0L) {
             // Fast path: parse complete frames straight out of the input
             // IoBuf while the slow-path accumulator is empty. Each call to
             // [tryFastEmit] consumes one complete frame from `msg` and emits
             // it; it returns false once the remaining bytes are less than a
-            // full frame.
-            while (msg.readableBytes > 0 && tryFastEmit(ctx, msg)) {
+            // full frame -- or the loop stops first because that frame's
+            // dispatch ended the connection.
+            while (!ended && msg.readableBytes > 0 && tryFastEmit(ctx, msg)) {
                 // loop until a partial frame remains
             }
             // Stash the trailing partial frame in the slow-path Buffer so the
             // next chunk continues parsing it. The IoBuf is auto-released
             // after this method returns; the pooled payloads emitted above
-            // are independent copies that outlive it.
+            // are independent copies that outlive it. Nothing is stashed
+            // after the ending: there is no next chunk to continue with.
             val remaining = msg.readableBytes
-            if (remaining > 0) {
+            if (!ended && remaining > 0) {
                 val bytes = ByteArray(remaining)
                 msg.readByteArray(bytes, 0, remaining)
                 buffer.write(bytes)
@@ -126,7 +173,12 @@ public class WsFrameDecoder(
     }
 
     private fun drainCompleteFrames(ctx: PipelineHandlerContext) {
-        while (true) {
+        // Re-checked after every emit: a frame's dispatch can end the
+        // connection, and the frames behind it are then not decoded. The
+        // ending also empties the accumulator, which stops this loop on its
+        // own; the check states the contract where it applies, and holds if
+        // the accumulator is ever left standing.
+        while (!ended) {
             val frame = tryParseFrame() ?: return
             emit(ctx, frame)
         }
