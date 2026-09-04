@@ -66,6 +66,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `codec-http`: both HTTP decoders stop decoding once the connection has ended; bytes after
+  it are discarded rather than parsed into messages nobody can answer, which also stops a
+  parse begun after the ending from stranding a pooled `HttpHeaders` and its recv buffer (#1093)
 - **BREAKING** (`core`): `Pipeline.notifyFlushComplete` and `PipelineHandler.onFlushComplete` — the
   answer to a flush, which every transport already reported and nothing received. Source-breaking
   for an out-of-tree `Pipeline` or `PipelineHandlerContext`; the handler callback has a default
@@ -140,6 +143,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `codec-http`: the response decoder no longer reports a truncated status line when the connection
+  ends from inside the dispatch of a head whose last line straddled a read boundary — the line
+  accumulator is consumed before the line it completed is parsed (#1093)
 - `codec-http`: a close raised from inside a decoder's own parse no longer lets a later request,
   or another connection, be handed the same pooled `HttpHeaders` (#1092)
 - `core` / `server-http`: channels now tell their pipeline they are active and that they have

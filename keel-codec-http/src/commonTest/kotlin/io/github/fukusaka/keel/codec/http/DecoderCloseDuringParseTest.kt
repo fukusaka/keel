@@ -18,27 +18,34 @@ import kotlin.test.assertNull
 
 /**
  * That a close raised from inside a decoder's own downstream dispatch does
- * not alias its pooled accumulator, and does not strand what the accumulator
- * holds.
+ * not alias its pooled accumulator, does not strand what the accumulator
+ * holds, and does not disturb what the decoder was doing before it.
  *
  * The decoders release their borrowed [HttpHeaders] on `onInactive`. A
  * handler that closes the channel synchronously from a request head — a
  * server's shutdown drain does exactly that — raises the ending *inside* the
- * decoder's parse frame, and the frame keeps writing into the accumulator
- * after control returns. Left on the released instance, the field hands it
- * back at the next borrow and two requests share one header map: measured
- * before the fix, three pipelined requests with a close from the first head
- * delivered the second request's header values on the third.
+ * decoder's parse frame. Two things used to go wrong there. The field kept
+ * pointing at the released instance, so the frame wrote into an accumulator
+ * the pool had handed on: measured before the fix, three pipelined requests
+ * with a close from the first head delivered the second request's header
+ * values on the third, and a second connection's already-emitted head came
+ * back carrying a header the first had parsed. And the frame kept decoding
+ * after the ending at all, emitting messages nobody could answer and taking
+ * borrows nobody would give back.
  *
- * Every case runs on a [TrackingAllocator] and ends by asserting the recv
- * buffers are all back. Claiming the accumulator is only half the problem:
- * whatever is claimed inherits the parse, and an instance that cannot release
- * the buffers its range entries retain turns the aliasing into a leak.
+ * Both are closed by construction now — the borrow has an owner
+ * ([BorrowedHeaders]) and the decoder ends ([DecoderEndedStateTest] pins
+ * what "ends" means). What these cases pin is the surroundings: that a close
+ * from a head leaves that head and every other connection alone, that what
+ * the decoder was in the middle of *before* the ending — a header line or
+ * block straddling a read, a message with no fields — decodes the same as it
+ * would have without one, and that every borrow and every recv buffer comes
+ * back.
  *
- * The sharpest shape has its own case: an ending that finds a borrow still
- * held, a second connection then taking it, and the first parsing on. Measured
- * on `main`, the second connection's already-emitted head came back carrying a
- * header the first connection had parsed.
+ * Every case runs on a [TrackingAllocator] and asserts the recv buffers are
+ * all back. Claiming the accumulator is only half the problem: whatever is
+ * claimed inherits the parse, and an instance that cannot release the buffers
+ * its range entries retain turns the aliasing into a leak.
  */
 class DecoderCloseDuringParseTest {
 
@@ -72,109 +79,21 @@ class DecoderCloseDuringParseTest {
     }
 
     @Test
-    fun `a close from the first head does not alias the later requests' headers`() {
-        val tracker = TrackingAllocator(DefaultAllocator)
-        val transport = TestIoTransport(tracker)
-        lateinit var channel: PipelinedChannel
-        channel = object : AbstractPipelinedChannel(transport, logger) {}
-        val heads = mutableListOf<HttpRequestHead>()
-        channel.pipeline.addLast("decoder", HttpRequestDecoder())
-        channel.pipeline.addLast(
-            "sink",
-            object : DuplexHandler {
-                override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
-                    when (msg) {
-                        is HttpRequestHead -> {
-                            heads.add(msg)
-                            // What a server's shutdown drain does to a
-                            // request that arrives while it is draining.
-                            if (heads.size == 1) channel.close()
-                        }
-                        is IoBuf -> msg.release()
-                        is HttpBody -> msg.content.release()
-                    }
-                }
-            },
-        )
-        val request = { marker: String -> "GET /$marker HTTP/1.1\r\nHost: h\r\nX-M: $marker\r\n\r\n" }
-
-        transport.onRead?.invoke(bufOf(request("a") + request("b") + request("c"), tracker))
-
-        assertEquals(
-            listOf("a", "b", "c"),
-            heads.map { it.headers["X-M"]?.toString() },
-            "each pipelined request carries its own header values",
-        )
-        assertNotSame(
-            heads[1].headers,
-            heads[2].headers,
-            "two requests must not share one pooled HttpHeaders instance",
-        )
-        // Held until here so the identity check above sees them live; a
-        // pooled instance is legitimately reused once released.
-        for (head in heads) head.headers.release()
-        assertEquals(0, tracker.outstandingCount, "every recv buffer the heads retained is back")
-    }
-
-    @Test
-    fun `a close from the first response head does not alias the later responses' headers`() {
-        val tracker = TrackingAllocator(DefaultAllocator)
-        val transport = TestIoTransport(tracker)
-        lateinit var channel: PipelinedChannel
-        channel = object : AbstractPipelinedChannel(transport, logger) {}
-        val heads = mutableListOf<HttpResponseHead>()
-        channel.pipeline.addLast("decoder", HttpResponseDecoder())
-        channel.pipeline.addLast(
-            "sink",
-            object : DuplexHandler {
-                override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
-                    when (msg) {
-                        is HttpResponseHead -> {
-                            heads.add(msg)
-                            if (heads.size == 1) channel.close()
-                        }
-                        is IoBuf -> msg.release()
-                        is HttpBody -> msg.content.release()
-                    }
-                }
-            },
-        )
-        val response = { marker: String ->
-            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-M: $marker\r\n\r\n"
-        }
-
-        transport.onRead?.invoke(bufOf(response("a") + response("b") + response("c"), tracker))
-
-        assertEquals(
-            listOf("a", "b", "c"),
-            heads.map { it.headers["X-M"]?.toString() },
-            "each pipelined response carries its own header values",
-        )
-        assertNotSame(heads[1].headers, heads[2].headers)
-        for (head in heads) head.headers.release()
-        assertEquals(0, tracker.outstandingCount, "every recv buffer the heads retained is back")
-    }
-
-    @Test
     fun `the same bytes decode the same however the reads are split`() {
         val request = { marker: String -> "GET /$marker HTTP/1.1\r\nHost: h\r\nX-M: $marker\r\n\r\n" }
 
-        // One read carrying all four, and the same four split at a message
-        // boundary — the close comes from the first head either way. The
-        // decoder decodes what arrives, before the ending and after it, and
-        // this pins that the fix did not change that: an earlier attempt
-        // dropped post-ending reads, which lost the fourth request in the
-        // split run alone. A split inside a header block is a different
-        // question and has its own case; this one says nothing about it.
-        val whole = decodeMarkers(listOf(request("a") + request("b") + request("c") + request("d")))
-        val split = decodeMarkers(listOf(request("a") + request("b") + request("c"), request("d")))
+        // The close comes from the first head, and after it nothing is
+        // decoded -- so the cut falls at the ending wherever the peer's
+        // segments fall, including inside the very message that raises it.
+        // Splits after the ending are the other class's concern; these cut
+        // `/a` itself, in its request line and in its header block.
+        val whole = decodeMarkers(listOf(request("a") + request("b") + request("c")))
+        val inRequestLine = decodeMarkers(listOf("GET /a HT", "TP/1.1\r\nHost: h\r\nX-M: a\r\n\r\n" + request("b")))
+        val inHeaders = decodeMarkers(listOf("GET /a HTTP/1.1\r\nHost: h\r\nX-", "M: a\r\n\r\n" + request("b")))
 
-        assertEquals(listOf("a", "b", "c", "d"), whole)
-        assertEquals(
-            whole,
-            split,
-            "a split at a message boundary does not change which requests are decoded",
-        )
+        assertEquals(listOf("a"), whole)
+        assertEquals(whole, inRequestLine, "a split inside the request line does not move the cut")
+        assertEquals(whole, inHeaders, "a split inside the header block does not move the cut")
     }
 
     @Test
@@ -291,11 +210,11 @@ class DecoderCloseDuringParseTest {
         val primed = List(PRIMED_POOL_SIZE) { HttpHeaders.borrow() }
         for (instance in primed) instance.release()
 
-        // Half the connections read on past the ending, half stop at it. The
-        // second half is what catches a replacement taken at the ending: a
-        // post-ending read carries such a borrow away in the message it
-        // completes, so a connection that simply stops is the only one where
-        // the replacement is left behind.
+        // Half the connections read on past the ending, half stop at it. Both
+        // halves pin that the ending leaves nothing borrowed: the ones that
+        // stop catch a replacement taken at the ending; the ones that read on
+        // are fed a header block that never completes, so a decoder that
+        // still decoded it would take a borrow nothing gives back.
         repeat(6) { round ->
             val tracker = TrackingAllocator(DefaultAllocator)
             val transport = TestIoTransport(tracker)
@@ -318,17 +237,19 @@ class DecoderCloseDuringParseTest {
                 },
             )
 
-            val message = if (label == "response") {
-                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-M: a\r\n\r\n"
+            val (message, unfinished) = if (label == "response") {
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-M: a\r\n\r\n" to "HTTP/1.1 200 OK\r\nX-M: b\r\n"
             } else {
-                "GET /x HTTP/1.1\r\nHost: h\r\n\r\n"
+                "GET /x HTTP/1.1\r\nHost: h\r\n\r\n" to "GET /y HTTP/1.1\r\nHost: h\r\n"
             }
             transport.onRead?.invoke(bufOf(message, tracker))
             channel.close()
             // A read after the ending, which is what a drained connection
-            // actually looks like. Its borrow has no second ending to give it
-            // back, so the message it fills has to carry it away on its own.
-            if (round % 2 == 0) transport.onRead?.invoke(bufOf(message, tracker))
+            // actually looks like -- and one that never completes its header
+            // block, so that a decoder still decoding it would hold a borrow
+            // with no second ending to give it back. The decoder has ended,
+            // so the read is not decoded and nothing is borrowed.
+            if (round % 2 == 0) transport.onRead?.invoke(bufOf(unfinished, tracker))
             for (headers in held) headers.release()
 
             assertEquals(0, tracker.outstandingCount, "$label: every recv buffer is back")
@@ -343,14 +264,14 @@ class DecoderCloseDuringParseTest {
     }
 
     @Test
-    fun `a request with no header fields after the ending is not handed the pool's accumulator`() {
-        // A shape that guarded only the sites writing a header field left this
-        // one unguarded: a message with no fields writes nothing, so nothing
-        // claimed, and the accumulator reached the application straight from
-        // the pool -- with the borrow taken for the message after it being the
-        // same instance. Measured that way: `[a, c, c]`, the last two sharing
-        // one map. (This design claims on first use, so the hand-over itself
-        // takes a borrow.)
+    fun `a request with no header fields is handed a pooled instance of its own`() {
+        // A message with no fields writes nothing into the accumulator, so a
+        // design that borrowed only on a header write handed the application
+        // whatever the slot held -- and the borrow taken for the message
+        // after it was the same instance. Measured that way: `[a, c, c]`,
+        // the last two sharing one map. The hand-over itself takes a borrow
+        // now. The close comes from the last head, so all three are decoded
+        // before the ending.
         val tracker = TrackingAllocator(DefaultAllocator)
         val transport = TestIoTransport(tracker)
         lateinit var channel: PipelinedChannel
@@ -364,7 +285,7 @@ class DecoderCloseDuringParseTest {
                     when (msg) {
                         is HttpRequestHead -> {
                             heads.add(msg)
-                            if (heads.size == 1) channel.close()
+                            if (heads.size == 3) channel.close()
                         }
                         is IoBuf -> msg.release()
                         is HttpBody -> msg.content.release()
@@ -401,10 +322,11 @@ class DecoderCloseDuringParseTest {
     }
 
     @Test
-    fun `a header line split across reads after the ending keeps its own fields`() {
-        // A header line split across the read boundary that follows the close.
-        // It goes through the fallback parser that handles straddling lines, a
-        // path no other case takes -- that, not where the split falls, is what
+    fun `a header line split across reads keeps its own fields`() {
+        // A header line split across a read boundary, with the close coming
+        // from the last head so the line is decoded before the ending. It goes
+        // through the fallback parser that handles straddling lines, a path no
+        // other case takes -- that, not where the split falls, is what
         // separates this from its sibling.
         val tracker = TrackingAllocator(DefaultAllocator)
         val transport = TestIoTransport(tracker)
@@ -423,7 +345,7 @@ class DecoderCloseDuringParseTest {
                             // because a later alias would overwrite them.
                             seen.add(msg.uri to msg.headers["X-A"]?.toString())
                             toRelease.add(msg.headers)
-                            if (seen.size == 1) {
+                            if (seen.size == 3) {
                                 channel.close()
                                 for (headers in toRelease) headers.release()
                                 toRelease.clear()
@@ -453,46 +375,35 @@ class DecoderCloseDuringParseTest {
     }
 
     @Test
-    fun `another connection's borrow does not become this one's accumulator`() {
-        // The worst shape, and the one that decides how the guard is written.
-        // The ending returns the accumulator; a second connection on the same
-        // pool -- ordinary, since the stack is per event-loop thread -- borrows
-        // it; then this connection parses on. Asking the instance whether it
-        // is idle in the pool answers "no" at that point, because the other
-        // connection now holds it, so a guard written that way goes quiet
-        // exactly when the write is worst: measured that way, connection two's
-        // request carried `X-Inj` from connection one.
+    fun `a connection closed from a head decodes nothing more and leaves another connection's head alone`() {
+        // The cross-connection shape with the close raised from a head: the
+        // ending arrives with the slot already empty -- the head took the
+        // accumulator away at `transfer` -- a second connection on the same
+        // pool then borrows and emits, and only then does the first read
+        // again. Before the decoder ended, the first parsed on and, with the
+        // field still pointing at what the pool had handed on, connection two's
+        // request carried `X-Inj` from connection one. Now the first decodes
+        // nothing after its ending and the second's head is exactly its own.
+        primeThePool()
         val tracker = TrackingAllocator(DefaultAllocator)
         val first = openConnection(tracker)
         val firstHeads = first.second
 
-        // The read ends exactly on head one, so the close is the last thing
-        // that happens on this connection before it hands control back --
-        // nothing parses again, and nothing takes a replacement.
         first.first.onRead?.invoke(bufOf("GET /a HTTP/1.1\r\nHost: h\r\n\r\n", tracker))
 
-        // A second connection opens and borrows from the same pool, taking
-        // the instance the ending just returned.
         val second = openConnection(tracker)
         second.first.onRead?.invoke(bufOf("GET /z HTTP/1.1\r\nHost: z\r\n\r\n", tracker))
 
-        // ...and only then does the first connection parse again.
         first.first.onRead?.invoke(
             bufOf("GET /b HTTP/1.1\r\nX-Inj: from-first\r\nHost: h\r\n\r\n", tracker),
         )
 
-        assertEquals(
-            listOf("/z"),
-            second.second.map { it.uri },
-            "the second connection decoded its own request",
-        )
-        assertNull(
-            second.second[0].headers["X-Inj"],
-            "and was not handed a header the first connection parsed",
-        )
-        assertEquals(listOf("/a", "/b"), firstHeads.map { it.uri })
+        assertEquals(listOf("/z"), second.second.map { it.uri }, "the second connection decoded its own request")
+        assertNull(second.second[0].headers["X-Inj"], "and was not handed a header the first connection parsed")
+        assertEquals(listOf("/a"), firstHeads.map { it.uri }, "the first connection decoded nothing after its ending")
         for (head in firstHeads + second.second) head.headers.release()
         assertEquals(0, tracker.outstandingCount, "every recv buffer is back")
+        assertEquals(PRIMED_POOL_SIZE, HttpHeadersPool.size(), "and every borrow came back")
     }
 
     /**
@@ -526,13 +437,15 @@ class DecoderCloseDuringParseTest {
     }
 
     @Test
-    fun `a header block straddling a read after the ending keeps its framing`() {
+    fun `a header block straddling a read keeps its framing`() {
         // The accumulator carries a part-parsed header block across the read
-        // boundary. Giving it back between reads discards the fields already
-        // parsed, and the decoder frames what follows against what is left:
-        // measured that way, `Content-Length` was lost, the body was framed
-        // away, and its bytes were delivered as a request of their own
-        // (`HELLOGET /c`). The framing is the assertion.
+        // boundary. A shape that gave the borrow back between reads discarded
+        // the fields already parsed, and the decoder framed what followed
+        // against what was left: measured that way, `Content-Length` was
+        // lost, the body was framed away, and its bytes were delivered as a
+        // request of their own (`HELLOGET /c`). The close comes from the last
+        // head, so the straddled block is decoded before the ending; the
+        // framing is the assertion.
         val tracker = TrackingAllocator(DefaultAllocator)
         val transport = TestIoTransport(tracker)
         lateinit var channel: PipelinedChannel
@@ -548,7 +461,7 @@ class DecoderCloseDuringParseTest {
                         is HttpRequestHead -> {
                             seen.add(msg.uri + " cl=" + msg.headers.contentLength)
                             heads.add(msg)
-                            if (heads.size == 1) channel.close()
+                            if (heads.size == 3) channel.close()
                         }
                         is HttpBody -> {
                             seen.add("body " + msg.content.readableBytes)
@@ -560,8 +473,8 @@ class DecoderCloseDuringParseTest {
             },
         )
 
-        // The close comes from `/a`. `/b`'s header block is then cut in two:
-        // `Content-Length` lands in the first read, the rest in the second.
+        // `/b`'s header block is cut in two: `Content-Length` lands in the
+        // first read, the rest in the second.
         transport.onRead?.invoke(
             bufOf("GET /a HTTP/1.0\r\n\r\n" + "POST /b HTTP/1.0\r\nContent-Length: 5\r\n", tracker),
         )
@@ -663,82 +576,123 @@ class DecoderCloseDuringParseTest {
     }
 
     @Test
-    fun `a connection parsing on after its ending does not write into another's head`() {
-        // The sharpest shape. The ending arrives with a borrow held -- the
-        // read stopped inside a header block -- a second connection then
-        // borrows what it gave back and emits a head from it, and only then
-        // does the first connection parse on. Measured on `main`, the second
-        // connection's head came back carrying `X-Inj` from the first.
+    fun `a rejected request's borrow that another connection takes is not written into`() {
+        // The cross-connection shape without an ending. A parse error gives
+        // the accumulator back through the same recycle the ending uses, but
+        // the decoder keeps decoding: a second connection on the same pool
+        // borrows what was given back and emits a head from it, and then the
+        // first reads on. A field left pointing at the released instance
+        // would write the first connection's next request into the second's
+        // already-emitted head. Green since the borrow got an owner; what it
+        // pins is that owner's record -- the mutation that gives the borrow
+        // back without forgetting it is killed here and nowhere else at
+        // decoder level, now that nothing is decoded after an ending.
         val tracker = TrackingAllocator(DefaultAllocator)
-        val firstHeads = mutableListOf<HttpRequestHead>()
-        val secondHeads = mutableListOf<HttpRequestHead>()
-        val (first, firstChannel) = openConnection(tracker, firstHeads, closesFromFirstHead = false)
+        val (first, firstHeads, firstErrors) = openRecordingConnection(tracker)
+        // `Host` is checked as the head is built, after the fields are in, so
+        // the rejection finds the accumulator held.
+        first.onRead?.invoke(bufOf("GET /nohost HTTP/1.1\r\nX-Part: one\r\n\r\n", tracker))
+        assertEquals(listOf("HttpParseException"), firstErrors)
 
-        // The read stops inside `/b`'s header block, so the ending finds the
-        // accumulator held -- the close comes from here rather than from a
-        // head, where the emitted message would already have taken it away.
-        first.onRead?.invoke(bufOf("POST /b HTTP/1.1\r\nX-Part: one\r\n", tracker))
-        firstChannel.close()
-
-        // The second connection arrives after the ending and takes what it
-        // gave back, emitting a head from it. It is opened here rather than up
-        // front because a decoder that borrows at construction would take a
-        // different instance and the shape would not form. It does not close:
-        // it is the bystander whose head must not be written into.
-        val (second, _) = openConnection(tracker, secondHeads, closesFromFirstHead = false)
+        val (second, secondHeads, _) = openRecordingConnection(tracker)
         second.onRead?.invoke(bufOf("GET /z HTTP/1.1\r\nHost: z\r\n\r\n", tracker))
 
-        // ...and only now does the first connection continue `/b`.
-        first.onRead?.invoke(bufOf("X-Inj: from-first\r\nHost: h\r\n\r\n", tracker))
+        first.onRead?.invoke(bufOf("GET /b HTTP/1.1\r\nX-Inj: from-first\r\nHost: h\r\n\r\n", tracker))
 
         assertEquals(listOf("/z"), secondHeads.map { it.uri })
-        assertNull(
-            secondHeads[0].headers["X-Inj"],
-            "the second connection's head is not written into by the first",
-        )
+        assertNull(secondHeads[0].headers["X-Inj"], "the second connection's head is not written into by the first")
+        assertEquals(listOf("/b"), firstHeads.map { it.uri }, "and the first decoded its next request")
         for (head in firstHeads + secondHeads) head.headers.release()
         assertEquals(0, tracker.outstandingCount, "every recv buffer is back")
     }
 
-    /**
-     * Opens a request-decoding channel on [tracker], recording every head it
-     * sees in [heads] and closing itself from the first one when
-     * [closesFromFirstHead].
-     */
-    private fun openConnection(
+    @Test
+    fun `a rejected response's borrow that another connection takes is not written into`() {
+        // The case above on the client side; an invalid `Content-Length` is
+        // rejected as the head is built, with the accumulator held.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val (first, firstHeads, firstErrors) = openRecordingResponseConnection(tracker)
+        first.onRead?.invoke(bufOf("HTTP/1.1 200 OK\r\nX-Part: one\r\nContent-Length: abc\r\n\r\n", tracker))
+        assertEquals(listOf("HttpParseException"), firstErrors)
+
+        val (second, secondHeads, _) = openRecordingResponseConnection(tracker)
+        second.onRead?.invoke(bufOf("HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n", tracker))
+
+        first.onRead?.invoke(bufOf("HTTP/1.1 204 No Content\r\nX-Inj: from-first\r\n\r\n", tracker))
+
+        assertEquals(listOf(201), secondHeads.map { it.status.code })
+        assertEquals(0L, secondHeads[0].headers.contentLength, "its framing header survives")
+        assertNull(secondHeads[0].headers["X-Inj"], "and it gains nothing from the first connection")
+        assertEquals(listOf(204), firstHeads.map { it.status.code }, "and the first decoded its next response")
+        for (head in firstHeads + secondHeads) head.headers.release()
+        assertEquals(0, tracker.outstandingCount, "every recv buffer is back")
+    }
+
+    /** A request-decoding channel that records heads and errors and never closes itself. */
+    private fun openRecordingConnection(
         tracker: TrackingAllocator,
-        heads: MutableList<HttpRequestHead>,
-        closesFromFirstHead: Boolean,
-    ): Pair<TestIoTransport, PipelinedChannel> {
+    ): Triple<TestIoTransport, MutableList<HttpRequestHead>, MutableList<String>> {
         val transport = TestIoTransport(tracker)
-        lateinit var channel: PipelinedChannel
-        channel = object : AbstractPipelinedChannel(transport, logger) {}
+        val channel = object : AbstractPipelinedChannel(transport, logger) {}
+        val heads = mutableListOf<HttpRequestHead>()
+        val errors = mutableListOf<String>()
         channel.pipeline.addLast("decoder", HttpRequestDecoder())
         channel.pipeline.addLast(
             "sink",
             object : DuplexHandler {
                 override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
                     when (msg) {
-                        is HttpRequestHead -> {
-                            heads.add(msg)
-                            if (closesFromFirstHead && heads.size == 1) channel.close()
-                        }
+                        is HttpRequestHead -> heads.add(msg)
                         is HttpBody -> msg.content.release()
                         is IoBuf -> msg.release()
                     }
                 }
+
+                override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+                    errors.add(cause::class.simpleName ?: "?")
+                }
             },
         )
-        return transport to channel
+        return Triple(transport, heads, errors)
+    }
+
+    /** The response-decoding twin of [openRecordingConnection]. */
+    private fun openRecordingResponseConnection(
+        tracker: TrackingAllocator,
+    ): Triple<TestIoTransport, MutableList<HttpResponseHead>, MutableList<String>> {
+        val transport = TestIoTransport(tracker)
+        val channel = object : AbstractPipelinedChannel(transport, logger) {}
+        val heads = mutableListOf<HttpResponseHead>()
+        val errors = mutableListOf<String>()
+        channel.pipeline.addLast("decoder", HttpResponseDecoder())
+        channel.pipeline.addLast(
+            "sink",
+            object : DuplexHandler {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                    when (msg) {
+                        is HttpResponseHead -> heads.add(msg)
+                        is HttpBody -> msg.content.release()
+                        is IoBuf -> msg.release()
+                    }
+                }
+
+                override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+                    errors.add(cause::class.simpleName ?: "?")
+                }
+            },
+        )
+        return Triple(transport, heads, errors)
     }
 
     @Test
-    fun `a response connection parsing on after its ending does not write into another's head`() {
-        // The request decoder's sharpest case, on the client side. Measured on
-        // `main`, the second connection's already-emitted head lost its
-        // `Content-Length`: the first connection's reset wiped the instance
-        // that head owns, erasing the framing header from a response the
-        // application had already been given.
+    fun `a response connection that reads after its ending decodes nothing and leaves another's head alone`() {
+        // The held-at-ending shape on the client side: the read stops inside a
+        // header block and the channel closes there, a second connection then
+        // borrows what the ending gave back and emits a head from it, and only
+        // then does the first read again. Measured on `main`, the second
+        // connection's already-emitted head lost its `Content-Length` -- the
+        // first's reset wiped the instance that head owns. Now the first
+        // decodes nothing after its ending: no reset, no borrow, no head.
         val tracker = TrackingAllocator(DefaultAllocator)
         val firstHeads = mutableListOf<HttpResponseHead>()
         val secondHeads = mutableListOf<HttpResponseHead>()
@@ -755,6 +709,11 @@ class DecoderCloseDuringParseTest {
         assertEquals(listOf(201), secondHeads.map { it.status.code })
         assertEquals(0L, secondHeads[0].headers.contentLength, "its framing header survives")
         assertNull(secondHeads[0].headers["X-Inj"], "and it gains nothing from the first connection")
+        assertEquals(
+            emptyList(),
+            firstHeads.map { it.status.code },
+            "the first connection decoded nothing after its ending",
+        )
         for (head in firstHeads + secondHeads) head.headers.release()
         assertEquals(0, tracker.outstandingCount, "every recv buffer is back")
     }
@@ -816,6 +775,12 @@ class DecoderCloseDuringParseTest {
         for (head in heads) head.headers.release()
         assertEquals(0, tracker.outstandingCount, "every recv buffer is back")
         return markers
+    }
+
+    private fun primeThePool() {
+        HttpHeadersPool.clear()
+        val primed = List(PRIMED_POOL_SIZE) { HttpHeaders.borrow() }
+        for (instance in primed) instance.release()
     }
 
     private companion object {

@@ -93,6 +93,17 @@ import kotlin.reflect.KClass
  * the inactive event so consumers can distinguish truncation from a
  * cleanly delimited close.
  *
+ * **Ending**: once the connection has ended ([onInactive]) the decoder
+ * decodes nothing more — the rest of the read that carried the ending,
+ * later reads, and journal replays are drained unparsed, and nothing is
+ * emitted or borrowed for them. (The head that raised the ending still
+ * finishes its own emission: a bodyless head's empty [HttpBodyEnd] follows
+ * the ending, as it always did.) A truncated response is reported once, as
+ * above, and then the decoder is done. `READ_UNTIL_CLOSE` completes its
+ * body on the ending first, and `PASS_THROUGH` is not decoding at all: it
+ * keeps relaying, and what the ending means for the switched protocol is
+ * that protocol's handler's decision.
+ *
  * The handler is stateful and must not be shared between connections.
  */
 class HttpResponseDecoder(
@@ -112,9 +123,32 @@ class HttpResponseDecoder(
         READ_CHUNK_TRAILER,
         READ_UNTIL_CLOSE,
         PASS_THROUGH,
+
+        /**
+         * The connection has ended. Nothing after it is decoded: the rest of
+         * the read that carried the ending, later reads, and reads the
+         * pipeline replays from its journal are all drained unparsed, and
+         * nothing is emitted or borrowed for them. Terminal -- see [state].
+         * [PASS_THROUGH] never enters it: there the decoder is relaying, not
+         * decoding, and what an ending means for the switched protocol is
+         * its own handler's decision.
+         */
+        ENDED,
     }
 
-    private var state = State.READ_STATUS_LINE
+    /**
+     * The parse state. [State.ENDED] is absorbing: once the connection has
+     * ended nothing moves the decoder out of it. Every transition writes this
+     * property, so the rule lives here and nowhere else. In this decoder every
+     * transition is written *before* the dispatch that could raise the ending,
+     * so today nothing is absorbed here -- the setter is the invariant, not a
+     * repair, and holds for a write added later. (The request decoder's
+     * `emitHead` writes after its dispatch and relies on it.)
+     */
+    private var state: State = State.READ_STATUS_LINE
+        set(next) {
+            if (field != State.ENDED) field = next
+        }
 
     // Fallback accumulator for lines that straddle IoBuf boundaries.
     // Lazily allocated on the first straddle; the ByteArray is retained
@@ -223,6 +257,7 @@ class HttpResponseDecoder(
             State.READ_CHUNK_DATA_CRLF, State.READ_CHUNK_TRAILER,
             -> propagateTruncation(ctx, "chunked body")
             State.PASS_THROUGH -> Unit // tunnel teardown is the new protocol's concern
+            State.ENDED -> Unit // the ending is delivered once; nothing is left to finish
         }
         // Any [headers] the decoder is still holding is a borrow that never
         // reached an emitted [HttpResponseHead]. Release it so a connection
@@ -241,6 +276,14 @@ class HttpResponseDecoder(
         // accumulator; the request decoder, whose `onInactive` has no such
         // routing, relies on this line outright.
         headers.recycle()
+        // And the decoder is done, unless it has already handed the stream
+        // to a switched protocol: after 101 or a CONNECT tunnel it relays
+        // rather than decodes, and the ending is that protocol's to
+        // interpret. Everywhere else nothing decoded after the ending could
+        // be answered, so nothing after it is decoded. This may run from
+        // inside the downstream dispatch of a head, with the parse frame
+        // still on the stack; the frame sees the state when it next looks.
+        if (state != State.PASS_THROUGH) state = State.ENDED
         ctx.propagateInactive()
     }
 
@@ -294,6 +337,9 @@ class HttpResponseDecoder(
                     buf.readerIndex = buf.writerIndex
                     ctx.propagateRead(rest)
                 }
+                // Nothing after the ending is decoded; the read is released by
+                // the caller as always, and nothing is emitted or borrowed for it.
+                State.ENDED -> return
                 State.READ_STATUS_LINE, State.READ_HEADERS,
                 State.READ_CHUNK_SIZE, State.READ_CHUNK_TRAILER,
                 -> {
@@ -371,7 +417,7 @@ class HttpResponseDecoder(
                 }
             }
             State.READ_FIXED_BODY, State.READ_CHUNK_DATA, State.READ_CHUNK_DATA_CRLF,
-            State.READ_UNTIL_CLOSE, State.PASS_THROUGH,
+            State.READ_UNTIL_CLOSE, State.PASS_THROUGH, State.ENDED,
             -> Unit // unreachable — processBuffer routes these states elsewhere.
         }
     }
@@ -386,40 +432,46 @@ class HttpResponseDecoder(
         var effLength = accumulatorSize
         if (effLength > 0 && arr[effLength - 1] == CR) effLength--
         enforceLineSizeCap(effLength)
-        try {
-            when (state) {
-                State.READ_STATUS_LINE -> {
-                    parseStatusLineFallback(arr, 0, effLength)
-                    state = State.READ_HEADERS
-                }
-                State.READ_HEADERS -> {
-                    if (effLength == 0) {
-                        emitHead(ctx)
-                    } else {
-                        parseHeaderLineFallback(arr, 0, effLength)
-                    }
-                }
-                State.READ_CHUNK_SIZE -> {
-                    val size = chunkSizeInArr(arr, 0, effLength)
-                    if (size < 0L) throwInvalidChunkSizeFromArr(arr, 0, effLength)
-                    bodyBytesRemaining = size
-                    state = if (size == 0L) State.READ_CHUNK_TRAILER else State.READ_CHUNK_DATA
-                }
-                State.READ_CHUNK_TRAILER -> {
-                    if (effLength == 0) {
-                        emitLastWithTrailers(ctx)
-                    } else {
-                        val trailers = chunkTrailers ?: HttpHeaders().also { chunkTrailers = it }
-                        parseTrailerLineFallback(arr, 0, effLength, trailers)
-                    }
-                }
-                State.READ_FIXED_BODY, State.READ_CHUNK_DATA, State.READ_CHUNK_DATA_CRLF,
-                State.READ_UNTIL_CLOSE, State.PASS_THROUGH,
-                -> Unit // unreachable.
+        // The line is assembled: the accumulator is consumed here, before it
+        // is parsed, so that `accumulatorSize > 0` means exactly "a line is
+        // still pending". Parsing the blank line that ends a header block
+        // dispatches the head, and a handler can end the connection from
+        // inside that dispatch; a size left standing until afterwards made
+        // that ending look like a truncated line -- measured, a read boundary
+        // between the CR and LF of that blank line, with a close from the
+        // head, reported a status line cut short for a response that had
+        // decoded whole. The bytes stay in the array; the parsers below take
+        // their length explicitly.
+        accumulatorSize = 0
+        when (state) {
+            State.READ_STATUS_LINE -> {
+                parseStatusLineFallback(arr, 0, effLength)
+                state = State.READ_HEADERS
             }
-        } finally {
-            // Reset logical size so subsequent lines can reuse the ByteArray.
-            accumulatorSize = 0
+            State.READ_HEADERS -> {
+                if (effLength == 0) {
+                    emitHead(ctx)
+                } else {
+                    parseHeaderLineFallback(arr, 0, effLength)
+                }
+            }
+            State.READ_CHUNK_SIZE -> {
+                val size = chunkSizeInArr(arr, 0, effLength)
+                if (size < 0L) throwInvalidChunkSizeFromArr(arr, 0, effLength)
+                bodyBytesRemaining = size
+                state = if (size == 0L) State.READ_CHUNK_TRAILER else State.READ_CHUNK_DATA
+            }
+            State.READ_CHUNK_TRAILER -> {
+                if (effLength == 0) {
+                    emitLastWithTrailers(ctx)
+                } else {
+                    val trailers = chunkTrailers ?: HttpHeaders().also { chunkTrailers = it }
+                    parseTrailerLineFallback(arr, 0, effLength, trailers)
+                }
+            }
+            State.READ_FIXED_BODY, State.READ_CHUNK_DATA, State.READ_CHUNK_DATA_CRLF,
+            State.READ_UNTIL_CLOSE, State.PASS_THROUGH, State.ENDED,
+            -> Unit // unreachable.
         }
     }
 
@@ -868,6 +920,8 @@ class HttpResponseDecoder(
     }
 
     private fun resetState() {
+        // Once the connection has ended no parse runs, so no error reaches
+        // this reset; if one did, the property would absorb the write.
         state = State.READ_STATUS_LINE
         accumulatorSize = 0
         status = null

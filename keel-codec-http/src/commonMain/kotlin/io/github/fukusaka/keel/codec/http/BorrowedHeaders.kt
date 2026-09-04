@@ -33,29 +33,18 @@ package io.github.fukusaka.keel.codec.http
  * read as much as a write, and [transfer] counts, so a message with no header
  * fields takes one too. It is handed to the message it filled when that is
  * emitted ([transfer]), and returned when a parse is abandoned or the
- * connection ends ([recycle]). Nothing is held between messages, so a
- * connection that ends and then reads a message to completion costs the pool
- * nothing: measured, a primed pool is the same size afterwards. A connection
+ * connection ends ([recycle]). Nothing is held between messages. A connection
  * that ends part-way through a message gives that accumulator back too --
- * [recycle] does not ask whether one is in flight.
+ * [recycle] does not ask whether one is in flight -- and after the ending the
+ * decoder decodes nothing, so [get] is not called again: once the emitted
+ * heads are released the pool is as it was. Measured, a primed pool is the
+ * same size after a run of connections that end and then read on.
  *
- * The one connection that costs anything is one that ends and then reads bytes
- * which never finish their message: it holds what it parses into, and nothing
- * will complete it. That costs a pooled instance **and** the recv buffer the
- * accumulator's range entries retain, which is the larger of the two.
- * Measured over twenty such connections: twenty buffers held here against one
- * on `main`.
- *
- * `main` is not better here, it is differently broken. It writes into an
- * instance the pool has already handed on, so the *next* borrower's release
- * frees the buffer -- the corruption is what cleans up. A decoder simply
- * dropped part-way through a header block leaks identically on both trees
- * (measured, twenty of twenty either way); what this branch changes is that
- * the post-ending shape joins that pre-existing class instead of being
- * accidentally swept up by the defect. Closing it needs the accumulator not to
- * retain buffers once the connection has ended -- the copying path the
- * trailers already take, and for the same reason -- which is filed, not done
- * here.
+ * That the decoder stops at its ending is what closes the accounting. A parse
+ * begun after it would hold a pooled instance and the recv buffer the
+ * accumulator's range entries retain, with no second ending to give either
+ * back; measured before the decoders ended, twenty such connections held
+ * twenty buffers.
  *
  * **Not generic, deliberately.** The hazard is not specific to these decoders
  * — a handler that releases something on `onInactive` and keeps receiving has
@@ -113,10 +102,10 @@ internal class BorrowedHeaders {
      * boundary, so a `Content-Length` was lost and the body bytes were
      * delivered as a request of their own. Neither is needed for the ownership
      * this type keeps: a borrow is taken on first use and handed to the
-     * message at [transfer], so after the ending a read that completes its
-     * message leaves this slot empty on its own. That the ending
-     * discards an in-flight header block at all is older than this type and is
-     * filed separately; [recycle] neither causes nor cures it.
+     * message at [transfer], and the decoder decodes nothing after its
+     * ending, so no read after it borrows at all. That the ending discards an
+     * in-flight header block is the decoder's contract, not this type's:
+     * [recycle] gives back whatever it holds and does not ask.
      */
     fun recycle() {
         held?.release()
