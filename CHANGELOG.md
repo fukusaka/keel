@@ -66,6 +66,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `codec-websocket`: `WsFrameDecoder` stops decoding once the connection has ended; bytes after it
+  are not parsed into frames nobody can act on, and a frame left part-parsed is dropped (#1094)
 - `codec-http`: both HTTP decoders stop decoding once the connection has ended; bytes after
   it are discarded rather than parsed into messages nobody can answer, which also stops a
   parse begun after the ending from stranding a pooled `HttpHeaders` and its recv buffer (#1093)
