@@ -66,6 +66,20 @@ import kotlin.reflect.KClass
  * **Error handling**: on [HttpParseException], the handler resets its
  * state and propagates the error downstream. The caller (typically the
  * application handler) is responsible for closing the connection.
+ *
+ * **Ending**: once the connection has ended ([onInactive]) the decoder
+ * decodes nothing more. The ending can be raised from inside the decoder's
+ * own downstream dispatch — a handler closing the channel from a request
+ * head, as a server's shutdown drain does — with the parse frame still on
+ * the stack; the rest of that read, later reads, and reads the pipeline
+ * replays from its journal are then drained unparsed. Nothing decoded after
+ * the ending could be answered, so nothing is emitted and no accumulator is
+ * borrowed for it. (The head that raised the ending still finishes its own
+ * emission: a bodyless head's empty [HttpBodyEnd] follows the ending, as it
+ * always did; it carries no bytes.) A request cut by the ending is discarded
+ * without an error:
+ * nobody is waiting on it. (The response decoder, whose caller is, reports
+ * the truncation first.)
  */
 class HttpRequestDecoder(
     /**
@@ -89,9 +103,28 @@ class HttpRequestDecoder(
         READ_CHUNK_DATA,
         READ_CHUNK_DATA_CRLF,
         READ_CHUNK_TRAILER,
+
+        /**
+         * The connection has ended. Nothing after it is decoded: the rest of
+         * the read that carried the ending, later reads, and reads the
+         * pipeline replays from its journal are all drained unparsed, and
+         * nothing is emitted or borrowed for them. Terminal -- see [state].
+         */
+        ENDED,
     }
 
-    private var state = State.READ_REQUEST_LINE
+    /**
+     * The parse state. [State.ENDED] is absorbing: once the connection has
+     * ended nothing moves the decoder out of it. This decoder needs that:
+     * [emitHead] writes the next state *after* the downstream dispatch that
+     * can raise the ending returns, and that write is what the setter
+     * absorbs. Every transition writes this property, so the rule lives here
+     * and nowhere else.
+     */
+    private var state: State = State.READ_REQUEST_LINE
+        set(next) {
+            if (field != State.ENDED) field = next
+        }
 
     // Fallback accumulator — lazily allocated on the first cross-IoBuf line.
     // `null` in the steady state where every line fits in a single IoBuf.
@@ -185,11 +218,13 @@ class HttpRequestDecoder(
         //
         // The borrow goes back here. It is the same recycle an abandoned
         // parse performs -- the accumulator never reached a message, so it is
-        // still this decoder's to give back -- and needs no bookkeeping of its
-        // own: a borrow is taken on first use and handed to the message at
-        // [BorrowedHeaders.transfer], so a read after the ending that
-        // completes its message leaves the slot empty on its own.
+        // still this decoder's to give back.
         headers.recycle()
+        // And the decoder is done: nothing decoded after the ending could be
+        // answered, so nothing after it is decoded. This may run from inside
+        // the downstream dispatch of a head, with the parse frame still on
+        // the stack; the frame sees the state when it next looks and stops.
+        state = State.ENDED
         ctx.propagateInactive()
     }
 
@@ -256,6 +291,9 @@ class HttpRequestDecoder(
                 -> {
                     if (!processOneLine(ctx, buf)) return
                 }
+                // Nothing after the ending is decoded; the read is released by
+                // the caller as always, and nothing is emitted or borrowed for it.
+                State.ENDED -> return
             }
         }
     }
@@ -327,7 +365,7 @@ class HttpRequestDecoder(
                 }
             }
             State.READ_FIXED_BODY, State.READ_CHUNK_DATA,
-            State.READ_CHUNK_DATA_CRLF,
+            State.READ_CHUNK_DATA_CRLF, State.ENDED,
             -> Unit // unreachable — processBuffer routes these states elsewhere.
         }
     }
@@ -377,7 +415,7 @@ class HttpRequestDecoder(
                 }
             }
             State.READ_FIXED_BODY, State.READ_CHUNK_DATA,
-            State.READ_CHUNK_DATA_CRLF,
+            State.READ_CHUNK_DATA_CRLF, State.ENDED,
             -> Unit // unreachable.
         }
     }
@@ -859,6 +897,8 @@ class HttpRequestDecoder(
     }
 
     private fun resetState() {
+        // Once the connection has ended no parse runs, so no error reaches
+        // this reset; if one did, the property would absorb the write.
         state = State.READ_REQUEST_LINE
         accumulatorSize = 0
         method = null
