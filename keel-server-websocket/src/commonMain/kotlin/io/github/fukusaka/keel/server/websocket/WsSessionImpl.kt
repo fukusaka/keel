@@ -173,11 +173,17 @@ internal class WsSessionImpl(
             // Close + drain the frame bridge: the pump is its sole consumer,
             // so any pooled WsFrame still buffered there (e.g. a data frame
             // the peer put after CLOSE, or frames queued when the pump was
-            // cancelled) is now unreachable. A server-initiated channel.close()
-            // does not fire the bridge's onInactive release hook, so reclaim
-            // them here; closing the bridge also makes a late decoder frame's
-            // trySend fail and take the bridge's release path instead of
-            // leaking. Synchronous, so it runs even when the pump is cancelled.
+            // cancelled) is now unreachable. The channel's own close() does
+            // deliver the ending, and the bridge releases on it -- but the
+            // pump can stop before anything closes the channel, and a frame
+            // buffered for a consumer that left is stranded either way, so
+            // reclaim here as well. Closing the bridge also makes a late
+            // frame's trySend fail and take the bridge's release path instead
+            // of leaking: the pump breaking on a peer CLOSE leaves the channel
+            // open until the upgrade's own teardown closes it, so a frame the
+            // peer sends after its CLOSE is still decoded and still has to
+            // land somewhere.
+            // Synchronous, so it runs even when the pump is cancelled.
             bridge.closeAndReleaseBuffered()
             // Release the pooled fragments of any message left half-assembled
             // when the pump stopped (the decoder's zero-copy fast path hands
