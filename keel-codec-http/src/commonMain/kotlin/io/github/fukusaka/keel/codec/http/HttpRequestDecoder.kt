@@ -948,9 +948,11 @@ class HttpRequestDecoder(
 // Pure functions of their arguments, at file level as [HttpResponseDecoder]
 // keeps its own. They need none of the class's state, and the class sits
 // close to detekt's `LargeClass` limit: an earlier shape of the terminal-state
-// change crossed it, and this is what kept the gate where it was. Measured on the epoll pipeline server, the move alone is also worth
-// about 13% at 16 threads / 500 connections -- not the reason it was made,
-// but a reason it stays.
+// change crossed it, and this is what kept the gate where it was; the final
+// shape fits without the move (measured: with these put back inside the
+// class, detekt raises nothing). The move is performance-neutral -- measured,
+// a clean build of the tree before it and one after decode the same on the
+// epoll pipeline server -- and stays for the layout and the headroom.
 
 private val LF = '\n'.code.toByte()
 private val CR = '\r'.code.toByte()
