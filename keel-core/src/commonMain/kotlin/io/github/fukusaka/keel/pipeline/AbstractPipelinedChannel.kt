@@ -3,6 +3,7 @@ package io.github.fukusaka.keel.pipeline
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.core.SocketAddress
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.internal.DefaultPipeline
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlin.coroutines.EmptyCoroutineContext
@@ -31,8 +32,9 @@ import kotlin.coroutines.EmptyCoroutineContext
  *   ensureBridge()                 → installs SuspendBridgeHandler (no read arming)
  *   readEnabled                    → transport.readEnabled
  *   shutdownOutput()               → transport.shutdownOutput()
- *   close()                        → pipeline.notifyInactive(), pipeline.requestClose() once,
- *                                    then transport.close() if the walk left it open
+ *   close()                        → the pipeline's close sequence: drain a still-queued
+ *                                    journal, the ending, the close walk, the release,
+ *                                    then the pipeline's end of life (every handler removed)
  * ```
  */
 abstract class AbstractPipelinedChannel(
@@ -64,13 +66,6 @@ abstract class AbstractPipelinedChannel(
     override fun resumeReads() = transport.resumeReads()
 
     private var bridge: SuspendBridgeHandler? = null
-
-    /**
-     * Whether [close] has already asked the pipeline to walk the handlers'
-     * close, so a handler that closes from inside its own `onClose` does not
-     * start the walk again.
-     */
-    private var closeWalkAsked: Boolean = false
 
     init {
         transport.onWritabilityChanged = { writable ->
@@ -163,11 +158,11 @@ abstract class AbstractPipelinedChannel(
         pipeline.addLast(PipelinedChannel.SUSPEND_BRIDGE_NAME, handler)
         bridge = handler
         // A peer-close that arrived before the bridge was installed is not
-        // lost: [DefaultPipeline] replays [SuspendBridgeHandler.onInactive]
-        // from `callHandlerAdded` (its `inactiveObserved` flag), so the
-        // bridge observes EOF and the next `read(buf)` returns `-1`. The
-        // channel is left open for the caller to close — Coroutine-mode
-        // channels are not auto-closed (see the `onReadClosed` wiring).
+        // lost: [DefaultPipeline] replays the ending it already delivered to a
+        // late handler from inside the add, so the bridge observes EOF and
+        // the next `read(buf)` returns `-1`. The channel is left open for the
+        // caller to close — Coroutine-mode channels are not auto-closed (see
+        // the `onReadClosed` wiring).
         return handler
     }
 
@@ -184,8 +179,10 @@ abstract class AbstractPipelinedChannel(
     }
 
     /**
-     * Closes this channel: tells its pipeline the connection has ended, asks
-     * the handlers to close, and releases the transport.
+     * Closes this channel: drains a journal whose drain is still queued, tells
+     * the pipeline the connection has ended, asks the handlers to close,
+     * releases the transport, and ends the pipeline's life — every handler
+     * removed, `handlerRemoved` once each.
      *
      * The ending is the other half of the activation sent at construction, and
      * not separable from it. A handler that registers something on `onActive`
@@ -196,89 +193,61 @@ abstract class AbstractPipelinedChannel(
      * never removed.
      *
      * The handlers' close is the outbound walk, for what a handler owns rather
-     * than what it observed: a TLS codec's native session is released there.
-     * Asked for once per channel, however many times a handler closes back.
+     * than what it observed. Each handler hears it at most once, however many
+     * times a handler closes back; a handler that consumes it ends the walk,
+     * and what a handler owns is released by `handlerRemoved` at the end of
+     * life regardless.
      *
      * **Where the handlers hear it relative to the descriptor going away
      * depends on the thread.** Called on the transport's own loop, the walk
      * runs before the release, and a handler still has a transport while it
-     * closes. Called from anywhere else, the walk is handed to the loop and the
-     * release happens first, so the handlers hear their close afterwards,
-     * against a transport already gone. A handler that must write during its
-     * close — a TLS close_notify is the example — cannot rely on getting one
-     * off the loop.
+     * closes. Called from anywhere else, the descriptor is released first —
+     * strictly before the hand-off, so the loop sees it gone — and the
+     * handlers hear their close afterwards. Called after the loop has stopped,
+     * the whole sequence runs in place on this thread, under the quiescence a
+     * stopped loop implies; a second closer on the same stopped loop finds the
+     * pipeline claimed and releases the transport only. A handler that must
+     * write during its close — a TLS close_notify is the example — cannot rely
+     * on getting one off the loop.
      *
-     * Idempotent at the pipeline, which already expected this caller: a close
-     * after a peer FIN finds the inactivation recorded and does nothing. Two
-     * threads closing at once can both start a walk; the flag that guards it is
-     * a plain read, like the transport's own, and for the same reason.
+     * Idempotent: every step of the sequence is a no-op once done, so a close
+     * re-entered from a handler — inside the ending, inside the close walk,
+     * inside a replayed read — and a second close from another thread both
+     * find the finished steps done.
      */
     override fun close() {
-        // On the loop: the ending, the walk, then the release the walk may
-        // have left undone. Off it: everything the handlers hear is handed to
-        // the loop — every pipeline delivery belongs to it, and the server's
-        // own handler mutates a registry its loop also touches, lock-free, on
-        // exactly that contract — while the descriptor is released here, as
-        // promptly as when close() did nothing else.
         if (transport.inOwningContext) {
-            pipeline.notifyInactive()
-            // The handlers' own close, which nothing in production sent
-            // before. `requestClose` has been on [Pipeline] since it was
-            // written with no caller outside tests, so `onClose` never ran on
-            // a connection and a handler holding something the connection
-            // owns — a TLS codec's native session, most of all — was never
-            // told to let go of it.
-            //
-            // Asked for once. The walk runs handler code, and a handler that
-            // closes this channel from inside its own `onClose` re-enters
-            // here: guarding on the transport instead would not hold, because
-            // the transport is still open until the walk reaches its end.
-            // Measured before this flag existed: 2620 frames deep, then a
-            // stack overflow that `invokeOnClose`'s own catch swallowed into
-            // an error report — and on Native, where these engines live,
-            // stack exhaustion is not catchable at all.
-            //
-            // Not a compare-and-swap, like the transport's own `markClosing`
-            // and for the same reason: two threads closing the same channel at
-            // once can both read `false` and both walk. That is a race the
-            // caller already has with the descriptor.
-            if (!closeWalkAsked) {
-                closeWalkAsked = true
-                pipeline.requestClose()
-            }
-            // The descriptor is not left to the walk: it has just run, and
-            // finding the transport still open means a handler swallowed the
-            // close or threw — it would otherwise stay for the pipeline's
-            // lifetime.
-            if (transport.isOpen) transport.close()
+            defaultPipeline.closeOnOwningContext()
             return
         }
-        // Read before the hand-off, because two closers racing here can both
-        // see `false` — the race the flag's comment above already accepts. The
-        // flag and not the transport guards the walk, so a channel whose
-        // transport died first still asks its handlers to release what they
-        // hold.
-        val walkNeeded = !closeWalkAsked
-        if (walkNeeded) closeWalkAsked = true
         if (transport.canDispatchToOwningContext) {
-            transport.ioDispatcher.dispatch(EmptyCoroutineContext) {
-                pipeline.notifyInactive()
-                if (walkNeeded) pipeline.requestClose()
-            }
-        } else {
-            // The loop has stopped: it can neither take the hand-off nor race
-            // this caller, so the ending runs in place and the walk falls to
-            // the pipeline's head-only fallback.
-            pipeline.notifyInactive()
-            if (walkNeeded) pipeline.requestClose()
+            // The release does not wait on the loop, and precedes the hand-off:
+            // what the loop then runs — the ending, the walk, the end of life
+            // — sees the descriptor gone, and the journal's drain-first
+            // delivers no data after it.
+            releaseTransport()
+            transport.ioDispatcher.dispatch(EmptyCoroutineContext) { defaultPipeline.closeOnOwningContext() }
+            return
         }
-        // The release does not wait on the loop. The walk it queued runs
-        // after, in full — a transport answers `inOwningContext` by asking
-        // which thread it is on — so the handlers hear their close against a
-        // transport already gone, and the walk's own end closes an
-        // already-closed transport. A handler that must write during its
-        // close needs the walk to precede the release, which means deferring
-        // it; that is filed, not done here.
-        transport.close()
+        // The loop has stopped: it can neither take the hand-off nor race this
+        // caller, so the sequence runs here. Another closer already holding
+        // the pipeline reaches every handler; this one only makes sure of the
+        // descriptor.
+        if (!defaultPipeline.runInPlace { defaultPipeline.closeOnOwningContext() }) releaseTransport()
+    }
+
+    /**
+     * Closes the transport without letting a throw skip what follows — the
+     * hand-off, or the end of life — the same guard the pipeline's own
+     * release applies at the end of the close walk. A transport that throws
+     * here (a loop rejecting the close it dispatches, after answering that it
+     * could take it) is logged; the walk's end tries again.
+     */
+    private fun releaseTransport() {
+        try {
+            transport.close()
+        } catch (e: Throwable) {
+            logger.warn(e) { "transport.close() threw; the pipeline's close continues" }
+        }
     }
 }

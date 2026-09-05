@@ -1,10 +1,8 @@
 package io.github.fukusaka.keel.pipeline
 
+import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Runnable
-import kotlin.coroutines.CoroutineContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -74,31 +72,6 @@ class ChannelCloseWalkTest {
             recorder.events,
             "one ending and one walk, however many times the caller closed before the loop ran",
         )
-    }
-
-    /**
-     * Holds dispatched work until a test asks for it, so the queued walk is
-     * observable.
-     *
-     * [runQueued] drains until nothing is left rather than running one round:
-     * off the owning thread the outbound walk queues *each hop* — every
-     * `propagateClose` goes back through the pipeline's dispatch — so a single
-     * round runs the tail and leaves the rest of the chain behind.
-     */
-    private class QueueingDispatcher : CoroutineDispatcher() {
-        private val queued = ArrayDeque<Runnable>()
-
-        /** Run once before the queued work, to put the transport on its loop. */
-        var onRun: (() -> Unit)? = null
-
-        override fun dispatch(context: CoroutineContext, block: Runnable) {
-            queued.addLast(block)
-        }
-
-        fun runQueued() {
-            onRun?.invoke()
-            while (queued.isNotEmpty()) queued.removeFirst().run()
-        }
     }
 
     @Test
@@ -263,9 +236,9 @@ class ChannelCloseWalkTest {
     }
 
     @Test
-    fun `a close that cannot reach the loop goes past the handlers`() {
+    fun `a close that cannot reach the loop still walks the handlers in place`() {
         val transport = TestIoTransport()
-        // A loop that has stopped: the pipeline can neither run the walk here
+        // A loop that has stopped: the pipeline can neither run the walk there
         // nor hand it over.
         transport.owningContext = false
         transport.owningContextAlive = false
@@ -276,17 +249,130 @@ class ChannelCloseWalkTest {
 
         channel.close()
 
-        // The ending still arrives — it is raised where it is, not dispatched.
-        // The close does not: the fallback reproduces the walk's last step and
-        // nothing before it, so the handlers are skipped. Deliberately, and the
-        // reason it is reported rather than done quietly. Asserting only that
-        // the transport ended would say nothing, since this method's own last
-        // line does that whatever the pipeline did.
+        // The loop cannot take the walk, and a stopped loop is a quiescent one
+        // -- the same premise under which the descriptor is released from this
+        // thread -- so the walk runs here instead of being skipped. A handler
+        // holding a native session hears its close either way.
         assertEquals(
-            listOf("inactive"),
+            listOf("inactive", "close"),
             recorder.events,
-            "a stopped loop carries the ending but not the close",
+            "a stopped loop carries the ending and the close, in place",
         )
         assertFalse(transport.isOpen)
+    }
+
+    @Test
+    fun `a handler that asks the pipeline to close from inside its own close does not walk again`() {
+        val transport = TestIoTransport()
+        var depth = 0
+        var maxDepth = 0
+        val recorder = object : Recorder() {
+            override fun onClose(ctx: PipelineHandlerContext) {
+                depth++
+                if (depth > maxDepth) maxDepth = depth
+                events.add("close")
+                // Straight to the pipeline, past the channel's own guard. The
+                // cap keeps a regression from overflowing the stack instead
+                // of failing the assertion.
+                if (depth < RECURSION_CAP) ctx.pipeline.requestClose()
+                ctx.propagateClose()
+                depth--
+            }
+        }
+        val channel = channelOver(transport)
+        channel.pipeline.addLast("recorder", recorder)
+        recorder.events.clear()
+
+        channel.close()
+
+        assertEquals(1, maxDepth, "the walk is the pipeline's to start once, whoever asks")
+        assertEquals(listOf("inactive", "close"), recorder.events)
+        assertFalse(transport.isOpen)
+    }
+
+    @Test
+    fun `two close requests on the loop walk the handlers once`() {
+        val transport = TestIoTransport()
+        val channel = channelOver(transport)
+        val recorder = Recorder()
+        channel.pipeline.addLast("recorder", recorder)
+        recorder.events.clear()
+
+        // Two callers reaching the pipeline directly -- what two threads
+        // closing at once become once the loop runs both their hand-offs.
+        channel.pipeline.requestClose()
+        channel.pipeline.requestClose()
+
+        // The ending is the walk's own end of life — nobody told the pipeline
+        // the connection ended before the walk, so the walk's completion does,
+        // once. Its place relative to the close is not pinned: for a bare
+        // request the order is the mechanism's, not a contract.
+        assertEquals(
+            1,
+            recorder.events.count { it == "close" },
+            "one walk, however many asked for it: ${recorder.events}",
+        )
+        assertEquals(1, recorder.events.count { it == "inactive" }, "and one ending: ${recorder.events}")
+        assertFalse(transport.isOpen)
+    }
+
+    @Test
+    fun `a write a handler issues from its close during the in-place walk is released rather than carried`() {
+        // The in-place walk rests on the loop being quiescent; letting it
+        // run outbound work inline would lift the loop's confinement for any
+        // thread that wrote during the teardown. So the farewell is released,
+        // exactly as it is for a close from off the loop.
+        val tracker = TrackingAllocator()
+        val transport = TestIoTransport(tracker)
+        transport.owningContext = false
+        transport.owningContextAlive = false
+        val channel = channelOver(transport)
+        val recorder = object : Recorder() {
+            override fun onClose(ctx: PipelineHandlerContext) {
+                events.add("close")
+                ctx.pipeline.requestWrite(tracker.allocate(8).also { it.writerIndex = 4 })
+                ctx.propagateClose()
+            }
+        }
+        channel.pipeline.addLast("recorder", recorder)
+        recorder.events.clear()
+
+        channel.close()
+
+        assertEquals(listOf("inactive", "close"), recorder.events)
+        assertEquals(0, transport.written.size, "the farewell did not reach the transport")
+        assertEquals(0, tracker.outstandingCount, "and was released")
+    }
+
+    @Test
+    fun `a close a handler initiates from its own context is the walk and ends the life before the channel's close`() {
+        // The Netty `ctx.close()` idiom: the handler starts the walk from its
+        // own position toward the head, and its completion is the end of the
+        // pipeline's life. The channel's later close finds nothing left to
+        // walk, so the handler above heard its close once, from that walk.
+        val transport = TestIoTransport()
+        val channel = channelOver(transport)
+        val above = Recorder()
+        val closer = object : Recorder() {
+            override fun onInactive(ctx: PipelineHandlerContext) {
+                events.add("inactive")
+                ctx.propagateClose()
+                ctx.propagateInactive()
+            }
+        }
+        channel.pipeline.addLast("above", above)
+        channel.pipeline.addLast("closer", closer)
+        above.events.clear()
+        closer.events.clear()
+
+        channel.pipeline.notifyInactive()
+        channel.close()
+
+        assertEquals(listOf("inactive", "close"), above.events, "once, from the handler's own close")
+        assertFalse(transport.isOpen)
+    }
+
+    private companion object {
+        const val RECURSION_CAP = 5
     }
 }
