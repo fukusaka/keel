@@ -271,6 +271,45 @@ class PipelineLifeStateTest {
     }
 
     @Test
+    fun `a close a handler starts from a replayed read releases the rest of the journal and delivers no data after it`() {
+        val f = Fixture(deferDrain = true)
+        f.pipeline.notifyRead(f.read())
+        f.pipeline.notifyRead(f.read())
+        f.pipeline.notifyReadComplete()
+        f.pipeline.notifyFlushComplete()
+        val closer = object : Recorder("h", f.log) {
+            override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                log.add("h:read")
+                (msg as IoBuf).release()
+                ctx.channel.close()
+            }
+
+            override fun onReadComplete(ctx: PipelineHandlerContext) {
+                log.add("h:readComplete")
+                ctx.propagateReadComplete()
+            }
+
+            override fun onFlushComplete(ctx: PipelineHandlerContext) {
+                log.add("h:flushComplete")
+                ctx.propagateFlushComplete()
+            }
+        }
+        f.pipeline.addLast("h", closer)
+        assertEquals(2, f.tracker.outstandingCount, "premise: the reads wait for the queued drain")
+
+        f.queue.runQueued()
+
+        assertEquals(
+            listOf("h:added", "h:active", "h:read", "h:inactive", "h:close", "h:removed"),
+            f.log,
+            "the first replayed read closes the channel; the end of life removes the handler at the read's return, " +
+                "before the drain reaches the read, the boundary and the flush completion behind it",
+        )
+        assertEquals(0, f.tracker.outstandingCount, "the read behind the close is released")
+        assertEquals(DefaultPipeline.Life.DESTROYED, f.life)
+    }
+
+    @Test
     fun `an ending a handler raises from a read does not make the real ending arrive twice below it`() {
         val f = Fixture()
         val raiser = object : Recorder("t", f.log) {
@@ -429,7 +468,20 @@ class PipelineLifeStateTest {
         val f = Fixture(deferDrain = true)
         f.pipeline.notifyRead(f.read())
         f.pipeline.notifyRead(f.read())
-        f.pipeline.addLast("h", f.recorder("h"))
+        f.pipeline.notifyReadComplete()
+        f.pipeline.notifyFlushComplete()
+        val handler = object : Recorder("h", f.log) {
+            override fun onReadComplete(ctx: PipelineHandlerContext) {
+                log.add("h:readComplete")
+                ctx.propagateReadComplete()
+            }
+
+            override fun onFlushComplete(ctx: PipelineHandlerContext) {
+                log.add("h:flushComplete")
+                ctx.propagateFlushComplete()
+            }
+        }
+        f.pipeline.addLast("h", handler)
         f.transport.owningContext = false
         f.queue.onRun = { f.transport.owningContext = true }
 
@@ -440,7 +492,8 @@ class PipelineLifeStateTest {
         assertEquals(
             listOf("h:added", "h:inactive", "h:close", "h:removed"),
             f.log,
-            "the drain the hand-off runs first finds the descriptor gone: no activation, no read, only the ending",
+            "the drain the hand-off runs first finds the descriptor gone: no activation, no read, no boundary, " +
+                "no flush completion — only the ending",
         )
         assertEquals(0, f.tracker.outstandingCount)
     }
