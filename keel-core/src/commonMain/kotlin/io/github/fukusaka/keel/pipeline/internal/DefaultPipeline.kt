@@ -260,6 +260,17 @@ internal class DefaultPipeline(
     /** Whether the connection is over as far as data goes: the ending was delivered, or the descriptor is gone. */
     private val ended: Boolean get() = endingPhase == Phase.DELIVERED || !transport.isOpen
 
+    /**
+     * The ending has reached the chain: `onInactive` is the last inbound
+     * event a handler hears, so nothing inbound is delivered after it — a
+     * read is released, a batch boundary / flush completion / writability /
+     * user event is dropped, an error is logged rather than handed to a
+     * handler that has already ended. Distinct from [ended], which also
+     * covers the descriptor going away before the ending is delivered (the
+     * drain's own guard); this one is the live path's guard.
+     */
+    private val inactiveDelivered: Boolean get() = endingPhase == Phase.DELIVERED
+
     private val destroying: Boolean get() = life == Life.DESTROYING || life == Life.DESTROYED
 
     private val journalSettled: Boolean get() = journal == Journal.DRAINED || journal == Journal.DISCARDED
@@ -395,7 +406,9 @@ internal class DefaultPipeline(
     }
 
     override fun notifyRead(msg: Any): Pipeline {
-        if (destroying) {
+        if (destroying || inactiveDelivered) {
+            // No inbound data after the ending: the read is released, not
+            // delivered to a handler that has heard its `onInactive`.
             ReferenceCountUtil.safeRelease(msg)
             return this
         }
@@ -426,7 +439,7 @@ internal class DefaultPipeline(
     }
 
     override fun notifyReadComplete(): Pipeline {
-        if (destroying) return this
+        if (destroying || inactiveDelivered) return this
         when (journal) {
             Journal.DRAINED -> head.invokeOnReadComplete()
             Journal.DISCARDED, Journal.DISCARD_OWED -> {}
@@ -439,7 +452,7 @@ internal class DefaultPipeline(
     }
 
     override fun notifyFlushComplete(): Pipeline {
-        if (destroying) return this
+        if (destroying || inactiveDelivered) return this
         when (journal) {
             Journal.DRAINED -> head.invokeOnFlushComplete()
             Journal.DISCARDED, Journal.DISCARD_OWED -> {}
@@ -497,6 +510,14 @@ internal class DefaultPipeline(
 
     override fun notifyError(cause: Throwable): Pipeline {
         if (destroying) return this
+        if (inactiveDelivered) {
+            // The reason is not lost, but the ending was the last inbound
+            // event, so it is logged rather than handed to a handler that
+            // has ended — the same as a journalled error the drain finds
+            // after the ending.
+            logger.warn(cause) { "An error arrived after the connection ended; no handler can act on it" }
+            return this
+        }
         when (journal) {
             Journal.DRAINED -> head.invokeOnError(cause)
             Journal.DISCARDED, Journal.DISCARD_OWED -> logger.warn(cause) {
@@ -516,7 +537,7 @@ internal class DefaultPipeline(
     }
 
     override fun notifyUserEvent(event: Any): Pipeline {
-        if (destroying) return this
+        if (destroying || inactiveDelivered) return this
         when (journal) {
             Journal.DRAINED -> head.invokeOnUserEvent(event)
             Journal.DISCARDED, Journal.DISCARD_OWED -> {}
@@ -532,7 +553,7 @@ internal class DefaultPipeline(
     }
 
     override fun notifyWritabilityChanged(isWritable: Boolean): Pipeline {
-        if (destroying) return this
+        if (destroying || inactiveDelivered) return this
         when (journal) {
             Journal.DRAINED -> {
                 writabilityCurrent = isWritable

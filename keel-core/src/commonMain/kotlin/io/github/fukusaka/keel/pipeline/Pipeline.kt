@@ -143,9 +143,12 @@ interface Pipeline {
     /**
      * Notifies the pipeline that the connection has ended.
      *
-     * The end, not the peer's end of file — that is [notifyReadClosed]. No
-     * inbound event follows, nothing can be written. Delivered once, as
-     * [InboundHandler.onInactive]; a close of the channel delivers it too.
+     * The end, not the peer's end of file — that is [notifyReadClosed]. It is
+     * the last inbound event a handler hears: the pipeline delivers no read,
+     * batch boundary, flush completion, writability change or user event
+     * after it (a read is released, a late error is logged), and nothing can
+     * be written. Delivered once, as [InboundHandler.onInactive]; a close of
+     * the channel delivers it too.
      */
     fun notifyInactive(): Pipeline
 
