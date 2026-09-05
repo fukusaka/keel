@@ -145,6 +145,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: a lifecycle sweep (activation, ending, close) no longer stops at a handler that throws —
+  the throw travels as an error and the event still reaches the handlers past it, once (#1096)
+- `core`: a handler that removes itself from inside its own callback no longer cuts the walk passing
+  through it; a removed context keeps its neighbours, as in Netty (#1096)
+- `core`: each handler hears its close at most once — a handler closing from inside its own `onClose`
+  or two threads closing at once no longer walk the handlers twice, and a close a handler starts from
+  its own context is not walked again by the channel (#1096)
+- `core`: a close that cannot reach a stopped owning context runs the handlers' `onClose` in place
+  instead of skipping them with a warning (#1096)
+- `core`: catching up a late-added handler no longer delivers the lifecycle event a second time to
+  every handler below it, and an ending a handler raises mid-chain no longer makes the real ending
+  arrive twice below it (#1096)
+- `core`: `handlerAdded` runs before the first lifecycle event on every engine, including the ones
+  that activate from inside the `add` itself (#1096)
+- `core`: a pipeline now has an end of life: when its channel's close completes, the ending is
+  delivered if it was not and every handler is removed — `handlerRemoved` once each, after the
+  handlers' own callbacks have returned — so what a handler owns is released on every close, and a
+  journal nothing drained is released with it (#1096)
+- `core`: the suspending bridges treat their removal as the end of the stream, so a reader parked on a
+  removed bridge is released instead of waiting forever (#1096)
+- `tls`: the TLS session is released by `handlerRemoved` and no longer inside the close walk, which
+  could run inside the handler's own decrypt loop — a handler below closing the channel from a read
+  had the next record of that read decrypted with a freed session (#1096)
 - `codec-http`: the response decoder no longer reports a truncated status line when the connection
   ends from inside the dispatch of a head whose last line straddled a read boundary — the line
   accumulator is consumed before the line it completed is parsed (#1093)
