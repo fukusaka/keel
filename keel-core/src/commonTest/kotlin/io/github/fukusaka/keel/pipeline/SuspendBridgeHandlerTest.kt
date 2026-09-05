@@ -5,6 +5,8 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -44,6 +46,20 @@ class SuspendBridgeHandlerTest {
             assertEquals(0x41.toByte(), owned.readByte())
             assertEquals(0x42.toByte(), owned.readByte())
             owned.release()
+        }
+    }
+
+    @Test
+    fun `removing the bridge releases a reader parked on it and what it queued`() {
+        runTest {
+            val (pipeline, bridge) = createPipelineWithBridge()
+            val reader = async(start = CoroutineStart.UNDISPATCHED) { bridge.readOwned() }
+            assertFalse(reader.isCompleted, "premise: the reader is parked")
+
+            pipeline.remove(PipelinedChannel.SUSPEND_BRIDGE_NAME)
+
+            assertNull(reader.await(), "removal is the bridge's ending: the reader sees EOF")
+            assertTrue(bridge.isEof)
         }
     }
 
