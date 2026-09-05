@@ -302,8 +302,8 @@ class PipelineLifeStateTest {
         assertEquals(
             listOf("h:added", "h:active", "h:read", "h:inactive", "h:close", "h:removed"),
             f.log,
-            "the first replayed read closes the channel; the end of life removes the handler at the read's return, " +
-                "before the drain reaches the read, the boundary and the flush completion behind it",
+            "the first replayed read closes the channel; the handler is removed before the rest of the journal " +
+                "(the second read, the boundary, the flush completion), and none of it reaches it",
         )
         assertEquals(0, f.tracker.outstandingCount, "the read behind the close is released")
         assertEquals(DefaultPipeline.Life.DESTROYED, f.life)

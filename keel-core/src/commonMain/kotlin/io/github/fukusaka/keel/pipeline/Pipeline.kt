@@ -136,9 +136,11 @@ interface Pipeline {
      * as the reported failure, so the head can tell it from an error raised
      * by anyone else. Journalled while the pre-attach journal is still
      * collecting (a bounded number; past the cap it is logged and dropped),
-     * until its drain replays it onto the assembled chain. Once the journal
-     * is given up — a stopped loop, the end of life — it reaches no handler:
-     * logged while the pipeline lives, dropped once it is destroyed.
+     * until its drain replays it onto the assembled chain — or logs it, when
+     * the ending was delivered before the drain reached it, since no handler
+     * can act on it then. Once the journal is given up — a stopped loop, the
+     * end of life — it reaches no handler: logged while the pipeline lives,
+     * dropped once it is destroyed.
      */
     fun notifyError(cause: Throwable): Pipeline
 
