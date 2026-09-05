@@ -491,8 +491,11 @@ internal class DefaultPipeline(
     }
 
     /**
-     * Whether [cause] is the reported failure *and* these handlers are
-     * getting it — now, or by a replay already scheduled.
+     * Whether [cause] is the reported failure *and* has a reporter: these
+     * handlers are getting it now, a replay already scheduled is bringing
+     * it, or — the ending delivered before it — [notifyError] logged it in
+     * their place. What the head needs is that it is named once, not that a
+     * handler heard it.
      *
      * The head reads it to decide whether to record what it silences: a
      * failure on its way to the handlers has a reporter, and one journalled
