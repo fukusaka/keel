@@ -137,10 +137,9 @@ interface Pipeline {
      * by anyone else. Journalled while the pre-attach journal is still
      * collecting (a bounded number; past the cap it is logged and dropped),
      * until its drain replays it onto the assembled chain — or logs it, when
-     * the ending was delivered before the drain reached it, since no handler
-     * can act on it then. Once the journal is given up — a stopped loop, the
-     * end of life — it reaches no handler: logged while the pipeline lives,
-     * dropped once it is destroyed.
+     * the ending was delivered before the drain reached it. Once the journal
+     * is given up — a stopped loop, the end of life — it reaches no handler:
+     * logged while the pipeline lives, dropped once it is destroyed.
      */
     fun notifyError(cause: Throwable): Pipeline
 
@@ -153,9 +152,11 @@ interface Pipeline {
      * start of a request to the deadline handler below it, the TLS handler
      * its handshake. Journalled while the pre-attach journal is still
      * collecting (a bounded number; past the cap it is logged and dropped),
-     * until its drain replays it onto the assembled chain. Once the journal
-     * is given up, or the pipeline is destroyed, the event is dropped without
-     * a log.
+     * until its drain replays it onto the assembled chain — or drops it, when
+     * the connection had ended (the ending delivered, or the descriptor gone)
+     * before the drain reached it: an event, unlike an error, is no reason
+     * that must still be told. Once the journal is given up, or the pipeline
+     * is destroyed, the event is dropped without a log.
      */
     fun notifyUserEvent(event: Any): Pipeline
 

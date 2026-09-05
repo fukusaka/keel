@@ -431,8 +431,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
-- `core`: `Pipeline.notifyError` / `notifyUserEvent` KDoc: who calls them — the channel's transport-failure route,
-  and handlers raising events inside the chain; no transport calls either (#1097)
+- `core`: `Pipeline.notifyError` / `notifyUserEvent` KDoc: meant for code outside the chain, never a transport;
+  both journalled until the drain (#1097)
 - `core`, `native-readiness`: document logger re-entrancy, the deferred FIN, the writability
   guard, and the internal-API boundary (#1067)
 - `core`: `IoTransport.flush()` / `onFlushComplete` contracts now state the episode rule

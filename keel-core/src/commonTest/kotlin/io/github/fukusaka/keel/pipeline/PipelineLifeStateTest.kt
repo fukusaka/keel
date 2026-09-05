@@ -19,9 +19,11 @@ import kotlin.test.assertTrue
  * the ending is delivered if it was not, and every handler is removed —
  * `handlerRemoved` once each, as the last thing it hears. None of that runs
  * inside a handler's callback: a close a handler starts from its own `onRead`
- * is released at once, but the ending and the removals wait for that read to
- * return, so the handlers below are neither swept out from under the sweep
- * nor freed while their own frame still uses them.
+ * is released at once, and the removals wait for that read to return, so the
+ * handlers below are neither swept out from under the sweep nor freed while
+ * their own frame still uses them. The ending itself is delivered there and
+ * then when the handler closes the channel; a close it propagates down the
+ * chain defers the ending with the removals.
  */
 class PipelineLifeStateTest {
 
@@ -277,6 +279,7 @@ class PipelineLifeStateTest {
         f.pipeline.notifyRead(f.read())
         f.pipeline.notifyReadComplete()
         f.pipeline.notifyFlushComplete()
+        var outstandingAtRemoval = -1
         val closer = object : Recorder("h", f.log) {
             override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
                 log.add("h:read")
@@ -293,6 +296,14 @@ class PipelineLifeStateTest {
                 log.add("h:flushComplete")
                 ctx.propagateFlushComplete()
             }
+
+            override fun handlerRemoved(ctx: PipelineHandlerContext) {
+                // Seen at the removal itself: the second read is still in the
+                // journal, so the end of life ran at the first read's return
+                // and not after the drain.
+                outstandingAtRemoval = f.tracker.outstandingCount
+                super.handlerRemoved(ctx)
+            }
         }
         f.pipeline.addLast("h", closer)
         assertEquals(2, f.tracker.outstandingCount, "premise: the reads wait for the queued drain")
@@ -302,9 +313,10 @@ class PipelineLifeStateTest {
         assertEquals(
             listOf("h:added", "h:active", "h:read", "h:inactive", "h:close", "h:removed"),
             f.log,
-            "the first replayed read closes the channel; the handler is removed before the rest of the journal " +
-                "(the second read, the boundary, the flush completion), and none of it reaches it",
+            "the first replayed read closes the channel; the end of life removes the handler at the read's return, " +
+                "before the drain reaches the read, the boundary and the flush completion behind it",
         )
+        assertEquals(1, outstandingAtRemoval, "at the removal the second read still waits in the journal")
         assertEquals(0, f.tracker.outstandingCount, "the read behind the close is released")
         assertEquals(DefaultPipeline.Life.DESTROYED, f.life)
     }
