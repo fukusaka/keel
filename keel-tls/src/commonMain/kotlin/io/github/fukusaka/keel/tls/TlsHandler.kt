@@ -84,6 +84,17 @@ class TlsHandler(
         ctx.allocator.hintSizeClass(plaintextBufferSize, PLAINTEXT_HINT_COUNT)
     }
 
+    /**
+     * Releases everything this handler owns — the native session above all.
+     * The pipeline calls this once, as the last thing the handler hears, and
+     * at the end of every channel's life outside any handler frame; so this
+     * is where the release lives, and not in [onClose], which the close walk
+     * runs synchronously — from inside this handler's own [processInbound]
+     * when a handler below closes the channel from its `onRead`, with the
+     * next record still to be decrypted. An explicit removal by another
+     * handler can still land inside such a frame, which is why the loops
+     * re-check [ctx] after every propagation.
+     */
     override fun handlerRemoved(ctx: PipelineHandlerContext) {
         handshakeDeadline?.cancel()
         handshakeDeadline = null
@@ -158,8 +169,18 @@ class TlsHandler(
             when (result.status) {
                 TlsResult.OK -> {
                     checkHandshakeComplete(ctx)
+                    // The handshake event above is a propagation too: a handler
+                    // below may have removed this one from inside it.
+                    if (this.ctx == null) {
+                        plainBuf.release()
+                        return
+                    }
                     if (plainBuf.readableBytes > 0) {
                         ctx.propagateRead(plainBuf)
+                        // A handler below may have removed this one from inside
+                        // that read; the session and the accumulate buffer are
+                        // gone with it, and `input` may have been the latter.
+                        if (this.ctx == null) return
                     } else {
                         plainBuf.release()
                     }
@@ -172,7 +193,7 @@ class TlsHandler(
                 }
                 TlsResult.NEED_WRAP -> {
                     plainBuf.release()
-                    if (!flushHandshakeResponse(ctx)) return
+                    if (!flushHandshakeResponse(ctx) || this.ctx == null) return
                     // After sending handshake response, retry unprotect.
                 }
                 TlsResult.BUFFER_OVERFLOW -> {
@@ -187,6 +208,11 @@ class TlsHandler(
                 }
                 TlsResult.CLOSED -> {
                     plainBuf.release()
+                    // The peer's close_notify: the handlers below hear the
+                    // ending from here, inside this read and ahead of the
+                    // handlers above, which hear it when the transport
+                    // reports the connection's end. Each context hears it
+                    // once either way.
                     ctx.propagateInactive()
                     return
                 }
@@ -328,6 +354,10 @@ class TlsHandler(
 
             if (cipherBuf.readableBytes > 0) {
                 ctx.propagateWrite(cipherBuf)
+                // A handler on the way to the transport may have thrown, and a
+                // handler below removed this one from the error: the session
+                // is gone with it.
+                if (this.ctx == null) return
             } else {
                 cipherBuf.release()
             }
@@ -425,9 +455,19 @@ class TlsHandler(
         ctx.propagateFlush()
     }
 
+    /**
+     * Passes the close on. The session is not released here: the close walk
+     * is synchronous and can run inside this handler's own inbound loop (a
+     * handler below closing the channel from its `onRead`), which would then
+     * decrypt the next record with a freed session. The release is
+     * [handlerRemoved]'s, which the pipeline runs outside every frame. No
+     * close_notify is sent from here, deliberately: whether the transport is
+     * still open inside `onClose` depends on the thread the close came from
+     * (open on the owning loop, already released off it), and keel releases
+     * the descriptor synchronously when the walk ends, so a farewell written
+     * here is not reliable. A graceful close_notify needs a deferred close.
+     */
     override fun onClose(ctx: PipelineHandlerContext) {
-        // Send close_notify via protect.
-        codec.close()
         ctx.propagateClose()
     }
 
@@ -468,6 +508,8 @@ class TlsHandler(
                 if (cipherBuf.readableBytes > 0) {
                     ctx.propagateWrite(cipherBuf)
                     ctx.propagateFlush()
+                    // Removed from inside the write or the flush: the session is gone.
+                    if (this.ctx == null) return false
                 } else {
                     cipherBuf.release()
                 }
@@ -512,7 +554,8 @@ class TlsHandler(
             emptyBuf.release()
         }
         checkHandshakeComplete(ctx)
-        return true
+        // Removed from inside the handshake event: the session is gone.
+        return this.ctx != null
     }
 
     private fun checkHandshakeComplete(ctx: PipelineHandlerContext) {
