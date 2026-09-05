@@ -70,6 +70,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `core`: no inbound event is delivered after `onInactive` — a read arriving then is released, a batch
+  boundary, flush completion, writability change or user event is dropped, and a late error is logged rather
+  than handed to a handler that has ended (#1099)
 - `core`: **BREAKING** (semantics): `InboundHandler.onInactive` now means the connection is over — a peer's end of
   file is `onReadClosed`, after which the connection stays writable, and in Pipeline mode the channel closes itself,
   so an answer to a peer that half-closed is written from inside that callback (#1098)
