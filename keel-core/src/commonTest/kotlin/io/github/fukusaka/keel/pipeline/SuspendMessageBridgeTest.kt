@@ -72,6 +72,21 @@ class SuspendMessageBridgeTest {
     }
 
     @Test
+    fun `removing the bridge closes the receiver and leaves what is buffered receivable`() {
+        runTest {
+            val pipeline = channel.pipeline
+            val bridge = SuspendMessageBridge(TestMessage::class)
+            pipeline.addLast("bridge", bridge)
+            pipeline.notifyRead(TestMessage("buffered"))
+
+            pipeline.remove("bridge")
+
+            assertEquals("buffered", bridge.receiveCatching().getOrThrow().value)
+            assertTrue(bridge.receiveCatching().isClosed, "removal is the bridge's ending")
+        }
+    }
+
+    @Test
     fun `onError closes channel with cause`() {
         runTest {
             val bridge = SuspendMessageBridge(TestMessage::class)

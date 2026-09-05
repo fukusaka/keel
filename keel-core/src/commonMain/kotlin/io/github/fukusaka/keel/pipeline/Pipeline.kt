@@ -56,10 +56,24 @@ interface Pipeline {
     /** Adds a handler after the handler named [baseName]. */
     fun addAfter(baseName: String, name: String, handler: PipelineHandler): Pipeline
 
-    /** Removes the handler with the given [name] and returns it. */
+    /**
+     * Removes the handler with the given [name] and returns it.
+     *
+     * Safe from inside the handler's own callbacks: the walk that is passing
+     * through it continues from its context, which keeps its neighbours.
+     */
     fun remove(name: String): PipelineHandler
 
-    /** Replaces the handler named [oldName] with [newHandler] and returns the old handler. */
+    /**
+     * Replaces the handler named [oldName] with [newHandler] and returns the old handler.
+     *
+     * The replacement is a new context: it is caught up like a late-added
+     * handler, and a walk passing through the old handler's position continues
+     * to it — a close walk in flight reaches the replacement, not the handler
+     * it replaced, which hears only `handlerRemoved`. The old context keeps
+     * pointing at its replacement, so what the replaced handler forwards after
+     * replacing itself arrives there.
+     */
     fun replace(oldName: String, newName: String, newHandler: PipelineHandler): PipelineHandler
 
     /** Returns the handler with the given [name], or null. */
@@ -130,7 +144,27 @@ interface Pipeline {
     /** Requests a flush through the pipeline. */
     fun requestFlush(): Pipeline
 
-    /** Requests a close through the pipeline. */
+    /**
+     * Requests a close through the pipeline: the outbound walk from the tail
+     * in which each handler hears [OutboundHandler.onClose] at most once, the
+     * head closing the transport when the walk reaches it.
+     *
+     * A walk ends where a handler does not pass the close on. Handlers that
+     * already heard their close are passed over by a later walk, so a request
+     * after a walk finds nothing left to ask and does nothing; a request made
+     * while a walk is running is served after it, as a new walk from the
+     * tail. The completion of a walk is the end of the pipeline's life: the
+     * transport is closed if it still is not, the ending is delivered if it
+     * was not, and every handler is removed — the release of what a handler
+     * owns is `handlerRemoved`'s, not the walk's.
+     *
+     * Runs on the owning context: handed to it from another thread, and,
+     * when that context has stopped and can no longer take anything, run on
+     * the caller's thread instead, under the quiescence a stopped loop
+     * implies — the same premise the transport's own close from that thread
+     * rests on. A second closer on a stopped loop finds the pipeline claimed
+     * and does nothing.
+     */
     fun requestClose(): Pipeline
 
     /** Convenience: requestWrite + requestFlush. */

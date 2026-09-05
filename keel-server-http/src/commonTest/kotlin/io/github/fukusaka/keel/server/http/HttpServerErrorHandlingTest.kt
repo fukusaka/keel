@@ -182,9 +182,13 @@ internal class HttpServerErrorHandlingTest : HttpServerHandlerFixture() {
             },
         )
 
-        handler().requestDrain()
+        // Held by reference, as the server's registry holds it: once the
+        // channel's close has ended the pipeline's life, the handler is no
+        // longer in the pipeline to be looked up.
+        val h = handler()
+        h.requestDrain()
         // A second drain after the channel is already closed must not throw.
-        handler().requestDrain()
+        h.requestDrain()
 
         assertTrue(transport.closed)
     }

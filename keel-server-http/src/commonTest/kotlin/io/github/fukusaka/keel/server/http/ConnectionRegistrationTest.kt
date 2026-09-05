@@ -2,12 +2,17 @@ package io.github.fukusaka.keel.server.http
 
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
+import io.github.fukusaka.keel.pipeline.InboundHandler
+import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.runTest
+import kotlin.coroutines.CoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -94,6 +99,68 @@ internal class ConnectionRegistrationTest {
             "and it is out again — an entry that joins on activation and never leaves on a close the " +
                 "server itself made would accumulate one handler, job and pipeline per dropped connection",
         )
+    }
+
+    @Test
+    fun `a handler above the server stack that throws on the lifecycle does not keep the connection out of or in the registry`() =
+        runTest(timeout = TIMEOUT) {
+            // The readiness engines defer the journal drain, so the whole
+            // stack is assembled before the activation sweeps it. A handler
+            // above the server's that throws on that sweep used to end it
+            // there: the connection never joined the registry, invisible to
+            // the server's own stop for its whole life. And one throwing on
+            // the ending used to leave the entry behind after the connection
+            // was gone. Measured on the real stack before the sweep was made
+            // to continue past a throw.
+            // Built here rather than from the fixture: the pipeline captures
+            // the transport's dispatcher when the channel is constructed, so
+            // the queue has to be in place before that or the drain runs
+            // inline and the sweep never crosses the thrower at all.
+            val queue = QueueingDispatcher()
+            val deferring = TestIoTransport().apply { dispatcher = queue }
+            val channel = object : AbstractPipelinedChannel(deferring, PrintLogger("test")) {}
+            val connections = ServerConnections()
+            channel.pipeline.addLast(
+                "thrower",
+                object : InboundHandler {
+                    override fun onActive(ctx: PipelineHandlerContext) = throw IllegalStateException("active")
+                    override fun onInactive(ctx: PipelineHandlerContext) = throw IllegalStateException("inactive")
+                },
+            )
+            channel.installHttpServerPipeline(
+                router = Router(),
+                middlewares = emptyList(),
+                errorHandlers = ErrorHandlers.DEFAULT,
+                queryParameterConfig = QueryParameterConfig.DEFAULT,
+                scope = scope,
+                connections = connections,
+            )
+            queue.runQueued()
+            assertEquals(1, connections.snapshot().size, "the activation reached the server's handler past the throw")
+
+            channel.close()
+
+            assertEquals(0, connections.snapshot().size, "and so did the ending")
+            deferring.close()
+        }
+
+    /**
+     * Holds dispatched work until asked, so the journal drain is deferred as
+     * it is on a readiness engine; runs everything inline once [runQueued] has
+     * run, since the registry's snapshot hops onto this same dispatcher.
+     */
+    private class QueueingDispatcher : CoroutineDispatcher() {
+        private val queued = ArrayDeque<Runnable>()
+        private var inline = false
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            if (inline) block.run() else queued.addLast(block)
+        }
+
+        fun runQueued() {
+            while (queued.isNotEmpty()) queued.removeFirst().run()
+            inline = true
+        }
     }
 
     private companion object {

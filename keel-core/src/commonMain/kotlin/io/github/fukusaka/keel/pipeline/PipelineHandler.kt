@@ -12,10 +12,28 @@ import kotlin.reflect.KClass
  */
 interface PipelineHandler {
 
-    /** Called after the handler is added to a pipeline. */
+    /**
+     * Called after the handler is added to a pipeline, and before the first
+     * lifecycle event it is told about — on every engine, including the ones
+     * that deliver the activation from inside the `add` call itself.
+     */
     fun handlerAdded(ctx: PipelineHandlerContext) {}
 
-    /** Called after the handler is removed from a pipeline. */
+    /**
+     * Called after the handler is removed from a pipeline — at most once, and
+     * the last thing the handler hears. This is where a handler releases what
+     * it owns: the pipeline removes every handler at the end of its channel's
+     * life, after the ending and outside any handler callback, so a release
+     * here is neither skipped nor run inside the handler's own frame.
+     *
+     * A handler may remove itself from inside one of its own callbacks. The
+     * walk that was passing through it goes on: propagating from its context
+     * still reaches the next handler, because the context keeps its
+     * neighbours after the removal. Nothing new is routed to it. A handler
+     * may also be removed by another one, from a callback nested inside its
+     * own — a handler that frees native state re-checks itself after each
+     * propagation.
+     */
     fun handlerRemoved(ctx: PipelineHandlerContext) {}
 }
 
@@ -25,6 +43,39 @@ interface PipelineHandler {
  * All callbacks run on the EventLoop thread and MUST NOT block or suspend.
  * The default implementation of each callback propagates the event to the
  * next inbound handler via [PipelineHandlerContext.propagateRead] etc.
+ *
+ * **A throw does not stop a lifecycle event.** When [onActive] or [onInactive]
+ * throws, the throw reaches the handlers below as [onError], and the event
+ * reaches them too: the pipeline propagates it on the handler's behalf if the
+ * handler had not, and adds nothing if it had. Every handler hears each
+ * lifecycle event once, whatever the handlers above it did. A throw from
+ * [onRead] is different — the message is released and reaches nobody below,
+ * as in Netty.
+ *
+ * **A late handler is caught up alone.** A handler added after the chain was
+ * activated (or ended) is told so from inside the `add` call; its default
+ * propagation of that replayed event is a no-op, since the handlers below
+ * already heard it. An event the handler raises from inside the replay — a
+ * close, say — enters at the head and reaches everyone as usual. A handler
+ * that holds the activation back to propagate it later — a gate, as Netty's
+ * `SslHandler` is — is not supported: a handler added below it meanwhile is
+ * caught up on its own, and the gate's later propagation stops at it, short
+ * of the handlers further below. A handler added with `addFirst` / `addLast`
+ * once the channel's life has ended is served a complete lifecycle in that
+ * one call: `handlerAdded`, the ending, `handlerRemoved`; the pipeline is
+ * empty by then, so an add or a `replace` naming an existing handler finds
+ * none and throws as it always did.
+ *
+ * **Each lifecycle event arrives at most once, and the ending may come first.**
+ * A handler that joins a connection already over hears [onInactive] without
+ * an [onActive] before it, so what [onInactive] undoes must tolerate never
+ * having been done. No activation follows an ending. [onInactive] says the
+ * connection is over as far as this pipeline is concerned; it does not say the
+ * transport is closed yet — on the owning loop it is still open — and whether
+ * it precedes or follows [OutboundHandler.onClose] is only fixed for the
+ * channel's own close on its loop. A handler passes the ending on from
+ * [onInactive] and does not raise one of its own from another callback: the
+ * ending is the pipeline's to deliver.
  *
  * [acceptedType] and [producedType] declare the message types this handler
  * consumes and produces. The pipeline validates type chain consistency at
@@ -91,7 +142,15 @@ interface InboundHandler : PipelineHandler {
         ctx.propagateFlushComplete()
     }
 
-    /** Called when the channel becomes inactive (disconnected). */
+    /**
+     * Called when the connection has ended for this pipeline.
+     *
+     * At most once per handler, and possibly the first thing it hears: the
+     * pipeline delivers the ending once, and a handler above that throws or
+     * removes itself does not keep it from the handlers below (see the class
+     * KDoc). Every channel's life ends with it — a close a handler started
+     * from its own context included — followed by [PipelineHandler.handlerRemoved].
+     */
     fun onInactive(ctx: PipelineHandlerContext) {
         ctx.propagateInactive()
     }
@@ -135,6 +194,20 @@ interface InboundHandler : PipelineHandler {
  * All callbacks run on the EventLoop thread and MUST NOT block or suspend.
  * The default implementation propagates each operation to the next outbound
  * handler via [PipelineHandlerContext.propagateWrite] etc.
+ *
+ * **Each handler hears its close at most once.** The walk runs from the tail
+ * toward the head through the handlers' own propagation; a handler that does
+ * not pass the close on ends that walk, as in Netty, and a later walk passes
+ * it over rather than asking it again. A handler that throws from [onClose]
+ * does not keep the close from the handlers above it — the pipeline
+ * propagates it on the handler's behalf. A close a handler asks for from
+ * inside its own [onClose], through the channel or [Pipeline.requestClose],
+ * is served after the running walk, as a new walk that skips whoever already
+ * heard it. Releasing what the handler owns belongs in
+ * [PipelineHandler.handlerRemoved], which the end of the channel's life runs
+ * for every handler whether or not the walk reached it; [onClose] is for the
+ * protocol's farewell, and must not free what the handler's own inbound
+ * callback may still be using, since the walk can run inside it.
  */
 interface OutboundHandler : PipelineHandler {
 
@@ -148,7 +221,19 @@ interface OutboundHandler : PipelineHandler {
         ctx.propagateFlush()
     }
 
-    /** Called when a close is requested. */
+    /**
+     * Called when a close is requested — at most once per handler. See the
+     * interface KDoc for what a throw or a re-entrant close does here. A close
+     * a handler initiates from its own context
+     * ([PipelineHandlerContext.propagateClose] outside any walk) is a walk
+     * from there toward the head; the handlers on the tail side of it hear
+     * the ending and `handlerRemoved`, and their close only if a close of the
+     * channel is asked for before the end of life removes them. There is no
+     * close replay: a handler installed later checks the channel's `isOpen`
+     * in `handlerAdded`. Whether the transport is still open inside this
+     * callback depends on the thread the close came from; do not read it as
+     * a stable signal.
+     */
     fun onClose(ctx: PipelineHandlerContext) {
         ctx.propagateClose()
     }

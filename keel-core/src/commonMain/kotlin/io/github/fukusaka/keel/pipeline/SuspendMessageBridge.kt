@@ -107,6 +107,20 @@ class SuspendMessageBridge<T : Any>(
     }
 
     /**
+     * Removal is this bridge's ending too: nothing reaches a removed handler,
+     * so the receiver is told the stream is over. What is already buffered
+     * stays receivable — the consumer drains it, or its own teardown
+     * ([closeAndReleaseBuffered]) releases it. At the end of a channel's life
+     * the ending ([onInactive]) has already released the buffer before the
+     * removal; a bridge removed from a still-live connection keeps its
+     * buffered messages for the consumer, so a consumer that has already left
+     * must have run its teardown, or pooled payloads stay buffered.
+     */
+    override fun handlerRemoved(ctx: PipelineHandlerContext) {
+        messages.close()
+    }
+
+    /**
      * Closes the channel and releases any buffered-but-undelivered messages.
      *
      * A server-initiated teardown now does deliver the ending — a channel's

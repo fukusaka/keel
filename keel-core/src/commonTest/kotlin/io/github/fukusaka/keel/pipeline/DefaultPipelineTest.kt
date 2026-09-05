@@ -4,7 +4,6 @@ import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
 import kotlin.reflect.KClass
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -128,11 +127,6 @@ class DefaultPipelineTest {
         assertEquals(handler, pipeline.get("h1"))
     }
 
-    // Held while the lifecycle replay delivers to the handlers *below* the
-    // one being caught up as well: inserting upstream makes everything under
-    // it hear the activation twice. Filed as its own task, because wiring the
-    // signal is what this change does and fixing the replay is not.
-    @Ignore
     @Test
     fun `addFirst adds handler after HEAD`() {
         val pipeline = createPipeline()
@@ -147,11 +141,6 @@ class DefaultPipelineTest {
         assertEquals(listOf("read"), h2.eventsAfterActivation)
     }
 
-    // Held while the lifecycle replay delivers to the handlers *below* the
-    // one being caught up as well: inserting upstream makes everything under
-    // it hear the activation twice. Filed as its own task, because wiring the
-    // signal is what this change does and fixing the replay is not.
-    @Ignore
     @Test
     fun `addBefore inserts handler before target`() {
         val pipeline = createPipeline()
@@ -163,6 +152,204 @@ class DefaultPipelineTest {
         pipeline.notifyRead("msg")
         assertEquals(listOf("read"), h1.eventsAfterActivation)
         assertEquals(listOf("read"), h2.eventsAfterActivation)
+    }
+
+    @Test
+    fun `a handler that closes the channel from its replayed activation ends the connection once for everyone`() {
+        val pipeline = createPipeline()
+        val below = RecordingInboundHandler()
+        pipeline.addLast("below", below)
+        assertEquals(listOf(ACTIVE), below.events, "premise: activated by the drain")
+        val closer = RecordingInboundHandler()
+        val closing = object : InboundHandler {
+            override fun onActive(ctx: PipelineHandlerContext) {
+                // Closes from inside the activation the pipeline is replaying to
+                // it alone. The ending that follows is not part of that replay
+                // and must reach everyone; the activation it then passes on is,
+                // and must reach nobody.
+                ctx.channel.close()
+                ctx.propagateActive()
+            }
+
+            override fun onInactive(ctx: PipelineHandlerContext) {
+                closer.events.add("inactive")
+                ctx.propagateInactive()
+            }
+        }
+
+        pipeline.addFirst("closer", closing)
+
+        assertEquals(listOf(ACTIVE, "inactive"), below.events, "the ending once, and no second activation")
+        assertEquals(listOf("inactive"), closer.events)
+    }
+
+    @Test
+    fun `a writability change raised from inside a replayed activation still reaches the handlers below`() {
+        val pipeline = createPipeline()
+        val below = object : InboundHandler {
+            val seen = mutableListOf<Boolean>()
+            override fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
+                seen.add(isWritable)
+                ctx.propagateWritabilityChanged(isWritable)
+            }
+        }
+        pipeline.addLast("below", below)
+        pipeline.notifyWritabilityChanged(true)
+        assertEquals(listOf(true), below.seen, "premise: the channel is writable")
+        // What the transport does when a write from inside the activation
+        // crosses the high-water mark and drains again: two real changes
+        // entering at the head. The replay of the current value to the new
+        // handler must not reach below as well -- it is the same value as the
+        // last genuine one, so only the count tells the two apart.
+        val greeter = object : InboundHandler {
+            override fun onActive(ctx: PipelineHandlerContext) {
+                ctx.pipeline.notifyWritabilityChanged(false)
+                ctx.pipeline.notifyWritabilityChanged(true)
+                ctx.propagateActive()
+            }
+        }
+
+        pipeline.addFirst("greeter", greeter)
+
+        assertEquals(
+            listOf(true, false, true),
+            below.seen,
+            "the genuine changes arrive and the replayed one does not",
+        )
+    }
+
+    @Test
+    fun `a writability change raised from inside the replayed writability still reaches the handlers below`() {
+        // A producer that resumes on writable=true and writes past the
+        // high-water mark: the transport raises false synchronously, from
+        // inside the very callback the pipeline is replaying to the producer.
+        val pipeline = createPipeline()
+        val below = object : InboundHandler {
+            val seen = mutableListOf<Boolean>()
+            override fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
+                seen.add(isWritable)
+                ctx.propagateWritabilityChanged(isWritable)
+            }
+        }
+        pipeline.addLast("below", below)
+        pipeline.notifyWritabilityChanged(true)
+        below.seen.clear()
+        val producer = object : InboundHandler {
+            var resumed = false
+            override fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
+                if (isWritable && !resumed) {
+                    resumed = true
+                    ctx.pipeline.notifyWritabilityChanged(false)
+                }
+                ctx.propagateWritabilityChanged(isWritable)
+            }
+        }
+
+        pipeline.addFirst("producer", producer)
+
+        assertEquals(listOf(false), below.seen, "the genuine change arrives and the replayed one does not")
+    }
+
+    @Test
+    fun `a late handler that raised a writability change from its replayed activation is not told the value again`() {
+        val pipeline = createPipeline()
+        pipeline.addLast("first", RecordingInboundHandler())
+        pipeline.notifyWritabilityChanged(true)
+        val seen = mutableListOf<Boolean>()
+        val late = object : InboundHandler {
+            override fun onActive(ctx: PipelineHandlerContext) {
+                ctx.pipeline.notifyWritabilityChanged(false)
+                ctx.propagateActive()
+            }
+
+            override fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
+                seen.add(isWritable)
+                ctx.propagateWritabilityChanged(isWritable)
+            }
+        }
+
+        pipeline.addFirst("late", late)
+
+        assertEquals(listOf(false), seen, "heard once, through the chain; the replay adds nothing")
+    }
+
+    @Test
+    fun `a late handler whose replayed activation ends the connection is not told the writability afterwards`() {
+        val pipeline = createPipeline()
+        pipeline.addLast("first", RecordingInboundHandler())
+        pipeline.notifyWritabilityChanged(true)
+        val events = mutableListOf<String>()
+        val late = object : DuplexHandler {
+            override fun onActive(ctx: PipelineHandlerContext) {
+                events.add("active")
+                ctx.channel.close()
+                ctx.propagateActive()
+            }
+
+            override fun onInactive(ctx: PipelineHandlerContext) {
+                events.add("inactive")
+                ctx.propagateInactive()
+            }
+
+            override fun onClose(ctx: PipelineHandlerContext) {
+                events.add("close")
+                ctx.propagateClose()
+            }
+
+            override fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
+                events.add("writable=$isWritable")
+            }
+        }
+
+        pipeline.addFirst("late", late)
+
+        assertEquals(listOf("active", "inactive", "close"), events)
+    }
+
+    @Test
+    fun `a handler that removes itself from handlerAdded is not caught up`() {
+        val pipeline = createPipeline()
+        pipeline.addLast("first", RecordingInboundHandler())
+        val events = mutableListOf<String>()
+        val init = object : InboundHandler {
+            override fun handlerAdded(ctx: PipelineHandlerContext) {
+                ctx.pipeline.remove("init")
+            }
+
+            override fun handlerRemoved(ctx: PipelineHandlerContext) {
+                events.add("removed")
+            }
+
+            override fun onActive(ctx: PipelineHandlerContext) {
+                events.add("active")
+            }
+        }
+
+        pipeline.addLast("init", init)
+
+        assertEquals(listOf("removed"), events, "nothing is routed to a removed context")
+    }
+
+    @Test
+    fun `a handler that removes itself from its replayed activation gets no writability replay`() {
+        val pipeline = createPipeline()
+        pipeline.addLast("first", RecordingInboundHandler())
+        pipeline.notifyWritabilityChanged(true)
+        val events = mutableListOf<String>()
+        val late = object : InboundHandler {
+            override fun onActive(ctx: PipelineHandlerContext) {
+                events.add("active")
+                ctx.pipeline.remove("late")
+            }
+
+            override fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
+                events.add("writable=$isWritable")
+            }
+        }
+
+        pipeline.addLast("late", late)
+
+        assertEquals(listOf("active"), events)
     }
 
     @Test
@@ -683,15 +870,9 @@ class DefaultPipelineTest {
 
         pipeline.notifyInactive()
 
-        // The nested handler must observe inactive at least once. Whether
-        // the in-progress walk also dispatches in addition to the replay is
-        // implementation-defined; both are acceptable as long as handlers
-        // are idempotent.
-        val events = laterRef[0]!!.events
-        assertTrue(
-            events.all { it == "inactive" } && events.isNotEmpty(),
-            "expected one or more 'inactive' events, got: $events",
-        )
+        // The nested handler observes the ending exactly once: the walk in
+        // progress reaches it, so it is not caught up as well.
+        assertEquals(listOf("inactive"), laterRef[0]!!.events)
     }
 
     // --- Pre-attach event journal ---

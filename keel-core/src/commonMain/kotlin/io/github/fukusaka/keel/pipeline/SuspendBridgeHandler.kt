@@ -156,6 +156,21 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
     }
 
     override fun onInactive(ctx: PipelineHandlerContext) {
+        end()
+        ctx.propagateInactive()
+    }
+
+    /**
+     * Removal is this bridge's ending too: nothing reaches a removed handler,
+     * so a reader parked here would otherwise wait for an EOF that can no
+     * longer arrive. The pipeline removes every handler at the end of a
+     * channel's life, after the ending — idempotent with [onInactive].
+     */
+    override fun handlerRemoved(ctx: PipelineHandlerContext) {
+        end()
+    }
+
+    private fun end() {
         eof = true
         // Release all queued buffers that will never be consumed. The
         // watermark state resets without re-arming: the channel is going
@@ -172,7 +187,6 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
             readCont = null
             cont.resume(Unit)
         }
-        ctx.propagateInactive()
     }
 
     // --- App-facing suspend API ---

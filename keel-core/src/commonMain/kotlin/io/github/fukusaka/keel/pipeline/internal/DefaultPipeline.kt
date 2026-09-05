@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.pipeline.internal
 
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.InboundHandler
@@ -14,6 +15,8 @@ import io.github.fukusaka.keel.pipeline.PipelineTypeException
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
@@ -33,7 +36,46 @@ import kotlin.coroutines.EmptyCoroutineContext
  * validate that adjacent [InboundHandler]s have compatible
  * [acceptedType]/[producedType] declarations. Validation is skipped when
  * either type is [Any] (the default).
+ *
+ * **State.** Everything the pipeline decides on is a record of something that
+ * happened, kept as a small state machine rather than as a set of flags:
+ *
+ * - [activationPhase] / [endingPhase]: `NONE → OBSERVED → DELIVERED`. Observed
+ *   when the transport reported it while the journal was still collecting;
+ *   delivered when the sweep from the head started.
+ * - [journal]: `FILLING → DRAIN_SCHEDULED | DRAIN_OWED → DRAINED`, or
+ *   `→ DISCARD_OWED | DISCARDED` when nothing will ever drain it. The pre-attach
+ *   journal holds what arrived before the first inbound handler.
+ * - [closeWalk]: `NONE → RUNNING ⇄ DONE`, counted by the nesting of the close
+ *   deliveries that actually invoked a handler; every `DONE` runs the release
+ *   ([afterCloseWalk]).
+ * - [life]: `LIVE → TERMINATE_OWED → ENDING → DESTROYING → DESTROYED`, the
+ *   pipeline's end of life ([terminate]): the ending is delivered if it was not,
+ *   then every handler is removed (`handlerRemoved`), as Netty's `destroy` does.
+ * - [frameDepth]: how many handler frames are on the stack. Work that must not
+ *   run inside a handler's callback — a drain owed to an inline dispatcher, the
+ *   delivery a discard owes, the end of life — is owed to the epilogue of the
+ *   outermost frame, where the depth returns to zero ([runOwed]).
+ *
+ * Each context keeps its own lifecycle (`PENDING → ACTIVE → ENDED`, or
+ * `REMOVED`), so a lifecycle event reaches a context at most once, whichever
+ * path brought it: the sweep, the replay a late handler gets, or a handler
+ * that raised the ending itself.
+ *
+ * **Delivery** is transition-then-invoke: a delivery function moves the
+ * context's state, invokes the handler, and continues through the handler's
+ * own propagation. A handler that throws on a lifecycle event does not hide it
+ * from the handlers below: the throw travels as an error and the event is
+ * propagated on the handler's behalf. A handler that consumes a close ends
+ * that walk (Netty); resources are released by the end of life, not by the
+ * walk reaching the head.
+ *
+ * **Threads.** Every field is confined to the transport's owning context. A
+ * close after that context has stopped runs in place on the caller's thread
+ * under a per-pipeline [claim], the same quiescence the transport's own close
+ * from that thread rests on.
  */
+@OptIn(ExperimentalAtomicApi::class)
 internal class DefaultPipeline(
     override val channel: PipelinedChannel,
     transport: IoTransport,
@@ -46,162 +88,180 @@ internal class DefaultPipeline(
     private val tail: DefaultContext = DefaultContext(this, "TAIL", TailHandler(logger, this))
 
     /**
-     * Dispatcher captured from the underlying [IoTransport]. Used by the
-     * pre-attach event journal to schedule [drainPreAttachJournal] on the
-     * next dispatcher tick after the first user [InboundHandler] is
-     * added — see the [PreAttachJournal] doc below for the rationale.
+     * Dispatcher captured from the underlying [IoTransport]. Used to schedule
+     * the journal's drain on the next tick after the first user
+     * [InboundHandler] is added, and to hand off work from other threads.
      */
     private val ioDispatcher: CoroutineDispatcher = transport.ioDispatcher
 
-    /**
-     * Runs [block] on the transport's owning context: inline when the caller
-     * is already there, dispatched otherwise.
-     *
-     * Outbound work touches state only the owning context may touch — the
-     * transport's `pendingWrites` deque above all — so an off-context caller
-     * cannot be allowed to walk the chain itself. Netty answers the same
-     * question the same way (`AbstractChannelHandlerContext.write` runs inline
-     * when `executor.inEventLoop()` and queues a task otherwise), and it is
-     * the shape keel already uses for `close` / `shutdownOutput` at the engine
-     * layer. Enforcing the old "caller must already be on the EventLoop"
-     * contract instead would have turned a silent corruption into a crash
-     * without making any caller correct.
-     *
-     * Returns `false` when the transport is already closed and [block] was
-     * abandoned, so a caller that transferred buffer ownership can release it
-     * rather than leak it. A boolean rather than a drop-handler lambda because
-     * the handler would be allocated on the fast path too; the dispatched
-     * closure is built only in the branch that uses it.
-     *
-     * A stopped owning context is asked about separately from a closed
-     * transport: the two are not the same state, and the one that strands work
-     * is a *live* transport whose dispatcher has stopped — its queue accepts
-     * the task and nothing ever drains it.
-     *
-     * The `false` return does not close the window entirely: a transport that
-     * closes, or whose loop stops, *after* the dispatch still leaves the task
-     * queued.
-     */
-    private inline fun onOwningContext(crossinline block: () -> Unit): Boolean {
-        if (transport.inOwningContext) {
-            block()
-            return true
-        }
-        if (!transport.isOpen || !transport.canDispatchToOwningContext) return false
-        ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
-        return true
-    }
+    // --- State ---
+
+    /** Whether the transport reported the event, and whether the sweep from the head has started. */
+    private enum class Phase { NONE, OBSERVED, DELIVERED }
+
+    /** The close walk: running while a close delivery that invoked a handler is on the stack. */
+    private enum class CloseWalk { NONE, RUNNING, DONE }
 
     /**
-     * Tracks whether [notifyInactive] has been observed at the pipeline level.
-     *
-     * Set once on the first [notifyInactive] call. Used by [callHandlerAdded]
-     * to replay [PipelineHandler.onInactive] to handlers installed *after*
-     * the inactivation event so engine-driven peer-FIN detection (kqueue
-     * `EV_EOF`, epoll `EPOLLRDHUP`, etc.) does not race with the lazy
-     * install of [io.github.fukusaka.keel.pipeline.SuspendBridgeHandler]
-     * inside [io.github.fukusaka.keel.pipeline.PipelinedChannel.read].
-     *
-     * Single-threaded read/write on the EventLoop thread, so no `@Volatile`
-     * is required (pipeline composition + lifecycle dispatch are both
-     * EventLoop-thread-only by contract).
+     * The pre-attach journal. `DRAIN_SCHEDULED`: a drain is queued on the
+     * dispatcher. `DRAIN_OWED`: an inline dispatcher, the drain runs when the
+     * outermost handler frame returns. `DISCARD_OWED`: the reads are already
+     * released, the lifecycle delivery is owed to the same epilogue.
      */
-    private var inactiveObserved: Boolean = false
+    private enum class Journal { FILLING, DRAIN_SCHEDULED, DRAIN_OWED, DRAINED, DISCARD_OWED, DISCARDED }
+
+    /** The pipeline's end of life; see [terminate]. */
+    internal enum class Life { LIVE, TERMINATE_OWED, ENDING, DESTROYING, DESTROYED }
 
     /**
-     * Lifecycle "head fired" flags — track whether each lifecycle
-     * event has actually propagated through the inbound chain
-     * (distinct from "the engine reported the event", which is
-     * recorded by [inactiveObserved] / [pendingActive] / etc.).
-     * Per-handler lifecycle replay in [callHandlerAdded] fires only
-     * when the corresponding "fired" flag is true — i.e. the event
-     * has already swept the chain and the late-added handler genuinely
-     * missed it. When an event arrives during the pre-attach window
-     * (observed but [drainPreAttachJournal] has not yet fired through
-     * head), the drain will deliver it via the now-assembled chain,
-     * so per-handler replay must skip to avoid double-firing.
-     *
-     * [writabilityCurrent] is the latest value seen by head — kept
-     * because writability is stateful, so a late handler needs to
-     * receive the *current* boolean rather than a replay of every
-     * past transition.
+     * How a lifecycle event is being delivered: by the sweep through the
+     * chain, or replayed to a late handler alone — where a throw is only
+     * logged, since the handlers below are not owed the event by this path.
      */
-    private var activeFired: Boolean = false
-    private var inactiveFired: Boolean = false
+    internal enum class Mode { SWEEP, REPLAY }
+
+    /** A context's lifecycle. `REMOVED` is terminal and the only state in which `handlerRemoved` has run. */
+    internal enum class Lifecycle { PENDING, ACTIVE, ENDED, REMOVED }
+
+    private var activationPhase: Phase = Phase.NONE
+    private var endingPhase: Phase = Phase.NONE
+    private var closeWalk: CloseWalk = CloseWalk.NONE
+
+    /** Nesting of close deliveries that invoked a handler; `0 → 1` is RUNNING, `1 → 0` is DONE. */
+    private var closeDepth: Int = 0
+
+    /**
+     * A close requested while the walk was running. Served at DONE as a new
+     * walk from the tail, so that a handler-initiated walk — which covers only
+     * the head side of its initiator — is completed by the tail side before
+     * the end of life removes it.
+     */
+    private var tailWalkOwed: Boolean = false
+
+    private var journal: Journal = Journal.FILLING
+
+    internal var life: Life = Life.LIVE
+        private set
+
+    /**
+     * Handler frames on the stack: every inbound and outbound event delivery,
+     * `handlerAdded` and `handlerRemoved`. When it returns to zero the owed
+     * work runs ([runOwed]). Netty keeps handlers from being removed inside a
+     * callback by deferring `destroy` to a fresh loop task; the epilogue does
+     * the same without a task that a stopping loop could fail to run.
+     */
+    private var frameDepth: Int = 0
+
+    /**
+     * The per-pipeline claim under which a close runs in place after the
+     * owning context stopped. Not re-entrant: a second closer — another
+     * thread, or a handler closing back from inside the in-place walk — finds
+     * it taken and does not touch the pipeline; the walk that holds it started
+     * at the tail and reaches everyone.
+     */
+    private val claim = AtomicInt(0)
+
+    /**
+     * The latest writability the chain was told, or null before the first.
+     * Writability is a state, so a late handler is told the current value
+     * rather than a replay of every change.
+     */
     private var writabilityCurrent: Boolean? = null
 
     /**
-     * Pre-attach event journal: holds inbound events that arrive before
-     * the pipeline acquires its first user [InboundHandler] and replays
-     * them once such a handler is installed.
+     * Where a lifecycle sweep is: the context whose handler is being invoked,
+     * how (sweep or replay), and whether it has propagated yet. A handler
+     * installed below a sweep that has not propagated is reached by the
+     * sweep and not replayed to as well; a handler that throws without
+     * propagating has the event propagated on its behalf; a replayed event's
+     * default propagation is held back ([DefaultContext.heldBack]). Nested
+     * sweeps restore the outer cursor.
+     */
+    private class Cursor(val ctx: DefaultContext, val mode: Mode) {
+        var propagated: Boolean = false
+
+        /** Whether this sweep has yet to reach [target]: it lies ahead of a handler that has not propagated. */
+        fun stillReaches(target: DefaultContext): Boolean =
+            mode == Mode.SWEEP && !propagated && ctx.leadsTo(target)
+    }
+
+    private var activeCursor: Cursor? = null
+    private var inactiveCursor: Cursor? = null
+    private var writabilityCursor: Cursor? = null
+    private var closeCursor: Cursor? = null
+
+    // --- Pre-attach journal ---
+
+    /**
+     * Pre-attach event journal: holds inbound events that arrive before the
+     * pipeline acquires its first user [InboundHandler] and replays them once
+     * such a handler is installed.
      *
      * **Why**: when an engine arms its read primitive eagerly (e.g.
-     * `IdleReadPolicy.DETECT_PEER_CLOSE` on `engine-nio` /
-     * `engine-netty` NIO fallback / `engine-nwconnection`, where the
-     * underlying API forces an active read to observe peer FIN), bytes
-     * the peer sends between channel construction and the first
-     * [PipelinedChannel.ensureBridge] / `pipeline.addLast` call would
-     * otherwise reach [TailHandler.onRead] and be released with a `WARN`
-     * log. The journal captures those events and drains them onto the
-     * (now fully-constructed) pipeline after the user's synchronous
-     * setup block completes.
+     * `IdleReadPolicy.DETECT_PEER_CLOSE` on `engine-nio` / `engine-netty` NIO
+     * fallback / `engine-nwconnection`, where the underlying API forces an
+     * active read to observe peer FIN), bytes the peer sends between channel
+     * construction and the first [PipelinedChannel.ensureBridge] /
+     * `pipeline.addLast` call would otherwise reach [TailHandler.onRead] and be
+     * released with a `WARN` log. The journal captures those events and drains
+     * them onto the (now fully-constructed) pipeline after the user's
+     * synchronous setup block completes.
      *
-     * **Drain timing — dispatcher tick, not first addX**: a synchronous
-     * codec-stack setup typically calls `addLast(decoder)`,
-     * `addLast(aggregator)`, `addLast(handler)` back-to-back. Draining
-     * the journal on the *first* `addX` would replay events through a
-     * partial pipeline (decoder → tail), bypassing aggregator and
-     * handler that are added afterwards in the same call site. To avoid
-     * this, the first user-inbound `addX` schedules the drain via
-     * [ioDispatcher] (`dispatch(EmptyCoroutineContext, Runnable {
-     * drainPreAttachJournal() })`); the current synchronous block
-     * (containing the remaining `addX` calls) runs to completion before
-     * the dispatcher picks up the drain task, so replay sees the fully
-     * assembled handler chain. This is the keel equivalent of Netty's
-     * `ChannelInitializer` deferred-event model.
+     * **Drain timing — dispatcher tick, not first addX**: a synchronous codec
+     * stack setup adds decoder, aggregator and handler back to back. Draining
+     * on the first add would replay through a partial pipeline, so the first
+     * inbound add schedules the drain on the dispatcher instead
+     * (`DRAIN_SCHEDULED`), the keel equivalent of Netty's `ChannelInitializer`
+     * deferred-event model. On an inline dispatcher the drain is owed to the
+     * outermost handler frame's epilogue (`DRAIN_OWED`), so a handler that
+     * installs the rest of the stack from `handlerAdded` is drained after the
+     * whole stack is in place.
      *
-     * **Per-event replay strategy**:
-     * - `notifyActive` → flag (idempotent).
-     * - `notifyRead(msg)` → bounded queue (each message matters; cap at
-     *   [MAX_PRE_ATTACH_READS] elements; overflow releases the oldest
-     *   and logs `WARN` — overflow indicates the user's handler-add
-     *   path is too slow relative to peer write rate).
-     * - `notifyReadComplete` → flag (consecutive completes coalesce
-     *   into one drain-time invocation).
-     * - `notifyWritabilityChanged(b)` → latest-only (stateful: only
-     *   the most recent value is meaningful).
-     * - `notifyError(cause)` → bounded queue (errors retained;
-     *   [MAX_PRE_ATTACH_ERRORS] cap protects against pathological
-     *   error storms).
-     * - `notifyUserEvent(event)` → bounded queue ([MAX_PRE_ATTACH_USER_EVENTS]).
-     * - `notifyInactive` → reuses the existing [inactiveObserved] flag;
-     *   per-handler replay through [callHandlerAdded] continues to
-     *   apply. Drain time invokes `head.invokeOnInactive` so the entire
-     *   chain processes the event, not just the first handler.
+     * **Per-event replay strategy**: activation and ending are phases
+     * (idempotent); reads are a bounded queue ([MAX_PRE_ATTACH_READS], overflow
+     * releases the oldest with a `WARN`); read completes coalesce; flush
+     * completions are counted; writability is latest-only; errors and user
+     * events are bounded queues.
      *
-     * **Single-thread invariant**: all journal mutations happen on the
-     * EventLoop thread (engine `notifyXxx` callbacks and pipeline
-     * `addX` are both EventLoop-bound by contract). The drain task is
-     * dispatched onto the same dispatcher, so it runs on the EventLoop
-     * thread serially with subsequent events.
+     * **After the connection ended, no data is delivered.** Each stage and
+     * element of the drain is delivered only while the ending has not been
+     * delivered and the transport is open; otherwise reads are released, errors
+     * logged, and only the ending sweep remains.
      */
-    private var drainScheduled: Boolean = false
-    private var preAttachJournalDrained: Boolean = false
-
     private val pendingReads: ArrayDeque<Any> = ArrayDeque()
-    private var pendingActive: Boolean = false
     private var pendingReadComplete: Boolean = false
 
     /**
-     * Flush completions raised before the drain, replayed by it.
-     *
-     * A count and not a flag: each completion answers one flush, and the
-     * handler that issued them is entitled to as many as it caused.
+     * Flush completions raised before the drain, replayed by it. A count and
+     * not a flag: each completion answers one flush, and the handler that
+     * issued them is entitled to as many as it caused.
      */
     private var pendingFlushCompletions: Int = 0
     private var pendingWritability: Boolean? = null
     private val pendingUserEvents: ArrayDeque<Any> = ArrayDeque()
     private val pendingErrors: ArrayDeque<Throwable> = ArrayDeque()
+
+    /**
+     * The failure a transport reported for this connection, whatever became
+     * of it afterwards.
+     *
+     * Two frames ask about it, and they ask different things. The end of the
+     * pipeline asks *whose* failure this is: a refusal a handler threw, or
+     * one an application injected through the public error entrance, is not
+     * the connection's own end, and a handler throwing anything is the case
+     * that frame exists to report. Identity answers that, and answers it the
+     * same whether the cause arrives now or by a replay later — which is why
+     * this is set whenever the transport reports, and not only when the
+     * handlers are getting it.
+     *
+     * The head asks the other question — whether anyone will receive it —
+     * through [handlersAreGettingTransportFailure].
+     *
+     * Only [notifyTransportFailure] moves it, so an application injecting a
+     * cause of its own cannot make its exception look like the connection's.
+     */
+    internal var reportedTransportFailure: Throwable? = null
+        private set
 
     init {
         head.next = tail
@@ -209,6 +269,13 @@ internal class DefaultPipeline(
     }
 
     override val isEmpty: Boolean get() = head.next === tail
+
+    /** Whether the connection is over as far as data goes: the ending was delivered, or the descriptor is gone. */
+    private val ended: Boolean get() = endingPhase == Phase.DELIVERED || !transport.isOpen
+
+    private val destroying: Boolean get() = life == Life.DESTROYING || life == Life.DESTROYED
+
+    private val journalSettled: Boolean get() = journal == Journal.DRAINED || journal == Journal.DISCARDED
 
     // --- Composition ---
 
@@ -263,12 +330,42 @@ internal class DefaultPipeline(
         val prev = ctx.prev!!
         val next = ctx.next!!
         validateInboundTypeChain(prev.handler, next.handler, next.name)
-        prev.next = next
-        next.prev = prev
-        ctx.prev = null
-        ctx.next = null
-        callHandlerRemoved(ctx)
+        removeContext(ctx)
+        // A mutation on a stopped loop is the last chance to notice that the
+        // journal's drain is never going to run — the same as for an add.
+        if (!transport.canDispatchToOwningContext && !journalSettled) {
+            discardJournal(JournalDiscard.OWNING_CONTEXT_STOPPED)
+        }
         return ctx.handler
+    }
+
+    /**
+     * The one transition to `REMOVED`, shared by [remove], [replace], the end
+     * of life ([destroy]) and a post-mortem add — so `handlerRemoved` runs at
+     * most once per context, however many of those reach it.
+     *
+     * Only the neighbours forget the context; the context keeps them. A walk
+     * that is passing through the handler when it removes itself — from its
+     * own `onInactive`, `onRead`, `onClose` — propagates from a context that
+     * still knows where next is, and reaches it. Nothing is routed *to* a
+     * removed context, from any direction: the chain the next walk starts
+     * from no longer links to it, and a stale link from another removed
+     * context skips it — its `handlerRemoved` has run, so its handler may
+     * already have released what it held. Netty keeps the links and skips
+     * removed handlers the same way.
+     */
+    private fun removeContext(ctx: DefaultContext) {
+        if (ctx.lifecycle == Lifecycle.REMOVED) return
+        unlink(ctx)
+        ctx.lifecycle = Lifecycle.REMOVED
+        callHandlerRemoved(ctx)
+    }
+
+    private fun unlink(ctx: DefaultContext) {
+        val prev = ctx.prev
+        val next = ctx.next
+        if (prev != null && prev.next === ctx) prev.next = next
+        if (next != null && next.prev === ctx) next.prev = prev
     }
 
     override fun replace(oldName: String, newName: String, newHandler: PipelineHandler): PipelineHandler {
@@ -283,8 +380,13 @@ internal class DefaultPipeline(
         newCtx.prev = prev
         newCtx.next = next
         next.prev = newCtx
-        oldCtx.prev = null
-        oldCtx.next = null
+        // The old context is pointed at its replacement in both directions,
+        // as in Netty: what the replaced handler forwards after replacing
+        // itself — an upgrade decoder handing on the bytes it did not
+        // consume — reaches the handler that took its place.
+        oldCtx.prev = newCtx
+        oldCtx.next = newCtx
+        oldCtx.lifecycle = Lifecycle.REMOVED
         callHandlerRemoved(oldCtx)
         callHandlerAdded(newCtx)
         return oldCtx.handler
@@ -297,124 +399,82 @@ internal class DefaultPipeline(
     // --- Inbound entry ---
 
     override fun notifyActive(): Pipeline {
-        if (preAttachJournalDrained) {
-            // Idempotent: only the first observation fires through the
-            // chain; subsequent calls are dropped. Late-added handlers
-            // pick up the active state via [callHandlerAdded]'s
-            // per-handler replay using [activeFired].
-            if (!activeFired) {
-                activeFired = true
-                head.invokeOnActive()
-            }
-        } else {
-            // Idempotent flag — multiple notifyActive calls coalesce.
-            pendingActive = true
+        if (destroying) return this
+        when (journal) {
+            Journal.DRAINED, Journal.DISCARDED -> if (activationPhase != Phase.DELIVERED) startActivationSweep()
+            else -> if (activationPhase == Phase.NONE) activationPhase = Phase.OBSERVED
         }
         return this
     }
 
     override fun notifyRead(msg: Any): Pipeline {
-        if (preAttachJournalDrained) {
-            head.invokeOnRead(msg)
-        } else {
-            if (pendingReads.size >= MAX_PRE_ATTACH_READS) {
-                // Overflow: release the oldest queued message to make room.
-                // Stream protocols cannot recover from out-of-order delivery,
-                // so the WARN here flags a likely user-side bug — handler
-                // add is too slow relative to peer write rate, and peer
-                // bytes are being lost.
-                val dropped = pendingReads.removeFirst()
-                logger.warn {
-                    "Pre-attach read journal overflow (cap=$MAX_PRE_ATTACH_READS); released oldest " +
-                        "${dropped::class.simpleName} to enqueue new message — install user inbound handler " +
-                        "earlier or pre-allocate the codec stack inside BindConfig.initializeConnection"
+        if (destroying) {
+            ReferenceCountUtil.safeRelease(msg)
+            return this
+        }
+        when (journal) {
+            Journal.DRAINED -> head.invokeOnRead(msg)
+            // Nothing will ever hand it to a handler: the drain nothing was
+            // going to run has been given up on.
+            Journal.DISCARDED, Journal.DISCARD_OWED -> ReferenceCountUtil.safeRelease(msg)
+            else -> {
+                if (pendingReads.size >= MAX_PRE_ATTACH_READS) {
+                    // Overflow: release the oldest queued message to make room.
+                    // Stream protocols cannot recover from out-of-order delivery,
+                    // so the WARN here flags a likely user-side bug — handler
+                    // add is too slow relative to peer write rate, and peer
+                    // bytes are being lost.
+                    val dropped = pendingReads.removeFirst()
+                    logger.warn {
+                        "Pre-attach read journal overflow (cap=$MAX_PRE_ATTACH_READS); released oldest " +
+                            "${dropped::class.simpleName} to enqueue new message — install user inbound handler " +
+                            "earlier or pre-allocate the codec stack inside BindConfig.initializeConnection"
+                    }
+                    ReferenceCountUtil.safeRelease(dropped)
                 }
-                ReferenceCountUtil.safeRelease(dropped)
+                pendingReads.addLast(msg)
             }
-            pendingReads.addLast(msg)
         }
         return this
     }
 
     override fun notifyReadComplete(): Pipeline {
-        if (preAttachJournalDrained) {
-            head.invokeOnReadComplete()
-        } else {
+        if (destroying) return this
+        when (journal) {
+            Journal.DRAINED -> head.invokeOnReadComplete()
+            Journal.DISCARDED, Journal.DISCARD_OWED -> {}
             // Coalesce consecutive readComplete events into a single
             // drain-time invocation — handlers treat readComplete as a
             // best-effort "batch boundary" hint, not a per-message signal.
-            pendingReadComplete = true
+            else -> pendingReadComplete = true
         }
         return this
     }
 
     override fun notifyFlushComplete(): Pipeline {
-        if (preAttachJournalDrained) {
-            head.invokeOnFlushComplete()
-        } else {
+        if (destroying) return this
+        when (journal) {
+            Journal.DRAINED -> head.invokeOnFlushComplete()
+            Journal.DISCARDED, Journal.DISCARD_OWED -> {}
             // Held, not dropped. "Before the drain" is not the same as "before
-            // any handler": `callHandlerAdded` defers the drain onto the
-            // dispatcher so a codec stack added back to back accumulates into
-            // one replay, and nothing gates a write or a flush in the meantime.
-            // A handler that responds on its activation therefore issues a
-            // flush inside that window, and dropping its answer loses it for
-            // good. Measured before this counter existed: handler attached,
-            // flush issued, completion raised — nothing arrived, then or after
-            // the drain.
-            //
-            // Counted rather than flagged, because completions are not
-            // coalesced: each one answers a flush, and a handler that paced
-            // itself on them would be short.
-            pendingFlushCompletions++
+            // any handler": the drain is deferred so a codec stack added back
+            // to back accumulates into one replay, and nothing gates a write or
+            // a flush in the meantime. A handler that responds on its
+            // activation issues a flush inside that window, and dropping its
+            // answer loses it for good.
+            else -> pendingFlushCompletions++
         }
         return this
     }
 
     override fun notifyInactive(): Pipeline {
-        // Idempotent: only the first [notifyInactive] propagates through the
-        // chain. Subsequent calls (e.g. [AbstractPipelinedChannel.close]
-        // running after an `onReadClosed`-driven `notifyInactive`, or a
-        // user-initiated `ch.close()` after peer FIN) become no-ops so
-        // existing handlers continue to receive `onInactive` exactly once.
-        if (inactiveObserved) return this
-        // Record the inactivation so handlers installed after this point
-        // receive a replayed [PipelineHandler.onInactive] from
-        // [callHandlerAdded]. Without the replay, an engine-driven peer-FIN
-        // event delivered before [SuspendBridgeHandler] is lazily installed
-        // (e.g. inside [PipelinedChannel.read]) would be lost — the bridge
-        // would suspend forever waiting for `eof = true`.
-        inactiveObserved = true
-        if (preAttachJournalDrained) {
-            inactiveFired = true
-            head.invokeOnInactive()
+        if (destroying || endingPhase == Phase.DELIVERED) return this
+        when (journal) {
+            Journal.DRAINED, Journal.DISCARDED -> startEndingSweep()
+            else -> endingPhase = Phase.OBSERVED
         }
-        // Pre-attach: the inactiveObserved flag is sufficient; drain replays
-        // it via head.invokeOnInactive at drain time and sets
-        // [inactiveFired].
         return this
     }
-
-    /**
-     * The failure a transport reported for this connection, whatever became
-     * of it afterwards.
-     *
-     * Two frames ask about it, and they ask different things. The end of the
-     * pipeline asks *whose* failure this is: a refusal a handler threw, or
-     * one an application injected through the public error entrance, is not
-     * the connection's own end, and a handler throwing anything is the case
-     * that frame exists to report. Identity answers that, and answers it the
-     * same whether the cause arrives now or by a replay later — which is why
-     * this is set whenever the transport reports, and not only when the
-     * handlers are getting it.
-     *
-     * The head asks the other question — whether anyone will receive it —
-     * through [handlersAreGettingTransportFailure].
-     *
-     * Only [notifyTransportFailure] moves it, so an application injecting a
-     * cause of its own cannot make its exception look like the connection's.
-     */
-    internal var reportedTransportFailure: Throwable? = null
-        private set
 
     /**
      * Whether [cause] is the reported failure *and* these handlers are
@@ -426,7 +486,8 @@ internal class DefaultPipeline(
      * never asks for one — does not.
      */
     internal fun handlersAreGettingTransportFailure(cause: Throwable): Boolean =
-        cause === reportedTransportFailure && (preAttachJournalDrained || drainScheduled)
+        cause === reportedTransportFailure &&
+            (journal == Journal.DRAINED || journal == Journal.DRAIN_SCHEDULED || journal == Journal.DRAIN_OWED)
 
     internal fun notifyTransportFailure(cause: Throwable) {
         reportedTransportFailure = cause
@@ -434,14 +495,19 @@ internal class DefaultPipeline(
     }
 
     override fun notifyError(cause: Throwable): Pipeline {
-        if (preAttachJournalDrained) {
-            head.invokeOnError(cause)
-        } else {
-            if (pendingErrors.size < MAX_PRE_ATTACH_ERRORS) {
-                pendingErrors.addLast(cause)
-            } else {
-                logger.warn(cause) {
-                    "Pre-attach error journal overflow (cap=$MAX_PRE_ATTACH_ERRORS); dropping additional error"
+        if (destroying) return this
+        when (journal) {
+            Journal.DRAINED -> head.invokeOnError(cause)
+            Journal.DISCARDED, Journal.DISCARD_OWED -> logger.warn(cause) {
+                "Error reported after the journal was discarded; no handler can act on it"
+            }
+            else -> {
+                if (pendingErrors.size < MAX_PRE_ATTACH_ERRORS) {
+                    pendingErrors.addLast(cause)
+                } else {
+                    logger.warn(cause) {
+                        "Pre-attach error journal overflow (cap=$MAX_PRE_ATTACH_ERRORS); dropping additional error"
+                    }
                 }
             }
         }
@@ -449,35 +515,129 @@ internal class DefaultPipeline(
     }
 
     override fun notifyUserEvent(event: Any): Pipeline {
-        if (preAttachJournalDrained) {
-            head.invokeOnUserEvent(event)
-        } else {
-            if (pendingUserEvents.size < MAX_PRE_ATTACH_USER_EVENTS) {
-                pendingUserEvents.addLast(event)
-            } else {
-                logger.warn { "Pre-attach user-event journal overflow (cap=$MAX_PRE_ATTACH_USER_EVENTS); dropping" }
+        if (destroying) return this
+        when (journal) {
+            Journal.DRAINED -> head.invokeOnUserEvent(event)
+            Journal.DISCARDED, Journal.DISCARD_OWED -> {}
+            else -> {
+                if (pendingUserEvents.size < MAX_PRE_ATTACH_USER_EVENTS) {
+                    pendingUserEvents.addLast(event)
+                } else {
+                    logger.warn { "Pre-attach user-event journal overflow (cap=$MAX_PRE_ATTACH_USER_EVENTS); dropping" }
+                }
             }
         }
         return this
     }
 
     override fun notifyWritabilityChanged(isWritable: Boolean): Pipeline {
-        if (preAttachJournalDrained) {
-            // Record the latest value so [callHandlerAdded]'s
-            // per-handler replay can deliver the current state to a
-            // late-added handler. Writability is stateful — only the
-            // most recent value is meaningful when joining.
-            writabilityCurrent = isWritable
-            head.invokeOnWritabilityChanged(isWritable)
-        } else {
-            // Latest-only — only the most recent value is meaningful when
-            // a handler joins.
-            pendingWritability = isWritable
+        if (destroying) return this
+        when (journal) {
+            Journal.DRAINED -> {
+                writabilityCurrent = isWritable
+                head.deliverWritability(isWritable, Mode.SWEEP)
+            }
+            // Writability is a state, not data: a report after the discard
+            // still tells a late handler the current value.
+            Journal.DISCARDED, Journal.DISCARD_OWED -> writabilityCurrent = isWritable
+            // Latest-only — only the most recent value is meaningful when a
+            // handler joins. Published as the current value by the drain, and
+            // only if no real report came first.
+            else -> pendingWritability = isWritable
         }
         return this
     }
 
+    private fun startActivationSweep() {
+        activationPhase = Phase.DELIVERED
+        head.deliverActive(Mode.SWEEP)
+    }
+
+    private fun startEndingSweep() {
+        endingPhase = Phase.DELIVERED
+        head.deliverInactive(Mode.SWEEP)
+    }
+
     // --- Outbound entry ---
+
+    /**
+     * Runs [block] on the transport's owning context: inline when the caller
+     * is already there, dispatched otherwise.
+     *
+     * Outbound work touches state only the owning context may touch — the
+     * transport's `pendingWrites` deque above all — so an off-context caller
+     * cannot be allowed to walk the chain itself. Netty answers the same
+     * question the same way (`AbstractChannelHandlerContext.write` runs inline
+     * when `executor.inEventLoop()` and queues a task otherwise), and it is
+     * the shape keel already uses for `close` / `shutdownOutput` at the engine
+     * layer.
+     *
+     * Returns `false` when the transport is already closed and [block] was
+     * abandoned, so a caller that transferred buffer ownership can release it
+     * rather than leak it. A stopped owning context is asked about separately
+     * from a closed transport: the one that strands work is a *live* transport
+     * whose dispatcher has stopped — its queue accepts the task and nothing
+     * ever drains it. The `false` return does not close the window entirely: a
+     * transport that closes, or whose loop stops, *after* the dispatch still
+     * leaves the task queued.
+     *
+     * A write or flush a handler issues from inside an in-place close walk
+     * takes this path too and is released: the walk rests on the loop being
+     * quiescent, and letting outbound work run inline would lift the loop's
+     * confinement for any thread that wrote during the teardown.
+     */
+    private inline fun onOwningContext(crossinline block: () -> Unit): Boolean {
+        if (transport.inOwningContext) {
+            block()
+            return true
+        }
+        if (!transport.isOpen || !transport.canDispatchToOwningContext) return false
+        ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
+        return true
+    }
+
+    /**
+     * Runs [block] — a close request — where it can run.
+     *
+     * A close is about what the handlers own rather than about the transport,
+     * so a closed transport does not cancel it: the step is handed to the loop
+     * whenever the loop can take it. A loop that cannot — stopped, per
+     * [IoTransport.canDispatchToOwningContext] — has the request run in place
+     * on the caller's thread under the [claim], after the journal nothing will
+     * drain is discarded. A caller that cannot take the claim does nothing:
+     * the closer that holds it walks from the tail and reaches everyone.
+     */
+    private inline fun onOwningContextForClose(crossinline block: () -> Unit) {
+        if (transport.inOwningContext) {
+            block()
+            return
+        }
+        if (transport.canDispatchToOwningContext) {
+            ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
+            return
+        }
+        runInPlace { block() }
+    }
+
+    /**
+     * Runs [block] on the caller's thread under the per-pipeline [claim], the
+     * premise being that the owning context has stopped and nothing else runs
+     * this pipeline. Returns `false` without running it when another closer
+     * holds the claim. The journal is discarded first: it is this pipeline's
+     * own state, the drain that would have delivered it is exactly what is not
+     * going to happen on this loop, and the discard delivers the observed
+     * lifecycle in place.
+     */
+    internal inline fun runInPlace(block: () -> Unit): Boolean {
+        if (!claim.compareAndSet(0, 1)) return false
+        try {
+            settleJournalOnStoppedLoop()
+            block()
+        } finally {
+            claim.store(0)
+        }
+        return true
+    }
 
     override fun requestWrite(msg: Any): Pipeline {
         if (!onOwningContext { tail.invokeOnWrite(msg) }) ReferenceCountUtil.safeRelease(msg)
@@ -490,52 +650,161 @@ internal class DefaultPipeline(
     }
 
     override fun requestClose(): Pipeline {
-        if (!onOwningContext { tail.invokeOnClose() }) closeWithoutChain()
+        onOwningContextForClose { startTailWalk() }
         return this
     }
 
     /**
-     * Closes the transport when a close could not reach the chain.
-     *
-     * The walk ends at [HeadHandler], whose whole job is to call
-     * `transport.close()` — the only thing that releases the descriptor. When
-     * the walk cannot run, reproducing just that terminus here recovers the
-     * descriptor, which would otherwise stay open for the pipeline's lifetime.
-     * It is **not** a pipeline close: the handlers' `onClose` is genuinely
-     * skipped, and anything a handler releases there — a TLS codec's native
-     * session, for one — is skipped with it. That is why this is reported
-     * rather than done quietly, and why "better" here means the fd, not
-     * everything.
-     *
-     * Silent when the transport is already closed. That is the ordinary
-     * close-after-close, and `close()` is idempotent, so there is nothing to
-     * report and nothing to do.
-     *
-     * **This calls `close()` from whatever thread the caller is on, and that is
-     * only safe while "cannot dispatch" implies the loop is fully quiescent.**
-     * The engines that answer `false` do so on quiescence, so their `close()`
-     * takes its caller-thread teardown branch. An engine that answered `false`
-     * during a shutdown *in progress* would instead send this caller into the
-     * loop hand-off's wait — turning an ordinary `close()` into a spin on an
-     * arbitrary thread, inside application teardown.
+     * Starts a close walk at the tail, or owes one to the walk that is
+     * running. Returns whether a handler was invoked — a walk that finds every
+     * outbound context already delivered or removed starts no frame, and the
+     * channel then runs the release itself ([closeOnOwningContext]).
      */
-    private fun closeWithoutChain() {
+    private fun startTailWalk(): Boolean {
+        if (destroying) return false
+        if (closeWalk == CloseWalk.RUNNING) {
+            tailWalkOwed = true
+            return false
+        }
+        return deliverCloseFrom(tail.prev)
+    }
+
+    /**
+     * Delivers the close to the first outbound context at or before [start]
+     * that has not heard it. Delivered and removed contexts are skipped, so
+     * each outbound context hears its close at most once and a later walk
+     * passes an earlier consumer. The walk then continues through the
+     * handler's own `propagateClose`, and ends where a handler does not
+     * propagate — consuming a close is a legitimate decision, as in Netty.
+     * Returns whether a handler was invoked.
+     */
+    private fun deliverCloseFrom(start: DefaultContext?): Boolean {
+        if (destroying) return false
+        var ctx = start
+        while (ctx != null && !ctx.acceptsClose()) ctx = ctx.prev
+        if (ctx == null) return false
+        ctx.invokeOnClose()
+        return true
+    }
+
+    /**
+     * Runs when the outermost close delivery returns (DONE), whoever started
+     * the walk, and from the channel's close when the walk started no frame.
+     * Idempotent on facts, so a nested walk running it again does nothing
+     * more: (i) the walk owed to this one, from the tail, first, so the tail
+     * side of a handler-initiated close hears its close before the end of
+     * life removes it; (ii) the descriptor, if a handler consumed the close
+     * before the head or the head's own close threw; (iii) the end of life —
+     * owed to the outermost frame's epilogue, since the delivery that ran this
+     * is itself a frame.
+     */
+    private fun afterCloseWalk() {
+        if (tailWalkOwed) {
+            tailWalkOwed = false
+            startTailWalk()
+        }
         if (transport.isOpen) {
-            logger.warn {
-                "close could not reach the pipeline — the owning context has stopped, so the handlers' " +
-                    "onClose is skipped; closing the transport directly so its descriptor is released"
+            try {
+                transport.close()
+            } catch (e: Throwable) {
+                logger.warn(e) { "transport.close() threw after the close walk" }
             }
         }
-        // The journal goes with the descriptor. Nothing else releases it — it
-        // is this pipeline's own state, not the transport's, so the teardown
-        // that runs inside close() cannot reach it, and the drain that would
-        // have is exactly what is not going to happen.
-        discardPreAttachJournal()
-        // Invoked rather than re-implemented: the head *is* the terminus, and a
-        // second responsibility added there later has to land on this path too.
-        // No re-entry — the head is a DuplexHandler, so this takes the outbound
-        // branch straight into its own onClose.
-        head.invokeOnClose()
+        terminate()
+    }
+
+    /**
+     * The channel's close, on the owning context (or in place under the
+     * [claim]). Every step is idempotent on facts, so a close re-entered from
+     * anywhere — a drain, a sweep, a walk, a `handlerRemoved` — runs the same
+     * sequence and finds the finished steps done:
+     *
+     * 1. A journal whose drain is still queued is drained first, so the reads
+     *    the peer sent reach the assembled chain before the ending, and the
+     *    ending precedes the close. Inside a handler frame the drain is owed to
+     *    the epilogue instead — the one case in which the close precedes the
+     *    ending.
+     * 2. The ending ([notifyInactive]), idempotent.
+     * 3. The close walk from the tail; owed if one is running.
+     * 4. When the walk started no frame — every outbound context had already
+     *    heard its close — the release the walk's end would have run.
+     */
+    internal fun closeOnOwningContext() {
+        if (journal == Journal.DRAIN_SCHEDULED) {
+            if (frameDepth == 0) drainJournal() else journal = Journal.DRAIN_OWED
+        }
+        notifyInactive()
+        val framed = startTailWalk()
+        if (!framed && closeWalk != CloseWalk.RUNNING) afterCloseWalk()
+    }
+
+    /**
+     * The pipeline's end of life. Nothing runs inside a handler frame: called
+     * with frames on the stack it is owed to the outermost frame's epilogue.
+     * Then, in order: the journal is settled — drained on a live loop (the
+     * transport is closed by now, so only the ending stage has anything left
+     * to deliver), discarded on a stopped one; the ending is delivered if it
+     * was not (a handler-initiated close reports no read-closed on most
+     * engines, so this is where its ending comes from — Netty likewise fires
+     * `channelInactive` before `destroy`); and every handler is removed, tail
+     * to head, `handlerRemoved` once each ([destroy]). From `DESTROYING` on no
+     * sweep or walk starts, and a handler added is served post-mortem
+     * ([callHandlerAdded]). Idempotent, never throws.
+     */
+    internal fun terminate() {
+        if (life != Life.LIVE && life != Life.TERMINATE_OWED) return
+        if (frameDepth > 0) {
+            life = Life.TERMINATE_OWED
+            return
+        }
+        life = Life.ENDING
+        settleJournal()
+        if (endingPhase != Phase.DELIVERED) startEndingSweep()
+        life = Life.DESTROYING
+        destroy()
+        life = Life.DESTROYED
+    }
+
+    private fun settleJournal() {
+        when (journal) {
+            Journal.DRAINED, Journal.DISCARDED -> {}
+            Journal.DISCARD_OWED -> deliverDiscardedLifecycle()
+            Journal.FILLING -> discardJournal(JournalDiscard.END_OF_LIFE)
+            Journal.DRAIN_SCHEDULED, Journal.DRAIN_OWED -> {
+                if (transport.canDispatchToOwningContext) {
+                    drainJournal()
+                } else {
+                    discardJournal(JournalDiscard.OWNING_CONTEXT_STOPPED)
+                }
+            }
+        }
+    }
+
+    private fun settleJournalOnStoppedLoop() {
+        when (journal) {
+            Journal.DRAINED, Journal.DISCARDED -> {}
+            Journal.DISCARD_OWED -> deliverDiscardedLifecycle()
+            else -> discardJournal(JournalDiscard.OWNING_CONTEXT_STOPPED)
+        }
+    }
+
+    /**
+     * Removes every handler, tail to head — Netty's `destroy`. Each context's
+     * `handlerRemoved` runs once, on its transition to `REMOVED`; a context a
+     * `handlerRemoved` removed ahead of the walk is skipped. Not interrupted
+     * by a throw. Runs with the journal settled and [life] past
+     * `TERMINATE_OWED`, so the epilogue that fires between the frames finds
+     * nothing owed and never re-enters this walk.
+     */
+    private fun destroy() {
+        var ctx = tail.prev
+        while (ctx != null && ctx !== head) {
+            val before = ctx.prev
+            removeContext(ctx)
+            ctx = before
+        }
+        head.next = tail
+        tail.prev = head
     }
 
     /**
@@ -563,8 +832,39 @@ internal class DefaultPipeline(
         }
     }
 
-    /** Latch for [reportDroppedFlush]; owning-context-confined like the lifecycle flags. */
+    /** Latch for [reportDroppedFlush]; owning-context-confined like the rest. */
     private var droppedFlushReported: Boolean = false
+
+    // --- Frames ---
+
+    /**
+     * Runs [block] as a handler frame. When the outermost frame returns, the
+     * work owed to the epilogue runs ([runOwed]) — after a throw too.
+     */
+    private inline fun <T> frame(block: () -> T): T {
+        frameDepth++
+        try {
+            return block()
+        } finally {
+            frameDepth--
+            if (frameDepth == 0) runOwed()
+        }
+    }
+
+    /**
+     * The epilogue at frame depth zero, in order: the journal's owed work,
+     * then the end of life. Each item is consumed by a state transition
+     * before it runs, so the frames it runs itself find nothing left when
+     * their own epilogues fire.
+     */
+    private fun runOwed() {
+        when (journal) {
+            Journal.DRAIN_OWED -> drainJournal()
+            Journal.DISCARD_OWED -> deliverDiscardedLifecycle()
+            else -> {}
+        }
+        if (life == Life.TERMINATE_OWED) terminate()
+    }
 
     // --- Internal ---
 
@@ -591,75 +891,77 @@ internal class DefaultPipeline(
         require(findContext(name) == null) { "Duplicate handler name: '$name'" }
     }
 
+    /**
+     * `handlerAdded` first, before any lifecycle event can reach the handler
+     * — a handler sets itself up here, its context most of all. Then the
+     * journal: the first inbound handler asks for the drain, on the
+     * dispatcher's next tick, or owed to the outermost frame's epilogue on an
+     * inline dispatcher, or discarded outright on a stopped loop. Then the
+     * replay of what the chain already heard, to this handler alone
+     * ([replayLifecycleTo]).
+     *
+     * **Post-mortem.** A handler added once the end of life is destroying the
+     * pipeline (or has) is served a complete lifecycle inside this call:
+     * `handlerAdded`, the ending, `handlerRemoved` — and is unlinked again.
+     * The callers that add after a close hold their handler by reference (the
+     * upgrade bridges), and see it end. Only `addFirst` / `addLast` get here
+     * then: the pipeline is empty, so `addBefore` / `addAfter` / `replace`
+     * find no base handler and throw before reaching this.
+     */
     private fun callHandlerAdded(ctx: DefaultContext) {
-        // Schedule the pre-attach journal drain on the *first* user
-        // [InboundHandler] addition. Subsequent addX calls in the same
-        // synchronous block (e.g. codec stack setup adding decoder +
-        // aggregator + handler back-to-back) must accumulate before the
-        // drain fires, which is why the drain is deferred onto
-        // [ioDispatcher] rather than executed inline. See the journal
-        // KDoc above for the full rationale.
-        var firedDrainInline = false
-        if (!preAttachJournalDrained && !drainScheduled && ctx.handler is InboundHandler) {
-            drainScheduled = true
-            if (!transport.canDispatchToOwningContext) {
-                // The dispatcher will not run again, so a deferred drain would
-                // sit in a queue nobody reads, holding the journal's pooled
-                // buffers for as long as this pipeline is reachable. Draining
-                // inline is not the alternative: that runs handler code off the
-                // owning context, on the assembly path every connection takes.
-                // The connection is over and these reads can no longer be
-                // handled by anyone, so they are released instead of stranded.
-                //
-                // [firedDrainInline] stays false deliberately — nothing was
-                // propagated through head, so the lifecycle replay below is
-                // still owed to this handler. The discard hands it the
-                // inactivation flag it needs; without that the replay matches
-                // no branch and silently does nothing.
-                discardPreAttachJournal()
-            } else if (ioDispatcher.isDispatchNeeded(EmptyCoroutineContext)) {
-                // Defer drain via the dispatcher so any addX calls remaining
-                // in the current synchronous block (e.g. codec stack setup
-                // adding decoder + aggregator + handler back-to-back) all
-                // accumulate before drain replays through the assembled chain.
-                ioDispatcher.dispatch(EmptyCoroutineContext, Runnable { drainPreAttachJournal() })
-            } else {
-                // Test transports backed by `Dispatchers.Unconfined` — which
-                // throws from `dispatch()` by design (Unconfined is meant for
-                // inline execution) — fall back to inline drain; unit tests
-                // typically add a single handler before `notifyXxx`, so
-                // partial-chain replay does not arise.
-                drainPreAttachJournal()
-                firedDrainInline = true
+        frame {
+            try {
+                ctx.handler.handlerAdded(ctx)
+            } catch (e: Throwable) {
+                logger.error(e) { "handlerAdded() threw for '${ctx.name}'" }
             }
         }
-        try {
-            ctx.handler.handlerAdded(ctx)
-            // Replay a previously-observed inactivation so handlers installed
-            // after [notifyInactive] still receive the lifecycle event. The
-            // canonical case is the lazy [SuspendBridgeHandler] installed by
-            // [PipelinedChannel.read]: an engine that reports peer FIN from
-            // the always-armed read filter (kqueue `EV_EOF`, epoll
-            // `EPOLLRDHUP`) before the user code calls `read` would
-            // otherwise leave the bridge waiting forever for `eof = true`.
-            // Per-handler lifecycle replay for late-added handlers.
-            // The [firedDrainInline] guard skips replay when the drain
-            // that just ran inline above already propagated lifecycle
-            // events through this handler via head — replaying again
-            // would double-fire.
-            if (!firedDrainInline && ctx.handler is InboundHandler) {
-                replayLifecycleTo(ctx, ctx.handler)
-            }
-        } catch (e: Throwable) {
-            logger.error(e) { "handlerAdded() threw for '${ctx.name}'" }
+        if (destroying) {
+            if (ctx.handler is InboundHandler) ctx.deliverInactive(Mode.REPLAY)
+            removeContext(ctx)
+            return
+        }
+        // Any add that finds the loop stopped gives the journal up, whatever
+        // state it is in: a drain already scheduled there is never going to
+        // run either, and this handler is the last chance to notice.
+        if (!transport.canDispatchToOwningContext && !journalSettled) {
+            discardJournal(JournalDiscard.OWNING_CONTEXT_STOPPED)
+        } else if (journal == Journal.FILLING && ctx.handler is InboundHandler) {
+            askForDrain()
+        }
+        if (ctx.handler is InboundHandler) replayLifecycleTo(ctx)
+    }
+
+    /**
+     * The first inbound handler is in: the journal has someone to drain to.
+     * Deferred onto the dispatcher so any add remaining in the current
+     * synchronous block accumulates before the drain replays through the
+     * assembled chain; on an inline dispatcher (`Dispatchers.Unconfined`
+     * throws from `dispatch()` by design) run now, or owed to the epilogue
+     * when a handler frame — a `handlerAdded` installing the rest of its stack
+     * — is still on the stack. A stopped loop gets no drain: the reads are
+     * released rather than stranded, and the observed lifecycle is delivered
+     * in place.
+     */
+    private fun askForDrain() {
+        if (!transport.canDispatchToOwningContext) {
+            discardJournal(JournalDiscard.OWNING_CONTEXT_STOPPED)
+        } else if (ioDispatcher.isDispatchNeeded(EmptyCoroutineContext)) {
+            journal = Journal.DRAIN_SCHEDULED
+            ioDispatcher.dispatch(EmptyCoroutineContext, Runnable { drainJournal() })
+        } else {
+            journal = Journal.DRAIN_OWED
+            if (frameDepth == 0) drainJournal()
         }
     }
 
     private fun callHandlerRemoved(ctx: DefaultContext) {
-        try {
-            ctx.handler.handlerRemoved(ctx)
-        } catch (e: Throwable) {
-            logger.error(e) { "handlerRemoved() threw for '${ctx.name}'" }
+        frame {
+            try {
+                ctx.handler.handlerRemoved(ctx)
+            } catch (e: Throwable) {
+                logger.error(e) { "handlerRemoved() threw for '${ctx.name}'" }
+            }
         }
     }
 
@@ -710,15 +1012,17 @@ internal class DefaultPipeline(
      * events to the next handler in the chain.
      *
      * **Inbound navigation** ([findNextInbound]): follows [next] pointers
-     * from head toward tail, skipping non-[InboundHandler] nodes.
+     * from head toward tail, skipping non-[InboundHandler] and removed nodes.
      *
      * **Outbound navigation** ([findPrevOutbound]): follows [prev] pointers
-     * from tail toward head, skipping non-[OutboundHandler] nodes.
+     * from tail toward head, skipping non-[OutboundHandler] and removed nodes.
      *
-     * **Invoke methods** (`invokeOn*`): wrap handler callbacks with try-catch
-     * to prevent IoBuf leaks on exceptions. [invokeOnRead] releases the message
-     * on exception; [invokeOnError] logs the secondary exception to avoid
-     * infinite error propagation loops.
+     * **Delivery** (`deliverX`): transition-then-invoke for the lifecycle
+     * events, keyed on this context's own state — so each reaches the handler
+     * at most once. **Invoke methods** (`invokeOnX`): wrap handler callbacks
+     * with try-catch to prevent IoBuf leaks on exceptions; [invokeOnRead]
+     * releases the message on exception; [invokeOnError] logs the secondary
+     * exception to avoid infinite error propagation loops.
      */
     internal class DefaultContext(
         private val pipelineRef: DefaultPipeline,
@@ -726,11 +1030,33 @@ internal class DefaultPipeline(
         override val handler: PipelineHandler,
     ) : PipelineHandlerContext {
 
-        /** Previous node toward HEAD (outbound direction). Null when detached. */
+        /**
+         * Previous node toward HEAD (outbound direction). Kept after the
+         * context is removed, so a walk passing through the handler when it
+         * removes itself still finds its way; see [DefaultPipeline.removeContext].
+         */
         var prev: DefaultContext? = null
 
-        /** Next node toward TAIL (inbound direction). Null when detached. */
+        /** Next node toward TAIL (inbound direction). Kept after removal, like [prev]. */
         var next: DefaultContext? = null
+
+        /**
+         * This context's lifecycle. `PENDING → ACTIVE → ENDED`, or straight
+         * to `ENDED` when the ending is the first thing it hears; `REMOVED`
+         * is terminal. An outbound-only context stays `PENDING` until removed.
+         */
+        var lifecycle: Lifecycle = Lifecycle.PENDING
+
+        /** Whether this (outbound) context has heard its close; once. */
+        var closeDelivered: Boolean = false
+
+        /**
+         * The last writability the chain delivered to this handler, or null.
+         * A replay tells a handler the current value only if it has not heard
+         * it — a genuine change raised from inside its replayed activation
+         * already did.
+         */
+        var writabilityHeard: Boolean? = null
 
         override val channel: PipelinedChannel get() = pipelineRef.channel
         override val pipeline: Pipeline get() = pipelineRef
@@ -739,8 +1065,8 @@ internal class DefaultPipeline(
         // --- Inbound propagation ---
 
         override fun propagateActive() {
-            val nextCtx = findNextInbound() ?: return
-            nextCtx.invokeOnActive()
+            if (heldBack(pipelineRef.activeCursor)) return
+            findNextInbound()?.deliverActive(Mode.SWEEP)
         }
 
         override fun propagateRead(msg: Any) {
@@ -759,8 +1085,8 @@ internal class DefaultPipeline(
         }
 
         override fun propagateInactive() {
-            val nextCtx = findNextInbound() ?: return
-            nextCtx.invokeOnInactive()
+            if (heldBack(pipelineRef.inactiveCursor)) return
+            findNextInbound()?.deliverInactive(Mode.SWEEP)
         }
 
         override fun propagateError(cause: Throwable) {
@@ -774,8 +1100,22 @@ internal class DefaultPipeline(
         }
 
         override fun propagateWritabilityChanged(isWritable: Boolean) {
-            val nextCtx = findNextInbound() ?: return
-            nextCtx.invokeOnWritabilityChanged(isWritable)
+            if (heldBack(pipelineRef.writabilityCursor)) return
+            findNextInbound()?.deliverWritability(isWritable, Mode.SWEEP)
+        }
+
+        /**
+         * Records on the sweep's cursor that this handler propagated, and
+         * answers whether the propagation is held back: it is when the event
+         * is being replayed to this handler alone. For the once-only
+         * activation and ending the contexts below would stop it anyway; for
+         * writability, gated by value, it is what keeps a replayed value from
+         * arriving below after a genuine change raised from inside the replay.
+         */
+        private fun heldBack(cursor: Cursor?): Boolean {
+            if (cursor == null || cursor.ctx !== this) return false
+            cursor.propagated = true
+            return cursor.mode == Mode.REPLAY
         }
 
         // --- Outbound propagation ---
@@ -783,10 +1123,12 @@ internal class DefaultPipeline(
         // The chain walk (findPrevOutbound) runs *inside* onOwningContext, not
         // before it. prev/next are non-volatile and EventLoop-confined, so an
         // off-loop emitter that resolved the previous context on its own thread
-        // could read a link the loop is concurrently mutating — and a context
-        // detached between the resolve and the dispatched run would surface a
-        // null prev whose write leaks. Resolving on the owning context closes
-        // both: a null prev there releases the message rather than dropping it.
+        // could read a link the loop is concurrently mutating. Resolving on the
+        // owning context closes that. A removed context keeps its links, so a
+        // handler writing after its removal — an asynchronous completion — still
+        // reaches the transport, as it does in Netty; only the head's own
+        // context resolves to no previous, and a write from there is released
+        // rather than dropped.
 
         override fun propagateWrite(msg: Any) {
             if (!pipelineRef.onOwningContext {
@@ -804,35 +1146,167 @@ internal class DefaultPipeline(
             }
         }
 
+        /**
+         * From inside this handler's own close — the walk is on the stack, on
+         * this thread — the next hop runs inline. From anywhere else it is a
+         * close the handler initiates from its own context (the Netty
+         * `ctx.close()` idiom): the walk from here toward the head, run where a
+         * close request can run.
+         */
         override fun propagateClose() {
-            if (!pipelineRef.onOwningContext { findPrevOutbound()?.invokeOnClose() }) {
-                pipelineRef.closeWithoutChain()
+            val cursor = pipelineRef.closeCursor
+            if (cursor != null && cursor.ctx === this) {
+                cursor.propagated = true
+                pipelineRef.deliverCloseFrom(prev)
+                return
+            }
+            pipelineRef.onOwningContextForClose { pipelineRef.deliverCloseFrom(prev) }
+        }
+
+        // --- Lifecycle delivery (transition-then-invoke) ---
+        //
+        // A lifecycle sweep — activation, ending, close — does not stop at a
+        // handler that throws: the throw goes on as an error, and the event
+        // goes on from there, propagated by the pipeline if the handler had
+        // not done it. Netty stops (`fireChannelInactive` catches and only
+        // reports), and can, since nothing in a Netty pipeline joins a
+        // registry the server drains on stop; here the server's handler does
+        // exactly that on these two events, so a throw above it that ended
+        // the sweep left the connection registered after it was gone, or
+        // never registered at all. Data events stay as they are: a read the
+        // handler threw on is released and reaches nobody below. A replay is
+        // to this handler alone, so a throw there is only logged.
+
+        /**
+         * The activation. Not delivered once the connection is over: after
+         * the ending was delivered, or after the transport closed — an
+         * activation after either would be a lie. An ending merely observed
+         * ahead of the drain is neither: the drain delivers the activation
+         * first and the ending after.
+         */
+        fun deliverActive(mode: Mode) {
+            if (lifecycle != Lifecycle.PENDING) return
+            if (pipelineRef.endingPhase == Phase.DELIVERED || !pipelineRef.transport.isOpen) return
+            val h = handler as? InboundHandler ?: return
+            lifecycle = Lifecycle.ACTIVE
+            val cursor = Cursor(this, mode)
+            val outer = pipelineRef.activeCursor
+            pipelineRef.activeCursor = cursor
+            pipelineRef.frame {
+                try {
+                    h.onActive(this)
+                } catch (e: Throwable) {
+                    if (mode == Mode.REPLAY) {
+                        pipelineRef.logger.error(e) { "onActive() replay threw for '$name'" }
+                    } else {
+                        propagateError(e)
+                        if (!cursor.propagated) propagateActive()
+                    }
+                } finally {
+                    pipelineRef.activeCursor = outer
+                }
+            }
+        }
+
+        /** The ending: once per context, and possibly the first thing it hears. */
+        fun deliverInactive(mode: Mode) {
+            if (lifecycle == Lifecycle.ENDED || lifecycle == Lifecycle.REMOVED) return
+            val h = handler as? InboundHandler ?: return
+            lifecycle = Lifecycle.ENDED
+            val cursor = Cursor(this, mode)
+            val outer = pipelineRef.inactiveCursor
+            pipelineRef.inactiveCursor = cursor
+            pipelineRef.frame {
+                try {
+                    h.onInactive(this)
+                } catch (e: Throwable) {
+                    if (mode == Mode.REPLAY) {
+                        pipelineRef.logger.error(e) { "onInactive() replay threw for '$name'" }
+                    } else {
+                        // The reason first, then the ending it interrupted.
+                        propagateError(e)
+                        if (!cursor.propagated) propagateInactive()
+                    }
+                } finally {
+                    pipelineRef.inactiveCursor = outer
+                }
+            }
+        }
+
+        /**
+         * A writability the handler has not heard. The same value again stops
+         * the walk: transports report transitions only, so a context that
+         * already holds the value has nothing newer below it.
+         */
+        fun deliverWritability(isWritable: Boolean, mode: Mode) {
+            if (lifecycle == Lifecycle.REMOVED || writabilityHeard == isWritable) return
+            val h = handler as? InboundHandler ?: return
+            writabilityHeard = isWritable
+            val cursor = Cursor(this, mode)
+            val outer = pipelineRef.writabilityCursor
+            pipelineRef.writabilityCursor = cursor
+            pipelineRef.frame {
+                try {
+                    h.onWritabilityChanged(this, isWritable)
+                } catch (e: Throwable) {
+                    if (mode == Mode.REPLAY) {
+                        pipelineRef.logger.error(e) { "onWritabilityChanged() replay threw for '$name'" }
+                    } else {
+                        propagateError(e)
+                        if (!cursor.propagated) propagateWritabilityChanged(isWritable)
+                    }
+                } finally {
+                    pipelineRef.writabilityCursor = outer
+                }
+            }
+        }
+
+        /** Whether the close walk delivers to this context: outbound, linked, and not yet told. */
+        fun acceptsClose(): Boolean =
+            lifecycle != Lifecycle.REMOVED && handler is OutboundHandler && !closeDelivered
+
+        /**
+         * The close, to an outbound context that [acceptsClose]. Counts as a
+         * frame of the walk; the outermost one's return is DONE and runs the
+         * release ([DefaultPipeline.afterCloseWalk]).
+         */
+        fun invokeOnClose() {
+            val h = handler as OutboundHandler
+            closeDelivered = true
+            val cursor = Cursor(this, Mode.SWEEP)
+            val outer = pipelineRef.closeCursor
+            pipelineRef.closeCursor = cursor
+            pipelineRef.closeDepth++
+            if (pipelineRef.closeDepth == 1) pipelineRef.closeWalk = CloseWalk.RUNNING
+            pipelineRef.frame {
+                try {
+                    h.onClose(this)
+                } catch (e: Throwable) {
+                    propagateError(e)
+                    if (!cursor.propagated) propagateClose()
+                } finally {
+                    pipelineRef.closeCursor = outer
+                    pipelineRef.closeDepth--
+                    if (pipelineRef.closeDepth == 0) {
+                        pipelineRef.closeWalk = CloseWalk.DONE
+                        pipelineRef.afterCloseWalk()
+                    }
+                }
             }
         }
 
         // --- Invoke with try-catch (leak prevention) ---
 
-        internal fun invokeOnActive() {
-            val h = handler
-            if (h is InboundHandler) {
-                try {
-                    h.onActive(this)
-                } catch (e: Throwable) {
-                    propagateError(e)
-                }
-            } else {
-                propagateActive()
-            }
-        }
-
         internal fun invokeOnRead(msg: Any) {
             val h = handler
             if (h is InboundHandler) {
-                try {
-                    h.onRead(this, msg)
-                } catch (e: Throwable) {
-                    ReferenceCountUtil.safeRelease(msg)
-                    propagateError(e)
+                pipelineRef.frame {
+                    try {
+                        h.onRead(this, msg)
+                    } catch (e: Throwable) {
+                        ReferenceCountUtil.safeRelease(msg)
+                        propagateError(e)
+                    }
                 }
             } else {
                 propagateRead(msg)
@@ -842,10 +1316,12 @@ internal class DefaultPipeline(
         internal fun invokeOnReadComplete() {
             val h = handler
             if (h is InboundHandler) {
-                try {
-                    h.onReadComplete(this)
-                } catch (e: Throwable) {
-                    propagateError(e)
+                pipelineRef.frame {
+                    try {
+                        h.onReadComplete(this)
+                    } catch (e: Throwable) {
+                        propagateError(e)
+                    }
                 }
             } else {
                 propagateReadComplete()
@@ -855,37 +1331,28 @@ internal class DefaultPipeline(
         internal fun invokeOnFlushComplete() {
             val h = handler
             if (h is InboundHandler) {
-                try {
-                    h.onFlushComplete(this)
-                } catch (e: Throwable) {
-                    propagateError(e)
+                pipelineRef.frame {
+                    try {
+                        h.onFlushComplete(this)
+                    } catch (e: Throwable) {
+                        propagateError(e)
+                    }
                 }
             } else {
                 propagateFlushComplete()
             }
         }
 
-        internal fun invokeOnInactive() {
-            val h = handler
-            if (h is InboundHandler) {
-                try {
-                    h.onInactive(this)
-                } catch (e: Throwable) {
-                    propagateError(e)
-                }
-            } else {
-                propagateInactive()
-            }
-        }
-
         internal fun invokeOnError(cause: Throwable) {
             val h = handler
             if (h is InboundHandler) {
-                try {
-                    h.onError(this, cause)
-                } catch (e: Throwable) {
-                    pipelineRef.logger.error(e) {
-                        "onError() threw in '$name' while handling: $cause"
+                pipelineRef.frame {
+                    try {
+                        h.onError(this, cause)
+                    } catch (e: Throwable) {
+                        pipelineRef.logger.error(e) {
+                            "onError() threw in '$name' while handling: $cause"
+                        }
                     }
                 }
             } else {
@@ -896,37 +1363,28 @@ internal class DefaultPipeline(
         internal fun invokeOnUserEvent(event: Any) {
             val h = handler
             if (h is InboundHandler) {
-                try {
-                    h.onUserEvent(this, event)
-                } catch (e: Throwable) {
-                    propagateError(e)
+                pipelineRef.frame {
+                    try {
+                        h.onUserEvent(this, event)
+                    } catch (e: Throwable) {
+                        propagateError(e)
+                    }
                 }
             } else {
                 propagateUserEvent(event)
             }
         }
 
-        internal fun invokeOnWritabilityChanged(isWritable: Boolean) {
-            val h = handler
-            if (h is InboundHandler) {
-                try {
-                    h.onWritabilityChanged(this, isWritable)
-                } catch (e: Throwable) {
-                    propagateError(e)
-                }
-            } else {
-                propagateWritabilityChanged(isWritable)
-            }
-        }
-
         internal fun invokeOnWrite(msg: Any) {
             val h = handler
             if (h is OutboundHandler) {
-                try {
-                    h.onWrite(this, msg)
-                } catch (e: Throwable) {
-                    ReferenceCountUtil.safeRelease(msg)
-                    propagateError(e)
+                pipelineRef.frame {
+                    try {
+                        h.onWrite(this, msg)
+                    } catch (e: Throwable) {
+                        ReferenceCountUtil.safeRelease(msg)
+                        propagateError(e)
+                    }
                 }
             } else {
                 propagateWrite(msg)
@@ -936,26 +1394,15 @@ internal class DefaultPipeline(
         internal fun invokeOnFlush() {
             val h = handler
             if (h is OutboundHandler) {
-                try {
-                    h.onFlush(this)
-                } catch (e: Throwable) {
-                    propagateError(e)
+                pipelineRef.frame {
+                    try {
+                        h.onFlush(this)
+                    } catch (e: Throwable) {
+                        propagateError(e)
+                    }
                 }
             } else {
                 propagateFlush()
-            }
-        }
-
-        internal fun invokeOnClose() {
-            val h = handler
-            if (h is OutboundHandler) {
-                try {
-                    h.onClose(this)
-                } catch (e: Throwable) {
-                    propagateError(e)
-                }
-            } else {
-                propagateClose()
             }
         }
 
@@ -964,7 +1411,7 @@ internal class DefaultPipeline(
         private fun findNextInbound(): DefaultContext? {
             var ctx = next
             while (ctx != null) {
-                if (ctx.handler is InboundHandler) return ctx
+                if (ctx.lifecycle != Lifecycle.REMOVED && ctx.handler is InboundHandler) return ctx
                 ctx = ctx.next
             }
             return null
@@ -973,164 +1420,151 @@ internal class DefaultPipeline(
         private fun findPrevOutbound(): DefaultContext? {
             var ctx = prev
             while (ctx != null) {
-                if (ctx.handler is OutboundHandler) return ctx
+                if (ctx.lifecycle != Lifecycle.REMOVED && ctx.handler is OutboundHandler) return ctx
                 ctx = ctx.prev
             }
             return null
         }
-    }
 
-    /**
-     * Replays the current lifecycle state to a late-added inbound
-     * handler. Replay precedence is "inactive wins" because the
-     * channel's terminal state takes priority — a handler joining an
-     * already-closed channel should observe `onInactive` (not
-     * `onActive`) so it can clean up immediately, regardless of the
-     * `activeFired` history.
-     */
-    private fun replayLifecycleTo(ctx: DefaultContext, handler: InboundHandler) {
-        when {
-            inactiveObserved && inactiveFired -> invokeReplayCatching(ctx, "onInactive") {
-                handler.onInactive(ctx)
+        /** Whether following [next] from here reaches [target]. */
+        fun leadsTo(target: DefaultContext): Boolean {
+            var ctx = next
+            while (ctx != null) {
+                if (ctx === target) return true
+                ctx = ctx.next
             }
-            activeFired -> {
-                invokeReplayCatching(ctx, "onActive") { handler.onActive(ctx) }
-                writabilityCurrent?.let { writable ->
-                    invokeReplayCatching(ctx, "onWritabilityChanged") {
-                        handler.onWritabilityChanged(ctx, writable)
-                    }
-                }
-            }
-        }
-    }
-
-    private inline fun invokeReplayCatching(ctx: DefaultContext, eventName: String, block: () -> Unit) {
-        try {
-            block()
-        } catch (e: Throwable) {
-            logger.error(e) { "$eventName() replay threw for '${ctx.name}'" }
+            return false
         }
     }
 
     /**
-     * Drains the pre-attach event journal onto the now fully-constructed
-     * pipeline. Scheduled by [callHandlerAdded] on the first user
-     * [InboundHandler] addition via [ioDispatcher.dispatch]; runs on the
-     * EventLoop thread serially with subsequent `notifyXxx` calls.
+     * Replays the lifecycle the chain already heard to a late-added inbound
+     * handler, alone: its default propagation of the replayed event is held
+     * back, since the handlers below heard it when it swept the chain. The
+     * ending wins over the activation — a handler joining an ended connection
+     * observes `onInactive` and cleans up at once. After a replayed activation
+     * the current writability is told too, if the handler has not heard it and
+     * the connection did not end from inside the activation.
      *
-     * **Replay order**: `onActive` (if pending) → buffered reads in
-     * arrival order → `onReadComplete` (if any read completed before
-     * the drain) → `onWritabilityChanged` with the latest value (if
-     * any) → buffered user events → buffered errors → `onInactive` (if
-     * the channel transitioned to inactive before the drain).
-     *
-     * The flag flip `preAttachJournalDrained = true` happens at the
-     * *start* of the drain so any `addX` invoked from within a replay
-     * handler (e.g. a codec that installs another handler in
-     * `handlerAdded`) bypasses the journal and propagates events
-     * directly through the head — the journal is one-shot.
+     * Nothing is replayed while the journal will deliver it (the drain sweeps
+     * the assembled chain), or while a running sweep has yet to reach the new
+     * context — the sweep delivers it, in sweep mode, throw and all.
      */
-    private fun drainPreAttachJournal() {
-        if (preAttachJournalDrained) return
-        preAttachJournalDrained = true
-
-        if (pendingActive) {
-            pendingActive = false
-            activeFired = true
-            head.invokeOnActive()
+    private fun replayLifecycleTo(ctx: DefaultContext) {
+        when (journal) {
+            Journal.DRAINED, Journal.DISCARDED -> {}
+            else -> return
         }
+        val cursor = when {
+            endingPhase == Phase.DELIVERED -> inactiveCursor
+            activationPhase == Phase.DELIVERED -> activeCursor
+            else -> null
+        }
+        if (cursor != null && cursor.stillReaches(ctx)) return
+        if (endingPhase == Phase.DELIVERED) {
+            ctx.deliverInactive(Mode.REPLAY)
+            return
+        }
+        if (activationPhase != Phase.DELIVERED) return
+        ctx.deliverActive(Mode.REPLAY)
+        if (ctx.lifecycle != Lifecycle.ACTIVE || endingPhase == Phase.DELIVERED) return
+        // Not while a writability sweep still reaches the context: the sweep
+        // delivers the value, and a replay ahead of it would make the sweep
+        // stop at this context's own record, hiding the change from the
+        // handlers below.
+        if (writabilityCursor?.stillReaches(ctx) == true) return
+        writabilityCurrent?.let { ctx.deliverWritability(it, Mode.REPLAY) }
+    }
+
+    /**
+     * Drains the pre-attach event journal onto the assembled chain: the
+     * activation, the reads in arrival order, the batch boundary, the flush
+     * completions, the writability, the user events, the errors, and the
+     * ending if it was observed. Marked `DRAINED` at the *start*, so an add
+     * from inside a replayed event bypasses the journal — it is one-shot — and
+     * a read arriving meanwhile goes straight through the head.
+     *
+     * The one drain: the dispatched task, the channel's close, the epilogue
+     * owed on an inline dispatcher and the end of life all run this. Each
+     * data stage and element is delivered only while the connection is not
+     * over ([ended]); after that reads are released, the rest dropped, and only
+     * the ending is delivered — no data after the descriptor is gone. A
+     * journalled error is delivered unless the ending already was: it is the
+     * reason, and precedes the end. The journalled writability is published only if no real report
+     * arrived since the drain began: a handler told the new value from inside
+     * the drain is not told the old one after it.
+     */
+    private fun drainJournal() {
+        when (journal) {
+            Journal.DRAIN_SCHEDULED, Journal.DRAIN_OWED -> {}
+            else -> return
+        }
+        journal = Journal.DRAINED
+        if (activationPhase == Phase.OBSERVED) startActivationSweep()
         while (pendingReads.isNotEmpty()) {
-            head.invokeOnRead(pendingReads.removeFirst())
+            val msg = pendingReads.removeFirst()
+            if (ended) ReferenceCountUtil.safeRelease(msg) else head.invokeOnRead(msg)
         }
         if (pendingReadComplete) {
             pendingReadComplete = false
-            head.invokeOnReadComplete()
+            if (!ended) head.invokeOnReadComplete()
         }
         while (pendingFlushCompletions > 0) {
             pendingFlushCompletions--
-            head.invokeOnFlushComplete()
+            if (!ended) head.invokeOnFlushComplete()
         }
         pendingWritability?.let { writable ->
             pendingWritability = null
-            writabilityCurrent = writable
-            head.invokeOnWritabilityChanged(writable)
+            if (writabilityCurrent == null) {
+                writabilityCurrent = writable
+                if (!ended) head.deliverWritability(writable, Mode.SWEEP)
+            }
         }
         while (pendingUserEvents.isNotEmpty()) {
-            head.invokeOnUserEvent(pendingUserEvents.removeFirst())
+            val event = pendingUserEvents.removeFirst()
+            if (!ended) head.invokeOnUserEvent(event)
         }
         while (pendingErrors.isNotEmpty()) {
-            head.invokeOnError(pendingErrors.removeFirst())
+            val cause = pendingErrors.removeFirst()
+            // Gated by the ending's delivery alone, not by the descriptor: a
+            // reason is not data. The transport reports the failure that ends
+            // a connection before it reports the ending, and closes itself in
+            // between; the head stayed quiet about that failure because this
+            // drain was going to hand it over, so it is handed over, still
+            // before the end.
+            if (endingPhase == Phase.DELIVERED) {
+                logger.warn(cause) { "A journalled error arrived after the connection ended; no handler can act on it" }
+            } else {
+                head.invokeOnError(cause)
+            }
         }
-        if (inactiveObserved && !inactiveFired) {
-            // Replay the inactivation through the head so the entire
-            // chain (not just the first handler via the per-handler
-            // [callHandlerAdded] replay) processes onInactive.
-            //
-            // Guarded on [inactiveFired], not only on the observation: the
-            // drain runs handler code, and a handler that closes the channel
-            // from inside a replayed read sends `notifyInactive` through the
-            // drained branch — the flag is already up by the time control
-            // returns here, and firing again would deliver the one ending
-            // twice. Measured before the guard: `[.., inactive, close, ..,
-            // inactive]` from a close inside the first replayed read.
-            inactiveFired = true
-            head.invokeOnInactive()
-        }
+        if (endingPhase == Phase.OBSERVED) startEndingSweep()
     }
 
     /**
-     * Releases the journalled reads when the owning context has stopped, so
-     * they are not held by a drain that will never run.
+     * Gives up on the journal: nothing is going to drain it. The reads are
+     * released, the errors reported with their cause (dropping the only record
+     * of why a connection failed is the silent failure this codebase forbids),
+     * the rest dropped, and the observed lifecycle delivered from the head in
+     * place — the activation only if no ending was observed and the transport
+     * is still open, then the ending. Inside a handler frame the delivery is
+     * owed to the epilogue (`DISCARD_OWED`), so a handler is not swept from
+     * inside its own `handlerAdded`.
      *
-     * Only the reads are *released*; the queued user events and errors are
-     * dropped without one. The difference is ownership, not type: [notifyRead]
-     * takes over its message — its own overflow path releases what it drops —
-     * whereas [notifyUserEvent] does not, and its overflow drops unreleased.
-     * Releasing a user event here would free something the emitter may still
-     * hold.
-     *
-     * **The lifecycle bookkeeping is exactly [drainPreAttachJournal]'s**, minus
-     * the head invocations. Not because the chain is unassembled — [addLast]
-     * links the new context before calling here, which is why the inline-drain
-     * branch has to set `firedDrainInline` at all — but because a head sweep
-     * now would reach only the handlers added so far, and deferring past that
-     * is the whole reason the drain is dispatched. On a stopped loop there is
-     * no later tick to defer to, so the per-handler replay carries what it can.
-     *
-     * That replay fires on `inactiveObserved && inactiveFired` or on
-     * `activeFired` — flags the drain promotes and this path must promote too.
-     * Leaving them as they are makes it match no branch at all and do nothing,
-     * silently: a bridge installed after a peer close would wait for an EOF it
-     * has already missed. Nothing sets them later, either — [notifyInactive]
-     * returns early once observed, and the drain early-returns once the journal
-     * is marked.
-     *
-     * **What the replay cannot carry** is anything with no branch of its own:
-     * a journalled writability change (the drain delivers it through head
-     * unconditionally; the replay only inside the `activeFired` branch), the
-     * queued user events, and the errors — which is why the errors are at least
-     * reported with their cause below rather than dropped.
-     *
-     * Marking the journal drained stops later reads from re-filling a queue
-     * with the same fate.
+     * Only the reads are *released*; the user events are dropped without one.
+     * The difference is ownership: [notifyRead] takes over its message,
+     * whereas [notifyUserEvent] does not, and releasing an event here would
+     * free something the emitter may still hold.
      */
-    private fun discardPreAttachJournal() {
-        // Guarded like [drainPreAttachJournal]: there are two callers now, and
-        // a close after the journal already went would otherwise re-run the
-        // flag promotion below.
-        if (preAttachJournalDrained) return
-        preAttachJournalDrained = true
-        // Promoted before anything below can return early. These are what the
-        // per-handler replay reads, and they are the only delivery left.
-        if (pendingActive) {
-            pendingActive = false
-            activeFired = true
+    private fun discardJournal(reason: JournalDiscard) {
+        when (journal) {
+            Journal.FILLING, Journal.DRAIN_SCHEDULED, Journal.DRAIN_OWED -> {}
+            else -> return
         }
         pendingWritability?.let { writable ->
             pendingWritability = null
             writabilityCurrent = writable
         }
-        if (inactiveObserved) inactiveFired = true
         val reads = pendingReads.size
         val events = pendingUserEvents.size
         val errors = pendingErrors.size
@@ -1140,20 +1574,39 @@ internal class DefaultPipeline(
         pendingUserEvents.clear()
         pendingReadComplete = false
         pendingFlushCompletions = 0
-        // Errors are reported individually, with their cause, the way the
-        // journal's own overflow path reports them. Dropping the only record of
-        // why a connection failed is the silent failure this codebase forbids.
         while (pendingErrors.isNotEmpty()) {
             val cause = pendingErrors.removeFirst()
-            logger.warn(cause) { "Discarded a journalled error — this connection's owning context has stopped" }
+            logger.warn(cause) { "Discarded a journalled error — ${reason.because}" }
         }
         if (reads > 0 || events > 0 || errors > 0) {
-            logger.warn {
+            // A stopped loop is worth a warning: the connection was still
+            // being assembled. The end of life is not — a channel closed
+            // before anything read from it is an ordinary way for one to end.
+            val line = {
                 "Discarded the pre-attach journal ($reads read(s), $events user event(s), $errors error(s)) " +
-                    "— a handler was added after this connection's owning context stopped, so the deferred " +
-                    "replay would never have run"
+                    "— ${reason.because}"
             }
+            if (reason == JournalDiscard.OWNING_CONTEXT_STOPPED) logger.warn { line() } else logger.debug { line() }
         }
+        if (frameDepth > 0) journal = Journal.DISCARD_OWED else deliverDiscardedLifecycle()
+    }
+
+    /** The delivery a discard owes: the observed lifecycle, swept from the head. */
+    private fun deliverDiscardedLifecycle() {
+        journal = Journal.DISCARDED
+        // Stated here as well as in `deliverActive`'s own gate: no activation
+        // on a connection that ended or whose descriptor is gone.
+        if (activationPhase == Phase.OBSERVED && endingPhase == Phase.NONE && transport.isOpen) startActivationSweep()
+        if (endingPhase == Phase.OBSERVED) startEndingSweep()
+    }
+
+    /** Why the pre-attach journal was released without being drained. */
+    private enum class JournalDiscard(val because: String) {
+        OWNING_CONTEXT_STOPPED(
+            "a handler was added, or a close requested, after this connection's owning context stopped, " +
+                "so the deferred replay would never have run",
+        ),
+        END_OF_LIFE("the channel's close released the transport before any inbound handler was installed"),
     }
 
     private companion object {

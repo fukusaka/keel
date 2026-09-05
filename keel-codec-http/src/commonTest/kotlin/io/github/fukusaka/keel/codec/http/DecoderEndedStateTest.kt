@@ -468,7 +468,10 @@ class DecoderEndedStateTest {
         val tracker = TrackingAllocator(DefaultAllocator)
         val c = openResponseConnection(tracker)
         c.read("HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\n\r\nRAW1", tracker)
-        c.channel.close()
+        // The ending as the read side reports it. The channel's own close is
+        // not usable here: it ends the pipeline's life, after which nothing
+        // is delivered to anyone.
+        c.channel.pipeline.notifyInactive()
         c.read("RAW2", tracker)
         assertEquals(listOf("head 101", "end 0", "raw RAW1", "raw RAW2"), c.sink.events)
         c.sink.releaseHeads()

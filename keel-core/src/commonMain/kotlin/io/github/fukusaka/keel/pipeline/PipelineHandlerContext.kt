@@ -120,7 +120,17 @@ interface PipelineHandlerContext {
     /** Propagates a flush request to the next outbound handler. */
     fun propagateFlush()
 
-    /** Propagates a close request to the next outbound handler. */
+    /**
+     * Propagates a close request to the next outbound handler that has not
+     * heard it.
+     *
+     * From inside the handler's own `onClose` this is the next hop of the
+     * running walk. From anywhere else it starts a close from this context
+     * (the Netty `ctx.close()` idiom): a walk from here toward the head, whose
+     * completion releases the transport and ends the pipeline's life — the
+     * handlers on the tail side then hear the ending and `handlerRemoved`,
+     * not their close, unless a close of the channel is asked for first.
+     */
     fun propagateClose()
 
     /** Convenience: propagateWrite + propagateFlush. */

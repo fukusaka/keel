@@ -156,7 +156,7 @@ class ReadBatchBoundaryTest {
     }
 
     @Test
-    fun `a handler that closes mid-batch gets the boundary after the ending`() {
+    fun `a handler that closes mid-batch does not get the boundary that follows`() {
         val transport = transport()
         lateinit var channel: PipelinedChannel
         val recorder = object : Recorder() {
@@ -174,10 +174,10 @@ class ReadBatchBoundaryTest {
         transport.onReadComplete?.invoke()
 
         assertEquals(
-            listOf("read", "inactive", "batchEnd"),
+            listOf("read", "inactive"),
             recorder.events,
-            "the boundary lands after the ending — a handler must not treat it as proof the " +
-                "channel is still live",
+            "the close ended the pipeline's life inside the batch, so the boundary that follows " +
+                "reaches nobody — nothing is delivered after the ending",
         )
     }
 }
