@@ -288,6 +288,32 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a transport's report from inside this side's own close is not an end under the caller`() = readClosedTest {
+        // The close records that it started before it runs anything, because
+        // what it runs can bring the report in: a handler's ending releases
+        // the transport, and a transport that reports from there would have
+        // the caller's own close read as an end under it.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.pipeline.addFirst(
+            "h",
+            object : InboundHandler {
+                override fun onInactive(ctx: PipelineHandlerContext) {
+                    f.transportEnded()
+                }
+            },
+        )
+
+        f.channel.close()
+
+        assertFalse(f.channel.endedByTransport, "the close was this side's, whatever arrived while it ran")
+        val dst = f.tracker.allocate(8)
+        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
     fun `a transport's report after a close this side performed is not an end under the caller`() = readClosedTest {
         // The mark separates "the connection ended under the caller" from
         // "the caller closed it", and a report landing after this side's own
@@ -370,6 +396,60 @@ class PipelineReadClosedTest {
             f.log,
             "there is no connection left to answer on, so what reaches the handlers below is the ending",
         )
+    }
+
+    @Test
+    fun `a handler added below one that already passed the event on is replayed to`() = readClosedTest {
+        // Passing the event on records that the handler did, so a handler
+        // installed below it afterwards is behind the sweep and is replayed
+        // to instead. Without that record the sweep is thought to still be
+        // coming, and the new handler hears nothing.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "first",
+            object : InboundHandler {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    ctx.propagateReadClosed()
+                    f.pipeline.addLast("late", f.recorder("late"))
+                }
+            },
+        )
+
+        f.peerFin()
+
+        assertEquals(
+            listOf("late:added", "late:active", "late:readClosed", "late:inactive", "late:close", "late:removed"),
+            f.log,
+            "the replay reaches it, and the close this chain performs follows",
+        )
+    }
+
+    @Test
+    fun `a typed handler passes the event on from inside its own read`() = readClosedTest {
+        // The context a typed handler is given inside `onReadTyped` wraps the
+        // real one, and passing the event on has to reach through the wrapper.
+        // That is the route a codec takes when its own protocol's close — a
+        // TLS close_notify — is the peer's end of file to the chain below it.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "typed",
+            object : TypedInboundHandler<IoBuf>(IoBuf::class) {
+                override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
+                    msg.release()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addLast("below", f.recorder("below"))
+
+        f.transport.onRead?.invoke(f.bytes(1))
+
+        assertEquals(
+            listOf("below:added", "below:active", "below:readClosed"),
+            f.log,
+            "the event reached through the wrapper",
+        )
+        assertEquals(0, f.tracker.outstandingCount)
     }
 
     @Test
