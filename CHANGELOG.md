@@ -77,6 +77,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
+  before the pipeline took it releases it, and so does one that finds the channel closed. A caller has nothing to
+  release in a `catch`; one that released the buffer itself there must stop. A write given nothing to write is
+  unchanged: it takes nothing and the buffer is still the caller's (#1098)
 - `core`: **BREAKING** (semantics, for a transport that opts in): where a transport reports the peer's end of file
   apart from the connection's, `InboundHandler.onInactive` means the connection is over and the peer's end of file
   is `onReadClosed`, after which the connection stays writable and in Pipeline mode the channel closes itself — so
@@ -174,13 +178,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   apart from the peer's; until then a read there throws as before (#1098)
 - `core`: a handler joining a chain after the peer's end of file was delivered to an empty one is told the
   connection is over and is removed with it, rather than hearing only that the peer finished on a channel nothing
-  goes on to close (#1098)
+  goes on to close — on the path a transport reaching it must opt into; no engine in this tree does yet (#1098)
 - `core`: a chain that had handlers when the peer's end of file was reported still releases the descriptor when
-  something empties it before the report reaches anyone — the connection is then nobody's, not its caller's (#1098)
-- `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
-  before the pipeline took it releases it, and so does one that finds the channel closed. A caller has nothing to
-  release in a `catch`; one that released the buffer itself there must stop. A write given nothing to write is
-  unchanged: it takes nothing and the buffer is still the caller's (#1098)
+  something empties it before the report reaches anyone — the connection is then nobody's, not its caller's; on the
+  same opt-in path (#1098)
 - `core`: a lifecycle sweep (activation, ending, close) no longer stops at a handler that throws —
   the throw travels as an error and the event still reaches the handlers past it, once (#1096)
 - `core`: a handler that removes itself from inside its own callback no longer cuts the walk passing
