@@ -264,6 +264,22 @@ class TransportPreSplitReportTest {
         }
 
     @Test
+    fun `two idle timeouts firing report the connection's end once`() = run {
+        // The read-idle and write-idle timers arm independently and each
+        // reclaims, so both can fire. What a listener does on the end — give
+        // back the aggregator's chunks, the decoder's headers, the server's
+        // registry entry — is not free to happen twice.
+        val transport = SplitTransport()
+        var ended = 0
+        transport.onClosed = { ended++ }
+
+        transport.endItself()
+        transport.endItself()
+
+        assertEquals(1, ended, "the end is a fact about the connection, not an event each path may raise")
+    }
+
+    @Test
     fun `the read-idle timeout still reclaims a connection after the peer's end of file`() {
         val transport = Transport()
         var endHook = 0
