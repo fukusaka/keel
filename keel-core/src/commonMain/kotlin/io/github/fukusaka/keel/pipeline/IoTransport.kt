@@ -20,6 +20,10 @@ import kotlinx.coroutines.CoroutineDispatcher
  *   → EOF (peer FIN)              → onReadClosed()
  *   → error / reset / idle / stop → onClosed()
  *
+ * A transport that has not been taught to tell the two apart — every one in
+ * this tree — reports the whole right-hand column on onReadClosed instead;
+ * see reportsEveryEndAsReadClosed.
+ *
  * Write path (pipeline → transport):
  *   write(buf) → flush() → platform syscall
  *   → EAGAIN → async retry → onFlushComplete()

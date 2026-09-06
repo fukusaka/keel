@@ -77,11 +77,15 @@ interface Channel : AutoCloseable {
      * [IoBuf.unsafeBuffer] (JVM) directly to the OS read syscall
      * for zero-copy I/O.
      *
-     * The peer's end of file is `-1`, returned once everything it sent has
-     * been read. The channel is still open and writable then — the peer
-     * half-closed — and closing it is the caller's; a channel with handlers
-     * that hears that end of file before its first read is a Pipeline-mode
-     * channel to its pipeline at that moment and closes itself instead.
+     * Where the transport reports the peer's end of file apart from the
+     * connection's end, that end of file is `-1`, returned once everything
+     * the peer sent has been read; the channel is still open and writable
+     * then — the peer half-closed — and closing it is the caller's, while a
+     * channel with handlers that hears it before its first read is a
+     * Pipeline-mode channel to its pipeline at that moment and closes
+     * itself instead. A transport that still makes one report for every way
+     * a connection can be over ends the read side with it: what was queued
+     * is released and the next read is `-1`.
      * Where the transport reports that it ended the connection itself — an
      * idle reclamation does, and each other end (a reset, a failed read or
      * write, a stopped loop) once its engine reports it that way — the

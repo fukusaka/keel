@@ -153,9 +153,11 @@ interface InboundHandler : PipelineHandler {
      * `ChannelInputShutdownEvent` for the same fact.
      *
      * At most once per handler, after [onActive] and before [onInactive]; a
-     * handler added after the transport's report hears it as a replay, one
-     * added after a report raised from inside the chain does not. Not
-     * delivered once the
+     * handler added after the event was delivered hears it as a replay, whether
+     * the channel or a handler's own [Pipeline.notifyReadClosed] delivered
+     * it — a handler that passed it on with
+     * [PipelineHandlerContext.propagateReadClosed] instead delivered nothing
+     * and is not replayed. Not delivered once the
      * ending was, nor once the transport is gone — then only the ending is.
      * What a handler releases here must be what the read side alone held; the
      * connection's own resources wait for [onInactive] and
@@ -166,7 +168,10 @@ interface InboundHandler : PipelineHandler {
      * takes at once — and a handler that answers later — keel's own
      * HTTP servers answer from a coroutine, which their ending cancels —
      * does not answer a peer that half-closed. A handler that raises it from
-     * inside the chain (a TLS close_notify) leaves the connection open. In
+     * inside the chain with [Pipeline.notifyReadClosed] (a TLS close_notify)
+     * gets the same close; one that only tells the handlers below it passes
+     * the event on with [PipelineHandlerContext.propagateReadClosed], which
+     * leaves the connection open. In
      * Coroutine mode the caller reads what was queued, gets `-1`, and closes
      * when it is done.
      */

@@ -129,16 +129,22 @@ interface Pipeline {
      *
      * The read side is over — no read follows — and the connection is not:
      * it is still open and still writable, so a handler can answer a peer
-     * that half-closed. Delivered once, as [InboundHandler.onReadClosed],
+     * that half-closed with what the socket takes at once (in Pipeline mode
+     * the close follows this call, and does not wait for a flush the socket
+     * refused). Delivered once, as [InboundHandler.onReadClosed],
      * between the activation and the ending; held ahead of the first inbound
      * handler and replayed to one added later, and not delivered once the
      * ending was or the transport is gone. A chain that has handlers but no
      * inbound one never asks for a drain, so the event is swept there and
      * then instead — reaching nobody, and leaving the channel to decide on
-     * it. The channel raises it from the transport's own report, and
-     * in Pipeline mode then closes, since nobody else owns the connection
-     * there; a handler that raises it from inside the chain (a TLS
-     * close_notify) does not close the channel.
+     * it. This is the report, whoever makes it: the
+     * channel makes it from the transport's own, and in Pipeline mode the
+     * delivery closes the channel, since nobody else owns the connection
+     * there — a handler calling this from inside the chain (a TLS
+     * close_notify) gets that close too. A handler that only wants the ones
+     * below it told passes the event on with
+     * [PipelineHandlerContext.propagateReadClosed], which starts no sweep,
+     * marks nothing delivered and closes nothing.
      */
     fun notifyReadClosed(): Pipeline
 
