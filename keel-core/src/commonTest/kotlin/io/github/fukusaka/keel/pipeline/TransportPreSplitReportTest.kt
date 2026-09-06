@@ -210,6 +210,21 @@ class TransportPreSplitReportTest {
     }
 
     @Test
+    fun `a bridge put in the chain by name is not a caller of the channel's own`() {
+        // The one report a pre-split transport makes is answered from the
+        // field, as it was before the peer's end of file became an event:
+        // a bridge nothing named to the channel was Pipeline mode to it, and
+        // still is. The wider question belongs to the report that is new.
+        val transport = Transport()
+        val channel = object : AbstractPipelinedChannel(transport, PrintLogger("pre-split")) {}
+        channel.pipeline.addLast(PipelinedChannel.SUSPEND_BRIDGE_NAME, SuspendBridgeHandler())
+
+        transport.onReadClosed?.invoke()
+
+        assertFalse(channel.isOpen, "nothing told the channel it had a caller")
+    }
+
+    @Test
     fun `a bridge removed by name leaves the channel the caller's`() {
         // The mode is the field's answer, not the chain's: a channel whose
         // caller took the bridge out of the chain is still the caller's, and
@@ -251,9 +266,7 @@ class TransportPreSplitReportTest {
     @Test
     fun `the read-idle timeout still reclaims a connection after the peer's end of file`() {
         val transport = Transport()
-        var ended = 0
         var endHook = 0
-        transport.onReadClosed = { ended++ }
         transport.onClosed = { endHook++ }
 
         transport.waitToRead()
@@ -264,10 +277,14 @@ class TransportPreSplitReportTest {
             transport.timer.scheduled.single().cancelled,
             "the peer finishing leaves nobody else to reclaim a connection its caller never closes",
         )
+        assertTrue(transport.isOpen, "premise: nothing has reclaimed it yet")
+        var reportedAgain = 0
+        transport.onReadClosed = { reportedAgain++ }
 
         transport.timer.scheduled.single().task()
-        assertEquals(1, ended, "so the timeout still fires and ends the connection")
-        assertEquals(0, endHook, "reported the way this transport always reported, not on the hook for the end alone")
+        assertFalse(transport.isOpen, "so the timeout reclaims the connection the peer left half-closed")
+        assertEquals(0, reportedAgain, "the one report this transport makes was made by the peer's end of file")
+        assertEquals(0, endHook, "and not on the hook for the end alone, which it never fills")
     }
 
     @Test

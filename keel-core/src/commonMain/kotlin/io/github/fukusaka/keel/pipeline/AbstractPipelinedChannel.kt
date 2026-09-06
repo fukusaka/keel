@@ -27,11 +27,13 @@ import kotlin.coroutines.EmptyCoroutineContext
  *   transport.onRead               → pipeline.notifyRead(buf)
  *   transport.onReadComplete       → pipeline.notifyReadComplete()
  *   transport.onFlushComplete      → pipeline.notifyFlushComplete()
- *   transport.onReadClosed         → pipeline.notifyReadClosed() + (Pipeline-mode) close()
- *                                    — or, from a transport that reports
- *                                    every end this way (each one in this
- *                                    tree), pipeline.notifyInactive() +
- *                                    (Pipeline-mode) close()
+ *   transport.onReadClosed         → pipeline.notifyReadClosed()
+ *                                    — the descriptor already gone → close()
+ *                                    — from a transport that reports every
+ *                                      end this way (each one in this tree)
+ *                                      → pipeline.notifyInactive() +
+ *                                        (Pipeline-mode) close()
+ *   pipeline delivered onReadClosed → (Pipeline-mode) close()
  *   transport.onClosed             → close()
  *   transport.onConnectionFailure  → pipeline error path
  *   transport.onWritabilityChanged → pipeline.notifyWritabilityChanged()
@@ -97,7 +99,11 @@ abstract class AbstractPipelinedChannel(
 
     /**
      * Whether this channel has a bridge, and so a caller of its own to close
-     * it. Both readings are needed and neither alone is right: [ensureBridge]
+     * it — asked where the peer's end of file is its own event, which is
+     * where the question is new. The report a transport makes for every end
+     * is answered as it always was, from the field alone.
+     *
+     * Both readings are needed here and neither alone is right: [ensureBridge]
      * names the field only after the add that installs it, and that add drains
      * a journalled end of file to the chain in between — so the field is still
      * empty for a delivery made from inside it. And a bridge taken out of the
@@ -161,11 +167,12 @@ abstract class AbstractPipelinedChannel(
                 // the channel answers it as it did before the event existed
                 // — the ending, and the close that a chain of its own has
                 // nobody else to perform.
-                // Read from the field, the way it was read before the split.
-                // The chain answers a different question — a bridge removed by
-                // name leaves the field set — and reading the chain here made
-                // such a channel Pipeline-mode and closed it under its caller.
-                val pipelineMode = !pipeline.isEmpty && !hasBridge
+                // The field alone, exactly as it was read before the split.
+                // [hasBridge] answers a wider question and would close fewer
+                // channels than this transport's listener closed before the
+                // event existed — a bridge put in the chain by name, which
+                // this reading does not see, was Pipeline mode to it.
+                val pipelineMode = !pipeline.isEmpty && bridge == null
                 pipeline.notifyInactive()
                 if (pipelineMode) close()
             } else if (!transport.isOpen) {
