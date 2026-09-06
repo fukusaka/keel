@@ -288,6 +288,24 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a reader parked on an empty queue is woken by the peer's end of file alone`() = readClosedTest {
+        // The ordinary shape: a caller waiting with nothing queued, and a
+        // peer that just closes. In Coroutine mode the channel does not close
+        // on that report, so the wake in the bridge is the only thing that
+        // ends the wait — without it the reader waits for good.
+        val f = Fixture()
+        val dst = f.tracker.allocate(8)
+        val reading = async(start = CoroutineStart.UNDISPATCHED) { f.channel.read(dst) }
+        assertFalse(reading.isCompleted, "premise: the reader is parked with nothing queued")
+
+        f.peerFin()
+
+        assertEquals(-1, reading.await())
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
     fun `the bridge passes the peer's end of file to the handlers below it`() = readClosedTest {
         // The bridge answers its own caller and is not the end of the chain:
         // a handler installed after it hears the event too.
@@ -299,6 +317,29 @@ class PipelineReadClosedTest {
 
         assertEquals(listOf("below:added", "below:active", "below:readClosed"), f.log)
         assertTrue(f.channel.isOpen, "a channel with a bridge is its caller's to close")
+    }
+
+    @Test
+    fun `a close still walking to the head is already this side's`() = readClosedTest {
+        // A handler writing its farewell from its own close can have the
+        // transport refuse it and report the end before the walk reaches the
+        // head. The close was asked for by this side, so that report is it
+        // catching up, not the connection ending under a caller.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.pipeline.addLast(
+            "farewell",
+            object : DuplexHandler {
+                override fun onClose(ctx: PipelineHandlerContext) {
+                    f.transportEnded()
+                    ctx.propagateClose()
+                }
+            },
+        )
+
+        f.pipeline.requestClose()
+
+        assertFalse(f.channel.endedByTransport, "the close was already this side's when the report landed")
     }
 
     @Test
@@ -406,6 +447,29 @@ class PipelineReadClosedTest {
             f.log,
         )
         assertFalse(f.channel.isOpen, "and the descriptor goes with it")
+    }
+
+    @Test
+    fun `a handler that joins and then removes itself does not answer for the chain it joined`() = readClosedTest {
+        // The replay asks who owns the connection before the handler hears
+        // the event, the way the sweep does: a handler that leaves from
+        // inside its own callback must not be able to answer for the chain
+        // it was joining, or the descriptor it made keel's stays.
+        val f = Fixture()
+        f.pipeline.addLast("h0", f.recorder("h0"))
+        f.pipeline.remove("h0")
+        f.peerFin()
+
+        f.pipeline.addLast(
+            "late",
+            object : InboundHandler {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    ctx.pipeline.remove("late")
+                }
+            },
+        )
+
+        assertFalse(f.channel.isOpen, "the chain it joined had made the connection keel's")
     }
 
     @Test

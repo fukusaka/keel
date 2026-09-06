@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.pipeline.PipelineTypeException
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.EmptyCoroutineContext
@@ -142,11 +143,15 @@ internal class DefaultPipeline(
     private var closeWalk: CloseWalk = CloseWalk.NONE
 
     /**
-     * Whether a close walk has reached the head, which is where this side
-     * releases the transport. Read by the channel: a transport reporting the
-     * end after that is catching up with a close this side performed, not
-     * ending a connection under its caller.
+     * Whether this side has begun a close of its own — asked of the pipeline,
+     * or walked to the head by a handler, the head being where the transport
+     * is released. Read by the channel: a transport reporting the end after
+     * that is catching up with a close this side performed, not ending a
+     * connection under its caller. Set when the close is asked for rather
+     * than when it lands, since a handler writing its farewell from its own
+     * close can have the transport refuse it and report the end first.
      */
+    @Volatile
     internal var closeReachedHead = false
 
     /** Nesting of close deliveries that invoked a handler; `0 → 1` is RUNNING, `1 → 0` is DONE. */
@@ -681,6 +686,7 @@ internal class DefaultPipeline(
     }
 
     override fun requestClose(): Pipeline {
+        closeReachedHead = true
         onOwningContextForClose { startTailWalk() }
         return this
     }
@@ -1495,14 +1501,18 @@ internal class DefaultPipeline(
         // The peer's end of file, if the chain heard it and no running sweep
         // will still bring it here.
         if (readClosedPhase == Phase.DELIVERED && readClosedCursor?.stillReaches(ctx) != true) {
+            // Who owns the connection is asked again, and asked before the
+            // handler hears the event — the same order the sweep uses, and
+            // for the same reason: a handler that removes itself from inside
+            // its own callback must not answer for the chain it is joining.
+            // It was answered once when the sweep ran, and a handler arriving
+            // after that changes it: a chain that was empty then — nobody's,
+            // so nothing closed — is keel's now, and the descriptor is
+            // keel's to release. Asked here rather than left to the ending,
+            // because there is no ending coming; the close delivers one.
+            val joinedPipelineMode = pipelineModeNow?.invoke() ?: false
             ctx.deliverReadClosed(Mode.REPLAY)
-            // Who owns the connection is asked again. It was answered when
-            // the sweep ran, and a handler arriving after that can change it:
-            // a chain that was empty then — nobody's, so nothing closed —
-            // is keel's now, and the descriptor is keel's to release. Asked
-            // here rather than left to the ending, because there is no
-            // ending coming; the close is what delivers one.
-            onReadClosedDelivered?.invoke(pipelineModeNow?.invoke() ?: false)
+            onReadClosedDelivered?.invoke(joinedPipelineMode)
             if (ctx.lifecycle != Lifecycle.ACTIVE || endingPhase == Phase.DELIVERED) return
         }
         // Not while a writability sweep still reaches the context: the sweep
