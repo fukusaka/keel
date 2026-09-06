@@ -193,6 +193,12 @@ abstract class AbstractPipelinedChannel(
                 // the chain is owed is the whole ending: the close delivers
                 // it, walks the handlers' close and removes them, which is
                 // where a handler gives back what it holds.
+                //
+                // Marked first. This side chose nothing here — the connection
+                // was already gone — so a reader that was away for the moment
+                // reads the end of file, where the close alone would have it
+                // read its own close and be refused.
+                transportEnded = true
                 close()
             } else {
                 // Remembered for the decision the delivery makes: a chain with
@@ -296,11 +302,11 @@ abstract class AbstractPipelinedChannel(
 
     /**
      * Set by [close] before it does anything, and read — together with the
-     * pipeline's own record of a close that reached its head — by the
-     * transport's report of the end: a connection this side is closing did
-     * not end under its caller, however the transport comes to say so
-     * afterwards. Both are needed: a close asked of the pipeline, or walked
-     * to the head by a handler, never enters [close].
+     * pipeline's own record of a close this side began — by the transport's
+     * report of the end: a connection this side is closing did not end under
+     * its caller, however the transport comes to say so afterwards. Both are
+     * needed: a close asked of the pipeline, walked to the head by a handler,
+     * or ended by one where it stands, never enters [close].
      */
     @Volatile
     private var closeStartedHere = false

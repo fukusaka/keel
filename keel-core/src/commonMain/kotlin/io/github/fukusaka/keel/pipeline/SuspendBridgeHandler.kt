@@ -164,16 +164,23 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
      * queued is the peer's last bytes and the reader gets them. Only the
      * EOF is recorded and a parked reader woken, so its next `read` drains
      * the queue and returns `-1` after it. A read the watermark had
-     * suspended is armed again by the caller's next read: nothing more will
-     * arrive on it, but that arming is also what starts the clock the
-     * connection is reclaimed by if its caller never closes it.
+     * suspended is resumed here: nothing more will arrive on it, but the
+     * arming that resuming performs is what starts the clock the connection
+     * is reclaimed by if its caller never closes it.
      */
     override fun onReadClosed(ctx: PipelineHandlerContext) {
         eof = true
         // The suspension is over with the read side: nothing will arrive to
         // dequeue below the watermark, so the bridge is not waiting to resume
-        // and must not be left looking as if it were.
-        readSuspendedByWatermark = false
+        // and must not be left looking as if it were. Resumed as well as
+        // cleared, the way a dequeue below the watermark resumes: on a
+        // transport whose pause left the read armed, the caller's next read
+        // arms nothing, and the clock this connection is reclaimed by starts
+        // from the arming.
+        if (readSuspendedByWatermark) {
+            readSuspendedByWatermark = false
+            ctx.channel.resumeReads()
+        }
         val cont = readCont
         if (cont != null) {
             readCont = null
