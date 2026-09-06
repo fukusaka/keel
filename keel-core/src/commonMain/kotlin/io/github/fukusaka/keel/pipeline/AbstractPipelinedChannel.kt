@@ -244,7 +244,7 @@ abstract class AbstractPipelinedChannel(
             // landing after a close this side performed (a timer that was
             // still armed, a loop noticing later) would turn that caller's
             // misuse into an end of file.
-            if (!closeStartedHere) transportEnded = true
+            if (!closeStartedHere && !defaultPipeline.closeReachedHead) transportEnded = true
             close()
         }
         // The channel is assembled and can carry traffic, so its pipeline is
@@ -295,9 +295,12 @@ abstract class AbstractPipelinedChannel(
     }
 
     /**
-     * Set by [close] before it does anything, and read by the transport's own
-     * report of the end: a connection this side is closing did not end under
-     * its caller, however the transport comes to say so afterwards.
+     * Set by [close] before it does anything, and read — together with the
+     * pipeline's own record of a close that reached its head — by the
+     * transport's report of the end: a connection this side is closing did
+     * not end under its caller, however the transport comes to say so
+     * afterwards. Both are needed: a close asked of the pipeline, or walked
+     * to the head by a handler, never enters [close].
      */
     @Volatile
     private var closeStartedHere = false

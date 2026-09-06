@@ -119,6 +119,12 @@ internal class HeadHandler(
     }
 
     override fun onClose(ctx: PipelineHandlerContext) {
+        // Recorded before the release: this side is closing, whatever the
+        // transport says afterwards. A close reaches here from the channel's
+        // own, from `requestClose`, and from a handler's `propagateClose` —
+        // the channel sees only the first, and the other two end the
+        // connection just as much.
+        pipeline.closeReachedHead = true
         transport.close()
     }
 }

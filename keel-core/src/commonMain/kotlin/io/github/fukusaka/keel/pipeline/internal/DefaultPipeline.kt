@@ -141,6 +141,14 @@ internal class DefaultPipeline(
     private var endingPhase: Phase = Phase.NONE
     private var closeWalk: CloseWalk = CloseWalk.NONE
 
+    /**
+     * Whether a close walk has reached the head, which is where this side
+     * releases the transport. Read by the channel: a transport reporting the
+     * end after that is catching up with a close this side performed, not
+     * ending a connection under its caller.
+     */
+    internal var closeReachedHead = false
+
     /** Nesting of close deliveries that invoked a handler; `0 → 1` is RUNNING, `1 → 0` is DONE. */
     private var closeDepth: Int = 0
 
@@ -1488,6 +1496,13 @@ internal class DefaultPipeline(
         // will still bring it here.
         if (readClosedPhase == Phase.DELIVERED && readClosedCursor?.stillReaches(ctx) != true) {
             ctx.deliverReadClosed(Mode.REPLAY)
+            // Who owns the connection is asked again. It was answered when
+            // the sweep ran, and a handler arriving after that can change it:
+            // a chain that was empty then — nobody's, so nothing closed —
+            // is keel's now, and the descriptor is keel's to release. Asked
+            // here rather than left to the ending, because there is no
+            // ending coming; the close is what delivers one.
+            onReadClosedDelivered?.invoke(pipelineModeNow?.invoke() ?: false)
             if (ctx.lifecycle != Lifecycle.ACTIVE || endingPhase == Phase.DELIVERED) return
         }
         // Not while a writability sweep still reaches the context: the sweep
