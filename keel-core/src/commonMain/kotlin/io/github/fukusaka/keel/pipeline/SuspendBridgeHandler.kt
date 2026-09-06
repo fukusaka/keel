@@ -103,9 +103,10 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
 
     /**
      * Whether the bridge has observed the end of the read side — the peer's
-     * end of file or the connection's end. Exposed for unit tests of
-     * [AbstractPipelinedChannel]'s wiring; user code should observe EOF via
-     * [read] returning `-1` instead of polling this flag.
+     * end of file or the connection's end. Read by [PipelinedChannel.read],
+     * which does not arm a read once the read side is over, and by unit
+     * tests of [AbstractPipelinedChannel]'s wiring; user code should observe
+     * EOF via [read] returning `-1` instead of polling this flag.
      */
     internal val isEof: Boolean get() = eof
 

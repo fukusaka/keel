@@ -164,8 +164,9 @@ interface InboundHandler : PipelineHandler {
      * [PipelineHandler.handlerRemoved]. When the transport reported it, a
      * Pipeline-mode channel closes itself right after this reaches the
      * chain, so the ending follows at once there: an answer must be written
-     * and flushed from within this call — the close delivers what the socket
-     * takes at once — and a handler that answers later — keel's own
+     * and flushed from within this call — the close attempts the flush the
+     * call deferred, once and without waiting, so what the socket takes at
+     * once is what the peer receives — and a handler that answers later — keel's own
      * HTTP servers answer from a coroutine, which their ending cancels —
      * does not answer a peer that half-closed. A handler that raises it from
      * inside the chain with [Pipeline.notifyReadClosed] (a TLS close_notify)

@@ -14,6 +14,15 @@ import kotlin.reflect.KClass
  * Connection close ([onInactive]) and errors ([onError]) close the channel
  * so that the suspend receiver terminates cleanly.
  *
+ * The peer's end of file ([InboundHandler.onReadClosed]) is not one of them:
+ * it is passed on, and this bridge's receiver learns of it only through the
+ * ending that follows. A chain ending in this bridge is one keel owns, so
+ * that ending does follow — the channel closes itself on the peer's end of
+ * file — but the consequence is that a consumer here cannot answer a peer
+ * that half-closed. Giving it that is for the first engine that reports the
+ * peer's end of file apart from the connection's end; until one does, no
+ * transport in this tree reports it at all.
+ *
  * **Usage with pipeline HTTP codec**:
  * ```
  * // Pipeline: encoder ↔ decoder ↔ aggregator ↔ bridge ↔ TAIL

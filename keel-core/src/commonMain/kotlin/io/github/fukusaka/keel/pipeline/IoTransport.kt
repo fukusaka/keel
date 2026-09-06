@@ -19,11 +19,13 @@ import kotlinx.coroutines.CoroutineDispatcher
  *   → data arrives → onRead(buf)
  *   → EOF (peer FIN)              → onReadClosed()
  *   → error / reset / idle / stop → onClosed()
+ * ```
  *
  * A transport that has not been taught to tell the two apart — every one in
- * this tree — reports the whole right-hand column on onReadClosed instead;
- * see reportsEveryEndAsReadClosed.
+ * this tree — reports every one of those endings on [onReadClosed], the
+ * second line included; see [reportsEveryEndAsReadClosed].
  *
+ * ```
  * Write path (pipeline → transport):
  *   write(buf) → flush() → platform syscall
  *   → EAGAIN → async retry → onFlushComplete()
@@ -165,8 +167,9 @@ interface IoTransport {
      * for is not reported, since the caller already knows.
      *
      * After this callback nothing is delivered and nothing can be written;
-     * the owner's only remaining move is [close], which the transport does
-     * not call for it. May follow [onReadClosed] — a peer that finished
+     * the owner's remaining move is [close] — which the transport calls
+     * itself when the end came from its own idle reclamation, and not
+     * otherwise. May follow [onReadClosed] — a peer that finished
      * sending and then went away, or a half-closed connection the idle
      * timeout reclaimed — and may arrive without it. A refused send is
      * reported to [onConnectionFailure] first, with the reason.
@@ -476,12 +479,15 @@ interface IoTransport {
     /**
      * Closes the transport and releases all resources.
      *
-     * A flush already requested lands first — as much of it as the socket
-     * takes at once — before the descriptor closes: a handler that answers
-     * the peer's end of file from inside [onReadClosed] writes and flushes
-     * on a channel that closes itself right after the call, and that answer
-     * is the close's to deliver. What was only queued, never flushed, is
-     * released unsent. Deregisters events and closes the underlying
+     * A flush already deferred to the current tick is attempted once, on the
+     * owning loop and without waiting, before the descriptor closes: a
+     * handler that answers the peer's end of file from inside [onReadClosed]
+     * writes and flushes on a channel that closes itself right after the
+     * call, and that attempt is what carries the answer. What was only
+     * queued, and anything left once a loop has stopped, is released unsent
+     * — so an answer larger than the socket takes at once is not delivered
+     * in full, and a transport whose teardown skips the attempt delivers
+     * none of it. Deregisters events and closes the underlying
      * fd/socket/connection. Implementations must be idempotent (use
      * [isOpen] flag to guard).
      */

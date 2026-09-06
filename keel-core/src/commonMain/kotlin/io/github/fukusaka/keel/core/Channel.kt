@@ -112,8 +112,9 @@ interface Channel : AutoCloseable {
      * same data to multiple channels), it must call [IoBuf.retain] **before**
      * passing the buffer in. The transfer holds in every outcome: a write
      * that throws — the channel is closed, [IllegalStateException]; the
-     * caller was cancelled — has released [buf] or handed it on, and the
-     * caller has nothing left to release.
+     * caller was cancelled — has released [buf] or handed it on, and so has
+     * a write with nothing to write, which releases it and returns `0`. The
+     * caller has nothing left to release on any of them.
      *
      * @return number of bytes written to the outbound buffer.
      */

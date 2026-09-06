@@ -40,9 +40,11 @@ import kotlin.coroutines.EmptyCoroutineContext
  * **State.** Everything the pipeline decides on is a record of something that
  * happened, kept as a small state machine rather than as a set of flags:
  *
- * - [activationPhase] / [endingPhase]: `NONE → OBSERVED → DELIVERED`. Observed
- *   when the transport reported it while the journal was still collecting;
- *   delivered when the sweep from the head started.
+ * - [activationPhase] / [readClosedPhase] / [endingPhase]: `NONE → OBSERVED →
+ *   DELIVERED`. Observed when the transport reported it while the journal was
+ *   still collecting; delivered when the sweep from the head started. The
+ *   peer's end of file sits between the other two, and is journalled and
+ *   replayed the same way ([readClosedCursor] alongside the other cursors).
  * - [journal]: `FILLING → DRAIN_SCHEDULED | DRAIN_OWED → DRAINED`, or
  *   `→ DISCARD_OWED | DISCARDED` when nothing will ever drain it. The pre-attach
  *   journal holds what arrived before the first inbound handler.
