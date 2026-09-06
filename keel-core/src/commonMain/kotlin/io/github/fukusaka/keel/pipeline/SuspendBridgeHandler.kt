@@ -103,10 +103,11 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
 
     /**
      * Whether the bridge has observed the end of the read side — the peer's
-     * end of file or the connection's end. Read by [PipelinedChannel.read],
-     * which does not arm a read once the read side is over, and by unit
-     * tests of [AbstractPipelinedChannel]'s wiring; user code should observe
-     * EOF via [read] returning `-1` instead of polling this flag.
+     * end of file or the connection's end. Nothing in the tree reads it
+     * outside this class and its tests — a read arms the transport whether
+     * or not the read side is over, because that arming is what starts the
+     * clock a half-closed connection is reclaimed by. User code should
+     * observe EOF via [read] returning `-1` rather than polling this flag.
      */
     internal val isEof: Boolean get() = eof
 
@@ -163,16 +164,15 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
      * queued is the peer's last bytes and the reader gets them. Only the
      * EOF is recorded and a parked reader woken, so its next `read` drains
      * the queue and returns `-1` after it. A read the watermark had
-     * suspended is not re-armed: nothing more will arrive on it, and the
-     * channel's read arming would only re-report the same end of file.
+     * suspended is armed again by the caller's next read: nothing more will
+     * arrive on it, but that arming is also what starts the clock the
+     * connection is reclaimed by if its caller never closes it.
      */
     override fun onReadClosed(ctx: PipelineHandlerContext) {
         eof = true
         // The suspension is over with the read side: nothing will arrive to
         // dequeue below the watermark, so the bridge is not waiting to resume
-        // and must not be left looking as if it were. What the flag also held
-        // off — the channel's first-read arming — is held off by the end of
-        // file itself; see [PipelinedChannel.read].
+        // and must not be left looking as if it were.
         readSuspendedByWatermark = false
         val cont = readCont
         if (cont != null) {
