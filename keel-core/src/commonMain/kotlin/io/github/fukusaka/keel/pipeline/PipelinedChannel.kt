@@ -136,8 +136,11 @@ interface PipelinedChannel : Channel {
      * first call. [withContext] dispatches to [ioDispatcher] (EventLoop) to
      * guarantee single-threaded access to [SuspendBridgeHandler] state.
      *
-     * The peer's end of file is `-1` once the bridge's queue is drained; the
-     * channel stays open and writable, and [close] is the caller's. After an
+     * Where the transport reports the peer's end of file apart from the
+     * connection's end, that end of file is `-1` once the bridge's queue is
+     * drained, the channel stays open and writable, and [close] is the
+     * caller's; a transport still making one report for every end ends the
+     * read side with it, releasing what was queued. After an
      * end the transport reported — see [endedByTransport] — the channel is
      * closed and a read is `-1` too; after a close this side performed it
      * is a misuse and throws [IllegalStateException].
@@ -160,7 +163,9 @@ interface PipelinedChannel : Channel {
             // path's job (at the low watermark) — arming here would defeat
             // the hysteresis and flap the engine's read registration on
             // every call.
-            if (!readEnabled && !bridge.readSuspendedByWatermark) readEnabled = true
+            // Nor after the peer's end of file: nothing more will arrive, and
+            // arming would only have the transport read the same end again.
+            if (!readEnabled && !bridge.readSuspendedByWatermark && !bridge.isEof) readEnabled = true
             bridge.read(buf)
         }
     }
@@ -175,6 +180,10 @@ interface PipelinedChannel : Channel {
      * on the way back, after the hop ran, leaves the buffer with the pipeline
      * and is rethrown as it is: a second release here would return to the
      * pool a buffer still queued for the send.
+     *
+     * A write with nothing to write is the same transfer: the buffer is
+     * released and `0` returned. The caller was already told not to touch it
+     * after this call, so keeping it here would leave it to nobody.
      *
      * A write after [shutdownOutput] reaches the transport, which releases
      * it unsent; an engine that refuses it earlier must release the buffer

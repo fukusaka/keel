@@ -28,6 +28,10 @@ import kotlin.coroutines.EmptyCoroutineContext
  *   transport.onReadComplete       → pipeline.notifyReadComplete()
  *   transport.onFlushComplete      → pipeline.notifyFlushComplete()
  *   transport.onReadClosed         → pipeline.notifyReadClosed() + (Pipeline-mode) close()
+ *                                    — or, from a transport that reports
+ *                                    every end this way (each one in this
+ *                                    tree), pipeline.notifyInactive() +
+ *                                    (Pipeline-mode) close()
  *   transport.onClosed             → close()
  *   transport.onConnectionFailure  → pipeline error path
  *   transport.onWritabilityChanged → pipeline.notifyWritabilityChanged()
@@ -145,7 +149,11 @@ abstract class AbstractPipelinedChannel(
                 // the channel answers it as it did before the event existed
                 // — the ending, and the close that a chain of its own has
                 // nobody else to perform.
-                val pipelineMode = !pipeline.isEmpty && pipeline.get(PipelinedChannel.SUSPEND_BRIDGE_NAME) == null
+                // Read from the field, the way it was read before the split.
+                // The chain answers a different question — a bridge removed by
+                // name leaves the field set — and reading the chain here made
+                // such a channel Pipeline-mode and closed it under its caller.
+                val pipelineMode = !pipeline.isEmpty && bridge == null
                 pipeline.notifyInactive()
                 if (pipelineMode) close()
             } else {
@@ -175,7 +183,11 @@ abstract class AbstractPipelinedChannel(
             // channel is in is only known then — by the bridge's presence in
             // the chain, since a bridge being installed is what drains the
             // journal to it, before this channel's own field is set.
-            if (pipeline.get(PipelinedChannel.SUSPEND_BRIDGE_NAME) == null) close()
+            // Both halves, as before the split: handlers in the chain, and no
+            // bridge among them. An empty chain is nobody's to close but its
+            // caller's — closing it here would refuse that caller's next read
+            // as a misuse where it is owed the end of file.
+            if (!pipeline.isEmpty && pipeline.get(PipelinedChannel.SUSPEND_BRIDGE_NAME) == null) close()
         }
         transport.onClosed = {
             // The transport ended the connection itself — a reset, a failed
@@ -185,8 +197,12 @@ abstract class AbstractPipelinedChannel(
             // not, and ends the pipeline's life. Idempotent, so a transport
             // that closes its descriptor before reporting is not closed
             // twice. Remembered first, so a reader that was away for this
-            // moment reads the end of file and not a misuse.
-            transportEnded = true
+            // moment reads the end of file and not a misuse — and only for a
+            // connection this side had not already ended, since a report
+            // landing after a close this side performed (a timer that was
+            // still armed, a loop noticing later) would turn that caller's
+            // misuse into an end of file.
+            if (!closeStartedHere) transportEnded = true
             close()
         }
         // The channel is assembled and can carry traffic, so its pipeline is
@@ -276,7 +292,16 @@ abstract class AbstractPipelinedChannel(
      * inside a replayed read — and a second close from another thread both
      * find the finished steps done.
      */
+    /**
+     * Set by [close] before it does anything, and read by the transport's own
+     * report of the end: a connection this side is closing did not end under
+     * its caller, however the transport comes to say so afterwards.
+     */
+    @Volatile
+    private var closeStartedHere = false
+
     override fun close() {
+        closeStartedHere = true
         if (transport.inOwningContext) {
             defaultPipeline.closeOnOwningContext()
             return

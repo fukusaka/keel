@@ -288,6 +288,60 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a transport's report after a close this side performed is not an end under the caller`() = readClosedTest {
+        // The mark separates "the connection ended under the caller" from
+        // "the caller closed it", and a report landing after this side's own
+        // close — a timer still armed, a loop noticing later — is the second.
+        // Marking it would turn the caller's misuse into an end of file.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.channel.close()
+
+        f.transportEnded()
+
+        assertFalse(f.channel.endedByTransport, "this side closed it; the transport only caught up")
+        val dst = f.tracker.allocate(8)
+        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a chain emptied of its handlers leaves the channel its caller's`() = readClosedTest {
+        // Pipeline mode is handlers in the chain and no bridge among them. A
+        // chain someone emptied is nobody's but its caller's: closing it on
+        // the peer's end of file would refuse that caller's next read as a
+        // misuse where it is owed the end of file.
+        val f = Fixture()
+        f.pipeline.addLast("h", f.recorder("h"))
+        f.pipeline.remove("h")
+
+        f.peerFin()
+
+        assertTrue(f.channel.isOpen, "an empty chain is not Pipeline mode")
+        val dst = f.tracker.allocate(8)
+        assertEquals(-1, f.channel.read(dst), "and its caller is owed the end of file")
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a read after the peer's end of file arms nothing`() = readClosedTest {
+        // Arming would have the transport read the same end again.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.peerFin()
+        f.transport.readEnabled = false
+
+        val dst = f.tracker.allocate(8)
+        assertEquals(-1, f.channel.read(dst))
+        dst.release()
+
+        assertFalse(f.transport.readEnabled, "nothing more will arrive on it")
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
     fun `the mark is read only after the close was seen`() = readClosedTest {
         // One reading decides, and it is the reading of the close: the mark
         // is consulted only once the channel was seen closed. A read that
@@ -350,7 +404,7 @@ class PipelineReadClosedTest {
     // --- Once, between activation and ending ---
 
     @Test
-    fun `a read-closed is not delivered after the ending nor after the descriptor is gone`() {
+    fun `a read-closed after the ending is not delivered and after the descriptor is gone is the ending`() {
         val afterEnding = Fixture()
         afterEnding.pipeline.addLast("h", afterEnding.recorder("h"))
         afterEnding.channel.ensureBridge()
@@ -364,9 +418,9 @@ class PipelineReadClosedTest {
         afterRelease.transport.close()
         afterRelease.pipeline.notifyReadClosed()
         assertEquals(
-            listOf("h:added", "h:active"),
+            listOf("h:added", "h:active", "h:inactive"),
             afterRelease.log,
-            "the descriptor is gone: only the ending is news",
+            "the descriptor is gone: there is no connection left to answer on, so the chain is owed the ending",
         )
     }
 

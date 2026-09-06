@@ -457,8 +457,12 @@ internal class DefaultPipeline(
     override fun notifyReadClosed(): Pipeline {
         if (destroying || readClosedPhase == Phase.DELIVERED || endingPhase == Phase.DELIVERED) return this
         when (journal) {
-            // Not after the descriptor is gone: only the ending is then.
-            Journal.DRAINED, Journal.DISCARDED -> if (!ended) startReadClosedSweep()
+            // Not after the descriptor is gone — there is no connection left
+            // to answer on, so what the chain is owed there is the ending, and
+            // it is owed it: a handler releases what it holds on being
+            // removed, and the removal comes with the ending.
+            Journal.DRAINED, Journal.DISCARDED ->
+                if (ended) startEndingSweep() else startReadClosedSweep()
             // A chain with handlers but none inbound never asks for a drain,
             // so a FIN journalled for it would wait forever: it is swept now
             // — the sweep reaches nobody, and the channel decides on it.

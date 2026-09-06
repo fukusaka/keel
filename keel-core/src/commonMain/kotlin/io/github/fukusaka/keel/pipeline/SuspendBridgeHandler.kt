@@ -167,6 +167,11 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
      */
     override fun onReadClosed(ctx: PipelineHandlerContext) {
         eof = true
+        // The suspension is over with the read side: nothing will arrive to
+        // dequeue below the watermark, so the bridge is not waiting to resume
+        // and must not be left looking as if it were. What the flag also held
+        // off — the channel's first-read arming — is held off by the end of
+        // file itself; see [PipelinedChannel.read].
         readSuspendedByWatermark = false
         val cont = readCont
         if (cont != null) {
