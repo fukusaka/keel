@@ -302,13 +302,19 @@ abstract class AbstractIoTransport(
     override val reportsEveryEndAsReadClosed: Boolean get() = true
 
     /**
-     * The name [readClosedAlreadyReported] had before the split; see
-     * [reportInactiveOnce]. It answered "has the one terminal report gone
-     * out", so it answers for both reports now — a caller asking it is
-     * asking whether the listener has been told the connection is over, and
-     * an idle reclamation tells it through [reportEndOnce].
+     * Whether the one terminal report a transport made before the split has
+     * gone out; see [reportInactiveOnce]. That report is two now, so this
+     * answers for either — a caller asking it is asking whether the listener
+     * has been told the connection is over, and on a transport that tells
+     * the two apart an idle reclamation tells it through [reportEndOnce]
+     * alone. Reading [readClosedAlreadyReported] in its place would answer
+     * `false` there, which is why the replacement is the disjunction and not
+     * a rename.
      */
-    @Deprecated("Renamed with the report itself", ReplaceWith("(readClosedAlreadyReported || endAlreadyReported)"))
+    @Deprecated(
+        "Split in two: this answers for either of readClosedAlreadyReported and endAlreadyReported",
+        ReplaceWith("(readClosedAlreadyReported || endAlreadyReported)"),
+    )
     protected val inactiveAlreadyReported: Boolean get() = readClosedAlreadyReported || endAlreadyReported
 
     private var endReported = false

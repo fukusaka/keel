@@ -146,7 +146,7 @@ interface Pipeline {
      * [PipelineHandlerContext.propagateReadClosed], which starts no sweep,
      * marks nothing delivered and closes nothing.
      */
-    fun notifyReadClosed(): Pipeline
+    fun notifyReadClosed(): Pipeline = this
 
     /**
      * Notifies the pipeline that the connection has ended.
