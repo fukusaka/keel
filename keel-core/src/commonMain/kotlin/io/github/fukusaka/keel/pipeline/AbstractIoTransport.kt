@@ -261,6 +261,9 @@ abstract class AbstractIoTransport(
         val end = onClosed
         if (end == null) {
             // Nothing offered a hook for the end: the one report takes it.
+            // No listener in this tree leaves it empty — a channel fills it
+            // for every transport — so this arm is defensive and untested,
+            // and it is here for a listener that is not a channel.
             reportReadClosedNow()
             return
         }
