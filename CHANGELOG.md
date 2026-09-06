@@ -13,7 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `IoTransport.onClosed` — a transport reporting that it ended the connection itself;
   `PipelinedChannel.endedByTransport` — whether the channel closed for an end it did not start, which is what a
   `read()` finding the channel closed answers `-1` for rather than refusing as a misuse. Each is defaulted, so a
-  pipeline, context, handler, transport or channel written before them still compiles and behaves as it did (#1098)
+  pipeline, context, handler, transport or channel written before them still compiles; a transport that extends
+  `AbstractIoTransport` also behaves as it did, and one implementing `IoTransport` directly answers the interface's
+  `false` and is read as telling the two ends apart (#1098)
 - `core`: `AbstractIoTransport.reportReadClosedOnce` / `reportEndOnce` / `readClosedAlreadyReported` /
   `endAlreadyReported` — four `protected` members a transport gains for reporting the peer's end of file apart
   from the connection's end, and for asking which has been reported (#1098)
@@ -165,13 +167,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - `core`: a Coroutine-mode `read()` after the connection ended under the caller returns `-1` instead of throwing
-  `Channel is closed`, decided from one reading of the channel's state so an end landing inside the call is the end
-  of file too — `PipelinedChannel.endedByTransport` says which it was. Reached once an engine reports that end
+  `Channel is closed` — `PipelinedChannel.endedByTransport` says which it was. Reached once an engine reports that end
   apart from the peer's; until then a read there throws as before (#1098)
+- `core`: a handler joining a chain after the peer's end of file was delivered to an empty one is told the
+  connection is over and is removed with it, rather than hearing only that the peer finished on a channel nothing
+  goes on to close (#1098)
 - `core`: a chain that had handlers when the peer's end of file was reported still releases the descriptor when
   something empties it before the report reaches anyone — the connection is then nobody's, not its caller's (#1098)
-- `core`: a read no longer re-arms the transport's read once the connection's read side is over — on any of the
-  reports that end it, not only the peer's own — which had the transport read and report that same end again (#1098)
 - `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
   before the pipeline took it releases it, and so does one that finds the channel closed or is given nothing to
   write. A caller has nothing to release in a `catch`; one that released the buffer itself on those paths must
