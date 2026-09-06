@@ -36,78 +36,78 @@ private fun readClosedTest(body: suspend TestScope.() -> Unit) = runTest(timeout
  * `-1`. The ending is a different fact — the connection is over — and comes
  * from a close, the channel's or the transport's own.
  */
+/**
+ * A transport that tells the peer's end of file apart from the end,
+ * the way an engine reports once it has been taught the difference.
+ * The base still answers for one that has not, and
+ * [AbstractPipelinedChannelTest] is where that wiring is pinned.
+ */
+private open class SplitTestIoTransport(tracker: TrackingAllocator) : TestIoTransport(tracker) {
+    override val reportsEveryEndAsReadClosed: Boolean get() = false
+}
+
+private class Fixture(deferDrain: Boolean = false, val tracker: TrackingAllocator = TrackingAllocator()) {
+    val queue = QueueingDispatcher()
+    val transport = SplitTestIoTransport(tracker).apply { if (deferDrain) dispatcher = queue }
+    val log = mutableListOf<String>()
+    val channel: PipelinedChannel = object : AbstractPipelinedChannel(transport, PrintLogger("read-closed")) {}
+    val pipeline: Pipeline get() = channel.pipeline
+
+    fun recorder(name: String): Recorder = Recorder(name, log)
+
+    fun bytes(vararg values: Byte): IoBuf = tracker.allocate(8).also { buf -> for (v in values) buf.writeByte(v) }
+
+    fun peerFin() {
+        transport.onReadClosed?.invoke()
+    }
+
+    fun transportEnded() {
+        transport.onClosed?.invoke()
+    }
+}
+
+/** Records every event under its name and passes everything on. */
+private open class Recorder(val name: String, val log: MutableList<String>) : DuplexHandler {
+    override fun handlerAdded(ctx: PipelineHandlerContext) {
+        log.add("$name:added")
+    }
+
+    override fun onActive(ctx: PipelineHandlerContext) {
+        log.add("$name:active")
+        ctx.propagateActive()
+    }
+
+    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+        log.add("$name:read")
+        ctx.propagateRead(msg)
+    }
+
+    override fun onReadClosed(ctx: PipelineHandlerContext) {
+        log.add("$name:readClosed")
+        ctx.propagateReadClosed()
+    }
+
+    override fun onInactive(ctx: PipelineHandlerContext) {
+        log.add("$name:inactive")
+        ctx.propagateInactive()
+    }
+
+    override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
+        log.add("$name:error")
+        ctx.propagateError(cause)
+    }
+
+    override fun onClose(ctx: PipelineHandlerContext) {
+        log.add("$name:close")
+        ctx.propagateClose()
+    }
+
+    override fun handlerRemoved(ctx: PipelineHandlerContext) {
+        log.add("$name:removed")
+    }
+}
+
 class PipelineReadClosedTest {
-
-    /**
-     * A transport that tells the peer's end of file apart from the end,
-     * the way an engine reports once it has been taught the difference.
-     * The base still answers for one that has not, and
-     * [AbstractPipelinedChannelTest] is where that wiring is pinned.
-     */
-    private open class SplitTestIoTransport(tracker: TrackingAllocator) : TestIoTransport(tracker) {
-        override val reportsEveryEndAsReadClosed: Boolean get() = false
-    }
-
-    private class Fixture(deferDrain: Boolean = false, val tracker: TrackingAllocator = TrackingAllocator()) {
-        val queue = QueueingDispatcher()
-        val transport = SplitTestIoTransport(tracker).apply { if (deferDrain) dispatcher = queue }
-        val log = mutableListOf<String>()
-        val channel: PipelinedChannel = object : AbstractPipelinedChannel(transport, PrintLogger("read-closed")) {}
-        val pipeline: Pipeline get() = channel.pipeline
-
-        fun recorder(name: String): Recorder = Recorder(name, log)
-
-        fun bytes(vararg values: Byte): IoBuf = tracker.allocate(8).also { buf -> for (v in values) buf.writeByte(v) }
-
-        fun peerFin() {
-            transport.onReadClosed?.invoke()
-        }
-
-        fun transportEnded() {
-            transport.onClosed?.invoke()
-        }
-    }
-
-    /** Records every event under its name and passes everything on. */
-    private open class Recorder(val name: String, val log: MutableList<String>) : DuplexHandler {
-        override fun handlerAdded(ctx: PipelineHandlerContext) {
-            log.add("$name:added")
-        }
-
-        override fun onActive(ctx: PipelineHandlerContext) {
-            log.add("$name:active")
-            ctx.propagateActive()
-        }
-
-        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
-            log.add("$name:read")
-            ctx.propagateRead(msg)
-        }
-
-        override fun onReadClosed(ctx: PipelineHandlerContext) {
-            log.add("$name:readClosed")
-            ctx.propagateReadClosed()
-        }
-
-        override fun onInactive(ctx: PipelineHandlerContext) {
-            log.add("$name:inactive")
-            ctx.propagateInactive()
-        }
-
-        override fun onError(ctx: PipelineHandlerContext, cause: Throwable) {
-            log.add("$name:error")
-            ctx.propagateError(cause)
-        }
-
-        override fun onClose(ctx: PipelineHandlerContext) {
-            log.add("$name:close")
-            ctx.propagateClose()
-        }
-
-        override fun handlerRemoved(ctx: PipelineHandlerContext) {
-            log.add("$name:removed")
-        }
-    }
 
     // --- Coroutine mode: the peer's last bytes are the reader's ---
 
@@ -170,40 +170,6 @@ class PipelineReadClosedTest {
     }
 
     @Test
-    fun `a reader suspended at the watermark drains everything after the FIN and is resumed`() = readClosedTest {
-        val f = Fixture()
-        val bridge = f.channel.ensureBridge()
-        f.transport.readEnabled = true
-        val chunk = 16 * 1024
-        repeat(5) { f.transport.onRead?.invoke(f.tracker.allocate(chunk).also { it.writerIndex = chunk }) }
-        assertTrue(bridge.readSuspendedByWatermark, "premise: 80 KiB queued crosses the high watermark")
-        assertEquals(1, f.transport.pauseReadsCount)
-
-        f.peerFin()
-
-        var total = 0
-        val dst = f.tracker.allocate(chunk)
-        while (true) {
-            dst.clear()
-            val n = f.channel.read(dst)
-            if (n < 0) break
-            total += n
-        }
-        dst.release()
-        assertEquals(5 * chunk, total, "every byte the peer sent before its FIN")
-        assertEquals(
-            1,
-            f.transport.resumeReadsCount,
-            "nothing more will arrive, but resuming is what arms the read, and the arming starts the clock " +
-                "that reclaims a connection its caller never closes",
-        )
-        assertFalse(bridge.readSuspendedByWatermark)
-        assertEquals(0, f.tracker.outstandingCount)
-    }
-
-    // --- Pipeline mode: the FIN ends the connection, the channel closes ---
-
-    @Test
     fun `in Pipeline mode the peer's FIN is followed by the channel's own close`() {
         val f = Fixture()
         f.pipeline.addLast("h", f.recorder("h"))
@@ -219,96 +185,6 @@ class PipelineReadClosedTest {
     }
 
     // --- The transport's own end: no FIN, just the ending ---
-
-    @Test
-    fun `a connection the transport ended is an ending without a read-closed in either mode`() = readClosedTest {
-        val pipelineMode = Fixture()
-        pipelineMode.pipeline.addLast("h", pipelineMode.recorder("h"))
-        pipelineMode.transportEnded()
-        assertEquals(
-            listOf("h:added", "h:active", "h:inactive", "h:close", "h:removed"),
-            pipelineMode.log,
-            "a reset is the end, not the peer finishing",
-        )
-        assertFalse(pipelineMode.transport.isOpen)
-
-        val coroutineMode = Fixture()
-        coroutineMode.channel.ensureBridge()
-        coroutineMode.transport.onRead?.invoke(coroutineMode.bytes(1))
-        coroutineMode.transportEnded()
-        assertEquals(0, coroutineMode.tracker.outstandingCount, "what was queued is released: nobody can be handed it")
-        assertFalse(
-            coroutineMode.channel.isOpen,
-            "the channel closes in Coroutine mode too — there is nothing left to answer",
-        )
-        val dst = coroutineMode.tracker.allocate(8)
-        assertEquals(
-            -1,
-            coroutineMode.channel.read(dst),
-            "a reader away for the end is told what the parked one was — nothing more to read — through the channel itself",
-        )
-        dst.release()
-    }
-
-    @Test
-    fun `the end is remembered before the close so a reader arriving inside it reads the end of file`() = readClosedTest {
-        // A reader that turns up while the transport's end is being processed
-        // — here from the handler removal the close runs — must find the
-        // channel already marked as ended by the transport; marked after the
-        // close, it would be refused as a misuse instead.
-        val f = Fixture()
-        val dst = f.tracker.allocate(8)
-        var arrived: Deferred<Int>? = null
-        val scope = this
-        f.pipeline.addLast(
-            "h",
-            object : Recorder("h", f.log) {
-                override fun handlerRemoved(ctx: PipelineHandlerContext) {
-                    arrived = scope.async(start = CoroutineStart.UNDISPATCHED) { f.channel.read(dst) }
-                    super.handlerRemoved(ctx)
-                }
-            },
-        )
-        f.channel.ensureBridge()
-
-        f.transportEnded()
-
-        assertEquals(-1, checkNotNull(arrived).await(), "the reader inside the close reads the end of file")
-        dst.release()
-        assertEquals(0, f.tracker.outstandingCount)
-    }
-
-    @Test
-    fun `a read after the caller's own close is refused as a misuse`() = readClosedTest {
-        // The end of file is for a connection that ended under the caller;
-        // a caller reading after its own close is told so, not handed -1.
-        val f = Fixture()
-        f.channel.ensureBridge()
-        f.channel.close()
-
-        val dst = f.tracker.allocate(8)
-        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
-        dst.release()
-        assertEquals(0, f.tracker.outstandingCount)
-    }
-
-    @Test
-    fun `a reader parked on an empty queue is woken by the peer's end of file alone`() = readClosedTest {
-        // The ordinary shape: a caller waiting with nothing queued, and a
-        // peer that just closes. In Coroutine mode the channel does not close
-        // on that report, so the wake in the bridge is the only thing that
-        // ends the wait — without it the reader waits for good.
-        val f = Fixture()
-        val dst = f.tracker.allocate(8)
-        val reading = async(start = CoroutineStart.UNDISPATCHED) { f.channel.read(dst) }
-        assertFalse(reading.isCompleted, "premise: the reader is parked with nothing queued")
-
-        f.peerFin()
-
-        assertEquals(-1, reading.await())
-        dst.release()
-        assertEquals(0, f.tracker.outstandingCount)
-    }
 
     @Test
     fun `an end of file held for a chain is delivered by the discard when the loop has stopped`() = readClosedTest {
@@ -404,6 +280,34 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a handler below one that closed on the end of file hears the ending and not the end of file`() = readClosedTest {
+        val f = Fixture()
+        f.pipeline.addLast(
+            "closer",
+            object : Recorder("closer", f.log) {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    log.add("$name:readClosed")
+                    // The connection ends under the handlers below before the
+                    // walk reaches them: what they are owed then is the
+                    // ending, and the read side's end is no longer news.
+                    ctx.channel.pipeline.notifyInactive()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addLast("below", f.recorder("below"))
+
+        f.peerFin()
+
+        assertFalse(
+            f.log.contains("below:readClosed"),
+            "the end of file must not reach a handler the ending already reached: ${f.log}",
+        )
+        assertTrue(f.log.contains("below:inactive"), "premise: the close did reach it")
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
     fun `the bridge passes the peer's end of file to the handlers below it`() = readClosedTest {
         // The bridge answers its own caller and is not the end of the chain:
         // a handler installed after it hears the event too.
@@ -415,84 +319,6 @@ class PipelineReadClosedTest {
 
         assertEquals(listOf("below:added", "below:active", "below:readClosed"), f.log)
         assertTrue(f.channel.isOpen, "a channel with a bridge is its caller's to close")
-    }
-
-    @Test
-    fun `a close a handler consumed is still this side's`() = readClosedTest {
-        // A handler is allowed to end the close walk where it stands, and
-        // then the descriptor is released after the walk instead of at the
-        // head. That is still this side closing, so a report arriving
-        // afterwards is the transport catching up.
-        val f = Fixture()
-        f.channel.ensureBridge()
-        f.pipeline.addLast(
-            "consumer",
-            object : DuplexHandler {
-                override fun onClose(ctx: PipelineHandlerContext) = Unit
-            },
-        )
-        f.pipeline.addLast(
-            "starter",
-            object : DuplexHandler {
-                override fun onReadClosed(ctx: PipelineHandlerContext) {
-                    ctx.propagateClose()
-                }
-            },
-        )
-
-        // A close nobody asked the pipeline for: a handler starts the walk,
-        // and the one above it ends it, so the descriptor is released after
-        // the walk rather than at the head.
-        f.peerFin()
-        f.transportEnded()
-
-        assertFalse(f.channel.endedByTransport, "the walk it consumed was this side's close")
-        val dst = f.tracker.allocate(8)
-        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
-        dst.release()
-        assertEquals(0, f.tracker.outstandingCount)
-    }
-
-    @Test
-    fun `a close still walking to the head is already this side's`() = readClosedTest {
-        // A handler writing its farewell from its own close can have the
-        // transport refuse it and report the end before the walk reaches the
-        // head. The close was asked for by this side, so that report is it
-        // catching up, not the connection ending under a caller.
-        val f = Fixture()
-        f.channel.ensureBridge()
-        f.pipeline.addLast(
-            "farewell",
-            object : DuplexHandler {
-                override fun onClose(ctx: PipelineHandlerContext) {
-                    f.transportEnded()
-                    ctx.propagateClose()
-                }
-            },
-        )
-
-        f.pipeline.requestClose()
-
-        assertFalse(f.channel.endedByTransport, "the close was already this side's when the report landed")
-    }
-
-    @Test
-    fun `a close asked of the pipeline is not an end under the caller either`() = readClosedTest {
-        // The channel sees its own close. A close asked of the pipeline, or
-        // walked to the head by a handler, releases the transport just as
-        // much — and a report catching up with it must not be read as the
-        // connection ending under a caller that closed it.
-        val f = Fixture()
-        f.channel.ensureBridge()
-
-        f.pipeline.requestClose()
-        f.transportEnded()
-
-        assertFalse(f.channel.endedByTransport, "the close was this side's, asked of the pipeline")
-        val dst = f.tracker.allocate(8)
-        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
-        dst.release()
-        assertEquals(0, f.tracker.outstandingCount)
     }
 
     @Test
@@ -514,51 +340,6 @@ class PipelineReadClosedTest {
         f.peerFin()
 
         assertFalse(f.channel.isOpen, "the chain the report arrived to had no caller of its own")
-    }
-
-    @Test
-    fun `a transport's report from inside this side's own close is not an end under the caller`() = readClosedTest {
-        // The close records that it started before it runs anything, because
-        // what it runs can bring the report in: a handler's ending releases
-        // the transport, and a transport that reports from there would have
-        // the caller's own close read as an end under it.
-        val f = Fixture()
-        f.channel.ensureBridge()
-        f.pipeline.addFirst(
-            "h",
-            object : InboundHandler {
-                override fun onInactive(ctx: PipelineHandlerContext) {
-                    f.transportEnded()
-                }
-            },
-        )
-
-        f.channel.close()
-
-        assertFalse(f.channel.endedByTransport, "the close was this side's, whatever arrived while it ran")
-        val dst = f.tracker.allocate(8)
-        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
-        dst.release()
-        assertEquals(0, f.tracker.outstandingCount)
-    }
-
-    @Test
-    fun `a transport's report after a close this side performed is not an end under the caller`() = readClosedTest {
-        // The mark separates "the connection ended under the caller" from
-        // "the caller closed it", and a report landing after this side's own
-        // close — a timer still armed, a loop noticing later — is the second.
-        // Marking it would turn the caller's misuse into an end of file.
-        val f = Fixture()
-        f.channel.ensureBridge()
-        f.channel.close()
-
-        f.transportEnded()
-
-        assertFalse(f.channel.endedByTransport, "this side closed it; the transport only caught up")
-        val dst = f.tracker.allocate(8)
-        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
-        dst.release()
-        assertEquals(0, f.tracker.outstandingCount)
     }
 
     @Test
@@ -765,25 +546,6 @@ class PipelineReadClosedTest {
     }
 
     @Test
-    fun `an end of file that finds the descriptor gone is an end under the caller`() = readClosedTest {
-        // This side chose nothing: the connection was already gone when the
-        // report arrived. The close that follows is the channel's answer to
-        // that, not a close its caller asked for, so a reader that was away
-        // for the moment is owed the end of file.
-        val f = Fixture()
-        f.channel.ensureBridge()
-        f.transport.close()
-
-        f.peerFin()
-
-        assertTrue(f.channel.endedByTransport, "the connection ended under the caller, whatever closed after")
-        val dst = f.tracker.allocate(8)
-        assertEquals(-1, f.channel.read(dst))
-        dst.release()
-        assertEquals(0, f.tracker.outstandingCount)
-    }
-
-    @Test
     fun `an end of file that finds the descriptor gone ends the chain and removes its handlers`() = readClosedTest {
         // There is no connection left to answer on, and a handler gives back
         // what it holds on being removed — so the whole ending is owed, not
@@ -827,70 +589,6 @@ class PipelineReadClosedTest {
 
         assertTrue(f.channel.isOpen, "the caller closes its own channel")
         assertEquals(0, f.tracker.outstandingCount)
-    }
-
-    @Test
-    fun `a read after the peer's end of file still arms the transport and starts the clock`() = readClosedTest {
-        // This setter is the only place a Coroutine-mode caller arms the
-        // read, and arming is what starts the read-idle clock. After the peer
-        // finished, that clock is the only claimant left for a connection its
-        // caller never closes — so the read arms even though nothing more
-        // will arrive on it.
-        val f = Fixture()
-        f.channel.ensureBridge()
-        f.peerFin()
-        f.transport.readEnabled = false
-
-        val dst = f.tracker.allocate(8)
-        assertEquals(-1, f.channel.read(dst))
-        dst.release()
-
-        assertTrue(f.transport.readEnabled, "the clock a half-closed connection is reclaimed by starts here")
-        assertEquals(0, f.tracker.outstandingCount)
-    }
-
-    @Test
-    fun `the mark is read only after the close was seen`() = readClosedTest {
-        // One reading decides, and it is the reading of the close: the mark
-        // is consulted only once the channel was seen closed. A read that
-        // consulted the mark first would hold a stale `false` when the end
-        // lands between the two, and refuse the end of file as a misuse. The
-        // transport here lands the end inside the mark's reading if there
-        // is one before the loop, and otherwise just before the loop runs.
-        val tracker = TrackingAllocator()
-        var armed = false
-        var ended = false
-        lateinit var transport: SplitTestIoTransport
-        fun landTheEnd() {
-            if (!ended) {
-                ended = true
-                transport.onClosed?.invoke()
-            }
-        }
-        transport = SplitTestIoTransport(tracker)
-        transport.dispatcher = object : CoroutineDispatcher() {
-            override fun isDispatchNeeded(context: CoroutineContext): Boolean = true
-
-            override fun dispatch(context: CoroutineContext, block: Runnable) {
-                if (armed) landTheEnd()
-                block.run()
-            }
-        }
-        val channel = object : AbstractPipelinedChannel(transport, PrintLogger("read-closed")) {
-            override val endedByTransport: Boolean
-                get() {
-                    val mark = super.endedByTransport
-                    if (armed) landTheEnd()
-                    return mark
-                }
-        }
-        channel.ensureBridge()
-        armed = true
-
-        val dst = tracker.allocate(8)
-        assertEquals(-1, channel.read(dst), "the mark read after the close is the end of file")
-        dst.release()
-        assertEquals(0, tracker.outstandingCount)
     }
 
     @Test
@@ -1089,5 +787,399 @@ class PipelineReadClosedTest {
             listOf("late:added", "late:inactive", "late:removed"),
             f.log.filter { it.startsWith("late:") },
         )
+    }
+}
+
+/**
+ * What a channel remembers about how its connection ended, and what a caller
+ * reading it is told.
+ *
+ * The mark separates a connection that ended under its caller from one this
+ * side closed — the caller's own close, a close asked of the pipeline, one a
+ * handler walked to the head or ended where it stands. A read after the first
+ * is the end of file; after the second it is the misuse the base refuses.
+ */
+class PipelineEndRecordTest {
+
+    @Test
+    fun `a reader suspended at the watermark drains everything after the FIN and is resumed`() = readClosedTest {
+        val f = Fixture()
+        val bridge = f.channel.ensureBridge()
+        f.transport.readEnabled = true
+        val chunk = 16 * 1024
+        repeat(5) { f.transport.onRead?.invoke(f.tracker.allocate(chunk).also { it.writerIndex = chunk }) }
+        assertTrue(bridge.readSuspendedByWatermark, "premise: 80 KiB queued crosses the high watermark")
+        assertEquals(1, f.transport.pauseReadsCount)
+
+        f.peerFin()
+
+        var total = 0
+        val dst = f.tracker.allocate(chunk)
+        while (true) {
+            dst.clear()
+            val n = f.channel.read(dst)
+            if (n < 0) break
+            total += n
+        }
+        dst.release()
+        assertEquals(5 * chunk, total, "every byte the peer sent before its FIN")
+        assertEquals(
+            1,
+            f.transport.resumeReadsCount,
+            "nothing more will arrive, but resuming is what arms the read, and the arming starts the clock " +
+                "that reclaims a connection its caller never closes",
+        )
+        assertFalse(bridge.readSuspendedByWatermark)
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    // --- Pipeline mode: the FIN ends the connection, the channel closes ---
+
+    @Test
+    fun `a connection the transport ended is an ending without a read-closed in either mode`() = readClosedTest {
+        val pipelineMode = Fixture()
+        pipelineMode.pipeline.addLast("h", pipelineMode.recorder("h"))
+        pipelineMode.transportEnded()
+        assertEquals(
+            listOf("h:added", "h:active", "h:inactive", "h:close", "h:removed"),
+            pipelineMode.log,
+            "a reset is the end, not the peer finishing",
+        )
+        assertFalse(pipelineMode.transport.isOpen)
+
+        val coroutineMode = Fixture()
+        coroutineMode.channel.ensureBridge()
+        coroutineMode.transport.onRead?.invoke(coroutineMode.bytes(1))
+        coroutineMode.transportEnded()
+        assertEquals(0, coroutineMode.tracker.outstandingCount, "what was queued is released: nobody can be handed it")
+        assertFalse(
+            coroutineMode.channel.isOpen,
+            "the channel closes in Coroutine mode too — there is nothing left to answer",
+        )
+        val dst = coroutineMode.tracker.allocate(8)
+        assertEquals(
+            -1,
+            coroutineMode.channel.read(dst),
+            "a reader away for the end is told what the parked one was — nothing more to read — through the channel itself",
+        )
+        dst.release()
+    }
+
+    @Test
+    fun `the end is remembered before the close so a reader arriving inside it reads the end of file`() = readClosedTest {
+        // A reader that turns up while the transport's end is being processed
+        // — here from the handler removal the close runs — must find the
+        // channel already marked as ended by the transport; marked after the
+        // close, it would be refused as a misuse instead.
+        val f = Fixture()
+        val dst = f.tracker.allocate(8)
+        var arrived: Deferred<Int>? = null
+        val scope = this
+        f.pipeline.addLast(
+            "h",
+            object : Recorder("h", f.log) {
+                override fun handlerRemoved(ctx: PipelineHandlerContext) {
+                    arrived = scope.async(start = CoroutineStart.UNDISPATCHED) { f.channel.read(dst) }
+                    super.handlerRemoved(ctx)
+                }
+            },
+        )
+        f.channel.ensureBridge()
+
+        f.transportEnded()
+
+        assertEquals(-1, checkNotNull(arrived).await(), "the reader inside the close reads the end of file")
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a read after the caller's own close is refused as a misuse`() = readClosedTest {
+        // The end of file is for a connection that ended under the caller;
+        // a caller reading after its own close is told so, not handed -1.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.channel.close()
+
+        val dst = f.tracker.allocate(8)
+        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a reader parked on an empty queue is woken by the peer's end of file alone`() = readClosedTest {
+        // The ordinary shape: a caller waiting with nothing queued, and a
+        // peer that just closes. In Coroutine mode the channel does not close
+        // on that report, so the wake in the bridge is the only thing that
+        // ends the wait — without it the reader waits for good.
+        val f = Fixture()
+        val dst = f.tracker.allocate(8)
+        val reading = async(start = CoroutineStart.UNDISPATCHED) { f.channel.read(dst) }
+        assertFalse(reading.isCompleted, "premise: the reader is parked with nothing queued")
+
+        f.peerFin()
+
+        assertEquals(-1, reading.await())
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `the peer's end of file resumes a read the watermark suspended before anyone reads`() = readClosedTest {
+        val f = Fixture()
+        val bridge = f.channel.ensureBridge()
+        f.transport.readEnabled = true
+        val chunk = 16 * 1024
+        repeat(5) { f.transport.onRead?.invoke(f.tracker.allocate(chunk).also { it.writerIndex = chunk }) }
+        assertTrue(bridge.readSuspendedByWatermark, "premise: 80 KiB queued crosses the high watermark")
+        assertEquals(1, f.transport.pauseReadsCount)
+
+        f.peerFin()
+
+        // Before any read. A caller that stops reading here never dequeues,
+        // so the resume a dequeue below the watermark would perform never
+        // happens — and on the engines whose pause leaves the read armed,
+        // that resume is the only thing that arms it again and starts the
+        // clock this connection is reclaimed by.
+        assertEquals(
+            1,
+            f.transport.resumeReadsCount,
+            "the bridge resumes on the end of file, not only when a reader drains the queue",
+        )
+        assertFalse(bridge.readSuspendedByWatermark)
+
+        val dst = f.tracker.allocate(chunk)
+        while (true) {
+            dst.clear()
+            if (f.channel.read(dst) < 0) break
+        }
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a close a handler consumed is still this side's`() = readClosedTest {
+        // A handler is allowed to end the close walk where it stands, and
+        // then the descriptor is released after the walk instead of at the
+        // head. That is still this side closing, so a report arriving
+        // afterwards is the transport catching up.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.pipeline.addLast(
+            "consumer",
+            object : DuplexHandler {
+                override fun onClose(ctx: PipelineHandlerContext) = Unit
+            },
+        )
+        f.pipeline.addLast(
+            "starter",
+            object : DuplexHandler {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    ctx.propagateClose()
+                }
+            },
+        )
+
+        // A close nobody asked the pipeline for: a handler starts the walk,
+        // and the one above it ends it, so the descriptor is released after
+        // the walk rather than at the head.
+        f.peerFin()
+        f.transportEnded()
+
+        assertFalse(f.channel.endedByTransport, "the walk it consumed was this side's close")
+        val dst = f.tracker.allocate(8)
+        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a close still walking to the head is already this side's`() = readClosedTest {
+        // A handler writing its farewell from its own close can have the
+        // transport refuse it and report the end before the walk reaches the
+        // head. The close was asked for by this side, so that report is it
+        // catching up, not the connection ending under a caller.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.pipeline.addLast(
+            "farewell",
+            object : DuplexHandler {
+                override fun onClose(ctx: PipelineHandlerContext) {
+                    f.transportEnded()
+                    ctx.propagateClose()
+                }
+            },
+        )
+
+        f.pipeline.requestClose()
+
+        assertFalse(f.channel.endedByTransport, "the close was already this side's when the report landed")
+    }
+
+    @Test
+    fun `a close asked of the pipeline is not an end under the caller either`() = readClosedTest {
+        // The channel sees its own close. A close asked of the pipeline, or
+        // walked to the head by a handler, releases the transport just as
+        // much — and a report catching up with it must not be read as the
+        // connection ending under a caller that closed it.
+        val f = Fixture()
+        f.channel.ensureBridge()
+
+        f.pipeline.requestClose()
+        f.transportEnded()
+
+        assertFalse(f.channel.endedByTransport, "the close was this side's, asked of the pipeline")
+        val dst = f.tracker.allocate(8)
+        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a transport's report from inside this side's own close is not an end under the caller`() = readClosedTest {
+        // The close records that it started before it runs anything, because
+        // what it runs can bring the report in: a handler's ending releases
+        // the transport, and a transport that reports from there would have
+        // the caller's own close read as an end under it.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.pipeline.addFirst(
+            "h",
+            object : InboundHandler {
+                override fun onInactive(ctx: PipelineHandlerContext) {
+                    f.transportEnded()
+                }
+            },
+        )
+
+        f.channel.close()
+
+        assertFalse(f.channel.endedByTransport, "the close was this side's, whatever arrived while it ran")
+        val dst = f.tracker.allocate(8)
+        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a transport's report after a close this side performed is not an end under the caller`() = readClosedTest {
+        // The mark separates "the connection ended under the caller" from
+        // "the caller closed it", and a report landing after this side's own
+        // close — a timer still armed, a loop noticing later — is the second.
+        // Marking it would turn the caller's misuse into an end of file.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.channel.close()
+
+        f.transportEnded()
+
+        assertFalse(f.channel.endedByTransport, "this side closed it; the transport only caught up")
+        val dst = f.tracker.allocate(8)
+        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `an end of file arriving after this side's own close is still this side's close`() = readClosedTest {
+        // The descriptor being gone is not by itself the transport ending the
+        // connection: this side may be why it went. A report the loop had
+        // queued must not turn the caller's use-after-close into an end of
+        // file it can read past.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.channel.close()
+
+        f.peerFin()
+
+        assertFalse(f.channel.endedByTransport, "this side closed it, and the report only caught up")
+        val dst = f.tracker.allocate(8)
+        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `an end of file that finds the descriptor gone is an end under the caller`() = readClosedTest {
+        // This side chose nothing: the connection was already gone when the
+        // report arrived. The close that follows is the channel's answer to
+        // that, not a close its caller asked for, so a reader that was away
+        // for the moment is owed the end of file.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.transport.close()
+
+        f.peerFin()
+
+        assertTrue(f.channel.endedByTransport, "the connection ended under the caller, whatever closed after")
+        val dst = f.tracker.allocate(8)
+        assertEquals(-1, f.channel.read(dst))
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a read after the peer's end of file still arms the transport and starts the clock`() = readClosedTest {
+        // This setter is the only place a Coroutine-mode caller arms the
+        // read, and arming is what starts the read-idle clock. After the peer
+        // finished, that clock is the only claimant left for a connection its
+        // caller never closes — so the read arms even though nothing more
+        // will arrive on it.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.peerFin()
+        f.transport.readEnabled = false
+
+        val dst = f.tracker.allocate(8)
+        assertEquals(-1, f.channel.read(dst))
+        dst.release()
+
+        assertTrue(f.transport.readEnabled, "the clock a half-closed connection is reclaimed by starts here")
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `the mark is read only after the close was seen`() = readClosedTest {
+        // One reading decides, and it is the reading of the close: the mark
+        // is consulted only once the channel was seen closed. A read that
+        // consulted the mark first would hold a stale `false` when the end
+        // lands between the two, and refuse the end of file as a misuse. The
+        // transport here lands the end inside the mark's reading if there
+        // is one before the loop, and otherwise just before the loop runs.
+        val tracker = TrackingAllocator()
+        var armed = false
+        var ended = false
+        lateinit var transport: SplitTestIoTransport
+        fun landTheEnd() {
+            if (!ended) {
+                ended = true
+                transport.onClosed?.invoke()
+            }
+        }
+        transport = SplitTestIoTransport(tracker)
+        transport.dispatcher = object : CoroutineDispatcher() {
+            override fun isDispatchNeeded(context: CoroutineContext): Boolean = true
+
+            override fun dispatch(context: CoroutineContext, block: Runnable) {
+                if (armed) landTheEnd()
+                block.run()
+            }
+        }
+        val channel = object : AbstractPipelinedChannel(transport, PrintLogger("read-closed")) {
+            override val endedByTransport: Boolean
+                get() {
+                    val mark = super.endedByTransport
+                    if (armed) landTheEnd()
+                    return mark
+                }
+        }
+        channel.ensureBridge()
+        armed = true
+
+        val dst = tracker.allocate(8)
+        assertEquals(-1, channel.read(dst), "the mark read after the close is the end of file")
+        dst.release()
+        assertEquals(0, tracker.outstandingCount)
     }
 }
