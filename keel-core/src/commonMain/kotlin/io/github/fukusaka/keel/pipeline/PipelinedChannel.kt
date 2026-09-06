@@ -169,9 +169,13 @@ interface PipelinedChannel : Channel {
             // path's job (at the low watermark) — arming here would defeat
             // the hysteresis and flap the engine's read registration on
             // every call.
-            // Nor after the peer's end of file: nothing more will arrive, and
-            // arming would only have the transport read the same end again.
-            if (!readEnabled && !bridge.readSuspendedByWatermark && !bridge.isEof) readEnabled = true
+            // Armed even once the read side is over. A transport reads the
+            // same end again and reports nothing for it, which costs a read;
+            // not arming costs the connection — this setter is the only place
+            // a Coroutine-mode caller starts the read-idle clock, and that
+            // clock is what reclaims a descriptor after the peer finished and
+            // its caller never closed.
+            if (!readEnabled && !bridge.readSuspendedByWatermark) readEnabled = true
             bridge.read(buf)
         }
     }
@@ -180,7 +184,10 @@ interface PipelinedChannel : Channel {
      * Writes data through the pipeline on the EventLoop thread.
      *
      * Takes [buf] in every outcome. The pipeline has it once the hop to the
-     * loop ran; when this call throws before that — the channel is closed,
+     * loop ran, and takes it in every outcome of its own — a handler that
+     * throws on the write has the buffer released for it, and a write with
+     * nowhere to go is released where it stops. When this call throws before
+     * the hop — the channel is closed,
      * the loop refused the hop, the caller was cancelled while the hop was
      * still queued — the buffer is released here. A cancellation that lands
      * on the way back, after the hop ran, leaves the buffer with the pipeline
