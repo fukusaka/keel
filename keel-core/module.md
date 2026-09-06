@@ -104,7 +104,7 @@ per-socket options (TCP_NODELAY, SO_KEEPALIVE, SO_RCVBUF, SO_SNDBUF). `IpAddress
 | `Pipeline` | `pipeline` | Handler chain interface |
 | `Pipeline` | `pipeline` | Handler chain contract (the doubly-linked implementation is internal) |
 | `PipelinedChannel` | `pipeline` | Channel with attached `Pipeline` |
-| `IoTransport` | `pipeline` | Engine-to-pipeline bridge: read callbacks (`onRead`, `onReadClosed`, `readEnabled`), write/flush, lifecycle (`shutdownOutput`, `awaitClosed`), and properties (`allocator`, `isOpen`, `ioDispatcher`) |
+| `IoTransport` | `pipeline` | Engine-to-pipeline bridge: read callbacks (`onRead`, `onReadClosed`, `readEnabled`), the end it forced (`onClosed`), write/flush, lifecycle (`shutdownOutput`, `awaitClosed`), and properties (`allocator`, `isOpen`, `ioDispatcher`) |
 | `AbstractIoTransport` | `pipeline` | Base `IoTransport` with write buffering, backpressure, and callback initialization |
 | `AbstractPipelinedChannel` | `pipeline` | Base `PipelinedChannel` that wires `IoTransport` callbacks to the pipeline |
 | `SuspendBridgeHandler` | `pipeline` | Pipeline-to-suspend bridge for raw `IoBuf` (Coroutine mode) |

@@ -8,7 +8,7 @@ sidebar_position: 3
 
 `IoBuf` is keel's byte buffer type. Two rules cover 95% of usage:
 
-1. **Writes transfer ownership.** After `channel.write(buf)` (or `sink.write`, or `ctx.propagateWrite`), the buffer is gone — do not touch it, do not `release()` it, do not inspect its indices. The engine releases it once the bytes have been sent.
+1. **Writes transfer ownership.** After `channel.write(buf)` (or `sink.write`, or `ctx.propagateWrite`), the buffer is gone — do not touch it, do not `release()` it, do not inspect its indices. The engine releases it once the bytes have been sent. That holds when the write **throws** as well: a channel that refuses the write releases the buffer before the refusal reaches you, so a `catch` has nothing to release.
 2. **Reads keep ownership.** You allocate a buffer, pass it to `channel.read(buf)` so the engine fills it, then you read from it and `release()` it when done.
 
 That's it. Everything else — `retain()`, fan-out, slicing, pool behaviour — only matters when you step outside those two rules on purpose.
