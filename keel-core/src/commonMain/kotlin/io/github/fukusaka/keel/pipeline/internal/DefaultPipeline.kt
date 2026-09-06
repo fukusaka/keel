@@ -126,7 +126,16 @@ internal class DefaultPipeline(
      * act on. At delivery rather than at the transport's report: a FIN
      * journalled ahead of the first handler is decided when it reaches one.
      */
-    internal var onReadClosedDelivered: (() -> Unit)? = null
+    internal var onReadClosedDelivered: ((pipelineMode: Boolean) -> Unit)? = null
+
+    /**
+     * Whether the channel is one keel owns the lifecycle of, asked before the
+     * walk that delivers the peer's end of file. The walk can change the
+     * answer — a handler removing itself, or installing a bridge, from inside
+     * its own `onReadClosed` — and an answer read afterwards is the one that
+     * handler made, not the one the report arrived to.
+     */
+    internal var pipelineModeNow: (() -> Boolean)? = null
     private var endingPhase: Phase = Phase.NONE
     private var closeWalk: CloseWalk = CloseWalk.NONE
 
@@ -560,8 +569,9 @@ internal class DefaultPipeline(
 
     private fun startReadClosedSweep() {
         readClosedPhase = Phase.DELIVERED
+        val pipelineMode = pipelineModeNow?.invoke() ?: false
         head.deliverReadClosed(Mode.SWEEP)
-        onReadClosedDelivered?.invoke()
+        onReadClosedDelivered?.invoke(pipelineMode)
     }
 
     private fun startEndingSweep() {

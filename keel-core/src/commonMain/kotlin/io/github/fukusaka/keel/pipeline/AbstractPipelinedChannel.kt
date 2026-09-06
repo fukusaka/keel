@@ -95,6 +95,18 @@ abstract class AbstractPipelinedChannel(
 
     private var bridge: SuspendBridgeHandler? = null
 
+    /**
+     * Whether this channel has a bridge, and so a caller of its own to close
+     * it. Both readings are needed and neither alone is right: [ensureBridge]
+     * names the field only after the add that installs it, and that add drains
+     * a journalled end of file to the chain in between — so the field is still
+     * empty for a delivery made from inside it. And a bridge taken out of the
+     * chain by name leaves the field naming it, on a channel that is still its
+     * caller's.
+     */
+    private val hasBridge: Boolean
+        get() = bridge != null || pipeline.get(PipelinedChannel.SUSPEND_BRIDGE_NAME) != null
+
     init {
         transport.onWritabilityChanged = { writable ->
             pipeline.notifyWritabilityChanged(writable)
@@ -153,9 +165,17 @@ abstract class AbstractPipelinedChannel(
                 // The chain answers a different question — a bridge removed by
                 // name leaves the field set — and reading the chain here made
                 // such a channel Pipeline-mode and closed it under its caller.
-                val pipelineMode = !pipeline.isEmpty && bridge == null
+                val pipelineMode = !pipeline.isEmpty && !hasBridge
                 pipeline.notifyInactive()
                 if (pipelineMode) close()
+            } else if (!transport.isOpen) {
+                // The peer's end of file found the descriptor already gone —
+                // an engine that released it before reporting, a loop that
+                // stopped. There is no connection left to answer on, so what
+                // the chain is owed is the whole ending: the close delivers
+                // it, walks the handlers' close and removes them, which is
+                // where a handler gives back what it holds.
+                close()
             } else {
                 // The peer's end of file: the read side is over, the
                 // connection is not. The pipeline hears it as `onReadClosed`,
@@ -165,7 +185,8 @@ abstract class AbstractPipelinedChannel(
                 pipeline.notifyReadClosed()
             }
         }
-        defaultPipeline.onReadClosedDelivered = {
+        defaultPipeline.pipelineModeNow = { !pipeline.isEmpty && !hasBridge }
+        defaultPipeline.onReadClosedDelivered = { pipelineMode ->
             // Auto-close on peer-FIN only in Pipeline mode — a chain with
             // user handlers and no [SuspendBridgeHandler]. There keel owns
             // the connection lifecycle (no [Channel] handle is given to the
@@ -180,14 +201,12 @@ abstract class AbstractPipelinedChannel(
             // Decided when the pipeline delivers the FIN, not when the
             // transport reports it: a FIN that arrives before any handler is
             // journalled and reaches the chain later, and which mode the
-            // channel is in is only known then — by the bridge's presence in
-            // the chain, since a bridge being installed is what drains the
-            // journal to it, before this channel's own field is set.
-            // Both halves, as before the split: handlers in the chain, and no
-            // bridge among them. An empty chain is nobody's to close but its
-            // caller's — closing it here would refuse that caller's next read
-            // as a misuse where it is owed the end of file.
-            if (!pipeline.isEmpty && pipeline.get(PipelinedChannel.SUSPEND_BRIDGE_NAME) == null) close()
+            // channel is in is only known then. Read before the walk, though
+            // — a handler removing itself or installing a bridge from inside
+            // its own `onReadClosed` must not be able to answer for the
+            // report it is hearing, or a Pipeline-mode channel it emptied
+            // keeps its descriptor with nobody left to release it.
+            if (pipelineMode) close()
         }
         transport.onClosed = {
             // The transport ended the connection itself — a reset, a failed
@@ -253,6 +272,14 @@ abstract class AbstractPipelinedChannel(
     }
 
     /**
+     * Set by [close] before it does anything, and read by the transport's own
+     * report of the end: a connection this side is closing did not end under
+     * its caller, however the transport comes to say so afterwards.
+     */
+    @Volatile
+    private var closeStartedHere = false
+
+    /**
      * Closes this channel: drains a journal whose drain is still queued, tells
      * the pipeline the connection has ended, asks the handlers to close,
      * releases the transport, and ends the pipeline's life — every handler
@@ -292,14 +319,6 @@ abstract class AbstractPipelinedChannel(
      * inside a replayed read — and a second close from another thread both
      * find the finished steps done.
      */
-    /**
-     * Set by [close] before it does anything, and read by the transport's own
-     * report of the end: a connection this side is closing did not end under
-     * its caller, however the transport comes to say so afterwards.
-     */
-    @Volatile
-    private var closeStartedHere = false
-
     override fun close() {
         closeStartedHere = true
         if (transport.inOwningContext) {

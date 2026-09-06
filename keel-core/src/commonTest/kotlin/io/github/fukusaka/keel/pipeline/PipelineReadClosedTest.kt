@@ -20,6 +20,12 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
+ * Every case here parks a reader or waits on a dispatcher hop, so each is
+ * bounded on the wall clock rather than on the test scheduler's virtual time.
+ */
+private fun readClosedTest(body: suspend TestScope.() -> Unit) = runTest(timeout = 15.seconds, testBody = body)
+
+/**
  * The peer's end of file as its own event, apart from the ending.
  *
  * A peer that closes its side for writing has finished sending, and nothing
@@ -30,12 +36,6 @@ import kotlin.time.Duration.Companion.seconds
  * `-1`. The ending is a different fact — the connection is over — and comes
  * from a close, the channel's or the transport's own.
  */
-/**
- * Every case here parks a reader or waits on a dispatcher hop, so each is
- * bounded on the wall clock rather than on the test scheduler's virtual time.
- */
-private fun readClosedTest(body: suspend TestScope.() -> Unit) = runTest(timeout = 15.seconds, testBody = body)
-
 class PipelineReadClosedTest {
 
     /**
@@ -322,6 +322,121 @@ class PipelineReadClosedTest {
         val dst = f.tracker.allocate(8)
         assertEquals(-1, f.channel.read(dst), "and its caller is owed the end of file")
         dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a handler that empties the chain while hearing the end of file does not keep the descriptor`() = readClosedTest {
+        // Which mode the channel is in is the report's question, not the
+        // handler's answer to it. A one-shot handler that removes itself
+        // from inside its own callback would otherwise leave a Pipeline-mode
+        // channel — one with no caller of its own — holding its descriptor.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "only",
+            object : InboundHandler {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    ctx.pipeline.remove("only")
+                }
+            },
+        )
+
+        f.peerFin()
+
+        assertFalse(f.channel.isOpen, "the chain it emptied had nobody else to release it")
+    }
+
+    @Test
+    fun `a handler that releases the transport stops the end of file it was passing on`() = readClosedTest {
+        // The descriptor is what the event is about. Once a handler has let
+        // it go — a close from inside its own callback — the handlers below
+        // are owed the ending, not a report that the peer merely finished.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "first",
+            object : InboundHandler {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    f.transport.close()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addLast("second", f.recorder("second"))
+
+        f.peerFin()
+
+        assertEquals(
+            listOf("second:added", "second:active", "second:inactive", "second:close", "second:removed"),
+            f.log,
+            "there is no connection left to answer on, so what reaches the handlers below is the ending",
+        )
+    }
+
+    @Test
+    fun `a handler raising the read closed from the chain closes a Pipeline-mode channel`() = readClosedTest {
+        // The report, whoever makes it: a TLS layer turning a close_notify
+        // into the peer's end of file gets the close that follows delivery,
+        // where passing the event on to the handlers below gets none.
+        val raised = Fixture()
+        raised.pipeline.addLast("h", raised.recorder("h"))
+        raised.pipeline.notifyReadClosed()
+        assertFalse(raised.channel.isOpen, "delivering it is what closes")
+
+        val passedOn = Fixture()
+        passedOn.pipeline.addLast(
+            "h",
+            object : InboundHandler {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        assertTrue(passedOn.channel.isOpen, "passing it on delivers nothing and closes nothing")
+    }
+
+    @Test
+    fun `an end of file that finds the descriptor gone ends the chain and removes its handlers`() = readClosedTest {
+        // There is no connection left to answer on, and a handler gives back
+        // what it holds on being removed — so the whole ending is owed, not
+        // the report that says the peer merely finished.
+        val f = Fixture()
+        f.pipeline.addLast("h", f.recorder("h"))
+        f.transport.close()
+
+        f.peerFin()
+
+        assertEquals(listOf("h:added", "h:active", "h:inactive", "h:close", "h:removed"), f.log)
+    }
+
+    @Test
+    fun `a bridge taken out of the chain by name leaves the channel its caller's`() = readClosedTest {
+        // Whether the channel has a caller of its own is the field's answer
+        // as much as the chain's: a bridge removed by name is still a caller
+        // waiting to read, and closing here would refuse its next read.
+        val f = Fixture()
+        f.pipeline.addLast("h", f.recorder("h"))
+        f.channel.ensureBridge()
+        f.pipeline.remove(PipelinedChannel.SUSPEND_BRIDGE_NAME)
+
+        f.peerFin()
+
+        assertTrue(f.channel.isOpen, "the channel is left for the caller to close")
+    }
+
+    @Test
+    fun `an end of file delivered from inside the bridge's own installation does not close the channel`() = readClosedTest {
+        // The other reading. The add that installs the bridge drains the
+        // journalled end of file to it, and the field is named only after
+        // that add returns — so a delivery from inside it sees an empty
+        // field on a channel that has a caller.
+        val f = Fixture()
+        f.peerFin()
+
+        val dst = f.tracker.allocate(8)
+        assertEquals(-1, f.channel.read(dst))
+        dst.release()
+
+        assertTrue(f.channel.isOpen, "the caller closes its own channel")
         assertEquals(0, f.tracker.outstandingCount)
     }
 
