@@ -12,7 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   — the peer's end of file as its own event, journalled and replayed like the other inbound events;
   `IoTransport.onClosed` — a transport reporting that it ended the connection itself;
   `PipelinedChannel.endedByTransport` — whether the channel closed for an end it did not start, which is what a
-  `read()` finding the channel closed answers `-1` for rather than refusing as a misuse (#1098)
+  `read()` finding the channel closed answers `-1` for rather than refusing as a misuse. Each is defaulted, so a
+  pipeline, context, handler, transport or channel written before them still compiles and behaves as it did (#1098)
+- `core`: `AbstractIoTransport.reportReadClosedOnce` / `reportEndOnce` / `readClosedAlreadyReported` /
+  `endAlreadyReported` — four `protected` members a transport gains for reporting the peer's end of file apart
+  from the connection's end, and for asking which has been reported (#1098)
 - `core`: `AbstractIoTransport` parks, sweeps and answers the callers waiting on a flush — one
   implementation for the three transports that wait this way, and eight `protected` members a
   subclass outside the tree gains with them (#1076)
@@ -76,8 +80,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is `onReadClosed`, after which the connection stays writable and in Pipeline mode the channel closes itself — so
   an answer to a peer that half-closed is written from inside that callback. No engine in this tree opts in yet, so
   what a handler hears is unchanged until its engine does (#1098)
-- `core`: **BREAKING** (source, for transports and pipelines outside the tree): `Pipeline.notifyReadClosed` is
-  abstract, so a `Pipeline` implemented outside this tree must add it; `AbstractIoTransport.reportInactiveOnce` /
+- `core`: **BREAKING** (source, for transports outside the tree): `AbstractIoTransport.reportInactiveOnce` /
   `inactiveAlreadyReported` are deprecated, and a transport reports the peer's end of file with
   `reportReadClosedOnce` and every other end with `reportEndOnce`. `IoTransport.reportsEveryEndAsReadClosed` says
   which contract a transport speaks — `false` on the interface, `true` on `AbstractIoTransport`, which every
@@ -164,8 +167,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `core`: a Coroutine-mode `read()` after the connection ended under the caller returns `-1` instead of throwing
   `Channel is closed`, decided from one reading of the channel's state so an end landing inside the call is the end
   of file too — `PipelinedChannel.endedByTransport` says which it was. Reached once an engine reports that end
-  apart from the peer's; until then a read there throws as before. A read after the peer's end of file also stops
-  re-arming the transport's read, which only had it report the same end again (#1098)
+  apart from the peer's; until then a read there throws as before (#1098)
+- `core`: a read no longer re-arms the transport's read once the connection's read side is over — on any of the
+  reports that end it, not only the peer's own — which had the transport read and report that same end again (#1098)
 - `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
   before the pipeline took it releases it, and so does one that finds the channel closed or is given nothing to
   write. A caller has nothing to release in a `catch`; one that released the buffer itself on those paths must
