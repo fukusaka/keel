@@ -86,10 +86,10 @@ interface Channel : AutoCloseable {
      * itself instead. A transport that still makes one report for every way
      * a connection can be over ends the read side with it: what was queued
      * is released and the next read is `-1`.
-     * Where the transport reports that it ended the connection itself — an
-     * idle reclamation does, and each other end (a reset, a failed read or
-     * write, a stopped loop) once its engine reports it that way — the
-     * channel is closed, a read is `-1`, and a [write] or [flush] that finds
+     * Where the transport reports that it ended the connection itself — each
+     * such end (a reset, a failed read or write, an idle reclamation, a
+     * stopped loop) once its engine reports it that way — the channel is
+     * closed, a read is `-1`, and a [write] or [flush] that finds
      * it closed throws [IllegalStateException]; one already past that check
      * is discarded with the transport. Nothing can be sent. An end the
      * transport does not report that way still closes the channel, and a

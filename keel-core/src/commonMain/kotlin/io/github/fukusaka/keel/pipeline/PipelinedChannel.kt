@@ -106,6 +106,12 @@ interface PipelinedChannel : Channel {
      * publication), and it turns `true` before [isOpen] turns `false` for
      * an end the transport reported — a reading that sees the close then
      * sees the mark. Otherwise the reading falls into the second case.
+     *
+     * The second half is a requirement on the transport as much as on the
+     * channel: a channel is told the connection ended by a report, so a
+     * transport that releases its descriptor before making that report
+     * leaves the window open however the channel is written. Report first,
+     * release after.
      */
     val endedByTransport: Boolean get() = false
 
