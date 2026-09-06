@@ -3,10 +3,12 @@ package io.github.fukusaka.keel.pipeline
 import io.github.fukusaka.keel.buf.TrackingAllocator
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * What a transport written before the peer's end of file became an event of
@@ -53,6 +55,22 @@ class TransportPreSplitReportTest {
 
         @Suppress("DEPRECATION")
         fun reportTheOldWay() = reportInactiveOnce()
+
+        @Suppress("DEPRECATION")
+        fun terminalReportAlreadyMade(): Boolean = inactiveAlreadyReported
+
+        fun readSideEndReported(): Boolean = readClosedAlreadyReported
+    }
+
+    /** The same base, saying it tells the peer's end of file apart. */
+    private class SplitTransport(
+        tracker: TrackingAllocator = TrackingAllocator(),
+    ) : TestIoTransport(tracker) {
+        override val reportsEveryEndAsReadClosed: Boolean get() = false
+
+        fun endItself() = reportEndOnce()
+
+        fun peerFin() = reportReadClosedOnce()
 
         @Suppress("DEPRECATION")
         fun terminalReportAlreadyMade(): Boolean = inactiveAlreadyReported
@@ -113,10 +131,10 @@ class TransportPreSplitReportTest {
 
     @Test
     fun `the connection ending marks the terminal report as made`() {
-        val transport = Transport()
-        // A listener for the end alone, so the report takes that hook and not
-        // the fallback to the read side's — which would set the read side's
-        // flag and let a check that reads only it answer correctly by luck.
+        // A transport that tells the two apart, so the report takes the hook
+        // for the end alone — a pre-split one reports on the read side's, and
+        // a check that reads only that flag would answer correctly by luck.
+        val transport = SplitTransport()
         var ended = 0
         transport.onClosed = { ended++ }
         assertFalse(transport.terminalReportAlreadyMade(), "premise: nothing reported yet")
@@ -132,6 +150,36 @@ class TransportPreSplitReportTest {
     }
 
     @Test
+    fun `the connection ending is reported on the read side by a transport that reports one end`() {
+        val transport = Transport()
+        var ended = 0
+        var readClosed = 0
+        transport.onClosed = { ended++ }
+        transport.onReadClosed = { readClosed++ }
+
+        transport.endItself()
+
+        assertEquals(0, ended, "the hook for the end alone means a report this transport never makes")
+        assertEquals(1, readClosed, "so the one report it does make carries the end, as it always did")
+        assertTrue(transport.terminalReportAlreadyMade())
+    }
+
+    @Test
+    fun `nothing reports the peer's end of file after the connection's end`() {
+        // The end is the last thing a listener hears. A path discovering the
+        // peer's own afterwards has nobody left to tell.
+        val transport = SplitTransport()
+        var readClosed = 0
+        transport.onClosed = { }
+        transport.onReadClosed = { readClosed++ }
+
+        transport.endItself()
+        transport.peerFin()
+
+        assertEquals(0, readClosed, "the connection was already reported over")
+    }
+
+    @Test
     fun `the peer's end of file marks the terminal report as made`() {
         val transport = Transport()
 
@@ -141,10 +189,72 @@ class TransportPreSplitReportTest {
     }
 
     @Test
+    fun `an idle reclamation reports the way the transport always did`() {
+        // The channel offers a hook for the end alone, and a transport from
+        // before the split has no report that means it. Filling that hook
+        // would end the channel by a route this transport never takes: the
+        // handlers' close walk would run at reclamation time, and a caller's
+        // read would answer the end of file where it was told this was a
+        // misuse.
+        val transport = Transport()
+        val log = mutableListOf<String>()
+        val channel = object : AbstractPipelinedChannel(transport, PrintLogger("pre-split")) {}
+        channel.pipeline.addLast("recorder", Recorder(log))
+        channel.ensureBridge()
+
+        transport.waitToRead()
+        transport.timer.scheduled.single().task()
+
+        assertEquals(listOf("active", "inactive"), log, "the ending, and no close walk under the caller")
+        assertFalse(channel.endedByTransport, "and no transport-reported end for a transport that reports none")
+    }
+
+    @Test
+    fun `a bridge removed by name leaves the channel the caller's`() {
+        // The mode is the field's answer, not the chain's: a channel whose
+        // caller took the bridge out of the chain is still the caller's, and
+        // closing it here would close it under them.
+        val transport = Transport()
+        val log = mutableListOf<String>()
+        val channel = object : AbstractPipelinedChannel(transport, PrintLogger("pre-split")) {}
+        channel.pipeline.addLast("recorder", Recorder(log))
+        channel.ensureBridge()
+        channel.pipeline.remove(PipelinedChannel.SUSPEND_BRIDGE_NAME)
+
+        transport.onReadClosed?.invoke()
+
+        assertTrue(channel.isOpen, "the channel is left for the caller to close")
+    }
+
+    @Test
+    fun `a Coroutine-mode reader over a transport that reports one end is given the end of file`() =
+        runTest(timeout = 15.seconds) {
+            // The other half of the compatibility branch. In Pipeline mode the
+            // ending reaches the handlers; here there are none, and the report
+            // ends the read side for the caller: what the peer sent before it
+            // goes with the ending, and the read after it is the end of file.
+            val tracker = TrackingAllocator()
+            val transport = Transport(tracker)
+            val channel = object : AbstractPipelinedChannel(transport, PrintLogger("pre-split")) {}
+            channel.ensureBridge()
+            transport.onRead?.invoke(tracker.allocate(8).also { it.writeByte(1) })
+
+            transport.onReadClosed?.invoke()
+
+            val dst = tracker.allocate(8)
+            assertEquals(-1, channel.read(dst), "the one report a pre-split transport makes ends the read side")
+            dst.release()
+            assertTrue(channel.isOpen, "and leaves a Coroutine-mode channel for its caller to close")
+            assertEquals(0, tracker.outstandingCount, "what was queued went with the ending")
+        }
+
+    @Test
     fun `the read-idle timeout still reclaims a connection after the peer's end of file`() {
         val transport = Transport()
         var ended = 0
-        transport.onClosed = { ended++ }
+        var endHook = 0
+        transport.onReadClosed = { ended++ }
+        transport.onClosed = { endHook++ }
 
         transport.waitToRead()
         assertEquals(1, transport.timer.scheduled.size, "premise: waiting to read arms the timer")
@@ -157,6 +267,7 @@ class TransportPreSplitReportTest {
 
         transport.timer.scheduled.single().task()
         assertEquals(1, ended, "so the timeout still fires and ends the connection")
+        assertEquals(0, endHook, "reported the way this transport always reported, not on the hook for the end alone")
     }
 
     @Test

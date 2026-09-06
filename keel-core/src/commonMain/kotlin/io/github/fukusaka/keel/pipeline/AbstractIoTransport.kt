@@ -205,6 +205,16 @@ abstract class AbstractIoTransport(
      * **EventLoop thread**, like every other wind-down step.
      */
     protected fun reportReadClosedOnce() {
+        // Nothing follows the end. A path that discovers the peer's own after
+        // the connection was reported over has nobody left to tell, and
+        // telling them would be the repeat the once-per-transport rule
+        // exists to prevent. The end's own report goes below this guard,
+        // since for a transport making one report that report *is* the end.
+        if (endReported) return
+        reportReadClosedNow()
+    }
+
+    private fun reportReadClosedNow() {
         if (readClosedReported) return
         readClosedReported = true
         // The read-idle timeout is left running; see [armIdleTimeout] for
@@ -223,25 +233,35 @@ abstract class AbstractIoTransport(
      * twice: it releases the aggregator's held chunks, the decoder's borrowed
      * header set, the server's registry entry, and wakes a parked reader.
      * Every transport reaches this from the two idle-timeout reclamations
-     * here; its own ending paths — a reset, a failed read or write, a loop
-     * that stopped — route through it as well, so a FIN followed by a
-     * reclamation reports the read side once and the end once.
+     * here. A transport that has learned to tell the two apart routes its
+     * own ending paths — a reset, a failed read or write, a loop that
+     * stopped — through it as well, so a FIN followed by a reclamation
+     * reports the read side once and the end once; none in this tree has,
+     * and each still reports those on the read side's report, which is where
+     * the arm below sends this one too.
      *
      * **EventLoop thread**, like every other wind-down step.
      */
     protected fun reportEndOnce() {
         if (endReported) return
         endReported = true
+        // A transport from before the split has one report for every way a
+        // connection could be over, and that report is the one below. Its
+        // listener hears the end there, as it heard it before this event
+        // existed — the hook for the end alone is one the listener offers and
+        // the transport has no way to fill differently, so filling it would
+        // tell a listener the connection ended by a route no report of this
+        // transport's own ever takes. Both arms end the connection; they
+        // differ in which report says so, and this one goes when the last
+        // transport has learned the difference.
+        if (reportsEveryEndAsReadClosed) {
+            reportReadClosedNow()
+            return
+        }
         val end = onClosed
         if (end == null) {
-            // A listener from before the split has no hook for the end alone:
-            // it had one report for every way a connection could be over, and
-            // that report is the one below. Told there instead, it hears what
-            // it heard before this event existed. The channel sets both hooks,
-            // so this is the shape a transport's own tests and any listener
-            // written against the old contract see, and it goes when the last
-            // of them has learned the difference.
-            reportReadClosedOnce()
+            // Nothing offered a hook for the end: the one report takes it.
+            reportReadClosedNow()
             return
         }
         end.invoke()
@@ -288,7 +308,7 @@ abstract class AbstractIoTransport(
      * asking whether the listener has been told the connection is over, and
      * an idle reclamation tells it through [reportEndOnce].
      */
-    @Deprecated("Renamed with the report itself", ReplaceWith("readClosedAlreadyReported || endAlreadyReported"))
+    @Deprecated("Renamed with the report itself", ReplaceWith("(readClosedAlreadyReported || endAlreadyReported)"))
     protected val inactiveAlreadyReported: Boolean get() = readClosedAlreadyReported || endAlreadyReported
 
     private var endReported = false
