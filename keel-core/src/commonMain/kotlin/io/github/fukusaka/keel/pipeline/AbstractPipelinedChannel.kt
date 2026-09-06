@@ -98,6 +98,17 @@ abstract class AbstractPipelinedChannel(
     private var bridge: SuspendBridgeHandler? = null
 
     /**
+     * Whether the chain had handlers when the transport reported the peer's
+     * end of file. The decision the delivery makes reads the chain as it is
+     * then, which is a whole loop task later for a report that had to wait
+     * for the journal's drain — and a chain emptied in between reads as a
+     * channel with a caller, when in fact it has nobody: not the caller, who
+     * never had a bridge, and no longer keel. Latched, since the report is
+     * made once.
+     */
+    private var chainHadHandlersAtReport = false
+
+    /**
      * Whether this channel has a bridge, and so a caller of its own to close
      * it — asked where the peer's end of file is its own event, which is
      * where the question is new. The report a transport makes for every end
@@ -184,6 +195,11 @@ abstract class AbstractPipelinedChannel(
                 // where a handler gives back what it holds.
                 close()
             } else {
+                // Remembered for the decision the delivery makes: a chain with
+                // handlers when the report arrived is one keel was driving,
+                // and emptying it before the journalled report reaches anyone
+                // hands the connection to nobody rather than to a caller.
+                chainHadHandlersAtReport = chainHadHandlersAtReport || !pipeline.isEmpty
                 // The peer's end of file: the read side is over, the
                 // connection is not. The pipeline hears it as `onReadClosed`,
                 // not as the ending — a handler can still answer, and a
@@ -192,7 +208,7 @@ abstract class AbstractPipelinedChannel(
                 pipeline.notifyReadClosed()
             }
         }
-        defaultPipeline.pipelineModeNow = { !pipeline.isEmpty && !hasBridge }
+        defaultPipeline.pipelineModeNow = { !hasBridge && (!pipeline.isEmpty || chainHadHandlersAtReport) }
         defaultPipeline.onReadClosedDelivered = { pipelineMode ->
             // Auto-close on peer-FIN only in Pipeline mode — a chain with
             // user handlers and no [SuspendBridgeHandler]. There keel owns

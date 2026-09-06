@@ -333,6 +333,22 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a chain emptied while the end of file waits for its drain still releases the descriptor`() = readClosedTest {
+        // The report arrived to a chain keel was driving, and the drain that
+        // carries it runs a loop task later. Emptying the chain in between
+        // hands the connection to nobody — the caller never had a bridge —
+        // so the decision reads the chain the report arrived to as well.
+        val f = Fixture(deferDrain = true)
+        f.pipeline.addLast("h", f.recorder("h"))
+
+        f.peerFin()
+        f.pipeline.remove("h")
+        f.queue.runQueued()
+
+        assertFalse(f.channel.isOpen, "nothing was left that could release it")
+    }
+
+    @Test
     fun `a chain emptied of its handlers leaves the channel its caller's`() = readClosedTest {
         // Pipeline mode is handlers in the chain and no bridge among them. A
         // chain someone emptied is nobody's but its caller's: closing it on
