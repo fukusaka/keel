@@ -198,7 +198,12 @@ abstract class AbstractIoTransport(
 
     /**
      * Reports the peer's end of file ([onReadClosed]), at most once for this
-     * transport. A read side closes once; a second report would tell a
+     * transport — and this gate covers only what routes through it. Most
+     * transports in this tree raise [onReadClosed] themselves, so their own
+     * wind-down does not consult it and a report from here after one of
+     * theirs is a second report to the listener; each carries whatever flag
+     * of its own it needs. Only the readiness transports route their
+     * wind-down through this. A read side closes once; a second report would tell a
      * listener that already acted on the first — a parked reader woken with
      * EOF, a bridge that stopped expecting data — the same thing again.
      *

@@ -147,9 +147,11 @@ internal class DefaultPipeline(
      * or walked to the head by a handler, or finished after the walk when a
      * handler consumed it; those are the places the transport is released. Read by the channel: a transport reporting the end after
      * that is catching up with a close this side performed, not ending a
-     * connection under its caller. Set when the close is asked for rather
-     * than when it lands, since a handler writing its farewell from its own
-     * close can have the transport refuse it and report the end first.
+     * connection under its caller. A walk can only start from `requestClose`
+     * or the channel's own close, and the first of those records it when it
+     * is asked for rather than when it lands — a handler writing its farewell
+     * from its own close can have the transport refuse the write and report
+     * the end while the walk is still travelling.
      */
     @Volatile
     internal var closeReachedHead = false
