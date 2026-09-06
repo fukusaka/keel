@@ -76,11 +76,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is `onReadClosed`, after which the connection stays writable and in Pipeline mode the channel closes itself — so
   an answer to a peer that half-closed is written from inside that callback. No engine in this tree opts in yet, so
   what a handler hears is unchanged until its engine does (#1098)
-- `core`: **BREAKING** (source, for transports outside the tree): `AbstractIoTransport.reportInactiveOnce` /
-  `inactiveAlreadyReported` are deprecated; a transport reports the peer's end of file with `reportReadClosedOnce`
-  and every other end with `reportEndOnce`. `IoTransport.reportsEveryEndAsReadClosed` says which contract a
-  transport speaks — `false` on the interface, `true` on `AbstractIoTransport`, which every pre-split transport
-  extends, so one is read as it was until it overrides the property to `false` (#1098)
+- `core`: **BREAKING** (source, for transports and pipelines outside the tree): `Pipeline.notifyReadClosed` is
+  abstract, so a `Pipeline` implemented outside this tree must add it; `AbstractIoTransport.reportInactiveOnce` /
+  `inactiveAlreadyReported` are deprecated, and a transport reports the peer's end of file with
+  `reportReadClosedOnce` and every other end with `reportEndOnce`. `IoTransport.reportsEveryEndAsReadClosed` says
+  which contract a transport speaks — `false` on the interface, `true` on `AbstractIoTransport`, which every
+  pre-split transport extends, so one is read as it was until it overrides the property to `false` (#1098)
 - `codec-websocket`: `WsFrameDecoder` stops decoding once the connection has ended; bytes after it
   are not parsed into frames nobody can act on, and a frame left part-parsed is dropped (#1094)
 - `codec-http`: both HTTP decoders stop decoding once the connection has ended; bytes after
@@ -162,7 +163,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `core`: a Coroutine-mode `read()` after the connection ended under the caller returns `-1` instead of throwing
   `Channel is closed`, decided from one reading of the channel's state so an end landing inside the call is the end
-  of file too — `PipelinedChannel.endedByTransport` says which it was (#1098)
+  of file too — `PipelinedChannel.endedByTransport` says which it was. Reached once an engine reports that end
+  apart from the peer's; until then a read there throws as before. A read after the peer's end of file also stops
+  re-arming the transport's read, which only had it report the same end again (#1098)
 - `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
   before the pipeline took it releases it, and so does one that finds the channel closed or is given nothing to
   write. A caller has nothing to release in a `catch`; one that released the buffer itself on those paths must
