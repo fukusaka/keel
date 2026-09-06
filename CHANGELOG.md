@@ -70,14 +70,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `core`: **BREAKING** (semantics): `InboundHandler.onInactive` now means the connection is over — a peer's end of
-  file is `onReadClosed`, after which the connection stays writable, and in Pipeline mode the channel closes itself,
-  so an answer to a peer that half-closed is written from inside that callback (#1098)
+- `core`: **BREAKING** (semantics, for a transport that opts in): where a transport reports the peer's end of file
+  apart from the connection's, `InboundHandler.onInactive` means the connection is over and the peer's end of file
+  is `onReadClosed`, after which the connection stays writable and in Pipeline mode the channel closes itself — so
+  an answer to a peer that half-closed is written from inside that callback. No engine in this tree opts in yet, so
+  what a handler hears is unchanged until its engine does (#1098)
 - `core`: **BREAKING** (source, for transports outside the tree): `AbstractIoTransport.reportInactiveOnce` /
-  `inactiveAlreadyReported` are deprecated aliases of `reportEndOnce` / `endAlreadyReported`; a transport that tells
-  the peer's end of file apart reports that one with `reportReadClosedOnce`. Every engine in this tree still reports
-  every end as the end, so the peer's end of file reaches a pipeline only once its engine has been taught to tell
-  them apart (#1098)
+  `inactiveAlreadyReported` are deprecated; a transport reports the peer's end of file with `reportReadClosedOnce`
+  and every other end with `reportEndOnce`. `IoTransport.reportsEveryEndAsReadClosed` says which contract a
+  transport speaks — `false` on the interface, `true` on `AbstractIoTransport`, which every pre-split transport
+  extends, so one is read as it was until it overrides the property to `false` (#1098)
 - `codec-websocket`: `WsFrameDecoder` stops decoding once the connection has ended; bytes after it
   are not parsed into frames nobody can act on, and a frame left part-parsed is dropped (#1094)
 - `codec-http`: both HTTP decoders stop decoding once the connection has ended; bytes after
@@ -160,10 +162,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `core`: a Coroutine-mode `read()` after the connection ended under the caller returns `-1` instead of throwing
   `Channel is closed`, decided from one reading of the channel's state so an end landing inside the call is the end
   of file too — `PipelinedChannel.endedByTransport` says which it was (#1098)
-- `core`: `Channel.write` takes the buffer in every outcome — a write that throws before the pipeline took it
-  releases it, so a caller has nothing to release in a `catch` and nothing to release twice (#1098)
-- `core`: the read-idle timeout ends with the peer's end of file, so a reader draining what came before it is not
-  reclaimed, and reads re-enabled after it arm no timer (#1098)
+- `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
+  before the pipeline took it releases it, and so does one that finds the channel closed or is given nothing to
+  write. A caller has nothing to release in a `catch`; one that released the buffer itself on those paths must
+  stop (#1098)
 - `core`: a lifecycle sweep (activation, ending, close) no longer stops at a handler that throws —
   the throw travels as an error and the event still reaches the handlers past it, once (#1096)
 - `core`: a handler that removes itself from inside its own callback no longer cuts the walk passing
