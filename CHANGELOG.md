@@ -168,6 +168,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Channel is closed`, decided from one reading of the channel's state so an end landing inside the call is the end
   of file too — `PipelinedChannel.endedByTransport` says which it was. Reached once an engine reports that end
   apart from the peer's; until then a read there throws as before (#1098)
+- `core`: a chain that had handlers when the peer's end of file was reported still releases the descriptor when
+  something empties it before the report reaches anyone — the connection is then nobody's, not its caller's (#1098)
 - `core`: a read no longer re-arms the transport's read once the connection's read side is over — on any of the
   reports that end it, not only the peer's own — which had the transport read and report that same end again (#1098)
 - `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
