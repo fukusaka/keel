@@ -174,8 +174,13 @@ interface IoTransport {
      * that has not been taught the difference behaves exactly as it did —
      * and one that has (it reports the peer's end of file with
      * `reportReadClosedOnce` and every other end with `reportEndOnce`)
-     * leaves this `false` and its channel keeps the two apart. It goes when
-     * the last transport has learned.
+     * answers `false` and its channel keeps the two apart.
+     *
+     * `false` here, because a transport implementing this interface directly
+     * is written against the interface it reads. `AbstractIoTransport`
+     * answers `true`: every transport written before the split extends it,
+     * and none of them can say so for itself. The property goes when the
+     * last transport has learned the difference.
      */
     val reportsEveryEndAsReadClosed: Boolean get() = false
 

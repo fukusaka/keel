@@ -152,12 +152,14 @@ abstract class AbstractIoTransport(
      */
     protected fun armIdleTimeout() {
         if (idleHandle != null) return
-        // The read side is over once the peer's end of file was reported:
-        // there is no read to wait for, and a timer armed now would measure
-        // the reader draining what the peer sent, or the app composing its
-        // answer to a peer that half-closed, and reclaim the connection
-        // under them. A read re-enabled after that report arms nothing.
-        if (readClosedReported) return
+        // Armed regardless of the peer's end of file. The timeout is what
+        // reclaims a connection nobody else will: after the peer finished,
+        // a Coroutine-mode channel is the caller's to close and a chain with
+        // no handlers yet closes for nothing, so stopping the clock here
+        // would leave the descriptor in CLOSE-WAIT with no other claimant.
+        // Whether a transport that tells the peer's end of file apart should
+        // instead measure only the answer it is still able to write is a
+        // question for the engine that first does.
         val timer = eventLoopTimer ?: return
         val millis = idleTimeoutMillis
         if (millis <= 0) return
@@ -185,11 +187,11 @@ abstract class AbstractIoTransport(
     private fun onIdleTimeout() {
         idleHandle = null // already fired and removed by the scheduler
         // Report the end, then force the connection closed. This fires for a
-        // peer that sends nothing while the connection waits to read — the
-        // timer is gone once the peer's end of file was reported, so never
-        // for one that finished. An idle timeout exists to *reclaim* the
-        // connection from a non-cooperating peer, so it must release the fd
-        // in every mode. `close()` is idempotent, so this is a no-op when the
+        // peer that sends nothing while the connection waits to read, and for
+        // one that finished and left the connection to a caller who never
+        // closed it. An idle timeout exists to *reclaim* the connection from
+        // a peer that is not going to cooperate, so it must release the fd in
+        // every mode. `close()` is idempotent, so this is a no-op when the
         // channel already closed itself.
         reclaimAfterIdle()
     }
@@ -205,10 +207,8 @@ abstract class AbstractIoTransport(
     protected fun reportReadClosedOnce() {
         if (readClosedReported) return
         readClosedReported = true
-        // Nothing more to wait for from the peer: the read-idle timeout is
-        // over with the read side (the write-idle timeout is its own, armed
-        // by a write that stalls).
-        cancelIdleTimeout()
+        // The read-idle timeout is left running; see [armIdleTimeout] for
+        // why the peer finishing is not a reason to stop reclaiming.
         onReadClosed?.invoke()
     }
 
@@ -263,16 +263,33 @@ abstract class AbstractIoTransport(
         ReplaceWith("reportReadClosedOnce()"),
     )
     protected fun reportInactiveOnce() {
-        reportsEveryEndAsReadClosed = true
         reportReadClosedOnce()
     }
 
-    final override var reportsEveryEndAsReadClosed: Boolean = false
-        private set
+    /**
+     * True here, because this base is the one every transport written before
+     * the split extends: it has one report for every way a connection can be
+     * over, so a listener must read it as the end and not as the peer merely
+     * finishing. A transport that has learned the difference — reporting the
+     * peer's end of file with [reportReadClosedOnce] and every other end with
+     * [reportEndOnce] — overrides this to `false`, one transport at a time,
+     * and the property goes when the last of them has.
+     *
+     * A listener implementing [IoTransport] directly rather than extending
+     * this base is written against the split contract, and the interface's
+     * own default says so.
+     */
+    override val reportsEveryEndAsReadClosed: Boolean get() = true
 
-    /** The name [readClosedAlreadyReported] had before the split; see [reportInactiveOnce]. */
-    @Deprecated("Renamed with the report itself", ReplaceWith("readClosedAlreadyReported"))
-    protected val inactiveAlreadyReported: Boolean get() = readClosedAlreadyReported
+    /**
+     * The name [readClosedAlreadyReported] had before the split; see
+     * [reportInactiveOnce]. It answered "has the one terminal report gone
+     * out", so it answers for both reports now — a caller asking it is
+     * asking whether the listener has been told the connection is over, and
+     * an idle reclamation tells it through [reportEndOnce].
+     */
+    @Deprecated("Renamed with the report itself", ReplaceWith("readClosedAlreadyReported || endAlreadyReported"))
+    protected val inactiveAlreadyReported: Boolean get() = readClosedAlreadyReported || endAlreadyReported
 
     private var endReported = false
 
