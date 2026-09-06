@@ -205,7 +205,9 @@ abstract class AbstractIoTransport(
      * of its own it needs. Only the readiness transports route their
      * wind-down through this. A read side closes once; a second report would tell a
      * listener that already acted on the first — a parked reader woken with
-     * EOF, a bridge that stopped expecting data — the same thing again.
+     * EOF, a bridge that stopped expecting data — the same thing again. A
+     * pipeline absorbs a repeat, but that is a guard in another module; a
+     * Coroutine-mode caller has none.
      *
      * **EventLoop thread**, like every other wind-down step.
      */
@@ -329,12 +331,17 @@ abstract class AbstractIoTransport(
 
     /**
      * Whether [reportEndOnce] has already told the listener the connection
-     * is over. A transport reporting a failure consults it: a reason
-     * delivered after the end reaches nobody who can act on it, so a refusal
-     * met on a connection whose end already went out stays quiet toward the
-     * pipeline. The wait is still answered with it, and a rider still reaches
-     * the head's check. A peer's end of file alone does not set it — the
-     * connection is still open and a refusal on it is still a reason.
+     * is over. A transport that has learned to tell the two ends apart
+     * consults it when reporting a failure, in place of the deprecated
+     * [inactiveAlreadyReported] its predecessor consulted: a reason delivered
+     * after the end reaches nobody who can act on it, so a refusal met on a
+     * connection whose end already went out stays quiet toward the pipeline.
+     * The wait is still answered with it, and a rider still reaches the
+     * head's check. A peer's end of file alone does not set it — the
+     * connection is still open and a refusal on it is still a reason. None in
+     * this tree has learned yet, so the one consumer there is reads the
+     * deprecated flag, and there a refusal after the peer's end of file does
+     * stay quiet.
      */
     protected val endAlreadyReported: Boolean get() = endReported
 

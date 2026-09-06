@@ -27,9 +27,12 @@ import kotlin.time.Duration.Companion.seconds
  * nothing in the tree would have caught either, since every implementation in
  * it is keel's own and was updated with the change.
  *
- * [PipelinedChannel] is not among them: it is implemented here only by
- * `AbstractPipelinedChannel`, whose members a subclass inherits, so an
- * addition to it is not the same kind of break.
+ * [PipelinedChannel] is here for a narrower reason: it is implemented in
+ * this tree only by `AbstractPipelinedChannel`, whose members a subclass
+ * inherits, so an addition to it is not the same kind of break — but the
+ * answer its interface gives for whether the connection ended under the
+ * caller is what a channel outside this tree gets, and that answer decides
+ * whether a read after a close is refused.
  *
  * The bodies are the smallest thing that compiles; nothing here is exercised.
  */

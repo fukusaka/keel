@@ -479,15 +479,15 @@ interface IoTransport {
     /**
      * Closes the transport and releases all resources.
      *
-     * A flush already deferred to the current tick is attempted once, on the
-     * owning loop and without waiting, before the descriptor closes: a
-     * handler that answers the peer's end of file from inside [onReadClosed]
-     * writes and flushes on a channel that closes itself right after the
-     * call, and that attempt is what carries the answer. What was only
-     * queued, and anything left once a loop has stopped, is released unsent
-     * — so an answer larger than the socket takes at once is not delivered
-     * in full, and a transport whose teardown skips the attempt delivers
-     * none of it. Deregisters events and closes the underlying
+     * An implementation may attempt a flush already deferred to the current
+     * tick, once and without waiting, before the descriptor closes — keel's
+     * own do, on the owning loop, and that attempt is what carries the answer
+     * a handler writes from inside [onReadClosed] on a channel that closes
+     * itself right after the call. Nothing here requires it: what was only
+     * queued, and anything left once a loop has stopped, is released unsent,
+     * an answer larger than the socket takes at once is not delivered in
+     * full, and a transport whose teardown skips the attempt delivers none
+     * of it. Deregisters events and closes the underlying
      * fd/socket/connection. Implementations must be idempotent (use
      * [isOpen] flag to guard).
      */

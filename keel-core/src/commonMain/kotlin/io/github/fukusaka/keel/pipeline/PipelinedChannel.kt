@@ -111,7 +111,9 @@ interface PipelinedChannel : Channel {
      * channel: a channel is told the connection ended by a report, so a
      * transport that releases its descriptor before making that report
      * leaves the window open however the channel is written. Report first,
-     * release after.
+     * release after — and for one that does not, this is what it can be:
+     * the mark is set when the report arrives, which is after the descriptor
+     * went, so a read landing in between is refused rather than answered.
      */
     val endedByTransport: Boolean get() = false
 
