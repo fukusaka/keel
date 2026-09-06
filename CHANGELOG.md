@@ -11,7 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `core`: `InboundHandler.onReadClosed` / `Pipeline.notifyReadClosed` / `PipelineHandlerContext.propagateReadClosed`
   — the peer's end of file as its own event, journalled and replayed like the other inbound events;
   `IoTransport.onClosed` — a transport reporting that it ended the connection itself;
-  `PipelinedChannel.endedByTransport` — whether the channel closed for that end (#1098)
+  `PipelinedChannel.endedByTransport` — whether the channel closed for an end it did not start, which is what a
+  `read()` finding the channel closed answers `-1` for rather than refusing as a misuse (#1098)
 - `core`: `AbstractIoTransport` parks, sweeps and answers the callers waiting on a flush — one
   implementation for the three transports that wait this way, and eight `protected` members a
   subclass outside the tree gains with them (#1076)
