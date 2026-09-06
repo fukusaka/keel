@@ -194,9 +194,8 @@ interface PipelinedChannel : Channel {
      * and is rethrown as it is: a second release here would return to the
      * pool a buffer still queued for the send.
      *
-     * A write with nothing to write is the same transfer: the buffer is
-     * released and `0` returned. The caller was already told not to touch it
-     * after this call, so keeping it here would leave it to nobody.
+     * A write with nothing to write is the exception: nothing is taken and
+     * `0` is returned, so the buffer is still the caller's.
      *
      * A write after [shutdownOutput] reaches the transport, which releases
      * it unsent; an engine that refuses it earlier must release the buffer
@@ -210,10 +209,12 @@ interface PipelinedChannel : Channel {
             error("Channel is closed")
         }
         val n = buf.readableBytes
-        if (n == 0) {
-            buf.release()
-            return 0
-        }
+        // Nothing to send and nothing taken: the buffer is still the
+        // caller's. Releasing it here would return a buffer to the pool that
+        // a caller holding a freshly allocated one is about to fill, which is
+        // worse than the leak it would close — and there is no leak, since
+        // nothing was handed anywhere.
+        if (n == 0) return 0
         var taken = false
         try {
             withContext(ioDispatcher) {

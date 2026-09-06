@@ -8,7 +8,7 @@ sidebar_position: 3
 
 `IoBuf` は keel のバイトバッファ型。使用パターンの 95% は次の 2 つのルールで尽きる:
 
-1. **write は所有権を移譲する。** `channel.write(buf)` / `sink.write` / `ctx.propagateWrite` の後、buf は呼び出し側から消える — 触らない、`release()` しない、index も見ない。engine が flush 完了後に release する。write が **throw** したときも同じ — 受け付けなかった channel は、その拒否が呼び出し側に届く前に buf を release しているので、`catch` で release するものは無い。書くものが無い write も同じで、buf を release して `0` を返す。
+1. **write は所有権を移譲する。** `channel.write(buf)` / `sink.write` / `ctx.propagateWrite` の後、buf は呼び出し側から消える — 触らない、`release()` しない、index も見ない。engine が flush 完了後に release する。write が **throw** したときも同じ — 受け付けなかった channel は、その拒否が呼び出し側に届く前に buf を release しているので、`catch` で release するものは無い。例外は「書くものが無い write」で、これは何も受け取らず `0` を返し、buf は呼び出し側のまま。
 2. **read は所有権を保持する。** 呼び出し側が空の buf を allocate し、`channel.read(buf)` で engine に fill してもらう。その後 read して使い終わったら `release()` する。
 
 以上。`retain()` / fan-out / slice / pool 挙動など細部は、この 2 ルールから意図的にはみ出すときだけ意識すれば良い。

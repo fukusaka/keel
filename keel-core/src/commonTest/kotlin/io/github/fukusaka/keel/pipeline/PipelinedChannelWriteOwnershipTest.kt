@@ -71,12 +71,20 @@ class PipelinedChannelWriteOwnershipTest {
     }
 
     @Test
-    fun `a write of nothing releases the buffer it was handed`() = runTest(timeout = 15.seconds) {
+    fun `a write of nothing leaves the buffer with its caller`() = runTest(timeout = 15.seconds) {
+        // The one outcome that takes nothing, because nothing was handed
+        // anywhere: a caller that wrote a buffer it had not filled yet still
+        // holds it, where releasing would return it to the pool underneath.
         val tracker = TrackingAllocator()
         val transport = TestIoTransport(tracker)
         val channel = channelOver(transport)
-        assertEquals(0, channel.write(tracker.allocate(8)))
+        val buf = tracker.allocate(8)
+
+        assertEquals(0, channel.write(buf))
+
         assertEquals(0, transport.written.size, "nothing was queued for an empty write")
+        assertEquals(1, tracker.outstandingCount, "and nothing was released for it")
+        buf.release()
         tracker.assertNoLeaks()
         channel.close()
     }
