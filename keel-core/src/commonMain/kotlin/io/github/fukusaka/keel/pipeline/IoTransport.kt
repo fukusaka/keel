@@ -150,6 +150,10 @@ interface IoTransport {
      * listener (one can still be answered, the other cannot), and a transport
      * that folded them together left its listener unable to tell a peer that
      * finished sending from a peer that is gone.
+     *
+     * Unless the transport answers `true` to [reportsEveryEndAsReadClosed],
+     * which every transport in this tree does — for one of those this is
+     * every end, and its listener reads it as the end it is.
      */
     var onReadClosed: (() -> Unit)?
 
@@ -168,6 +172,12 @@ interface IoTransport {
      * reported to [onConnectionFailure] first, with the reason.
      */
     var onClosed: (() -> Unit)?
+        // The default accessors store nothing, so a transport written before
+        // this hook existed — one that has a single report for every way its
+        // connection can be over — is not obliged to carry a field for a
+        // report it never makes.
+        get() = null
+        set(value) {}
 
     /**
      * Whether this transport still reports every end the way it did before
