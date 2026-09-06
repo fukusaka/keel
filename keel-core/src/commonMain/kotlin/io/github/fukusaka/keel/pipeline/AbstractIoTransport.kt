@@ -27,7 +27,7 @@ import kotlin.coroutines.resume
  *   afterwards. Subclasses supply the FIN via [sendFin] and call
  *   [sendFinIfDrained] from their flush-completion paths.
  * - **Open state**: [opened] flag with [isOpen] property for idempotent close.
- * - **Callback properties**: [onRead], [onReadComplete], [onReadClosed],
+ * - **Callback properties**: [onRead], [onReadComplete], [onReadClosed], [onClosed],
  *   [onFlushComplete], [onWritabilityChanged], [onConnectionFailure]
  *   initialized to `null`.
  * - **Flush waiters**: the list a caller parks on in `awaitPendingFlush`, its
@@ -104,6 +104,7 @@ abstract class AbstractIoTransport(
     override var onRead: ((IoBuf) -> Unit)? = null
     override var onReadComplete: (() -> Unit)? = null
     override var onReadClosed: (() -> Unit)? = null
+    override var onClosed: (() -> Unit)? = null
 
     /**
      * Real storage for [IoTransport.onConnectionFailure], whose interface
@@ -151,6 +152,14 @@ abstract class AbstractIoTransport(
      */
     protected fun armIdleTimeout() {
         if (idleHandle != null) return
+        // Armed regardless of the peer's end of file. The timeout is what
+        // reclaims a connection nobody else will: after the peer finished,
+        // a Coroutine-mode channel is the caller's to close and a chain with
+        // no handlers yet closes for nothing, so stopping the clock here
+        // would leave the descriptor in CLOSE-WAIT with no other claimant.
+        // Whether a transport that tells the peer's end of file apart should
+        // instead measure only the answer it is still able to write is a
+        // question for the engine that first does.
         val timer = eventLoopTimer ?: return
         val millis = idleTimeoutMillis
         if (millis <= 0) return
@@ -177,56 +186,173 @@ abstract class AbstractIoTransport(
 
     private fun onIdleTimeout() {
         idleHandle = null // already fired and removed by the scheduler
-        // Notify the pipeline / caller of inactivity, then force the connection
-        // closed. Unlike a cooperative peer-FIN — which `onReadClosed` deliberately
-        // leaves open for a Coroutine-mode caller or an empty pipeline (half-close
-        // support, caller owns the resource) — an idle timeout exists to *reclaim*
-        // the connection from a non-cooperating peer, so it must release the fd in
-        // every mode. `close()` is idempotent, so this is a no-op when the channel
-        // already closed itself in pipeline mode.
+        // Report the end, then force the connection closed. This fires for a
+        // peer that sends nothing while the connection waits to read, and for
+        // one that finished and left the connection to a caller who never
+        // closed it. An idle timeout exists to *reclaim* the connection from
+        // a peer that is not going to cooperate, so it must release the fd in
+        // every mode. `close()` is idempotent, so this is a no-op when the
+        // channel already closed itself.
         reclaimAfterIdle()
     }
 
     /**
-     * Reports the connection inactive, at most once for this transport.
-     *
-     * "Inactive" is a fact about the connection, not an event each path that
-     * discovers it gets to raise — and a handler's `onInactive` is not free to
-     * run twice. It releases the aggregator's held chunks, the decoder's
-     * borrowed header set, the server's registry entry, and wakes a parked
-     * reader with EOF. A pipeline absorbs a repeat, but that is a guard in
-     * another module; a Coroutine-mode handler has none.
-     *
-     * **This gate covers only what routes through it.** Every transport
-     * reaches it from the two idle-timeout reclamations here, which are this
-     * class's own code — but only the readiness transports route their
-     * wind-down through it as well. The rest report from their own peer-close
-     * handling without consulting the flag, so a FIN followed by an idle
-     * timeout reports twice there, unchanged from before this gate existed.
-     * netty and io_uring carry independent flags of their own; nodejs carries
-     * none and reports from two callbacks. Converging them is tracked with
-     * the rest of those transports' contract work.
+     * Reports the peer's end of file ([onReadClosed]), at most once for this
+     * transport — and this gate covers only what routes through it. Most
+     * transports in this tree raise [onReadClosed] themselves, so their own
+     * wind-down does not consult it and a report from here after one of
+     * theirs is a second report to the listener; each carries whatever flag
+     * of its own it needs. Only the readiness transports route their
+     * wind-down through this. A read side closes once; a second report would tell a
+     * listener that already acted on the first — a parked reader woken with
+     * EOF, a bridge that stopped expecting data — the same thing again. A
+     * pipeline absorbs a repeat, but that is a guard in another module; a
+     * Coroutine-mode caller has none.
      *
      * **EventLoop thread**, like every other wind-down step.
      */
-    protected fun reportInactiveOnce() {
-        if (inactiveReported) return
-        inactiveReported = true
+    protected fun reportReadClosedOnce() {
+        // Nothing follows the end. A path that discovers the peer's own after
+        // the connection was reported over has nobody left to tell, and
+        // telling them would be the repeat the once-per-transport rule
+        // exists to prevent. The end's own report goes below this guard,
+        // since for a transport making one report that report *is* the end.
+        if (endReported) return
+        reportReadClosedNow()
+    }
+
+    private fun reportReadClosedNow() {
+        if (readClosedReported) return
+        readClosedReported = true
+        // The read-idle timeout is left running; see [armIdleTimeout] for
+        // why the peer finishing is not a reason to stop reclaiming.
         onReadClosed?.invoke()
     }
 
-    private var inactiveReported = false
+    private var readClosedReported = false
 
     /**
-     * Whether [reportInactiveOnce] has already told the listener the
-     * connection is over. A transport reporting a failure consults it: a
-     * reason delivered after the end reaches nobody who can act on it, so a
-     * refusal met on a connection whose inactive already went out — a peer
-     * FIN first, then a handler's flush from its own `onInactive` — stays
-     * quiet toward the pipeline. The wait is still answered with it, and a
-     * rider still reaches the head's check.
+     * Reports the connection ended by this transport ([onClosed]), at most
+     * once for this transport.
+     *
+     * The end is a fact about the connection, not an event each path that
+     * discovers it gets to raise — and a listener is not free to hear it
+     * twice: it releases the aggregator's held chunks, the decoder's borrowed
+     * header set, the server's registry entry, and wakes a parked reader.
+     * Every transport reaches this from the two idle-timeout reclamations
+     * here. A transport that has learned to tell the two apart routes its
+     * own ending paths — a reset, a failed read or write, a loop that
+     * stopped — through it as well, so a FIN followed by a reclamation
+     * reports the read side once and the end once; none in this tree has,
+     * and each still reports those on the read side's report, which is where
+     * the arm below sends this one too.
+     *
+     * **EventLoop thread**, like every other wind-down step.
      */
-    protected val inactiveAlreadyReported: Boolean get() = inactiveReported
+    protected fun reportEndOnce() {
+        if (endReported) return
+        endReported = true
+        // A transport from before the split has one report for every way a
+        // connection could be over, and that report is the one below. Its
+        // listener hears the end there, as it heard it before this event
+        // existed — the hook for the end alone is one the listener offers and
+        // the transport has no way to fill differently, so filling it would
+        // tell a listener the connection ended by a route no report of this
+        // transport's own ever takes. Both arms end the connection; they
+        // differ in which report says so, and this one goes when the last
+        // transport has learned the difference.
+        if (reportsEveryEndAsReadClosed) {
+            reportReadClosedNow()
+            return
+        }
+        val end = onClosed
+        if (end == null) {
+            // Nothing offered a hook for the end: the one report takes it.
+            // No listener in this tree leaves it empty — a channel fills it
+            // for every transport — so this arm is defensive and untested,
+            // and it is here for a listener that is not a channel.
+            reportReadClosedNow()
+            return
+        }
+        end.invoke()
+    }
+
+    /**
+     * The report a transport made before the peer's end of file became an
+     * event of its own, kept so one written against the old contract behaves
+     * as it did: it had a single report for every way a connection could be
+     * over, the channel answered it by telling the pipeline and — with no
+     * reader of its own — closing, and that is what [reportReadClosedOnce]
+     * does now. So this is that one, unchanged in effect, and a transport
+     * that has learned to tell the two apart reports the peer's end of file
+     * with [reportReadClosedOnce] and every other end with [reportEndOnce] —
+     * only then does a reader of its own hear the difference.
+     */
+    @Deprecated(
+        "Report the peer's end of file with reportReadClosedOnce and every other end with reportEndOnce",
+        ReplaceWith("reportReadClosedOnce()"),
+    )
+    protected fun reportInactiveOnce() {
+        reportReadClosedOnce()
+    }
+
+    /**
+     * True here, because this base is the one every transport written before
+     * the split extends: it has one report for every way a connection can be
+     * over, so a listener must read it as the end and not as the peer merely
+     * finishing. A transport that has learned the difference — reporting the
+     * peer's end of file with [reportReadClosedOnce] and every other end with
+     * [reportEndOnce] — overrides this to `false`, one transport at a time,
+     * and the property goes when the last of them has.
+     *
+     * A listener implementing [IoTransport] directly rather than extending
+     * this base is written against the split contract, and the interface's
+     * own default says so.
+     */
+    override val reportsEveryEndAsReadClosed: Boolean get() = true
+
+    /**
+     * Whether the one terminal report a transport made before the split has
+     * gone out; see [reportInactiveOnce]. That report is two now, so this
+     * answers for either — a caller asking it is asking whether the listener
+     * has been told the connection is over, and on a transport that tells
+     * the two apart an idle reclamation tells it through [reportEndOnce]
+     * alone. Reading [readClosedAlreadyReported] in its place would answer
+     * `false` there, which is why the replacement is the disjunction and not
+     * a rename.
+     */
+    @Deprecated(
+        "Split in two: this answers for either of readClosedAlreadyReported and endAlreadyReported",
+        ReplaceWith("(readClosedAlreadyReported || endAlreadyReported)"),
+    )
+    protected val inactiveAlreadyReported: Boolean get() = readClosedAlreadyReported || endAlreadyReported
+
+    private var endReported = false
+
+    /**
+     * Whether [reportEndOnce] has already told the listener the connection
+     * is over. A transport that has learned to tell the two ends apart
+     * consults it when reporting a failure, in place of the deprecated
+     * [inactiveAlreadyReported] its predecessor consulted: a reason delivered
+     * after the end reaches nobody who can act on it, so a refusal met on a
+     * connection whose end already went out stays quiet toward the pipeline.
+     * The wait is still answered with it, and a rider still reaches the
+     * head's check. A peer's end of file alone does not set it — the
+     * connection is still open and a refusal on it is still a reason. None in
+     * this tree has learned yet, so the one consumer there is reads the
+     * deprecated flag, and there a refusal after the peer's end of file does
+     * stay quiet.
+     */
+    protected val endAlreadyReported: Boolean get() = endReported
+
+    /**
+     * Whether the peer's end of file has been reported through
+     * [reportReadClosedOnce]. For a transport deciding what a later event
+     * means: a receive on a stream already declared complete, or a close the
+     * platform performs once both halves have ended, is not the connection's
+     * end when the read side's end was already told.
+     */
+    protected val readClosedAlreadyReported: Boolean get() = readClosedReported
 
     private var writeIdleHandle: TimerHandle? = null
 
@@ -263,7 +389,7 @@ abstract class AbstractIoTransport(
     }
 
     /**
-     * Reports the connection inactive and then reclaims it, in that order and
+     * Reports the connection ended and then reclaims it, in that order and
      * both regardless of the other.
      *
      * Two obligations, and the notification used to be able to skip the close.
@@ -292,7 +418,7 @@ abstract class AbstractIoTransport(
     private fun reclaimAfterIdle() {
         var failure: Throwable? = null
         try {
-            reportInactiveOnce()
+            reportEndOnce()
         } catch (notifyFailure: Throwable) {
             failure = notifyFailure
         }

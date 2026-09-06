@@ -93,6 +93,30 @@ interface PipelinedChannel : Channel {
      */
     override val isOpen: Boolean get() = isActive
 
+    /**
+     * Whether the connection ended under the caller — the transport reported
+     * its end and the channel closed itself — as opposed to a close this
+     * side performed. A [read] after the former is the end of file; after
+     * the latter it is a misuse. The default cannot tell and refuses every
+     * read after a close; a channel that can tell says so.
+     *
+     * [read] reads this on the caller's thread, next to [isOpen] and outside
+     * the owning context, so an implementation keeps two things: the value
+     * is published like [isOpen] is (volatile, or under the same
+     * publication), and it turns `true` before [isOpen] turns `false` for
+     * an end the transport reported — a reading that sees the close then
+     * sees the mark. Otherwise the reading falls into the second case.
+     *
+     * The second half is a requirement on the transport as much as on the
+     * channel: a channel is told the connection ended by a report, so a
+     * transport that releases its descriptor before making that report
+     * leaves the window open however the channel is written. Report first,
+     * release after — and for one that does not, this is what it can be:
+     * the mark is set when the report arrives, which is after the descriptor
+     * went, so a read landing in between is refused rather than answered.
+     */
+    val endedByTransport: Boolean get() = false
+
     // --- Coroutine mode: suspend I/O with EventLoop thread guarantee ---
     //
     // SuspendBridgeHandler requires all methods (read, onRead, onInactive,
@@ -120,10 +144,26 @@ interface PipelinedChannel : Channel {
      * first call. [withContext] dispatches to [ioDispatcher] (EventLoop) to
      * guarantee single-threaded access to [SuspendBridgeHandler] state.
      *
+     * Where the transport reports the peer's end of file apart from the
+     * connection's end, that end of file is `-1` once the bridge's queue is
+     * drained, the channel stays open and writable, and [close] is the
+     * caller's; a transport still making one report for every end ends the
+     * read side with it, releasing what was queued. After an
+     * end the transport reported — see [endedByTransport] — the channel is
+     * closed and a read is `-1` too; after a close this side performed it
+     * is a misuse and throws [IllegalStateException].
+     *
      * @return number of bytes read, or -1 on EOF.
      */
     override suspend fun read(buf: IoBuf): Int {
-        check(isOpen) { "Channel is closed" }
+        // One reading decides. A second one on this thread could see an end
+        // that landed between the two and refuse as a misuse what is the
+        // end of file; the channel marks the transport's end before it
+        // closes, so a reading that sees the close sees the mark.
+        if (!isOpen) {
+            if (endedByTransport) return -1
+            error("Channel is closed")
+        }
         return withContext(ioDispatcher) {
             val bridge = ensureBridge()
             // First-read arming only: while the bridge has suspended reads
@@ -131,6 +171,12 @@ interface PipelinedChannel : Channel {
             // path's job (at the low watermark) — arming here would defeat
             // the hysteresis and flap the engine's read registration on
             // every call.
+            // Armed even once the read side is over. A transport reads the
+            // same end again and reports nothing for it, which costs a read;
+            // not arming costs the connection — this setter is the only place
+            // a Coroutine-mode caller starts the read-idle clock, and that
+            // clock is what reclaims a descriptor after the peer finished and
+            // its caller never closed.
             if (!readEnabled && !bridge.readSuspendedByWatermark) readEnabled = true
             bridge.read(buf)
         }
@@ -139,17 +185,47 @@ interface PipelinedChannel : Channel {
     /**
      * Writes data through the pipeline on the EventLoop thread.
      *
-     * Engines that support half-close should override to check
-     * `outputShutdown` before delegating to `super.write(buf)`.
+     * Takes [buf] in every outcome. The pipeline has it once the hop to the
+     * loop ran, and takes it in every outcome of its own — a handler that
+     * throws on the write has the buffer released for it, and a write with
+     * nowhere to go is released where it stops. When this call throws before
+     * the hop — the channel is closed,
+     * the loop refused the hop, the caller was cancelled while the hop was
+     * still queued — the buffer is released here. A cancellation that lands
+     * on the way back, after the hop ran, leaves the buffer with the pipeline
+     * and is rethrown as it is: a second release here would return to the
+     * pool a buffer still queued for the send.
+     *
+     * A write with nothing to write is the exception: nothing is taken and
+     * `0` is returned, so the buffer is still the caller's.
+     *
+     * A write after [shutdownOutput] reaches the transport, which releases
+     * it unsent; an engine that refuses it earlier must release the buffer
+     * before it throws, or the transfer above does not hold there.
      *
      * @return number of bytes buffered (actual send happens on [flush]).
      */
     override suspend fun write(buf: IoBuf): Int {
-        check(isOpen) { "Channel is closed" }
+        if (!isOpen) {
+            buf.release()
+            error("Channel is closed")
+        }
         val n = buf.readableBytes
+        // Nothing to send and nothing taken: the buffer is still the
+        // caller's. Releasing it here would return a buffer to the pool that
+        // a caller holding a freshly allocated one is about to fill, which is
+        // worse than the leak it would close — and there is no leak, since
+        // nothing was handed anywhere.
         if (n == 0) return 0
-        withContext(ioDispatcher) {
-            pipeline.requestWrite(buf)
+        var taken = false
+        try {
+            withContext(ioDispatcher) {
+                taken = true
+                pipeline.requestWrite(buf)
+            }
+        } catch (t: Throwable) {
+            if (!taken) buf.release()
+            throw t
         }
         return n
     }

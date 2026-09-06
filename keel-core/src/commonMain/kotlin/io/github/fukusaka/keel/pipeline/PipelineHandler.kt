@@ -69,13 +69,16 @@ interface PipelineHandler {
  * **Each lifecycle event arrives at most once, and the ending may come first.**
  * A handler that joins a connection already over hears [onInactive] without
  * an [onActive] before it, so what [onInactive] undoes must tolerate never
- * having been done. No activation follows an ending. [onInactive] says the
- * connection is over as far as this pipeline is concerned; it does not say the
- * transport is closed yet — on the owning loop it is still open — and whether
- * it precedes or follows [OutboundHandler.onClose] is only fixed for the
- * channel's own close on its loop. A handler passes the ending on from
- * [onInactive] and does not raise one of its own from another callback: the
- * ending is the pipeline's to deliver.
+ * having been done. No activation follows an ending, and no [onReadClosed]
+ * does either. [onInactive] says the connection is over as far as this
+ * pipeline is concerned; it does not say the transport is closed yet — on the
+ * owning loop it is still open — and whether it precedes or follows
+ * [OutboundHandler.onClose] is only fixed for the channel's own close on its
+ * loop. A handler passes the ending on from [onInactive] and does not raise
+ * one of its own from another callback: the ending is the pipeline's to
+ * deliver, and so is the peer's end of file — a handler that learns of one
+ * inside its own protocol (a TLS close_notify) passes on [onReadClosed], not
+ * the ending.
  *
  * [acceptedType] and [producedType] declare the message types this handler
  * consumes and produces. The pipeline validates type chain consistency at
@@ -143,7 +146,45 @@ interface InboundHandler : PipelineHandler {
     }
 
     /**
-     * Called when the connection has ended for this pipeline.
+     * Called when the peer has closed its side for writing: no read follows,
+     * and the connection is still open and writable, so a handler that
+     * answers from within this call can still answer — the half-close a
+     * request/response peer performs after its last request. Netty raises
+     * `ChannelInputShutdownEvent` for the same fact.
+     *
+     * At most once per handler, after [onActive] and before [onInactive]; a
+     * handler added after the event was delivered hears it as a replay, whether
+     * the channel or a handler's own [Pipeline.notifyReadClosed] delivered
+     * it — a handler that passed it on with
+     * [PipelineHandlerContext.propagateReadClosed] instead delivered nothing
+     * and is not replayed. Not delivered once the
+     * ending was, nor once the transport is gone — then only the ending is.
+     * What a handler releases here must be what the read side alone held; the
+     * connection's own resources wait for [onInactive] and
+     * [PipelineHandler.handlerRemoved]. When the transport reported it, a
+     * Pipeline-mode channel closes itself right after this reaches the
+     * chain, so the ending follows at once there: an answer must be written
+     * and flushed from within this call — the close attempts the flush the
+     * call deferred, once and without waiting, so what the socket takes at
+     * once is what the peer receives — and a handler that answers later — keel's own
+     * HTTP servers answer from a coroutine, which their ending cancels —
+     * does not answer a peer that half-closed. A handler that raises it from
+     * inside the chain with [Pipeline.notifyReadClosed] (a TLS close_notify)
+     * gets the same close; one that only tells the handlers below it passes
+     * the event on with [PipelineHandlerContext.propagateReadClosed], which
+     * leaves the connection open. In
+     * Coroutine mode the caller reads what was queued, gets `-1`, and closes
+     * when it is done.
+     */
+    fun onReadClosed(ctx: PipelineHandlerContext) {
+        ctx.propagateReadClosed()
+    }
+
+    /**
+     * Called when the connection has ended for this pipeline: nothing more
+     * arrives, nothing more can be sent. The peer's end of file alone is not
+     * this — that is [onReadClosed], and the connection is still writable
+     * after it.
      *
      * At most once per handler, and possibly the first thing it hears: the
      * pipeline delivers the ending once, and a handler above that throws or

@@ -93,6 +93,17 @@ interface PipelineHandlerContext {
     /** Passes a flush completion to the next inbound handler. */
     fun propagateFlushComplete()
 
+    /**
+     * Propagates the peer's end of file to the next inbound handler — the
+     * read side is over, the connection is not.
+     *
+     * Defaulted so a context written before this event existed still
+     * compiles; one that keeps the default passes nothing on, which is what
+     * it did before the event. The pipeline's own context overrides it.
+     */
+    fun propagateReadClosed() {
+    }
+
     /** Propagates a channel-inactive event to the next inbound handler. */
     fun propagateInactive()
 

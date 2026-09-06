@@ -15,6 +15,7 @@ import io.github.fukusaka.keel.pipeline.PipelineTypeException
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Runnable
+import kotlin.concurrent.Volatile
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.EmptyCoroutineContext
@@ -40,9 +41,11 @@ import kotlin.coroutines.EmptyCoroutineContext
  * **State.** Everything the pipeline decides on is a record of something that
  * happened, kept as a small state machine rather than as a set of flags:
  *
- * - [activationPhase] / [endingPhase]: `NONE → OBSERVED → DELIVERED`. Observed
- *   when the transport reported it while the journal was still collecting;
- *   delivered when the sweep from the head started.
+ * - [activationPhase] / [readClosedPhase] / [endingPhase]: `NONE → OBSERVED →
+ *   DELIVERED`. Observed when the transport reported it while the journal was
+ *   still collecting; delivered when the sweep from the head started. The
+ *   peer's end of file sits between the other two, and is journalled and
+ *   replayed the same way ([readClosedCursor] alongside the other cursors).
  * - [journal]: `FILLING → DRAIN_SCHEDULED | DRAIN_OWED → DRAINED`, or
  *   `→ DISCARD_OWED | DISCARDED` when nothing will ever drain it. The pre-attach
  *   journal holds what arrived before the first inbound handler.
@@ -96,20 +99,6 @@ internal class DefaultPipeline(
 
     // --- State ---
 
-    /** Whether the transport reported the event, and whether the sweep from the head has started. */
-    private enum class Phase { NONE, OBSERVED, DELIVERED }
-
-    /** The close walk: running while a close delivery that invoked a handler is on the stack. */
-    private enum class CloseWalk { NONE, RUNNING, DONE }
-
-    /**
-     * The pre-attach journal. `DRAIN_SCHEDULED`: a drain is queued on the
-     * dispatcher. `DRAIN_OWED`: an inline dispatcher, the drain runs when the
-     * outermost handler frame returns. `DISCARD_OWED`: the reads are already
-     * released, the lifecycle delivery is owed to the same epilogue.
-     */
-    private enum class Journal { FILLING, DRAIN_SCHEDULED, DRAIN_OWED, DRAINED, DISCARD_OWED, DISCARDED }
-
     /** The pipeline's end of life; see [terminate]. */
     internal enum class Life { LIVE, TERMINATE_OWED, ENDING, DESTROYING, DESTROYED }
 
@@ -124,8 +113,48 @@ internal class DefaultPipeline(
     internal enum class Lifecycle { PENDING, ACTIVE, ENDED, REMOVED }
 
     private var activationPhase: Phase = Phase.NONE
+
+    /**
+     * The peer's end of file: observed by [notifyReadClosed], delivered by
+     * the read-closed sweep. Sits between the activation and the ending and
+     * is never delivered after the ending — a read side that closes after
+     * the connection ended is no news.
+     */
+    private var readClosedPhase: Phase = Phase.NONE
+
+    /**
+     * Runs right after the read-closed sweep delivered the peer's end of
+     * file to the chain — the channel decides there whether the FIN ends the
+     * connection (Pipeline mode, nobody else owns it) or is the caller's to
+     * act on. At delivery rather than at the transport's report: a FIN
+     * journalled ahead of the first handler is decided when it reaches one.
+     */
+    internal var onReadClosedDelivered: ((pipelineMode: Boolean) -> Unit)? = null
+
+    /**
+     * Whether the channel is one keel owns the lifecycle of, asked before the
+     * walk that delivers the peer's end of file. The walk can change the
+     * answer — a handler removing itself, or installing a bridge, from inside
+     * its own `onReadClosed` — and an answer read afterwards is the one that
+     * handler made, not the one the report arrived to.
+     */
+    internal var pipelineModeNow: (() -> Boolean)? = null
     private var endingPhase: Phase = Phase.NONE
     private var closeWalk: CloseWalk = CloseWalk.NONE
+
+    /**
+     * Whether this side has begun a close of its own — asked of the pipeline,
+     * or walked to the head by a handler, or finished after the walk when a
+     * handler consumed it; those are the places the transport is released. Read by the channel: a transport reporting the end after
+     * that is catching up with a close this side performed, not ending a
+     * connection under its caller. A walk can only start from `requestClose`
+     * or the channel's own close, and the first of those records it when it
+     * is asked for rather than when it lands — a handler writing its farewell
+     * from its own close can have the transport refuse the write and report
+     * the end while the walk is still travelling.
+     */
+    @Volatile
+    internal var closeReachedHead = false
 
     /** Nesting of close deliveries that invoked a handler; `0 → 1` is RUNNING, `1 → 0` is DONE. */
     private var closeDepth: Int = 0
@@ -168,24 +197,8 @@ internal class DefaultPipeline(
      */
     private var writabilityCurrent: Boolean? = null
 
-    /**
-     * Where a lifecycle sweep is: the context whose handler is being invoked,
-     * how (sweep or replay), and whether it has propagated yet. A handler
-     * installed below a sweep that has not propagated is reached by the
-     * sweep and not replayed to as well; a handler that throws without
-     * propagating has the event propagated on its behalf; a replayed event's
-     * default propagation is held back ([DefaultContext.heldBack]). Nested
-     * sweeps restore the outer cursor.
-     */
-    private class Cursor(val ctx: DefaultContext, val mode: Mode) {
-        var propagated: Boolean = false
-
-        /** Whether this sweep has yet to reach [target]: it lies ahead of a handler that has not propagated. */
-        fun stillReaches(target: DefaultContext): Boolean =
-            mode == Mode.SWEEP && !propagated && ctx.leadsTo(target)
-    }
-
     private var activeCursor: Cursor? = null
+    private var readClosedCursor: Cursor? = null
     private var inactiveCursor: Cursor? = null
     private var writabilityCursor: Cursor? = null
     private var closeCursor: Cursor? = null
@@ -283,8 +296,8 @@ internal class DefaultPipeline(
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
         val after = head.next!!
-        validateInboundTypeChain(head.handler, handler, name)
-        validateInboundTypeChain(handler, after.handler, after.name)
+        validateInboundTypeChain(head, head.handler, handler, name)
+        validateInboundTypeChain(head, handler, after.handler, after.name)
         insertBetween(head, newCtx, after)
         callHandlerAdded(newCtx)
         return this
@@ -294,8 +307,8 @@ internal class DefaultPipeline(
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
         val before = tail.prev!!
-        validateInboundTypeChain(before.handler, handler, name)
-        validateInboundTypeChain(handler, tail.handler, "TAIL")
+        validateInboundTypeChain(head, before.handler, handler, name)
+        validateInboundTypeChain(head, handler, tail.handler, "TAIL")
         insertBetween(before, newCtx, tail)
         callHandlerAdded(newCtx)
         return this
@@ -306,8 +319,8 @@ internal class DefaultPipeline(
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
         val before = base.prev!!
-        validateInboundTypeChain(before.handler, handler, name)
-        validateInboundTypeChain(handler, base.handler, baseName)
+        validateInboundTypeChain(head, before.handler, handler, name)
+        validateInboundTypeChain(head, handler, base.handler, baseName)
         insertBetween(before, newCtx, base)
         callHandlerAdded(newCtx)
         return this
@@ -318,8 +331,8 @@ internal class DefaultPipeline(
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
         val after = base.next!!
-        validateInboundTypeChain(base.handler, handler, name)
-        validateInboundTypeChain(handler, after.handler, after.name)
+        validateInboundTypeChain(head, base.handler, handler, name)
+        validateInboundTypeChain(head, handler, after.handler, after.name)
         insertBetween(base, newCtx, after)
         callHandlerAdded(newCtx)
         return this
@@ -329,7 +342,7 @@ internal class DefaultPipeline(
         val ctx = getContext(name)
         val prev = ctx.prev!!
         val next = ctx.next!!
-        validateInboundTypeChain(prev.handler, next.handler, next.name)
+        validateInboundTypeChain(head, prev.handler, next.handler, next.name)
         removeContext(ctx)
         // A mutation on a stopped loop is the last chance to notice that the
         // journal's drain is never going to run — the same as for an add.
@@ -373,8 +386,8 @@ internal class DefaultPipeline(
         if (oldName != newName) checkDuplicateName(newName)
         val prev = oldCtx.prev!!
         val next = oldCtx.next!!
-        validateInboundTypeChain(prev.handler, newHandler, newName)
-        validateInboundTypeChain(newHandler, next.handler, next.name)
+        validateInboundTypeChain(head, prev.handler, newHandler, newName)
+        validateInboundTypeChain(head, newHandler, next.handler, next.name)
         val newCtx = DefaultContext(this, newName, newHandler)
         prev.next = newCtx
         newCtx.prev = prev
@@ -467,6 +480,24 @@ internal class DefaultPipeline(
         return this
     }
 
+    override fun notifyReadClosed(): Pipeline {
+        if (destroying || readClosedPhase == Phase.DELIVERED || endingPhase == Phase.DELIVERED) return this
+        when (journal) {
+            // Not after the descriptor is gone — there is no connection left
+            // to answer on, so what the chain is owed there is the ending, and
+            // it is owed it: a handler releases what it holds on being
+            // removed, and the removal comes with the ending.
+            Journal.DRAINED, Journal.DISCARDED ->
+                if (ended) startEndingSweep() else startReadClosedSweep()
+            // A chain with handlers but none inbound never asks for a drain,
+            // so a FIN journalled for it would wait forever: it is swept now
+            // — the sweep reaches nobody, and the channel decides on it.
+            Journal.FILLING -> if (isEmpty) readClosedPhase = Phase.OBSERVED else startReadClosedSweep()
+            else -> readClosedPhase = Phase.OBSERVED
+        }
+        return this
+    }
+
     override fun notifyInactive(): Pipeline {
         if (destroying || endingPhase == Phase.DELIVERED) return this
         when (journal) {
@@ -553,6 +584,13 @@ internal class DefaultPipeline(
         head.deliverActive(Mode.SWEEP)
     }
 
+    private fun startReadClosedSweep() {
+        readClosedPhase = Phase.DELIVERED
+        val pipelineMode = pipelineModeNow?.invoke() ?: false
+        head.deliverReadClosed(Mode.SWEEP)
+        onReadClosedDelivered?.invoke(pipelineMode)
+    }
+
     private fun startEndingSweep() {
         endingPhase = Phase.DELIVERED
         head.deliverInactive(Mode.SWEEP)
@@ -592,7 +630,17 @@ internal class DefaultPipeline(
             return true
         }
         if (!transport.isOpen || !transport.canDispatchToOwningContext) return false
-        ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
+        try {
+            ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
+        } catch (refused: Throwable) {
+            // A loop that said it could take the hand-off and then would not.
+            // The caller is told the same as for one that said it could not,
+            // so what it handed over is released rather than left with
+            // nobody: the throw travels on, and the caller has nothing to
+            // release for it.
+            logger.warn(refused) { "the loop refused a hand-off it said it could take" }
+            return false
+        }
         return true
     }
 
@@ -650,6 +698,7 @@ internal class DefaultPipeline(
     }
 
     override fun requestClose(): Pipeline {
+        closeReachedHead = true
         onOwningContextForClose { startTailWalk() }
         return this
     }
@@ -704,6 +753,12 @@ internal class DefaultPipeline(
             startTailWalk()
         }
         if (transport.isOpen) {
+            // The other place this side releases the transport: a handler
+            // consumed the walk, so it never reached the head, and the close
+            // is finished here instead. Recorded for the same reason the head
+            // records it — a report arriving afterwards is the transport
+            // catching up, not the connection ending under its caller.
+            closeReachedHead = true
             try {
                 transport.close()
             } catch (e: Throwable) {
@@ -868,13 +923,6 @@ internal class DefaultPipeline(
 
     // --- Internal ---
 
-    private fun insertBetween(before: DefaultContext, new: DefaultContext, after: DefaultContext) {
-        before.next = new
-        new.prev = before
-        new.next = after
-        after.prev = new
-    }
-
     private fun findContext(name: String): DefaultContext? {
         var ctx = head.next
         while (ctx != null && ctx !== tail) {
@@ -965,43 +1013,6 @@ internal class DefaultPipeline(
         }
     }
 
-    /**
-     * Validates inbound type chain between adjacent handlers.
-     *
-     * Skipped when either handler is not a [InboundHandler] or when
-     * either type is [Any] (opt-out default).
-     */
-    private fun validateInboundTypeChain(
-        prevHandler: PipelineHandler,
-        nextHandler: PipelineHandler,
-        nextName: String,
-    ) {
-        if (prevHandler !is InboundHandler) return
-        if (nextHandler !is InboundHandler) return
-        val produced = prevHandler.producedType
-        val accepted = nextHandler.acceptedType
-        if (produced == Any::class || accepted == Any::class) return
-        // KMP limitation: no reflective supertype traversal (Class.isAssignableFrom
-        // is JVM-only). Validate exact type match only. Subtype relationships
-        // (e.g., HttpObject → HttpRequest) are not detected; handlers should
-        // declare the exact type they produce/accept.
-        if (produced != accepted) {
-            throw PipelineTypeException(
-                "Type mismatch in pipeline: '${nameOf(prevHandler)}' produces " +
-                    "${produced.simpleName} but '$nextName' accepts ${accepted.simpleName}",
-            )
-        }
-    }
-
-    private fun nameOf(handler: PipelineHandler): String {
-        var ctx: DefaultContext? = head
-        while (ctx != null) {
-            if (ctx.handler === handler) return ctx.name
-            ctx = ctx.next
-        }
-        return handler::class.simpleName ?: "unknown"
-    }
-
     // --- DefaultContext ---
 
     /**
@@ -1047,6 +1058,9 @@ internal class DefaultPipeline(
          */
         var lifecycle: Lifecycle = Lifecycle.PENDING
 
+        /** Whether this context heard the peer's end of file; once, between activation and ending. */
+        var readClosedHeard: Boolean = false
+
         /** Whether this (outbound) context has heard its close; once. */
         var closeDelivered: Boolean = false
 
@@ -1082,6 +1096,11 @@ internal class DefaultPipeline(
         override fun propagateFlushComplete() {
             val nextCtx = findNextInbound() ?: return
             nextCtx.invokeOnFlushComplete()
+        }
+
+        override fun propagateReadClosed() {
+            if (heldBack(pipelineRef.readClosedCursor)) return
+            findNextInbound()?.deliverReadClosed(Mode.SWEEP)
         }
 
         override fun propagateInactive() {
@@ -1204,6 +1223,35 @@ internal class DefaultPipeline(
                     }
                 } finally {
                     pipelineRef.activeCursor = outer
+                }
+            }
+        }
+
+        /**
+         * The peer's end of file: once per context, only to a context that
+         * heard the activation and not the ending, and not once the
+         * descriptor is gone — then the ending is what there is to say.
+         */
+        fun deliverReadClosed(mode: Mode) {
+            if (lifecycle != Lifecycle.ACTIVE || readClosedHeard) return
+            if (pipelineRef.endingPhase == Phase.DELIVERED || !pipelineRef.transport.isOpen) return
+            val h = handler as? InboundHandler ?: return
+            readClosedHeard = true
+            val cursor = Cursor(this, mode)
+            val outer = pipelineRef.readClosedCursor
+            pipelineRef.readClosedCursor = cursor
+            pipelineRef.frame {
+                try {
+                    h.onReadClosed(this)
+                } catch (e: Throwable) {
+                    if (mode == Mode.REPLAY) {
+                        pipelineRef.logger.error(e) { "onReadClosed() replay threw for '$name'" }
+                    } else {
+                        propagateError(e)
+                        if (!cursor.propagated) propagateReadClosed()
+                    }
+                } finally {
+                    pipelineRef.readClosedCursor = outer
                 }
             }
         }
@@ -1468,6 +1516,23 @@ internal class DefaultPipeline(
         if (activationPhase != Phase.DELIVERED) return
         ctx.deliverActive(Mode.REPLAY)
         if (ctx.lifecycle != Lifecycle.ACTIVE || endingPhase == Phase.DELIVERED) return
+        // The peer's end of file, if the chain heard it and no running sweep
+        // will still bring it here.
+        if (readClosedPhase == Phase.DELIVERED && readClosedCursor?.stillReaches(ctx) != true) {
+            // Who owns the connection is asked again, and asked before the
+            // handler hears the event — the same order the sweep uses, and
+            // for the same reason: a handler that removes itself from inside
+            // its own callback must not answer for the chain it is joining.
+            // It was answered once when the sweep ran, and a handler arriving
+            // after that changes it: a chain that was empty then — nobody's,
+            // so nothing closed — is keel's now, and the descriptor is
+            // keel's to release. Asked here rather than left to the ending,
+            // because there is no ending coming; the close delivers one.
+            val joinedPipelineMode = pipelineModeNow?.invoke() ?: false
+            ctx.deliverReadClosed(Mode.REPLAY)
+            onReadClosedDelivered?.invoke(joinedPipelineMode)
+            if (ctx.lifecycle != Lifecycle.ACTIVE || endingPhase == Phase.DELIVERED) return
+        }
         // Not while a writability sweep still reaches the context: the sweep
         // delivers the value, and a replay ahead of it would make the sweep
         // stop at this context's own record, hiding the change from the
@@ -1479,8 +1544,8 @@ internal class DefaultPipeline(
     /**
      * Drains the pre-attach event journal onto the assembled chain: the
      * activation, the reads in arrival order, the batch boundary, the flush
-     * completions, the writability, the user events, the errors, and the
-     * ending if it was observed. Marked `DRAINED` at the *start*, so an add
+     * completions, the writability, the user events, the errors, the peer's
+     * end of file if it was observed, and the ending if it was observed. Marked `DRAINED` at the *start*, so an add
      * from inside a replayed event bypasses the journal — it is one-shot — and
      * a read arriving meanwhile goes straight through the head.
      *
@@ -1501,6 +1566,21 @@ internal class DefaultPipeline(
         }
         journal = Journal.DRAINED
         if (activationPhase == Phase.OBSERVED) startActivationSweep()
+        drainReadSide()
+        drainWriteSide()
+        drainUserEvents()
+        drainErrors()
+        // The peer's end of file last, after everything else the journal
+        // holds: in Pipeline mode its delivery closes the channel, and a
+        // flush completion, a user event or a reason journalled before the
+        // FIN was reported would otherwise be dropped by the ending it
+        // brings — the reason is owed to the handlers before the end.
+        if (readClosedPhase == Phase.OBSERVED && !ended) startReadClosedSweep()
+        if (endingPhase == Phase.OBSERVED) startEndingSweep()
+    }
+
+    /** The reads in arrival order, then the batch boundary. */
+    private fun drainReadSide() {
         while (pendingReads.isNotEmpty()) {
             val msg = pendingReads.removeFirst()
             if (ended) ReferenceCountUtil.safeRelease(msg) else head.invokeOnRead(msg)
@@ -1509,6 +1589,10 @@ internal class DefaultPipeline(
             pendingReadComplete = false
             if (!ended) head.invokeOnReadComplete()
         }
+    }
+
+    /** The flush completions, then the journalled writability if no real report came first. */
+    private fun drainWriteSide() {
         while (pendingFlushCompletions > 0) {
             pendingFlushCompletions--
             if (!ended) head.invokeOnFlushComplete()
@@ -1520,25 +1604,32 @@ internal class DefaultPipeline(
                 if (!ended) head.deliverWritability(writable, Mode.SWEEP)
             }
         }
+    }
+
+    private fun drainUserEvents() {
         while (pendingUserEvents.isNotEmpty()) {
             val event = pendingUserEvents.removeFirst()
             if (!ended) head.invokeOnUserEvent(event)
         }
+    }
+
+    /**
+     * The journalled errors. Gated by the ending's delivery alone, not by
+     * the descriptor: a reason is not data. The transport reports the
+     * failure that ends a connection before it reports the ending, and
+     * closes itself in between; the head stayed quiet about that failure
+     * because this drain was going to hand it over, so it is handed over,
+     * still before the end.
+     */
+    private fun drainErrors() {
         while (pendingErrors.isNotEmpty()) {
             val cause = pendingErrors.removeFirst()
-            // Gated by the ending's delivery alone, not by the descriptor: a
-            // reason is not data. The transport reports the failure that ends
-            // a connection before it reports the ending, and closes itself in
-            // between; the head stayed quiet about that failure because this
-            // drain was going to hand it over, so it is handed over, still
-            // before the end.
             if (endingPhase == Phase.DELIVERED) {
                 logger.warn(cause) { "A journalled error arrived after the connection ended; no handler can act on it" }
             } else {
                 head.invokeOnError(cause)
             }
         }
-        if (endingPhase == Phase.OBSERVED) startEndingSweep()
     }
 
     /**
@@ -1597,35 +1688,116 @@ internal class DefaultPipeline(
         // Stated here as well as in `deliverActive`'s own gate: no activation
         // on a connection that ended or whose descriptor is gone.
         if (activationPhase == Phase.OBSERVED && endingPhase == Phase.NONE && transport.isOpen) startActivationSweep()
+        if (readClosedPhase == Phase.OBSERVED && endingPhase == Phase.NONE && transport.isOpen) startReadClosedSweep()
         if (endingPhase == Phase.OBSERVED) startEndingSweep()
     }
+}
 
-    /** Why the pre-attach journal was released without being drained. */
-    private enum class JournalDiscard(val because: String) {
-        OWNING_CONTEXT_STOPPED(
-            "a handler was added, or a close requested, after this connection's owning context stopped, " +
-                "so the deferred replay would never have run",
-        ),
-        END_OF_LIFE("the channel's close released the transport before any inbound handler was installed"),
+// --- File-level state and helpers of DefaultPipeline (kept out of the class for its size) ---
+
+/** Whether the transport reported the event, and whether the sweep from the head has started. */
+private enum class Phase { NONE, OBSERVED, DELIVERED }
+
+/** The close walk: running while a close delivery that invoked a handler is on the stack. */
+private enum class CloseWalk { NONE, RUNNING, DONE }
+
+/**
+ * The pre-attach journal. `DRAIN_SCHEDULED`: a drain is queued on the
+ * dispatcher. `DRAIN_OWED`: an inline dispatcher, the drain runs when the
+ * outermost handler frame returns. `DISCARD_OWED`: the reads are already
+ * released, the lifecycle delivery is owed to the same epilogue.
+ */
+private enum class Journal { FILLING, DRAIN_SCHEDULED, DRAIN_OWED, DRAINED, DISCARD_OWED, DISCARDED }
+
+/** Why the pre-attach journal was released without being drained. */
+private enum class JournalDiscard(val because: String) {
+    OWNING_CONTEXT_STOPPED(
+        "a handler was added, or a close requested, after this connection's owning context stopped, " +
+            "so the deferred replay would never have run",
+    ),
+    END_OF_LIFE("the channel's close released the transport before any inbound handler was installed"),
+}
+
+/**
+ * Where a lifecycle sweep is: the context whose handler is being invoked,
+ * how (sweep or replay), and whether it has propagated yet. A handler
+ * installed below a sweep that has not propagated is reached by the
+ * sweep and not replayed to as well; a handler that throws without
+ * propagating has the event propagated on its behalf; a replayed event's
+ * default propagation is held back ([DefaultContext.heldBack]). Nested
+ * sweeps restore the outer cursor.
+ */
+private class Cursor(val ctx: DefaultPipeline.DefaultContext, val mode: DefaultPipeline.Mode) {
+    var propagated: Boolean = false
+
+    /** Whether this sweep has yet to reach [target]: it lies ahead of a handler that has not propagated. */
+    fun stillReaches(target: DefaultPipeline.DefaultContext): Boolean =
+        mode == DefaultPipeline.Mode.SWEEP && !propagated && ctx.leadsTo(target)
+}
+
+/**
+ * Per-pipeline cap on buffered inbound messages waiting for the
+ * first user [InboundHandler]. Sized to handle realistic codec
+ * setup races (HTTP/1 request line + headers + small body
+ * chunks) without unbounded growth if the user forgets to
+ * install a handler. Overflow drops the oldest queued message
+ * with a `WARN` log — protocol streams cannot recover from
+ * out-of-order delivery, so the WARN flags a likely user-side
+ * bug.
+ */
+private const val MAX_PRE_ATTACH_READS = 64
+
+/** Cap on buffered errors. Pathological error storms get truncated. */
+private const val MAX_PRE_ATTACH_ERRORS = 8
+
+/** Cap on buffered user events. */
+private const val MAX_PRE_ATTACH_USER_EVENTS = 16
+
+private fun insertBetween(
+    before: DefaultPipeline.DefaultContext,
+    new: DefaultPipeline.DefaultContext,
+    after: DefaultPipeline.DefaultContext,
+) {
+    before.next = new
+    new.prev = before
+    new.next = after
+    after.prev = new
+}
+
+private fun nameOf(head: DefaultPipeline.DefaultContext, handler: PipelineHandler): String {
+    var ctx: DefaultPipeline.DefaultContext? = head
+    while (ctx != null) {
+        if (ctx.handler === handler) return ctx.name
+        ctx = ctx.next
     }
+    return handler::class.simpleName ?: "unknown"
+}
 
-    private companion object {
-        /**
-         * Per-pipeline cap on buffered inbound messages waiting for the
-         * first user [InboundHandler]. Sized to handle realistic codec
-         * setup races (HTTP/1 request line + headers + small body
-         * chunks) without unbounded growth if the user forgets to
-         * install a handler. Overflow drops the oldest queued message
-         * with a `WARN` log — protocol streams cannot recover from
-         * out-of-order delivery, so the WARN flags a likely user-side
-         * bug.
-         */
-        private const val MAX_PRE_ATTACH_READS = 64
-
-        /** Cap on buffered errors. Pathological error storms get truncated. */
-        private const val MAX_PRE_ATTACH_ERRORS = 8
-
-        /** Cap on buffered user events. */
-        private const val MAX_PRE_ATTACH_USER_EVENTS = 16
+/**
+ * Validates inbound type chain between adjacent handlers.
+ *
+ * Skipped when either handler is not a [InboundHandler] or when
+ * either type is [Any] (opt-out default).
+ */
+private fun validateInboundTypeChain(
+    head: DefaultPipeline.DefaultContext,
+    prevHandler: PipelineHandler,
+    nextHandler: PipelineHandler,
+    nextName: String,
+) {
+    if (prevHandler !is InboundHandler) return
+    if (nextHandler !is InboundHandler) return
+    val produced = prevHandler.producedType
+    val accepted = nextHandler.acceptedType
+    if (produced == Any::class || accepted == Any::class) return
+    // KMP limitation: no reflective supertype traversal (Class.isAssignableFrom
+    // is JVM-only). Validate exact type match only. Subtype relationships
+    // (e.g., HttpObject → HttpRequest) are not detected; handlers should
+    // declare the exact type they produce/accept.
+    if (produced != accepted) {
+        throw PipelineTypeException(
+            "Type mismatch in pipeline: '${nameOf(head, prevHandler)}' produces " +
+                "${produced.simpleName} but '$nextName' accepts ${accepted.simpleName}",
+        )
     }
 }

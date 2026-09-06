@@ -53,7 +53,12 @@ public enum class IdleReadPolicy {
      * Surface peer FIN through `IoTransport.onReadClosed` even when
      * [PipelinedChannel.readEnabled] is `false`. The engine arms (or
      * keeps active) the underlying read primitive at all times, so peer
-     * close is observed within milliseconds. The cost is that bytes the
+     * close is observed within milliseconds. Where an engine observes the
+     * FIN without reading and reports it apart from the connection's end,
+     * it reports it only once nothing the peer sent is left unread: those
+     * bytes are the reader's, and a connection holding them with reads
+     * disabled hears of the FIN when its reads are enabled and drain to it.
+     * The cost is that bytes the
      * peer sends while `readEnabled = false` are consumed by the engine
      * (drained from kernel `rcvbuf` on engine-nio / engine-netty NIO
      * fallback, drained from the NWConnection framework receive buffer

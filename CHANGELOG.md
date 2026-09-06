@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `InboundHandler.onReadClosed` / `Pipeline.notifyReadClosed` / `PipelineHandlerContext.propagateReadClosed`
+  — the peer's end of file as its own event, journalled and replayed like the other inbound events;
+  `IoTransport.onClosed` — a transport reporting that it ended the connection itself;
+  `PipelinedChannel.endedByTransport` — whether the channel closed for an end it did not start, which is what a
+  `read()` finding the channel closed answers `-1` for rather than refusing as a misuse. Each is defaulted, so a
+  pipeline, context, handler, transport or channel written before them still compiles; a transport that extends
+  `AbstractIoTransport` also behaves as it did, and one implementing `IoTransport` directly answers the interface's
+  `false` and is read as telling the two ends apart (#1098)
+- `core`: `AbstractIoTransport.reportReadClosedOnce` / `reportEndOnce` / `readClosedAlreadyReported` /
+  `endAlreadyReported` — four `protected` members a transport gains for reporting the peer's end of file apart
+  from the connection's end, and for asking which has been reported (#1098)
 - `core`: `AbstractIoTransport` parks, sweeps and answers the callers waiting on a flush — one
   implementation for the three transports that wait this way, and eight `protected` members a
   subclass outside the tree gains with them (#1076)
@@ -66,6 +77,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
+  before the pipeline took it releases it, and so does one that finds the channel closed. A caller has nothing to
+  release in a `catch`; one that released the buffer itself there must stop. A write given nothing to write is
+  unchanged: it takes nothing and the buffer is still the caller's (#1098)
+- `core`: **BREAKING** (semantics, for a transport that opts in): where a transport reports the peer's end of file
+  apart from the connection's, `InboundHandler.onInactive` means the connection is over and the peer's end of file
+  is `onReadClosed`, after which the connection stays writable and in Pipeline mode the channel closes itself — so
+  an answer to a peer that half-closed is written from inside that callback. No engine in this tree opts in yet, so
+  what a handler hears is unchanged until its engine does (#1098)
+- `core`: **BREAKING** (semantics, for transports outside the tree): a transport reports the peer's end of file
+  with `reportReadClosedOnce` and every other end with `reportEndOnce`, and
+  `IoTransport.reportsEveryEndAsReadClosed` says which contract it speaks. `AbstractIoTransport` answers `true`, so
+  a transport extending it is read as it was until it overrides the property to `false`. The interface answers
+  `false`: a transport implementing `IoTransport` directly and still making one report for every end has that
+  report read as the peer's alone, so a reset or a failure reaches a chain as a half-close and no ending follows —
+  such a transport must override the property. `AbstractIoTransport.reportInactiveOnce` / `inactiveAlreadyReported`
+  are deprecated (#1098)
 - `codec-websocket`: `WsFrameDecoder` stops decoding once the connection has ended; bytes after it
   are not parsed into frames nobody can act on, and a frame left part-parsed is dropped (#1094)
 - `codec-http`: both HTTP decoders stop decoding once the connection has ended; bytes after
@@ -145,6 +173,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: a Coroutine-mode `read()` after the connection ended under the caller returns `-1` instead of throwing
+  `Channel is closed` — `PipelinedChannel.endedByTransport` says which it was. Reached once an engine reports that end
+  apart from the peer's; until then a read there throws as before (#1098)
+- `core`: a handler joining a chain after the peer's end of file was delivered to an empty one is told the
+  connection is over and is removed with it, rather than hearing only that the peer finished on a channel nothing
+  goes on to close — on the path a transport reaching it must opt into; no engine in this tree does yet (#1098)
+- `core`: a chain that had handlers when the peer's end of file was reported still releases the descriptor when
+  something empties it before the report reaches anyone — the connection is then nobody's, not its caller's; on the
+  same opt-in path (#1098)
 - `core`: a lifecycle sweep (activation, ending, close) no longer stops at a handler that throws —
   the throw travels as an error and the event still reaches the handlers past it, once (#1096)
 - `core`: a handler that removes itself from inside its own callback no longer cuts the walk passing

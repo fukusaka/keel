@@ -6,6 +6,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.internal.DefaultPipeline
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
@@ -26,7 +27,14 @@ import kotlin.coroutines.EmptyCoroutineContext
  *   transport.onRead               → pipeline.notifyRead(buf)
  *   transport.onReadComplete       → pipeline.notifyReadComplete()
  *   transport.onFlushComplete      → pipeline.notifyFlushComplete()
- *   transport.onReadClosed         → pipeline.notifyInactive() + (Pipeline-mode) close()
+ *   transport.onReadClosed         → pipeline.notifyReadClosed()
+ *                                    — the descriptor already gone → close()
+ *                                    — from a transport that reports every
+ *                                      end this way (each one in this tree)
+ *                                      → pipeline.notifyInactive() +
+ *                                        (Pipeline-mode) close()
+ *   pipeline delivered onReadClosed → (Pipeline-mode) close()
+ *   transport.onClosed             → close()
  *   transport.onConnectionFailure  → pipeline error path
  *   transport.onWritabilityChanged → pipeline.notifyWritabilityChanged()
  *   ensureBridge()                 → installs SuspendBridgeHandler (no read arming)
@@ -50,6 +58,28 @@ abstract class AbstractPipelinedChannel(
     override val allocator: BufferAllocator get() = transport.allocator
     override val isActive: Boolean get() = transport.isOpen
     override val isOpen: Boolean get() = transport.isOpen
+
+    /**
+     * Set on the owning context when the transport reports the connection's
+     * end, before the close that follows; read from the caller's thread by
+     * [read], which is why it is volatile — the same way [isOpen] reads the
+     * transport's own flag.
+     */
+    @Volatile
+    private var transportEnded = false
+
+    /**
+     * A read after the connection ended under the caller — a reset, a failed
+     * read or write, a reclamation, a stopped loop, after which the channel
+     * closed itself — is the end of file: the reader that was away for that
+     * moment is told what the parked one was, nothing more to read. A read
+     * after a close this side performed — the caller's own [close], a
+     * handler closing the channel from the chain, or the channel's own
+     * close after the peer's end of file in Pipeline mode — is the misuse
+     * the base refuses. The base decides from one reading of [isOpen]; this
+     * is the other half of that reading.
+     */
+    override val endedByTransport: Boolean get() = transportEnded
     override val isWritable: Boolean get() = transport.isOpen && transport.isWritable
     override val ioDispatcher: CoroutineDispatcher get() = transport.ioDispatcher
 
@@ -66,6 +96,33 @@ abstract class AbstractPipelinedChannel(
     override fun resumeReads() = transport.resumeReads()
 
     private var bridge: SuspendBridgeHandler? = null
+
+    /**
+     * Whether the chain had handlers when the transport reported the peer's
+     * end of file. The decision the delivery makes reads the chain as it is
+     * then, which is a whole loop task later for a report that had to wait
+     * for the journal's drain — and a chain emptied in between reads as a
+     * channel with a caller, when in fact it has nobody: not the caller, who
+     * never had a bridge, and no longer keel. Latched, since the report is
+     * made once.
+     */
+    private var chainHadHandlersAtReport = false
+
+    /**
+     * Whether this channel has a bridge, and so a caller of its own to close
+     * it — asked where the peer's end of file is its own event, which is
+     * where the question is new. The report a transport makes for every end
+     * is answered as it always was, from the field alone.
+     *
+     * Both readings are needed here and neither alone is right: [ensureBridge]
+     * names the field only after the add that installs it, and that add drains
+     * a journalled end of file to the chain in between — so the field is still
+     * empty for a delivery made from inside it. And a bridge taken out of the
+     * chain by name leaves the field naming it, on a channel that is still its
+     * caller's.
+     */
+    private val hasBridge: Boolean
+        get() = bridge != null || pipeline.get(PipelinedChannel.SUSPEND_BRIDGE_NAME) != null
 
     init {
         transport.onWritabilityChanged = { writable ->
@@ -115,21 +172,88 @@ abstract class AbstractPipelinedChannel(
             if (!pipeline.isEmpty) defaultPipeline.notifyTransportFailure(cause)
         }
         transport.onReadClosed = {
-            // Auto-close on peer-FIN only in Pipeline mode — a pipeline
-            // with user handlers and no [SuspendBridgeHandler]. There keel
-            // owns the connection lifecycle (no [Channel] handle is given
-            // to the caller), so the fd must be released here or it leaks
-            // in CLOSE-WAIT. A Coroutine-mode channel — a bridge is wired,
-            // or the pipeline is still empty before the lazy bridge — is
-            // the caller's resource: `read()` reports EOF as `-1` and the
-            // caller closes the [Channel]. Auto-closing it would be
-            // redundant, and would also sever a peer half-close (peer did
-            // `shutdown(SHUT_WR)` but can still receive a final response).
-            // Captured before `notifyInactive` in case a handler removes
-            // itself while handling it.
-            val pipelineMode = !pipeline.isEmpty && bridge == null
-            pipeline.notifyInactive()
+            if (transport.reportsEveryEndAsReadClosed) {
+                // A transport that has not been taught the difference: this
+                // one report is every way its connection could be over, so
+                // the channel answers it as it did before the event existed
+                // — the ending, and the close that a chain of its own has
+                // nobody else to perform.
+                // The field alone, exactly as it was read before the split.
+                // [hasBridge] answers a wider question and would close fewer
+                // channels than this transport's listener closed before the
+                // event existed — a bridge put in the chain by name, which
+                // this reading does not see, was Pipeline mode to it.
+                val pipelineMode = !pipeline.isEmpty && bridge == null
+                pipeline.notifyInactive()
+                if (pipelineMode) close()
+            } else if (!transport.isOpen) {
+                // The peer's end of file found the descriptor already gone —
+                // an engine that released it before reporting, a loop that
+                // stopped. There is no connection left to answer on, so what
+                // the chain is owed is the whole ending: the close delivers
+                // it, walks the handlers' close and removes them, which is
+                // where a handler gives back what it holds.
+                //
+                // Marked first, and only where this side did not choose the
+                // close the descriptor went with: a reader that was away for
+                // the moment reads the end of file, where the close alone
+                // would have it read its own close and be refused — but a
+                // caller that closed and then had a queued report land must
+                // still be told it closed.
+                if (!closeStartedHere && !defaultPipeline.closeReachedHead) transportEnded = true
+                close()
+            } else {
+                // Remembered for the decision the delivery makes: a chain with
+                // handlers when the report arrived is one keel was driving,
+                // and emptying it before the journalled report reaches anyone
+                // hands the connection to nobody rather than to a caller.
+                chainHadHandlersAtReport = chainHadHandlersAtReport || !pipeline.isEmpty
+                // The peer's end of file: the read side is over, the
+                // connection is not. The pipeline hears it as `onReadClosed`,
+                // not as the ending — a handler can still answer, and a
+                // Coroutine-mode reader still drains what was queued before
+                // it gets `-1`.
+                pipeline.notifyReadClosed()
+            }
+        }
+        defaultPipeline.pipelineModeNow = { !hasBridge && (!pipeline.isEmpty || chainHadHandlersAtReport) }
+        defaultPipeline.onReadClosedDelivered = { pipelineMode ->
+            // Auto-close on peer-FIN only in Pipeline mode — a chain with
+            // user handlers and no [SuspendBridgeHandler]. There keel owns
+            // the connection lifecycle (no [Channel] handle is given to the
+            // caller), so the fd must be released here or it leaks in
+            // CLOSE-WAIT; the close delivers the ending. A Coroutine-mode
+            // channel is the caller's resource: `read()` reports EOF as `-1`
+            // once the queue is drained and the caller closes the [Channel].
+            // Auto-closing it would be redundant, and would also sever a
+            // peer half-close (peer did `shutdown(SHUT_WR)` but can still
+            // receive a final response).
+            //
+            // Decided when the pipeline delivers the FIN, not when the
+            // transport reports it: a FIN that arrives before any handler is
+            // journalled and reaches the chain later, and which mode the
+            // channel is in is only known then. Read before the walk, though
+            // — a handler removing itself or installing a bridge from inside
+            // its own `onReadClosed` must not be able to answer for the
+            // report it is hearing, or a Pipeline-mode channel it emptied
+            // keeps its descriptor with nobody left to release it.
             if (pipelineMode) close()
+        }
+        transport.onClosed = {
+            // The transport ended the connection itself — a reset, a failed
+            // read or write, an idle reclamation, a stopped loop. Nothing is
+            // left to answer, in either mode: the close delivers the ending,
+            // walks the handlers' close, releases what the transport has
+            // not, and ends the pipeline's life. Idempotent, so a transport
+            // that closes its descriptor before reporting is not closed
+            // twice. Remembered first, so a reader that was away for this
+            // moment reads the end of file and not a misuse — and only for a
+            // connection this side had not already ended, since a report
+            // landing after a close this side performed (a timer that was
+            // still armed, a loop noticing later) would turn that caller's
+            // misuse into an end of file.
+            if (!closeStartedHere && !defaultPipeline.closeReachedHead) transportEnded = true
+            close()
         }
         // The channel is assembled and can carry traffic, so its pipeline is
         // told. Nothing sent this before, so `onActive` never ran on any
@@ -158,11 +282,11 @@ abstract class AbstractPipelinedChannel(
         pipeline.addLast(PipelinedChannel.SUSPEND_BRIDGE_NAME, handler)
         bridge = handler
         // A peer-close that arrived before the bridge was installed is not
-        // lost: [DefaultPipeline] replays the ending it already delivered to a
-        // late handler from inside the add, so the bridge observes EOF and
-        // the next `read(buf)` returns `-1`. The channel is left open for the
-        // caller to close — Coroutine-mode channels are not auto-closed (see
-        // the `onReadClosed` wiring).
+        // lost: it sits in the journal, whose drain this add triggers, and
+        // reaches the bridge from inside the add, so the bridge observes EOF
+        // and the next `read(buf)` returns `-1` once the queue is drained. The
+        // channel is left open for the caller to close — Coroutine-mode
+        // channels are not auto-closed (see the `onReadClosed` wiring).
         return handler
     }
 
@@ -177,6 +301,17 @@ abstract class AbstractPipelinedChannel(
     override suspend fun awaitClosed() {
         transport.awaitClosed()
     }
+
+    /**
+     * Set by [close] before it does anything, and read — together with the
+     * pipeline's own record of a close this side began — by the transport's
+     * report of the end: a connection this side is closing did not end under
+     * its caller, however the transport comes to say so afterwards. Both are
+     * needed: a close asked of the pipeline, walked to the head by a handler,
+     * or ended by one where it stands, never enters [close].
+     */
+    @Volatile
+    private var closeStartedHere = false
 
     /**
      * Closes this channel: drains a journal whose drain is still queued, tells
@@ -205,8 +340,11 @@ abstract class AbstractPipelinedChannel(
      * strictly before the hand-off, so the loop sees it gone — and the
      * handlers hear their close afterwards. Called after the loop has stopped,
      * the whole sequence runs in place on this thread, under the quiescence a
-     * stopped loop implies; a second closer on the same stopped loop finds the
-     * pipeline claimed and releases the transport only. A handler that must
+     * stopped loop implies; a second closer on the same stopped loop — another
+     * thread, or this pipeline's own delivery of a journalled FIN under the
+     * first closer's claim — finds the pipeline claimed and releases the
+     * transport only, so the closer that holds the claim walks with the
+     * descriptor already gone. A handler that must
      * write during its close — a TLS close_notify is the example — cannot rely
      * on getting one off the loop.
      *
@@ -216,6 +354,7 @@ abstract class AbstractPipelinedChannel(
      * find the finished steps done.
      */
     override fun close() {
+        closeStartedHere = true
         if (transport.inOwningContext) {
             defaultPipeline.closeOnOwningContext()
             return
