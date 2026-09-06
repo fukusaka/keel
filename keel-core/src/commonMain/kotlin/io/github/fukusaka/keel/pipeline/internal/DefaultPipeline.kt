@@ -144,8 +144,8 @@ internal class DefaultPipeline(
 
     /**
      * Whether this side has begun a close of its own — asked of the pipeline,
-     * or walked to the head by a handler, the head being where the transport
-     * is released. Read by the channel: a transport reporting the end after
+     * or walked to the head by a handler, or finished after the walk when a
+     * handler consumed it; those are the places the transport is released. Read by the channel: a transport reporting the end after
      * that is catching up with a close this side performed, not ending a
      * connection under its caller. Set when the close is asked for rather
      * than when it lands, since a handler writing its farewell from its own
@@ -741,6 +741,12 @@ internal class DefaultPipeline(
             startTailWalk()
         }
         if (transport.isOpen) {
+            // The other place this side releases the transport: a handler
+            // consumed the walk, so it never reached the head, and the close
+            // is finished here instead. Recorded for the same reason the head
+            // records it — a report arriving afterwards is the transport
+            // catching up, not the connection ending under its caller.
+            closeReachedHead = true
             try {
                 transport.close()
             } catch (e: Throwable) {

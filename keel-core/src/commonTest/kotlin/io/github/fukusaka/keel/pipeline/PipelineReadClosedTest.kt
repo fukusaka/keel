@@ -320,6 +320,42 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a close a handler consumed is still this side's`() = readClosedTest {
+        // A handler is allowed to end the close walk where it stands, and
+        // then the descriptor is released after the walk instead of at the
+        // head. That is still this side closing, so a report arriving
+        // afterwards is the transport catching up.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.pipeline.addLast(
+            "consumer",
+            object : DuplexHandler {
+                override fun onClose(ctx: PipelineHandlerContext) = Unit
+            },
+        )
+        f.pipeline.addLast(
+            "starter",
+            object : DuplexHandler {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    ctx.propagateClose()
+                }
+            },
+        )
+
+        // A close nobody asked the pipeline for: a handler starts the walk,
+        // and the one above it ends it, so the descriptor is released after
+        // the walk rather than at the head.
+        f.peerFin()
+        f.transportEnded()
+
+        assertFalse(f.channel.endedByTransport, "the walk it consumed was this side's close")
+        val dst = f.tracker.allocate(8)
+        assertFailsWith<IllegalStateException> { f.channel.read(dst) }
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
     fun `a close still walking to the head is already this side's`() = readClosedTest {
         // A handler writing its farewell from its own close can have the
         // transport refuse it and report the end before the walk reaches the
