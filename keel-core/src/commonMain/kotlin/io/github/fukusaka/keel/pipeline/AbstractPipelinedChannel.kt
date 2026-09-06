@@ -194,11 +194,13 @@ abstract class AbstractPipelinedChannel(
                 // it, walks the handlers' close and removes them, which is
                 // where a handler gives back what it holds.
                 //
-                // Marked first. This side chose nothing here — the connection
-                // was already gone — so a reader that was away for the moment
-                // reads the end of file, where the close alone would have it
-                // read its own close and be refused.
-                transportEnded = true
+                // Marked first, and only where this side did not choose the
+                // close the descriptor went with: a reader that was away for
+                // the moment reads the end of file, where the close alone
+                // would have it read its own close and be refused — but a
+                // caller that closed and then had a queued report land must
+                // still be told it closed.
+                if (!closeStartedHere && !defaultPipeline.closeReachedHead) transportEnded = true
                 close()
             } else {
                 // Remembered for the decision the delivery makes: a chain with

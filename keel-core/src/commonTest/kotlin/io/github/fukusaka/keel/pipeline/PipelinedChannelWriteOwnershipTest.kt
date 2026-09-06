@@ -71,6 +71,30 @@ class PipelinedChannelWriteOwnershipTest {
     }
 
     @Test
+    fun `a write the loop refuses after saying it could take it releases the buffer`() = runTest(timeout = 15.seconds) {
+        // A loop that answers "I can take this" and then throws on the
+        // hand-off leaves the message with nobody. The caller is told the
+        // same as for a loop that said it could not, so what it handed over
+        // is released rather than left outstanding.
+        val tracker = TrackingAllocator()
+        val transport = object : TestIoTransport(tracker) {
+            override val inOwningContext: Boolean get() = false
+            override val ioDispatcher: CoroutineDispatcher
+                get() = object : CoroutineDispatcher() {
+                    override fun dispatch(context: CoroutineContext, block: Runnable): Unit =
+                        throw UnsupportedOperationException("the loop refuses")
+                }
+        }
+        val channel = channelOver(transport)
+        val buf = tracker.allocate(8).also { it.writeByte(1) }
+
+        channel.pipeline.requestWrite(buf)
+
+        assertEquals(0, transport.written.size, "nothing was queued")
+        tracker.assertNoLeaks()
+    }
+
+    @Test
     fun `a write of nothing leaves the buffer with its caller`() = runTest(timeout = 15.seconds) {
         // The one outcome that takes nothing, because nothing was handed
         // anywhere: a caller that wrote a buffer it had not filled yet still

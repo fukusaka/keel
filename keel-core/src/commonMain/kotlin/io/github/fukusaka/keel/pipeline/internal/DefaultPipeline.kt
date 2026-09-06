@@ -630,7 +630,17 @@ internal class DefaultPipeline(
             return true
         }
         if (!transport.isOpen || !transport.canDispatchToOwningContext) return false
-        ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
+        try {
+            ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
+        } catch (refused: Throwable) {
+            // A loop that said it could take the hand-off and then would not.
+            // The caller is told the same as for one that said it could not,
+            // so what it handed over is released rather than left with
+            // nobody: the throw travels on, and the caller has nothing to
+            // release for it.
+            logger.warn(refused) { "the loop refused a hand-off it said it could take" }
+            return false
+        }
         return true
     }
 
