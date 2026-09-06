@@ -170,7 +170,7 @@ class PipelineReadClosedTest {
     }
 
     @Test
-    fun `a reader suspended at the watermark still drains everything after the FIN and the bridge resumes nothing`() = readClosedTest {
+    fun `a reader suspended at the watermark drains everything after the FIN and is resumed`() = readClosedTest {
         val f = Fixture()
         val bridge = f.channel.ensureBridge()
         f.transport.readEnabled = true
@@ -191,7 +191,12 @@ class PipelineReadClosedTest {
         }
         dst.release()
         assertEquals(5 * chunk, total, "every byte the peer sent before its FIN")
-        assertEquals(0, f.transport.resumeReadsCount, "nothing more will arrive, so the bridge does not resume reads")
+        assertEquals(
+            1,
+            f.transport.resumeReadsCount,
+            "nothing more will arrive, but resuming is what arms the read, and the arming starts the clock " +
+                "that reclaims a connection its caller never closes",
+        )
         assertFalse(bridge.readSuspendedByWatermark)
         assertEquals(0, f.tracker.outstandingCount)
     }
@@ -302,6 +307,99 @@ class PipelineReadClosedTest {
 
         assertEquals(-1, reading.await())
         dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `an end of file held for a chain is delivered by the discard when the loop has stopped`() = readClosedTest {
+        // The FIN arrives with nothing installed, so it is held. Then the owning
+        // context stops, and the first handler added is what notices that the drain
+        // which would have delivered it is never going to run. The discard is the
+        // only thing left that can: after it the event is no longer merely observed,
+        // so no later drain sweeps it.
+        val f = Fixture()
+        f.peerFin()
+        f.transport.owningContextAlive = false
+
+        f.pipeline.addLast("late", f.recorder("late"))
+
+        assertTrue(f.log.contains("late:readClosed"), "the discard delivers the end of file it was holding")
+        assertFalse(f.channel.isOpen, "and the chain that heard it had made the connection keel's")
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a close a handler walked to the head is this side's`() = readClosedTest {
+        // Nobody asked the pipeline for this close: a handler starts the walk from
+        // its own callback and it runs all the way to the head, which is where the
+        // transport is released. A report arriving afterwards is it catching up.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.pipeline.addLast(
+            "starter",
+            object : DuplexHandler {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    ctx.propagateClose()
+                }
+            },
+        )
+
+        f.peerFin()
+        f.transportEnded()
+
+        assertFalse(f.channel.endedByTransport, "the walk that reached the head was this side's close")
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a handler installed below a running sweep hears the end of file from the sweep`() = readClosedTest {
+        // A handler joining below a sweep that has not propagated is the sweep's to
+        // reach, not the replay's: a replay holds its propagation back, so the
+        // handlers past it would hear the event from neither.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.pipeline.addLast("tailward", f.recorder("tailward"))
+        f.pipeline.addBefore(
+            "tailward",
+            "installer",
+            object : InboundHandler {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    ctx.pipeline.addAfter("installer", "joiner", f.recorder("joiner"))
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+
+        f.peerFin()
+
+        assertTrue(f.log.contains("joiner:readClosed"), "the handler installed mid-sweep hears it")
+        assertTrue(f.log.contains("tailward:readClosed"), "and so does the one already below it")
+        f.channel.close()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a handler that throws on the replayed end of file keeps the throw to itself`() = readClosedTest {
+        // A replay is to the joining handler alone — the handlers below heard the
+        // event when it swept the chain — so its throw is logged and nothing is
+        // carried on for it. In the sweep both are: the error travels and the event
+        // still reaches the handlers past the thrower.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.pipeline.addLast("below", f.recorder("below"))
+        f.peerFin()
+        assertTrue(f.log.contains("below:readClosed"), "premise: the chain heard it in the sweep")
+
+        f.pipeline.addFirst(
+            "thrower",
+            object : InboundHandler {
+                override fun onReadClosed(ctx: PipelineHandlerContext): Unit = throw IllegalStateException("boom")
+            },
+        )
+
+        assertFalse(f.log.contains("below:error"), "a replay's throw is logged, not propagated as an error")
+        assertTrue(f.channel.isOpen, "and a channel with a caller of its own is still the caller's")
+        f.channel.close()
         assertEquals(0, f.tracker.outstandingCount)
     }
 
@@ -664,6 +762,25 @@ class PipelineReadClosedTest {
             },
         )
         assertTrue(passedOn.channel.isOpen, "passing it on delivers nothing and closes nothing")
+    }
+
+    @Test
+    fun `an end of file that finds the descriptor gone is an end under the caller`() = readClosedTest {
+        // This side chose nothing: the connection was already gone when the
+        // report arrived. The close that follows is the channel's answer to
+        // that, not a close its caller asked for, so a reader that was away
+        // for the moment is owed the end of file.
+        val f = Fixture()
+        f.channel.ensureBridge()
+        f.transport.close()
+
+        f.peerFin()
+
+        assertTrue(f.channel.endedByTransport, "the connection ended under the caller, whatever closed after")
+        val dst = f.tracker.allocate(8)
+        assertEquals(-1, f.channel.read(dst))
+        dst.release()
+        assertEquals(0, f.tracker.outstandingCount)
     }
 
     @Test

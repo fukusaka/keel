@@ -3,12 +3,18 @@ package io.github.fukusaka.keel.pipeline
 import io.github.fukusaka.keel.buf.BufferAllocator
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.logging.Logger
+import io.github.fukusaka.keel.logging.PrintLogger
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * A witness that the peer's end of file can be added to these interfaces
@@ -141,6 +147,67 @@ class PreSplitImplementorsCompileTest {
         override fun propagateFlush() = Unit
 
         override fun propagateClose() = Unit
+    }
+
+    /**
+     * A channel that answers the interface's own default for whether the
+     * connection ended under its caller — which is the answer any channel
+     * outside this tree gets, and which decides whether a read after a close
+     * is refused or answered with the end of file.
+     */
+    private class DefaultingChannel(private val transport: IoTransport) : PipelinedChannel {
+        override val pipeline: Pipeline get() = throw UnsupportedOperationException()
+        override val logger: Logger get() = PrintLogger("defaulting")
+        override val allocator: BufferAllocator get() = DefaultAllocator
+        override val ioDispatcher: CoroutineDispatcher get() = Dispatchers.Unconfined
+        override val isActive: Boolean get() = transport.isOpen
+        override val isOpen: Boolean get() = transport.isOpen
+        override val isWritable: Boolean get() = false
+        override var readEnabled: Boolean = false
+
+        override fun ensureBridge(): SuspendBridgeHandler = throw UnsupportedOperationException()
+
+        override fun shutdownOutput() = Unit
+
+        override suspend fun awaitFlushComplete() = Unit
+
+        override suspend fun awaitClosed() = Unit
+
+        override fun close() = Unit
+    }
+
+    @Test
+    fun `a channel that does not say refuses every read after a close`() = runTest(timeout = 15.seconds) {
+        val transport = PreSplitTransport()
+        val channel: PipelinedChannel = DefaultingChannel(transport)
+        assertFalse(channel.endedByTransport, "a channel that cannot tell says it cannot")
+
+        val dst = DefaultAllocator.allocate(8)
+        assertFailsWith<IllegalStateException> { channel.read(dst) }
+        dst.release()
+    }
+
+    /** A handler from before the event, which hears the events it always did. */
+    private class PreSplitHandler(val log: MutableList<String>) : InboundHandler {
+        override fun onActive(ctx: PipelineHandlerContext) {
+            log.add("active")
+        }
+
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+            log.add("read")
+        }
+
+        override fun onInactive(ctx: PipelineHandlerContext) {
+            log.add("inactive")
+        }
+    }
+
+    @Test
+    fun `a handler written before it passes the event on without knowing it`() {
+        val log = mutableListOf<String>()
+        val handler: InboundHandler = PreSplitHandler(log)
+        handler.onReadClosed(PreSplitContext())
+        assertEquals(emptyList(), log, "the event is one a pre-split handler passes on rather than hears")
     }
 
     @Test
