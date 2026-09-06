@@ -64,8 +64,9 @@ internal class HeadHandler(
             // Reaching here at all means the drain ran inside this call, so
             // no loop containment saw it and no other frame will name it. The
             // refusal these handlers are getting is the one exception: they
-            // have it, or a scheduled replay is bringing it, and naming it
-            // here would report the same thing twice. A journal with no
+            // have it, a scheduled replay is bringing it, or -- the ending
+            // already delivered -- the pipeline logged it in their place, and
+            // naming it here would report the same thing twice. A journal with no
             // replay scheduled is not that, and neither is a refusal raised
             // by anything but the transport, nor a channel with nothing
             // installed -- there no frame below keeps a record, so this one
