@@ -175,9 +175,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `core`: a chain that had handlers when the peer's end of file was reported still releases the descriptor when
   something empties it before the report reaches anyone — the connection is then nobody's, not its caller's (#1098)
 - `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
-  before the pipeline took it releases it, and so does one that finds the channel closed or is given nothing to
-  write. A caller has nothing to release in a `catch`; one that released the buffer itself on those paths must
-  stop (#1098)
+  before the pipeline took it releases it, and so does one that finds the channel closed. A caller has nothing to
+  release in a `catch`; one that released the buffer itself there must stop. A write given nothing to write is
+  unchanged: it takes nothing and the buffer is still the caller's (#1098)
 - `core`: a lifecycle sweep (activation, ending, close) no longer stops at a handler that throws —
   the throw travels as an error and the event still reaches the handlers past it, once (#1096)
 - `core`: a handler that removes itself from inside its own callback no longer cuts the walk passing
