@@ -77,6 +77,17 @@ interface Channel : AutoCloseable {
      * [IoBuf.unsafeBuffer] (JVM) directly to the OS read syscall
      * for zero-copy I/O.
      *
+     * The peer's end of file is `-1`, returned once everything it sent has
+     * been read. The channel is still open and writable then — the peer
+     * half-closed — and closing it is the caller's; a channel with handlers
+     * that hears that end of file before its first read is a Pipeline-mode
+     * channel to its pipeline at that moment and closes itself instead.
+     * Once the connection has ended — a reset, a failed read or write, an
+     * idle reclamation, a stopped loop — the channel is closed, a read is
+     * `-1`, and a [write] or [flush] that finds it closed throws
+     * [IllegalStateException]; one already past that check is discarded
+     * with the transport. Nothing can be sent.
+     *
      * @return number of bytes read, or -1 on EOF.
      */
     suspend fun read(buf: IoBuf): Int
@@ -92,7 +103,10 @@ interface Channel : AutoCloseable {
      * The transport releases the buffer after [flush] completes (or on teardown).
      * If the caller wants to keep a reference alive (for example, to write the
      * same data to multiple channels), it must call [IoBuf.retain] **before**
-     * passing the buffer in.
+     * passing the buffer in. The transfer holds in every outcome: a write
+     * that throws — the channel is closed, [IllegalStateException]; the
+     * caller was cancelled — has released [buf] or handed it on, and the
+     * caller has nothing left to release.
      *
      * @return number of bytes written to the outbound buffer.
      */

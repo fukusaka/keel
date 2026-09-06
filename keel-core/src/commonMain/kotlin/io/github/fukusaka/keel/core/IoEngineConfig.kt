@@ -116,7 +116,10 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  *                          without per-segment bookkeeping.
  * @property idleTimeoutMillis Per-connection idle (no-progress) timeout in
  *                          milliseconds: if no bytes are read from a connection
- *                          for this long, the connection is closed. This is the
+ *                          for this long while it is waiting to read, the
+ *                          connection is closed; once the peer's end of file
+ *                          was reported there is nothing to wait for and the
+ *                          timer is gone with the read side. This is the
  *                          transport-level, protocol-agnostic time-axis defence
  *                          against slowloris / stalled peers — a peer that
  *                          connects then sends nothing (or trickles bytes below
@@ -128,10 +131,8 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  *                          (per-client) override it; captured per connection at
  *                          accept / connect and fixed for that connection's life.
  *
- *                          **Currently honoured by the epoll and kqueue engines.
- *                          The other engines (io_uring / nio / netty / nodejs /
- *                          nwconnection) ignore it for now; it is wired into them
- *                          in follow-up changes.**
+ *                          Honoured by every engine: each provides the timer
+ *                          the transport base arms and cancels.
  * @property flushCoalescing When `true` (default), the write path coalesces
  *                          per-frame `requestFlush` calls that land in the same
  *                          EventLoop tick into a single gathered send (one

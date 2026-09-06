@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `InboundHandler.onReadClosed` / `Pipeline.notifyReadClosed` / `PipelineHandlerContext.propagateReadClosed`
+  — the peer's end of file as its own event, journalled and replayed like the other inbound events;
+  `IoTransport.onClosed` — a transport reporting that it ended the connection itself;
+  `PipelinedChannel.endedByTransport` — whether the channel closed for that end (#1098)
 - `core`: `AbstractIoTransport` parks, sweeps and answers the callers waiting on a flush — one
   implementation for the three transports that wait this way, and eight `protected` members a
   subclass outside the tree gains with them (#1076)
@@ -66,6 +70,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `core`: **BREAKING** (semantics): `InboundHandler.onInactive` now means the connection is over — a peer's end of
+  file is `onReadClosed`, after which the connection stays writable, and in Pipeline mode the channel closes itself,
+  so an answer to a peer that half-closed is written from inside that callback (#1098)
+- `core`: **BREAKING** (source, for transports outside the tree): `AbstractIoTransport.reportInactiveOnce` /
+  `inactiveAlreadyReported` are deprecated aliases of `reportEndOnce` / `endAlreadyReported`; a transport that tells
+  the peer's end of file apart reports that one with `reportReadClosedOnce`. Every engine in this tree still reports
+  every end as the end, so the peer's end of file reaches a pipeline only once its engine has been taught to tell
+  them apart (#1098)
 - `codec-websocket`: `WsFrameDecoder` stops decoding once the connection has ended; bytes after it
   are not parsed into frames nobody can act on, and a frame left part-parsed is dropped (#1094)
 - `codec-http`: both HTTP decoders stop decoding once the connection has ended; bytes after
@@ -145,6 +157,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: a Coroutine-mode `read()` after the connection ended under the caller returns `-1` instead of throwing
+  `Channel is closed`, decided from one reading of the channel's state so an end landing inside the call is the end
+  of file too — `PipelinedChannel.endedByTransport` says which it was (#1098)
+- `core`: `Channel.write` takes the buffer in every outcome — a write that throws before the pipeline took it
+  releases it, so a caller has nothing to release in a `catch` and nothing to release twice (#1098)
+- `core`: the read-idle timeout ends with the peer's end of file, so a reader draining what came before it is not
+  reclaimed, and reads re-enabled after it arm no timer (#1098)
 - `core`: a lifecycle sweep (activation, ending, close) no longer stops at a handler that throws —
   the throw travels as an error and the event still reaches the handlers past it, once (#1096)
 - `core`: a handler that removes itself from inside its own callback no longer cuts the walk passing

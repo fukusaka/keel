@@ -124,7 +124,29 @@ interface Pipeline {
      */
     fun notifyFlushComplete(): Pipeline
 
-    /** Notifies the pipeline that the channel is now inactive. */
+    /**
+     * Notifies the pipeline that the peer has closed its side for writing.
+     *
+     * The read side is over — no read follows — and the connection is not:
+     * it is still open and still writable, so a handler can answer a peer
+     * that half-closed. Delivered once, as [InboundHandler.onReadClosed],
+     * between the activation and the ending; journalled ahead of the first
+     * inbound handler like the other inbound events, replayed to a handler
+     * added later, and not delivered once the ending was or the transport
+     * is gone. The channel raises it from the transport's own report, and
+     * in Pipeline mode then closes, since nobody else owns the connection
+     * there; a handler that raises it from inside the chain (a TLS
+     * close_notify) does not close the channel.
+     */
+    fun notifyReadClosed(): Pipeline
+
+    /**
+     * Notifies the pipeline that the connection has ended.
+     *
+     * The end, not the peer's end of file — that is [notifyReadClosed]. No
+     * inbound event follows, nothing can be written. Delivered once, as
+     * [InboundHandler.onInactive]; a close of the channel delivers it too.
+     */
     fun notifyInactive(): Pipeline
 
     /** Notifies the pipeline that an error has occurred. */

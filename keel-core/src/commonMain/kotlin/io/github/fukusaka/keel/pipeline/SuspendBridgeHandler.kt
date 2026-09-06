@@ -17,7 +17,9 @@ import kotlin.coroutines.resume
  * **Inbound (push → pull)**:
  * - [onRead]: buffers incoming [IoBuf] in an internal queue
  * - [read]: suspends until data is available, then dequeues and bulk-copies
- * - [onInactive]: signals EOF, drains and releases queued buffers, so [read] returns -1
+ * - [onReadClosed]: signals EOF and keeps the queue — [read] hands out what
+ *   the peer sent before it closed, then returns -1
+ * - [onInactive]: the end — releases whatever is still queued, so [read] returns -1
  *
  * **Outbound (direct propagation)**:
  * - [write]: delegates to [PipelineHandlerContext.propagateWrite]
@@ -34,7 +36,7 @@ import kotlin.coroutines.resume
  *            App → flush()    → propagateFlush → handlers → HEAD → IoTransport
  * ```
  *
- * **Thread safety**: all methods — [onRead], [onInactive], [read], [write], [flush] —
+ * **Thread safety**: all methods — [onRead], [onReadClosed], [onInactive], [read], [write], [flush] —
  * must be called on the same EventLoop thread. The handler is not thread-safe.
  * The suspend continuation is resumed on the EventLoop thread via dispatch.
  *
@@ -100,10 +102,10 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
         private set
 
     /**
-     * Whether the bridge has observed pipeline inactivation. Exposed for
-     * unit tests of [AbstractPipelinedChannel]'s deferred-close path; user
-     * code should observe EOF via [read] returning `-1` instead of polling
-     * this flag.
+     * Whether the bridge has observed the end of the read side — the peer's
+     * end of file or the connection's end. Exposed for unit tests of
+     * [AbstractPipelinedChannel]'s wiring; user code should observe EOF via
+     * [read] returning `-1` instead of polling this flag.
      */
     internal val isEof: Boolean get() = eof
 
@@ -155,6 +157,30 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
         }
     }
 
+    /**
+     * The peer's end of file: no more data will be queued, but what is
+     * queued is the peer's last bytes and the reader gets them. Only the
+     * EOF is recorded and a parked reader woken, so its next `read` drains
+     * the queue and returns `-1` after it. A read the watermark had
+     * suspended is not re-armed: nothing more will arrive on it, and the
+     * channel's read arming would only re-report the same end of file.
+     */
+    override fun onReadClosed(ctx: PipelineHandlerContext) {
+        eof = true
+        readSuspendedByWatermark = false
+        val cont = readCont
+        if (cont != null) {
+            readCont = null
+            cont.resume(Unit)
+        }
+        ctx.propagateReadClosed()
+    }
+
+    /**
+     * The connection's end: nothing queued can be read any more — a
+     * caller that closed did not want it, and a transport that ended the
+     * connection cannot hand it over — so it is released here.
+     */
     override fun onInactive(ctx: PipelineHandlerContext) {
         end()
         ctx.propagateInactive()
@@ -197,7 +223,8 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
      * **Single reader only**: only one coroutine may be suspended in [read]
      * at a time. Concurrent calls overwrite the pending continuation.
      *
-     * @return number of bytes read, or -1 on EOF (peer closed / notifyInactive).
+     * @return number of bytes read, or -1 on EOF — after the peer's end of
+     *   file once the queue is drained, and at once after the connection's end.
      */
     suspend fun read(buf: IoBuf): Int {
         // Wait for data or EOF.

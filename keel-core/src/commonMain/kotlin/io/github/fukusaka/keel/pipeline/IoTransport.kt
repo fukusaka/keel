@@ -17,7 +17,8 @@ import kotlinx.coroutines.CoroutineDispatcher
  * Read path (transport → pipeline):
  *   readEnabled = true → platform event registration
  *   → data arrives → onRead(buf)
- *   → EOF/error   → onReadClosed()
+ *   → EOF (peer FIN)              → onReadClosed()
+ *   → error / reset / idle / stop → onClosed()
  *
  * Write path (pipeline → transport):
  *   write(buf) → flush() → platform syscall
@@ -32,10 +33,12 @@ import kotlinx.coroutines.CoroutineDispatcher
  *
  * ## Read Path
  *
- * Set [onRead] and [onReadClosed] callbacks, then set [readEnabled] to
- * `true` to start the read loop. The transport handles buffer allocation,
- * platform syscalls (or async callbacks), EAGAIN retry, and automatic
- * re-arming internally. EOF and errors are reported via [onReadClosed].
+ * Set [onRead], [onReadClosed] and [onClosed] callbacks, then set
+ * [readEnabled] to `true` to start the read loop. The transport handles
+ * buffer allocation, platform syscalls (or async callbacks), EAGAIN retry,
+ * and automatic re-arming internally. The peer's end of file is reported
+ * via [onReadClosed]; a connection the transport ends itself — an error, a
+ * reset, an idle reclamation, a stopped loop — via [onClosed].
  *
  * ## Write Backpressure
  *
@@ -129,18 +132,56 @@ interface IoTransport {
     }
 
     /**
-     * Callback invoked when the read side is closed (EOF, error, or
-     * connection reset).
+     * Callback invoked when the peer has closed its side for writing — an
+     * orderly end of file, and nothing else.
      *
-     * After this callback, no further [onRead] calls will occur.
-     * The transport does NOT call [close] — the callback owner decides
-     * whether to close the full connection.
+     * After this callback no further [onRead] call occurs; the connection is
+     * still open and still writable, so the owner can answer a peer that
+     * half-closed. At most once. The transport does NOT call [close] — the
+     * callback owner decides whether the whole connection ends.
+     *
+     * A connection that ends for any other reason — a reset, a failed read
+     * or write, an idle reclamation, a loop that stopped — is reported by
+     * [onClosed] instead, not here: the two are different facts to a
+     * listener (one can still be answered, the other cannot), and a transport
+     * that folded them together left its listener unable to tell a peer that
+     * finished sending from a peer that is gone.
      */
     var onReadClosed: (() -> Unit)?
 
     /**
+     * Callback invoked when this transport has ended the connection on its
+     * own: a reset or a failed read, a write the platform refused, an idle
+     * timeout that reclaimed it, a loop that stopped under it. At most once,
+     * and only for an end the transport forced — a close the caller asked
+     * for is not reported, since the caller already knows.
+     *
+     * After this callback nothing is delivered and nothing can be written;
+     * the owner's only remaining move is [close], which the transport does
+     * not call for it. May follow [onReadClosed] — a peer that finished
+     * sending and then went away, or a half-closed connection the idle
+     * timeout reclaimed — and may arrive without it. A refused send is
+     * reported to [onConnectionFailure] first, with the reason.
+     */
+    var onClosed: (() -> Unit)?
+
+    /**
+     * Whether this transport still reports every end the way it did before
+     * the peer's end of file became an event of its own: one report, on
+     * [onReadClosed], for a FIN and for a reset and for a failure alike.
+     *
+     * A channel reads such a report as the ending it was, so a transport
+     * that has not been taught the difference behaves exactly as it did —
+     * and one that has (it reports the peer's end of file with
+     * `reportReadClosedOnce` and every other end with `reportEndOnce`)
+     * leaves this `false` and its channel keeps the two apart. It goes when
+     * the last transport has learned.
+     */
+    val reportsEveryEndAsReadClosed: Boolean get() = false
+
+    /**
      * Callback invoked when this transport ends the connection over a
-     * refused send, with that refusal — before [onReadClosed], so a listener
+     * refused send, with that refusal — before [onClosed], so a listener
      * hears the reason while it can still act on it, and at most once. The
      * other failures that end a connection do so without it, and deliberately.
      * One kind has usually just come from the handler chain, so sending it
@@ -153,9 +194,9 @@ interface IoTransport {
      * not reported here even when the closing drain meets a dead peer: the
      * caller asked for the queue to be discarded, and a peer found gone
      * while discarding is the outcome it asked for. Nor is a refusal met
-     * after [onReadClosed] already went out — the peer can end the
-     * connection first — since a reason delivered after the end reaches
-     * nobody who can act on it; the flush wait is still answered with it.
+     * after [onClosed] already went out — the connection can end first —
+     * since a reason delivered after the end reaches nobody who can act on
+     * it; the flush wait is still answered with it.
      *
      * The default accessors store nothing, so a transport that never raises
      * [io.github.fukusaka.keel.core.RefusedWriteException] is not obliged to
@@ -168,8 +209,8 @@ interface IoTransport {
 
     /**
      * Hook invoked by [io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel]
-     * after [onRead], [onReadClosed], and [onWritabilityChanged] have all
-     * been wired up. Engines that pre-arm their read primitive when the
+     * after [onRead], [onReadClosed], [onClosed] and [onWritabilityChanged]
+     * have all been wired up. Engines that pre-arm their read primitive when the
      * caller selects [io.github.fukusaka.keel.core.IdleReadPolicy.DETECT_PEER_CLOSE]
      * should arm here (rather than in `init { }`) so any inbound bytes
      * the platform delivers via the read primitive's first event always
@@ -416,9 +457,14 @@ interface IoTransport {
     /**
      * Closes the transport and releases all resources.
      *
-     * Releases pending write buffers, deregisters events, and closes
-     * the underlying fd/socket/connection. Implementations must be
-     * idempotent (use [isOpen] flag to guard).
+     * A flush already requested lands first — as much of it as the socket
+     * takes at once — before the descriptor closes: a handler that answers
+     * the peer's end of file from inside [onReadClosed] writes and flushes
+     * on a channel that closes itself right after the call, and that answer
+     * is the close's to deliver. What was only queued, never flushed, is
+     * released unsent. Deregisters events and closes the underlying
+     * fd/socket/connection. Implementations must be idempotent (use
+     * [isOpen] flag to guard).
      */
     fun close()
 
