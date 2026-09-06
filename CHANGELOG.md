@@ -82,11 +82,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is `onReadClosed`, after which the connection stays writable and in Pipeline mode the channel closes itself — so
   an answer to a peer that half-closed is written from inside that callback. No engine in this tree opts in yet, so
   what a handler hears is unchanged until its engine does (#1098)
-- `core`: **BREAKING** (source, for transports outside the tree): `AbstractIoTransport.reportInactiveOnce` /
-  `inactiveAlreadyReported` are deprecated, and a transport reports the peer's end of file with
-  `reportReadClosedOnce` and every other end with `reportEndOnce`. `IoTransport.reportsEveryEndAsReadClosed` says
-  which contract a transport speaks — `false` on the interface, `true` on `AbstractIoTransport`, which every
-  pre-split transport extends, so one is read as it was until it overrides the property to `false` (#1098)
+- `core`: **BREAKING** (semantics, for transports outside the tree): a transport reports the peer's end of file
+  with `reportReadClosedOnce` and every other end with `reportEndOnce`, and
+  `IoTransport.reportsEveryEndAsReadClosed` says which contract it speaks. `AbstractIoTransport` answers `true`, so
+  a transport extending it is read as it was until it overrides the property to `false`. The interface answers
+  `false`: a transport implementing `IoTransport` directly and still making one report for every end has that
+  report read as the peer's alone, so a reset or a failure reaches a chain as a half-close and no ending follows —
+  such a transport must override the property. `AbstractIoTransport.reportInactiveOnce` / `inactiveAlreadyReported`
+  are deprecated (#1098)
 - `codec-websocket`: `WsFrameDecoder` stops decoding once the connection has ended; bytes after it
   are not parsed into frames nobody can act on, and a frame left part-parsed is dropped (#1094)
 - `codec-http`: both HTTP decoders stop decoding once the connection has ended; bytes after
