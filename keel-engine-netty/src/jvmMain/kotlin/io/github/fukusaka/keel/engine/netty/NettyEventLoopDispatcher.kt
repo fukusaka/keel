@@ -42,9 +42,9 @@ import kotlin.coroutines.CoroutineContext
  * [EventLoop.inEventLoop]). The coroutine runtime then runs the block
  * inline, avoiding a task-queue round-trip on every
  * `withContext(ioDispatcher)` hop whose caller was already resumed on
- * the EventLoop thread by an inbound callback. This matches the
- * behaviour other EventLoop dispatchers in keel implement natively
- * (epoll / kqueue / io_uring / nio / nwconnection).
+ * the EventLoop thread by an inbound callback. The NWConnection queue
+ * dispatcher elides the same way; the readiness (epoll / kqueue), io_uring
+ * and nio loops do not override `isDispatchNeeded` and always queue.
  *
  * **Implementation**: [dispatch] forwards to
  * [EventLoop.execute][io.netty.util.concurrent.EventExecutor.execute]
