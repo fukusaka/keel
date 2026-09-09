@@ -47,7 +47,9 @@
 #   KEEL_GATE_TIMEOUT      seconds         (default: 900)
 #   KEEL_GATE_JVMARGS      daemon args     (default: -Xmx6g -XX:MaxMetaspaceSize=1g)
 #   KEEL_GATE_NO_SYNC      set to 1 to skip rsync (re-run on an already-synced tree)
-#   KEEL_GATE_RSYNC_DELETE set to 1 to add --delete --delete-excluded. Plain -az
+#   KEEL_GATE_RSYNC_DELETE set to 1 to add --delete (never --delete-excluded,
+#                          which would delete .git, the build output and
+#                          benchmark/results from the remote). Plain -az
 #                          leaves a file the local tree deleted in place on the
 #                          remote, where it can still be compiled. Use it when a
 #                          remote-only compile error names a file you removed.
@@ -83,6 +85,18 @@ jvmTest linuxX64Test jsNodeTest dokkaGeneratePublicationHtml"
 # named. A Linux host needs nothing.
 MAC_PRELUDE='source ~/.sdkman/bin/sdkman-init.sh; export PATH=/opt/homebrew/bin:/opt/homebrew/sbin:$PATH;'
 
+# The prelude above is sent to the remote; it does not put timeout on this
+# machine's PATH. timeout is not in a base macOS install (it comes with
+# coreutils), and without this shim a passing gate would report FAIL because
+# the small ssh calls that read the result would fail with command not found.
+# The bound is a convenience on those calls, not a correctness requirement, so
+# running without it is better than refusing to run.
+if command -v timeout >/dev/null 2>&1; then
+    bounded() { timeout "$@"; }
+else
+    bounded() { shift; "$@"; }
+fi
+
 run_one() {
     local label="$1" host="$2" dir="$3" tasks="$4" prelude="$5"
     local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
@@ -114,11 +128,14 @@ run_one() {
     echo "--- gradle (timeout ${TIMEOUT}s)"
     # The whole remote command is one quoted string so the local shell does not
     # expand $PATH, $?, or the log paths. --stop is followed by ';' rather than
-    # '&&' so that having no daemon to stop does not skip the gate. The archive
-    # is taken whether or not the gate passed, before anything can rerun.
-    # ${dir} is deliberately unquoted so the remote shell expands a leading ~.
-    # Quoting it (either way) makes cd fail on the default path.
-    ssh "$host" "cd ${dir} && ${prelude} \
+    # '&&' so that having no daemon to stop does not skip the gate; the cd uses
+    # '|| exit' rather than '&&' for the opposite reason, because '&&' would
+    # bind only as far as the first ';' and let the gate run in the login
+    # directory. ${dir} is deliberately unquoted so the remote shell expands a
+    # leading ~. Quoting it (either way) makes cd fail on the default path.
+    # The archive is taken whether or not the gate passed, before a rerun can
+    # overwrite the XML.
+    ssh "$host" "cd ${dir} || exit 111; ${prelude} \
         ./gradlew --stop >/dev/null 2>&1; \
         timeout ${TIMEOUT} ./gradlew --continue -Ptls -Pbenchmark \
             -Dorg.gradle.jvmargs='${JVMARGS}' \
@@ -131,30 +148,43 @@ run_one() {
     local sshrc=$?
 
     # The remote command ends in `true`, so a non-zero status here is the ssh
-    # itself failing (a dropped connection, a refused auth). Without this the
-    # gate would go on to read the exit file and report whatever the previous
-    # run left there — a green from a run that never happened. The stamped
-    # names above make a stale read impossible too; this catches the case where
-    # the connection never carried the command at all.
-    if [ $sshrc -ne 0 ]; then
-        echo "--- ${label}: FAIL (ssh exited ${sshrc}; the gate did not run)" >&2
+    # itself failing (a dropped connection, a refused auth). Ask for this run's
+    # exit file anyway: a connection that drops during the teardown of a long
+    # run has still produced a verdict, and throwing it away costs another full
+    # run on both hosts. Only an empty answer means the gate did not run. This
+    # cannot resurrect an older run's verdict, because the file's name carries
+    # this run's timestamp — that is what makes reading it here safe.
+    local code
+    code="$(bounded 60 ssh "$host" "cat '${exitf}' 2>/dev/null" </dev/null)"
+
+    if [ -z "$code" ]; then
+        echo "--- ${label}: FAIL (ssh exited ${sshrc}, no verdict on the remote; the gate did not run)" >&2
         return 1
     fi
+    [ $sshrc -ne 0 ] && echo "--- ${label}: ssh exited ${sshrc} after the run; reading its verdict" >&2
 
-    local code
-    code="$(timeout 60 ssh "$host" "cat '${exitf}' 2>/dev/null" </dev/null)"
-    code="${code:-255}"
+    # Ask whether the archive exists rather than asserting it does. tar's own
+    # failure goes to the log, and the log is only shown on FAIL, so on a pass
+    # an unwritable or full /tmp would otherwise be announced as an archive.
+    local archnote
+    archnote="$(bounded 60 ssh "$host" "test -s '${arch}' && echo '${arch}'" </dev/null)"
+    archnote="${archnote:-<archiving failed, see the log>}"
 
     if [ "$code" -eq 0 ]; then
-        echo "--- ${label}: PASS (log ${host}:${log}, test-results ${host}:${arch})"
+        echo "--- ${label}: PASS (log ${host}:${log}, test-results ${host}:${archnote})"
         return 0
     fi
 
-    echo "--- ${label}: FAIL (exit ${code}$([ "$code" -eq 124 ] && echo ' = timeout, daemon hang'))" >&2
+    # 124 is the remote timeout firing. Say that, and no more: with --continue a
+    # failing run keeps going through the remaining task groups, so an overrun
+    # is as likely to be a long failing run as the daemon hang it used to mean.
+    echo "--- ${label}: FAIL (exit ${code}$([ "$code" -eq 124 ] && echo " = hit the ${TIMEOUT}s timeout"))" >&2
     # Bounded: a host wedged badly enough to fire the timeout above can leave
-    # this one hanging too, and then the failure prints nothing at all.
-    timeout 60 ssh "$host" "tail -40 '${log}'" </dev/null >&2
-    echo "--- test-results archived on ${host}: ${arch}" >&2
+    # this one hanging too, and then the failure prints nothing at all. 120
+    # lines rather than 40 because --continue reports every failed task group,
+    # and the first of them is the one 40 lines would cut off.
+    bounded 60 ssh "$host" "tail -120 '${log}'" </dev/null >&2
+    echo "--- test-results on ${host}: ${archnote}" >&2
     echo "--- full log on ${host}: ${log}" >&2
     return 1
 }
