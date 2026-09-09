@@ -396,12 +396,16 @@ private class BenchmarkRoutingHandler : InboundHandler {
                                 // round-trip is sufficient.
                                 msg.rsv1 && deflate != null -> {
                                     val inflated = deflate.decompress(msg.payload)
-                                    val recompressed = deflate.compress(inflated)
+                                    // payloadChunks, not payload: the frame owns
+                                    // the pooled chunks and its encoder writes
+                                    // them one by one, so the compressed bytes
+                                    // are never flattened and copied back into
+                                    // an IoBuf. Same hand-off production makes.
                                     WsFrame(
                                         fin = true,
                                         rsv1 = true,
                                         opcode = msg.opcode,
-                                        payload = recompressed,
+                                        payloadChunks = deflate.compressToChunks(inflated),
                                     )
                                 }
                                 // RSV1=0 — client sent the message
