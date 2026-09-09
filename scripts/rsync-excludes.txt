@@ -1,0 +1,26 @@
+# Shared by scripts/gate.sh and scripts/bench-sync.sh.
+# Build output (the remote builds its own), local-only documents, and the
+# per-host native benchmark artefacts, which are not portable between hosts.
+.git
+build
+*/build
+.gradle
+.kotlin
+.idea
+node_modules
+website
+.claude
+.wrangler
+CLAUDE.md
+design.md
+plan.md
+status.md
+research.md
+history.md
+daily
+benchmark/rust-bench/target
+benchmark/go-bench/go-bench
+benchmark/zig-bench/zig-out
+benchmark/swift-bench/.build
+benchmark/results
+benchmark/results-summary
