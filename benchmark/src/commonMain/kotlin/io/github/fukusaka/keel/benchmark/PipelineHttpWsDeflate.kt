@@ -2,6 +2,7 @@ package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.buf.IoBufAccumulator
+import io.github.fukusaka.keel.buf.IoBufChunks
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
@@ -68,11 +69,20 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
      * Compresses one outbound message payload (RFC 7692 §7.2.1): raw
      * DEFLATE with `Z_SYNC_FLUSH`, then strips the trailing `00 00 FF FF`
      * sync marker. The session is reset afterwards (no context takeover).
+     *
+     * Returns the pooled chunks the codec wrote into, not a `ByteArray`:
+     * the caller hands them to `WsFrame.payloadChunks`, which the frame
+     * encoder writes one by one, so the compressed payload is never copied.
+     * Flattening here and letting the encoder copy it back into an `IoBuf`
+     * is what production stopped doing, and the point of this class is to
+     * measure what production runs. **The returned chunks are owned by the
+     * caller** — hand them to a `WsFrame` (whose encoder releases them) or
+     * release them.
      */
-    fun compress(payload: ByteArray): ByteArray {
-        val deflated = runEncoder(payload)
+    fun compressToChunks(payload: ByteArray): IoBufChunks {
+        val chunks = runEncoderChunks(payload)
         encoder.reset()
-        return deflated
+        return chunks
     }
 
     /**
@@ -96,11 +106,14 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
      * writes straight into pooled chunks (`NEED_OUTPUT` seals a full chunk),
      * so nothing is copied per drain and no byte is boxed.
      * [IoBufAccumulator.trimTail] strips the RFC 7692 `00 00 FF FF`
-     * `Z_SYNC_FLUSH` marker. Mirrors keel-server-websocket's
-     * `WsPermessageDeflate.runEncoderChunks` — the bench measures the shape
-     * production actually runs.
+     * `Z_SYNC_FLUSH` marker. Statement-for-statement the loop in
+     * keel-server-websocket's `WsPermessageDeflate.runEncoderChunks`.
+     *
+     * Releases the accumulator on the throw path only: [IoBufAccumulator.toIoBufChunks]
+     * transfers the chunks **without** clearing them, so a `finally` here
+     * would release every chunk a second time after the hand-off.
      */
-    private fun runEncoder(input: ByteArray): ByteArray {
+    private fun runEncoderChunks(input: ByteArray): IoBufChunks {
         val src = allocator.allocate(input.size.coerceAtLeast(1))
         val acc = IoBufAccumulator(allocator, OUTPUT_CHUNK)
         try {
@@ -119,10 +132,19 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
                 acc.commit()
             }
             acc.commit()
+            // A NoFlush stream terminated by flush() always emits at least the
+            // four marker bytes, so trimTail's fail-fast guard is unreachable
+            // with the zlib backends. If a backend ever broke that contract the
+            // throw would skip compressToChunks' reset and leave the encoder
+            // mid-message; production poisons the session for that case, which
+            // a bench engine that would already be reporting a broken workload
+            // does not need to mirror.
             acc.trimTail(SYNC_TAIL.size)
-            return acc.toByteArray()
-        } finally {
+            return acc.toIoBufChunks()
+        } catch (t: Throwable) {
             acc.release()
+            throw t
+        } finally {
             src.release()
         }
     }
@@ -152,8 +174,10 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
             }
             acc.commit()
             return acc.toByteArray()
-        } finally {
+        } catch (t: Throwable) {
             acc.release()
+            throw t
+        } finally {
             src.release()
         }
     }
