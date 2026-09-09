@@ -74,7 +74,8 @@
 
 set -uo pipefail
 
-MODE="${1:?usage: gate.sh <mac|linux|both>}"
+MODE="${1-}"
+[ -n "$MODE" ] || { echo "usage: gate.sh <mac|linux|both>" >&2; exit 2; }
 TIMEOUT="${KEEL_GATE_TIMEOUT:-900}"
 JVMARGS="${KEEL_GATE_JVMARGS:--Xmx6g -XX:MaxMetaspaceSize=1g}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -112,6 +113,43 @@ else
     bounded() { shift; "$@"; }
 fi
 
+# Invariant 1 applies to the environment as much as to the arguments. A value
+# this script does not understand is refused, never reinterpreted as false:
+# KEEL_GATE_RSYNC_DELETE=true used to be read as "no", so the rerun that was
+# meant to test the stale-file hypothesis silently did not, and passed.
+require_bool() {
+    local name="$1" val="${2:-0}"
+    case "$val" in
+        0|1|"") ;;
+        *) echo "ERROR: ${name} must be 0 or 1 (got '${val}')" >&2; exit 2 ;;
+    esac
+}
+# A timeout of 0 means "no limit" to timeout(1), so it would remove the bound
+# while the line that reports it still printed a number. Non-numeric is worse:
+# it is rejected by the remote, after a full-tree rsync.
+require_positive_int() {
+    local name="$1" val="$2"
+    case "$val" in
+        ''|*[!0-9]*) echo "ERROR: ${name} must be a positive integer (got '${val}')" >&2; exit 2 ;;
+    esac
+    [ "$val" -gt 0 ] || { echo "ERROR: ${name} must be greater than 0 (0 disables the bound)" >&2; exit 2; }
+}
+
+# Fail a stalled connect rather than inheriting the operating system's. The
+# local bound on the long call is the remote timeout plus room for the sync,
+# the archive and the teardown; it is the backstop for a stall the remote
+# timeout cannot see, such as a connection that never finishes establishing.
+SSH_OPTS="-o ConnectTimeout=30"
+
+# Validated here rather than where the variables are read, because these are
+# function calls and the functions are defined above this line. Putting the
+# call next to the assignment cost a "command not found" that, with no set -e,
+# let the run start with the value that had just failed to be checked.
+require_positive_int KEEL_GATE_TIMEOUT "$TIMEOUT"
+require_bool KEEL_GATE_NO_SYNC "${KEEL_GATE_NO_SYNC:-}"
+require_bool KEEL_GATE_RSYNC_DELETE "${KEEL_GATE_RSYNC_DELETE:-}"
+
+
 run_one() {
     local label="$1" host="$2" dir="$3" tasks="$4" prelude="$5"
     local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
@@ -136,7 +174,11 @@ run_one() {
         echo "--- rsync${del:+ (--delete)}"
         # ${del[@]+...} rather than "${del[@]}": bash 3.2, which is what /bin/bash
         # is on macOS, treats an empty array as unset under set -u and aborts.
-        rsync -az ${del[@]+"${del[@]}"} --exclude-from="$EXCLUDES" "${REPO_ROOT}/" "${host}:${dir}/" || {
+        # rsync is a remote call too, and was the one with a bound at neither
+        # end: a host wedged in the state this gate exists to detect left it
+        # waiting with only "--- rsync" on screen.
+        bounded "$TIMEOUT" rsync -az -e "ssh ${SSH_OPTS}" ${del[@]+"${del[@]}"} \
+            --exclude-from="$EXCLUDES" "${REPO_ROOT}/" "${host}:${dir}/" || {
             echo "ERROR: rsync to ${host} failed" >&2; return 1; }
     fi
 
@@ -149,14 +191,20 @@ run_one() {
     # directory. ${dir} is deliberately unquoted so the remote shell expands a
     # leading ~. Quoting it (either way) makes cd fail on the default path.
     # The archive is taken whether or not the gate passed, before a rerun can
-    # overwrite the XML.
-    ssh "$host" "cd ${dir} || exit 111; ${prelude} \
+    # overwrite the XML. The cleanup path ends in a slash: /tmp is a symlink on
+    # a macOS host, and find without one does not descend it, so the cleanup
+    # silently removed nothing there. -L is not the fix — BSD find refuses
+    # -delete when symlinks are followed (measured on the macOS gate host,
+    # where it also differs from another machine on the same OS version). Its
+    # errors go to the log rather than /dev/null, because a cleanup that fails
+    # quietly is how this one went unnoticed.
+    bounded "$((TIMEOUT * 2 + 300))" ssh $SSH_OPTS "$host" "cd ${dir} || exit 111; ${prelude} \
         timeout ${TIMEOUT} ./gradlew --stop >/dev/null 2>&1; \
         timeout ${TIMEOUT} ./gradlew --continue -Ptls -Pbenchmark \
             -Dorg.gradle.jvmargs='${JVMARGS}' \
             ${tasks} > '${log}' 2>&1 </dev/null; \
         echo \$? > '${exitf}'; \
-        find /tmp -maxdepth 1 -name 'keel-gate-${label}-*' -mtime +7 -delete 2>/dev/null; \
+        find /tmp/ -maxdepth 1 -name 'keel-gate-${label}-*' -mtime +7 -delete >> '${log}' 2>&1; \
         find . -path '*/build/test-results/*' -name '*.xml' -print0 2>/dev/null \
             | tar czf '${arch}' --null -T - >> '${log}' 2>&1 \
             || echo 'gate.sh: archiving test-results failed (see above)' >> '${log}'; \
@@ -171,7 +219,7 @@ run_one() {
     # cannot resurrect an older run's verdict, because the file's name carries
     # this run's timestamp — that is what makes reading it here safe.
     local code
-    code="$(bounded 60 ssh "$host" "cat '${exitf}' 2>/dev/null" </dev/null)"
+    code="$(bounded 60 ssh $SSH_OPTS "$host" "cat '${exitf}' 2>/dev/null" </dev/null)"
 
     if [ -z "$code" ]; then
         # Empty means one of two things and the difference matters: the gate
@@ -190,11 +238,20 @@ run_one() {
     # failure goes to the log, and the log is only shown on FAIL, so on a pass
     # an unwritable or full /tmp would otherwise be announced as an archive.
     local archnote
-    archnote="$(bounded 60 ssh "$host" "test -s '${arch}' && echo '${arch}'" </dev/null)"
-    archnote="${archnote:-<archiving failed, see the log>}"
+    archnote="$(bounded 60 ssh $SSH_OPTS "$host" "test -s '${arch}' && echo '${arch}'" </dev/null)"
+    if [ -n "$archnote" ]; then
+        archnote="${host}:${archnote}"
+    else
+        archnote="not written — see the log"
+    fi
+
+    case "$code" in
+        ''|*[!0-9]*) echo "--- ${label}: FAIL (the remote wrote '${code}' where its exit code should be)" >&2
+                     code=255 ;;
+    esac
 
     if [ "$code" -eq 0 ]; then
-        echo "--- ${label}: PASS (log ${host}:${log}, test-results ${host}:${archnote})"
+        echo "--- ${label}: PASS (log ${host}:${log}, test-results ${archnote})"
         return 0
     fi
 
@@ -206,10 +263,10 @@ run_one() {
     # this one hanging too, and then the failure prints nothing at all. 120
     # lines rather than 40 because --continue reports every failed task group,
     # and the first of them is the one 40 lines would cut off.
-    bounded 60 ssh "$host" "tail -120 '${log}'" </dev/null >&2
+    bounded 60 ssh $SSH_OPTS "$host" "tail -120 '${log}'" </dev/null >&2
     # Named, not characterised: a detekt or compile failure produces no
     # test-results XML at all, so this archive can legitimately be empty.
-    echo "--- test-results archive on ${host}: ${archnote}" >&2
+    echo "--- test-results archive: ${archnote}" >&2
     echo "--- full log on ${host}: ${log}" >&2
     return 1
 }

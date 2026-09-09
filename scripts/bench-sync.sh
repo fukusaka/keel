@@ -52,13 +52,14 @@
 
 set -uo pipefail
 
-MODE="${1:?usage: bench-sync.sh <mac|linux> [--native-refs]}"
+MODE="${1-}"
+[ -n "$MODE" ] || { echo "usage: bench-sync.sh <mac|linux> [--native-refs]" >&2; exit 2; }
 # A mistyped --native-refs used to be ignored, and the run then reported ready
 # while the rust and go binaries stayed as they were — the sweep measures the
 # old ones and says nothing. Silent skips are what the note at the top of this
 # file is about, so refuse instead.
 if [ $# -gt 2 ] || { [ $# -eq 2 ] && [ "$2" != "--native-refs" ]; }; then
-    echo "usage: bench-sync.sh <mac|linux> [--native-refs] (unexpected argument: ${2:-})" >&2; exit 2
+    echo "usage: bench-sync.sh <mac|linux> [--native-refs] (unexpected argument: ${3:-${2:-}})" >&2; exit 2
 fi
 NATIVE_REFS=0
 [ "${2:-}" = "--native-refs" ] && NATIVE_REFS=1
@@ -82,6 +83,30 @@ else
     bounded() { shift; "$@"; }
 fi
 
+# Same rules as gate.sh, for the same reason: a value this script does not
+# understand is refused, never quietly read as "no", and a timeout of 0 means
+# no limit to timeout(1) rather than the limit the run reports.
+require_bool() {
+    local name="$1" val="${2:-0}"
+    case "$val" in
+        0|1|"") ;;
+        *) echo "ERROR: ${name} must be 0 or 1 (got '${val}')" >&2; exit 2 ;;
+    esac
+}
+require_positive_int() {
+    local name="$1" val="$2"
+    case "$val" in
+        ''|*[!0-9]*) echo "ERROR: ${name} must be a positive integer (got '${val}')" >&2; exit 2 ;;
+    esac
+    [ "$val" -gt 0 ] || { echo "ERROR: ${name} must be greater than 0 (0 disables the bound)" >&2; exit 2; }
+}
+
+SSH_OPTS="-o ConnectTimeout=30"
+
+require_positive_int KEEL_BENCH_TIMEOUT "$TIMEOUT"
+require_bool KEEL_BENCH_NO_SYNC "${KEEL_BENCH_NO_SYNC:-}"
+require_bool KEEL_BENCH_RSYNC_DELETE "${KEEL_BENCH_RSYNC_DELETE:-}"
+
 case "$MODE" in
     mac)   : "${KEEL_BENCH_MAC_HOST:?KEEL_BENCH_MAC_HOST is required (ssh target that builds macosArm64)}"
            HOST="$KEEL_BENCH_MAC_HOST"; DIR="${KEEL_BENCH_MAC_DIR:-~/prj/keel-work/keel}"
@@ -98,7 +123,8 @@ if [ "${KEEL_BENCH_NO_SYNC:-0}" != "1" ]; then
     echo "--- rsync → ${HOST}${del:+ (--delete)}"
     # ${del[@]+...} rather than "${del[@]}": bash 3.2, which is what /bin/bash
     # is on macOS, treats an empty array as unset under set -u and aborts.
-    rsync -az ${del[@]+"${del[@]}"} --exclude-from="$EXCLUDES" "${REPO_ROOT}/" "${HOST}:${DIR}/" || {
+    bounded "$TIMEOUT" rsync -az -e "ssh ${SSH_OPTS}" ${del[@]+"${del[@]}"} \
+        --exclude-from="$EXCLUDES" "${REPO_ROOT}/" "${HOST}:${DIR}/" || {
         echo "ERROR: rsync to ${HOST} failed" >&2; exit 1; }
 fi
 
@@ -106,8 +132,11 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="/tmp/keel-bench-sync-${MODE}-${STAMP}.log"
 
 echo "--- build (native + classpath + js), timeout ${TIMEOUT}s, log ${HOST}:${LOG}"
-# Nothing else removes these, and every run leaves one.
-bounded 60 ssh "$HOST" "find /tmp -maxdepth 1 -name 'keel-bench-sync-${MODE}-*' -mtime +7 -delete 2>/dev/null" </dev/null || true
+# Nothing else removes these, and every run leaves one. The trailing slash on
+# /tmp matters: it is a symlink on a macOS host and find does not descend one
+# given as a bare path operand, while -L makes BSD find refuse -delete outright.
+# Errors are not silenced — a cleanup nobody can see fail is one that does not run.
+bounded 60 ssh $SSH_OPTS "$HOST" "find /tmp/ -maxdepth 1 -name 'keel-bench-sync-${MODE}-*' -mtime +7 -delete" </dev/null || true
 # The same guards gate.sh needs, for the same reasons: --stop first, because a
 # daemon left by an earlier run on this host (the gate passes the same jvmargs,
 # so it is the same daemon) carries its accumulated heap into this build; a
@@ -117,14 +146,14 @@ bounded 60 ssh "$HOST" "find /tmp -maxdepth 1 -name 'keel-bench-sync-${MODE}-*' 
 # 4g in gradle.properties, which OOMs the compiler on this build. ${DIR} is
 # unquoted so the remote shell expands a leading ~, and uses '|| exit' rather
 # than '&&' so a failed cd cannot let the build run in the login directory.
-ssh "$HOST" "cd ${DIR} || exit 111; ${PRELUDE} \
+bounded "$((TIMEOUT * 2 + 300))" ssh $SSH_OPTS "$HOST" "cd ${DIR} || exit 111; ${PRELUDE} \
     timeout ${TIMEOUT} ./gradlew --stop >/dev/null 2>&1; \
     timeout ${TIMEOUT} ./gradlew --no-configuration-cache -Pbenchmark \
         -Dorg.gradle.jvmargs='${JVMARGS}' \
         ${NATIVE_TASK} :benchmark:writeClasspath :benchmark:compileProductionExecutableKotlinJs \
         > '${LOG}' 2>&1 </dev/null" </dev/null || {
     echo "ERROR: gradle build failed on ${HOST} (log ${HOST}:${LOG})" >&2
-    bounded 60 ssh "$HOST" "tail -120 '${LOG}'" </dev/null >&2
+    bounded 60 ssh $SSH_OPTS "$HOST" "tail -120 '${LOG}'" </dev/null >&2
     exit 1; }
 
 if [ "$NATIVE_REFS" = "1" ]; then
@@ -136,15 +165,15 @@ if [ "$NATIVE_REFS" = "1" ]; then
     # but because they wait: cargo blocks on the package-cache lock held by a
     # concurrent build or left by a killed one, and a fetch can stall. Without
     # a bound that wait is unbounded and its output sits on the ssh pipe.
-    ssh "$HOST" "cd ${DIR}/benchmark/rust-bench || exit 111; ${PRELUDE} \
+    bounded "$((TIMEOUT + 300))" ssh $SSH_OPTS "$HOST" "cd ${DIR}/benchmark/rust-bench || exit 111; ${PRELUDE} \
         timeout ${TIMEOUT} cargo build --release >> '${LOG}' 2>&1 </dev/null" </dev/null || {
         echo "ERROR: cargo build failed on ${HOST} (log ${HOST}:${LOG})" >&2
-        bounded 60 ssh "$HOST" "tail -120 '${LOG}'" </dev/null >&2
+        bounded 60 ssh $SSH_OPTS "$HOST" "tail -120 '${LOG}'" </dev/null >&2
         exit 1; }
-    ssh "$HOST" "cd ${DIR}/benchmark/go-bench || exit 111; ${PRELUDE} \
+    bounded "$((TIMEOUT + 300))" ssh $SSH_OPTS "$HOST" "cd ${DIR}/benchmark/go-bench || exit 111; ${PRELUDE} \
         timeout ${TIMEOUT} go build -o go-bench . >> '${LOG}' 2>&1 </dev/null" </dev/null || {
         echo "ERROR: go build failed on ${HOST} (log ${HOST}:${LOG})" >&2
-        bounded 60 ssh "$HOST" "tail -120 '${LOG}'" </dev/null >&2
+        bounded 60 ssh $SSH_OPTS "$HOST" "tail -120 '${LOG}'" </dev/null >&2
         exit 1; }
 fi
 
