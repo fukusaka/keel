@@ -1,7 +1,7 @@
 package io.github.fukusaka.keel.benchmark
 
 import io.github.fukusaka.keel.buf.DefaultAllocator
-import io.github.fukusaka.keel.buf.IoBuf
+import io.github.fukusaka.keel.buf.IoBufAccumulator
 import io.github.fukusaka.keel.compression.CodecStatus
 import io.github.fukusaka.keel.compression.DecoderOptions
 import io.github.fukusaka.keel.compression.DecoderSession
@@ -72,7 +72,7 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
     fun compress(payload: ByteArray): ByteArray {
         val deflated = runEncoder(payload)
         encoder.reset()
-        return stripSyncTail(deflated)
+        return deflated
     }
 
     /**
@@ -81,7 +81,7 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
      * inflates. The session is reset afterwards (no context takeover).
      */
     fun decompress(payload: ByteArray): ByteArray {
-        val inflated = runDecoder(payload + SYNC_TAIL)
+        val inflated = runDecoder(payload)
         decoder.reset()
         return inflated
     }
@@ -92,87 +92,71 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
     }
 
     /**
-     * Drives [encoder] over [input] with the standard keel compression
-     * SPI loop: `update` until `NEED_INPUT`, then `finish` until
-     * `FINISHED`, draining [output] on every `NEED_OUTPUT`. Mirrors the
-     * loop shape of keel-server-websocket's `WsPermessageDeflate`.
+     * Drives [encoder] over [input] into an [IoBufAccumulator]: the codec
+     * writes straight into pooled chunks (`NEED_OUTPUT` seals a full chunk),
+     * so nothing is copied per drain and no byte is boxed.
+     * [IoBufAccumulator.trimTail] strips the RFC 7692 `00 00 FF FF`
+     * `Z_SYNC_FLUSH` marker. Mirrors keel-server-websocket's
+     * `WsPermessageDeflate.runEncoderChunks` — the bench measures the shape
+     * production actually runs.
      */
     private fun runEncoder(input: ByteArray): ByteArray {
         val src = allocator.allocate(input.size.coerceAtLeast(1))
-        val output = allocator.allocate(OUTPUT_CHUNK)
-        val collected = ArrayList<Byte>(input.size)
+        val acc = IoBufAccumulator(allocator, OUTPUT_CHUNK)
         try {
             if (input.isNotEmpty()) src.writeByteArray(input, 0, input.size)
             while (true) {
-                when (encoder.update(src, output)) {
-                    CodecStatus.NEED_OUTPUT -> drain(output, collected)
+                when (encoder.update(src, acc.writableChunk())) {
+                    CodecStatus.NEED_OUTPUT -> acc.commit()
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update must not return FINISHED")
                 }
             }
-            drain(output, collected)
+            acc.commit()
             // Z_SYNC_FLUSH boundary (NOT finish): ends in 00 00 FF FF, stream
             // stays open. flush() returns NEED_INPUT once fully drained.
-            while (encoder.flush(output) != CodecStatus.NEED_INPUT) {
-                drain(output, collected)
+            while (encoder.flush(acc.writableChunk()) != CodecStatus.NEED_INPUT) {
+                acc.commit()
             }
-            drain(output, collected)
+            acc.commit()
+            acc.trimTail(SYNC_TAIL.size)
+            return acc.toByteArray()
         } finally {
+            acc.release()
             src.release()
-            output.release()
         }
-        return collected.toByteArray()
     }
 
-    /** Drives [decoder] to completion over [input]; same SPI loop as [runEncoder]. */
+    /**
+     * Drives [decoder] to completion over [input]; same accumulator loop as
+     * [runEncoder]. The `00 00 FF FF` boundary is written straight into the
+     * input buffer rather than concatenated onto a fresh `ByteArray`.
+     */
     private fun runDecoder(input: ByteArray): ByteArray {
-        val src = allocator.allocate(input.size.coerceAtLeast(1))
-        val output = allocator.allocate(OUTPUT_CHUNK)
-        val collected = ArrayList<Byte>(input.size * INFLATE_GUESS_RATIO)
+        val src = allocator.allocate(input.size + SYNC_TAIL.size)
+        val acc = IoBufAccumulator(allocator, OUTPUT_CHUNK)
         try {
             if (input.isNotEmpty()) src.writeByteArray(input, 0, input.size)
+            src.writeByteArray(SYNC_TAIL, 0, SYNC_TAIL.size)
             while (true) {
-                when (decoder.update(src, output)) {
-                    CodecStatus.NEED_OUTPUT -> drain(output, collected)
+                when (decoder.update(src, acc.writableChunk())) {
+                    CodecStatus.NEED_OUTPUT -> acc.commit()
                     CodecStatus.NEED_INPUT -> break
                     CodecStatus.FINISHED -> error("update must not return FINISHED")
                 }
             }
-            drain(output, collected)
+            acc.commit()
             // flush() (NOT finish): drain this frame's plaintext, stream open.
-            while (decoder.flush(output) != CodecStatus.NEED_INPUT) {
-                drain(output, collected)
+            while (decoder.flush(acc.writableChunk()) != CodecStatus.NEED_INPUT) {
+                acc.commit()
             }
-            drain(output, collected)
+            acc.commit()
+            return acc.toByteArray()
         } finally {
+            acc.release()
             src.release()
-            output.release()
         }
-        return collected.toByteArray()
     }
-
-    /** Copies all readable bytes out of [output] into [dest] and clears it. */
-    private fun drain(output: IoBuf, dest: ArrayList<Byte>) {
-        val n = output.readableBytes
-        if (n == 0) return
-        val tmp = ByteArray(n)
-        output.readByteArray(tmp, 0, n)
-        for (b in tmp) dest.add(b)
-        output.clear()
-    }
-
-    private fun ArrayList<Byte>.toByteArray(): ByteArray = ByteArray(size) { this[it] }
-
-    /**
-     * Removes the RFC 7692 §7.2.1 `00 00 FF FF` sync-flush tail from a
-     * `Z_SYNC_FLUSH`-terminated DEFLATE stream.
-     */
-    private fun stripSyncTail(deflated: ByteArray): ByteArray =
-        if (deflated.size >= SYNC_TAIL.size && deflated.takeLast(SYNC_TAIL.size) == SYNC_TAIL.toList()) {
-            deflated.copyOf(deflated.size - SYNC_TAIL.size)
-        } else {
-            deflated
-        }
 
     companion object {
         /**
@@ -182,11 +166,8 @@ internal class PipelineHttpWsDeflate : AutoCloseable {
          */
         private val SYNC_TAIL: ByteArray = byteArrayOf(0x00, 0x00, 0xFF.toByte(), 0xFF.toByte())
 
-        /** Output IoBuf size for the streaming codec drive loop. */
+        /** Accumulator chunk size for the streaming codec drive loop. */
         private const val OUTPUT_CHUNK: Int = 8192
-
-        /** Rough initial-capacity multiplier for the inflate accumulator. */
-        private const val INFLATE_GUESS_RATIO: Int = 4
 
         /**
          * The `Sec-WebSocket-Extensions` value sent in the 101 response
