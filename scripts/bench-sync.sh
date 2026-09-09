@@ -45,9 +45,21 @@
 #
 # This does not run a sweep. Run bench-keel.sh / bench-all.sh on the host after.
 
+# The invariants listed at the top of scripts/gate.sh apply here too: reject a
+# bad invocation before doing work, bound every remote call without depending on
+# a tool this machine may not have, never report a failure without the path to
+# its log, and clean up what a run leaves behind.
+
 set -uo pipefail
 
 MODE="${1:?usage: bench-sync.sh <mac|linux> [--native-refs]}"
+# A mistyped --native-refs used to be ignored, and the run then reported ready
+# while the rust and go binaries stayed as they were — the sweep measures the
+# old ones and says nothing. Silent skips are what the note at the top of this
+# file is about, so refuse instead.
+if [ $# -gt 2 ] || { [ $# -eq 2 ] && [ "$2" != "--native-refs" ]; }; then
+    echo "usage: bench-sync.sh <mac|linux> [--native-refs] (unexpected argument: ${2:-})" >&2; exit 2
+fi
 NATIVE_REFS=0
 [ "${2:-}" = "--native-refs" ] && NATIVE_REFS=1
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -59,6 +71,16 @@ JVMARGS="${KEEL_BENCH_JVMARGS:--Xmx6g -XX:MaxMetaspaceSize=1g}"
 # A non-interactive zsh reads ~/.zshenv but not ~/.zshrc, so a macOS host's
 # Homebrew and sdkman entries have to be named here. A Linux host needs nothing.
 MAC_PRELUDE='source ~/.sdkman/bin/sdkman-init.sh; export PATH=/opt/homebrew/bin:/opt/homebrew/sbin:$PATH;'
+
+# The prelude above is sent to the remote; it does not put timeout on this
+# machine's PATH, and timeout is not in a base macOS install. Without this the
+# call that fetches a failing build's log would die with command not found,
+# printing nothing where the failure should be.
+if command -v timeout >/dev/null 2>&1; then
+    bounded() { timeout "$@"; }
+else
+    bounded() { shift; "$@"; }
+fi
 
 case "$MODE" in
     mac)   : "${KEEL_BENCH_MAC_HOST:?KEEL_BENCH_MAC_HOST is required (ssh target that builds macosArm64)}"
@@ -84,6 +106,8 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="/tmp/keel-bench-sync-${MODE}-${STAMP}.log"
 
 echo "--- build (native + classpath + js), timeout ${TIMEOUT}s, log ${HOST}:${LOG}"
+# Nothing else removes these, and every run leaves one.
+bounded 60 ssh "$HOST" "find /tmp -maxdepth 1 -name 'keel-bench-sync-${MODE}-*' -mtime +7 -delete 2>/dev/null" </dev/null || true
 # The same guards gate.sh needs, for the same reasons: --stop first, because a
 # daemon left by an earlier run on this host (the gate passes the same jvmargs,
 # so it is the same daemon) carries its accumulated heap into this build; a
@@ -94,13 +118,13 @@ echo "--- build (native + classpath + js), timeout ${TIMEOUT}s, log ${HOST}:${LO
 # unquoted so the remote shell expands a leading ~, and uses '|| exit' rather
 # than '&&' so a failed cd cannot let the build run in the login directory.
 ssh "$HOST" "cd ${DIR} || exit 111; ${PRELUDE} \
-    ./gradlew --stop >/dev/null 2>&1; \
+    timeout ${TIMEOUT} ./gradlew --stop >/dev/null 2>&1; \
     timeout ${TIMEOUT} ./gradlew --no-configuration-cache -Pbenchmark \
         -Dorg.gradle.jvmargs='${JVMARGS}' \
         ${NATIVE_TASK} :benchmark:writeClasspath :benchmark:compileProductionExecutableKotlinJs \
         > '${LOG}' 2>&1 </dev/null" </dev/null || {
     echo "ERROR: gradle build failed on ${HOST} (log ${HOST}:${LOG})" >&2
-    timeout 60 ssh "$HOST" "tail -40 '${LOG}'" </dev/null >&2
+    bounded 60 ssh "$HOST" "tail -120 '${LOG}'" </dev/null >&2
     exit 1; }
 
 if [ "$NATIVE_REFS" = "1" ]; then
@@ -114,10 +138,14 @@ if [ "$NATIVE_REFS" = "1" ]; then
     # a bound that wait is unbounded and its output sits on the ssh pipe.
     ssh "$HOST" "cd ${DIR}/benchmark/rust-bench || exit 111; ${PRELUDE} \
         timeout ${TIMEOUT} cargo build --release >> '${LOG}' 2>&1 </dev/null" </dev/null || {
-        echo "ERROR: cargo build failed on ${HOST} (log ${HOST}:${LOG})" >&2; exit 1; }
+        echo "ERROR: cargo build failed on ${HOST} (log ${HOST}:${LOG})" >&2
+        bounded 60 ssh "$HOST" "tail -120 '${LOG}'" </dev/null >&2
+        exit 1; }
     ssh "$HOST" "cd ${DIR}/benchmark/go-bench || exit 111; ${PRELUDE} \
         timeout ${TIMEOUT} go build -o go-bench . >> '${LOG}' 2>&1 </dev/null" </dev/null || {
-        echo "ERROR: go build failed on ${HOST} (log ${HOST}:${LOG})" >&2; exit 1; }
+        echo "ERROR: go build failed on ${HOST} (log ${HOST}:${LOG})" >&2
+        bounded 60 ssh "$HOST" "tail -120 '${LOG}'" </dev/null >&2
+        exit 1; }
 fi
 
 echo "--- ${MODE}: ready. Run the sweep on ${HOST}, then ./benchmark/bench-pull.sh <host>"

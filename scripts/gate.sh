@@ -57,6 +57,21 @@
 # Exits non-zero if any host's gate fails, after printing the tail of that
 # host's log and the path of its archived test-results.
 
+# Invariants every path in this file has to keep. Three review rounds found
+# defects, and each round's fix introduced one; these are what those defects
+# had in common, written down so an edit can be checked against them:
+#
+#   1. Reject a bad invocation before doing any work, and never treat an
+#      unrecognised argument as a narrower run that then exits 0.
+#   2. Bound every call that reaches a remote host, and never make the bound a
+#      hard dependency on a tool this machine may not have.
+#   3. Never discard a verdict the remote already produced, and never report a
+#      failure without the paths to the log and the archive: their names carry
+#      a timestamp nobody can reconstruct.
+#   4. State only what has been checked. An archive that exists is not an
+#      archive with test results in it.
+#   5. Clean up what a run leaves on the remote.
+
 set -uo pipefail
 
 MODE="${1:?usage: gate.sh <mac|linux|both>}"
@@ -136,11 +151,12 @@ run_one() {
     # The archive is taken whether or not the gate passed, before a rerun can
     # overwrite the XML.
     ssh "$host" "cd ${dir} || exit 111; ${prelude} \
-        ./gradlew --stop >/dev/null 2>&1; \
+        timeout ${TIMEOUT} ./gradlew --stop >/dev/null 2>&1; \
         timeout ${TIMEOUT} ./gradlew --continue -Ptls -Pbenchmark \
             -Dorg.gradle.jvmargs='${JVMARGS}' \
             ${tasks} > '${log}' 2>&1 </dev/null; \
         echo \$? > '${exitf}'; \
+        find /tmp -maxdepth 1 -name 'keel-gate-${label}-*' -mtime +7 -delete 2>/dev/null; \
         find . -path '*/build/test-results/*' -name '*.xml' -print0 2>/dev/null \
             | tar czf '${arch}' --null -T - >> '${log}' 2>&1 \
             || echo 'gate.sh: archiving test-results failed (see above)' >> '${log}'; \
@@ -158,7 +174,14 @@ run_one() {
     code="$(bounded 60 ssh "$host" "cat '${exitf}' 2>/dev/null" </dev/null)"
 
     if [ -z "$code" ]; then
-        echo "--- ${label}: FAIL (ssh exited ${sshrc}, no verdict on the remote; the gate did not run)" >&2
+        # Empty means one of two things and the difference matters: the gate
+        # never ran, or it ran and this second ssh could not bring the answer
+        # back. A connection that dropped during teardown does not heal in
+        # between, so the second reading is the likely one, and the evidence is
+        # sitting on the remote under a name whose timestamp nobody can guess.
+        # Print the paths either way.
+        echo "--- ${label}: FAIL (ssh exited ${sshrc}; no verdict could be read)" >&2
+        echo "--- if the run got that far, its log is ${host}:${log} and its test-results ${host}:${arch}" >&2
         return 1
     fi
     [ $sshrc -ne 0 ] && echo "--- ${label}: ssh exited ${sshrc} after the run; reading its verdict" >&2
@@ -184,7 +207,9 @@ run_one() {
     # lines rather than 40 because --continue reports every failed task group,
     # and the first of them is the one 40 lines would cut off.
     bounded 60 ssh "$host" "tail -120 '${log}'" </dev/null >&2
-    echo "--- test-results on ${host}: ${archnote}" >&2
+    # Named, not characterised: a detekt or compile failure produces no
+    # test-results XML at all, so this archive can legitimately be empty.
+    echo "--- test-results archive on ${host}: ${archnote}" >&2
     echo "--- full log on ${host}: ${log}" >&2
     return 1
 }
@@ -195,14 +220,29 @@ case "$MODE" in
     *) echo "usage: gate.sh <mac|linux|both>" >&2; exit 2 ;;
 esac
 
+# Invariant 1. A second argument used to be ignored, so `gate.sh mac linux` ran
+# one host and exited 0 — a one-host green, which is a partial gate reported as
+# a full one.
+if [ $# -gt 1 ]; then
+    echo "usage: gate.sh <mac|linux|both> (unexpected argument: ${2})" >&2; exit 2
+fi
+
+# Both hosts are checked here, not inside the branches below. Checking inline
+# meant `both` ran the entire macOS gate — a quarter of an hour on a shared
+# host — before finding out the Linux host was never set.
 if [ "$MODE" = "mac" ] || [ "$MODE" = "both" ]; then
     : "${KEEL_GATE_MAC_HOST:?KEEL_GATE_MAC_HOST is required (ssh target that builds macosArm64)}"
+fi
+if [ "$MODE" = "linux" ] || [ "$MODE" = "both" ]; then
+    : "${KEEL_GATE_LINUX_HOST:?KEEL_GATE_LINUX_HOST is required (ssh target that builds linuxX64)}"
+fi
+
+if [ "$MODE" = "mac" ] || [ "$MODE" = "both" ]; then
     run_one mac "$KEEL_GATE_MAC_HOST" "${KEEL_GATE_MAC_DIR:-~/prj/keel-work/keel}" \
         "$MAC_TASKS" "$MAC_PRELUDE" || rc=1
 fi
 
 if [ "$MODE" = "linux" ] || [ "$MODE" = "both" ]; then
-    : "${KEEL_GATE_LINUX_HOST:?KEEL_GATE_LINUX_HOST is required (ssh target that builds linuxX64)}"
     # Both hosts run even if the first failed: a gate that stops at the first
     # host hides the other host's failures for a round, which is the cost this
     # gate exists to avoid.
