@@ -136,9 +136,11 @@ require_positive_int() {
 }
 
 # Fail a stalled connect rather than inheriting the operating system's. The
-# local bound on the long call is the remote timeout plus room for the sync,
-# the archive and the teardown; it is the backstop for a stall the remote
-# timeout cannot see, such as a connection that never finishes establishing.
+# local bound on the long call is twice the remote timeout — the remote applies
+# one to --stop and one to the gradle run — plus room for the archive and the
+# teardown. It does not cover the sync, which is a separately bounded call. It
+# is the backstop for a stall the remote timeout cannot see, such as a
+# connection that never finishes establishing.
 SSH_OPTS="-o ConnectTimeout=30"
 
 # Validated here rather than where the variables are read, because these are
@@ -152,6 +154,12 @@ require_bool KEEL_GATE_RSYNC_DELETE "${KEEL_GATE_RSYNC_DELETE:-}"
 
 run_one() {
     local label="$1" host="$2" dir="$3" tasks="$4" prelude="$5"
+    # One-second granularity, no pid. Two gates launched against the same host
+    # within the same second would therefore share these names, and one could
+    # read the other's verdict. Left as it is because pr-checks.md already says
+    # not to run two things on a gate host at once, and because a stamp that
+    # differs per run is not enough on its own to make that safe — the runs
+    # would still be fighting over the same daemon and the same build directory.
     local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
     # All three carry the stamp. A fixed-name log is truncated by a second run
     # on the same host, and a fixed-name exit file is read by whichever run asks
