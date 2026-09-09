@@ -66,9 +66,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `build`: `scripts/gate.sh` runs the pre-merge gate on a macOS and a Linux host, and
-  `scripts/bench-sync.sh` syncs and builds a bench host; both replace the macOS-only
-  `scripts/check-local.sh`, which is removed (#1100)
+- `build`: `scripts/gate.sh` (two-host pre-merge gate) and `scripts/bench-sync.sh` (bench host
+  sync and build) replace `scripts/check-local.sh`, which is removed (#1100)
 - `codec-websocket`: `WsFrameDecoder` stops decoding once the connection has ended; bytes after it
   are not parsed into frames nobody can act on, and a frame left part-parsed is dropped (#1094)
 - `codec-http`: both HTTP decoders stop decoding once the connection has ended; bytes after
