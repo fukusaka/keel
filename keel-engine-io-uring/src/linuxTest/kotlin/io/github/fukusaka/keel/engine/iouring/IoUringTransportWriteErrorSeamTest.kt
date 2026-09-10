@@ -28,7 +28,7 @@ import kotlin.test.assertTrue
  * The audit follow-up that ran after PR #745 noticed the four sibling
  * write paths had drifted away from the same fix: each error CQE
  * (`-EPIPE` / `-ECONNRESET` / etc.) ended in `onAsyncFlushDone()` or
- * `onComplete()` without calling `fireReadClosedOnce`, so the pipeline
+ * `onComplete()` without reporting the end through the base gate, so the pipeline
  * never learned that the connection was broken.
  *
  * One test per fixed path. Each test forces the corresponding
@@ -87,7 +87,7 @@ class IoUringTransportWriteErrorSeamTest {
     }
 
     @Test
-    fun `CQE writev error CQE fires onReadClosed via fireReadClosedOnce`() {
+    fun `CQE writev error CQE reports the end through the base gate`() {
         // Two pending writes route through flushCqe → submitAsyncWritev,
         // which exercises the writev callback that previously treated
         // res < 0 as writtenBytes = 0 and fell into the partial-write
@@ -107,16 +107,16 @@ class IoUringTransportWriteErrorSeamTest {
             fake.enqueueCqe(userData = writevUserData, res = -EPIPE, flags = 0u, hasMore = false)
             assertTrue(el.runIteration(Cqe()))
 
-            assertEquals(1, onReadClosedFires, "writev -EPIPE must fire onReadClosed via fireReadClosedOnce")
+            assertEquals(1, onReadClosedFires, "writev -EPIPE must report the end through the base gate")
         }
     }
 
     @Test
-    fun `SEND_ZC error CQE fires onReadClosed via fireReadClosedOnce`() {
+    fun `SEND_ZC error CQE reports the end through the base gate`() {
         // SEND_ZC mode submits one SEND_ZC SQE per buffer. The first CQE
         // carries the send result (here -EPIPE); with hasMore=0 the engine
         // completes the slot immediately, so the transport's callback
-        // sees res < 0 and must call fireReadClosedOnce.
+        // sees res < 0 and must report the end through the base gate.
         withTransport(
             writeModeSelector = IoModeSelectors.SEND_ZC,
             capabilities = IoUringCapabilities(sendZc = true),
@@ -133,12 +133,12 @@ class IoUringTransportWriteErrorSeamTest {
             fake.enqueueCqe(userData = sendZcUserData, res = -EPIPE, flags = 0u, hasMore = false)
             assertTrue(el.runIteration(Cqe()))
 
-            assertEquals(1, onReadClosedFires, "SEND_ZC -EPIPE must fire onReadClosed via fireReadClosedOnce")
+            assertEquals(1, onReadClosedFires, "SEND_ZC -EPIPE must report the end through the base gate")
         }
     }
 
     @Test
-    fun `SENDMSG_ZC error CQE fires onReadClosed via fireReadClosedOnce`() {
+    fun `SENDMSG_ZC error CQE reports the end through the base gate`() {
         // SENDMSG_ZC needs two or more pending writes (single-buffer flush
         // falls back to SEND_ZC). Same single-CQE collapse via hasMore=0.
         withTransport(
@@ -156,12 +156,12 @@ class IoUringTransportWriteErrorSeamTest {
             fake.enqueueCqe(userData = sendmsgZcUserData, res = -EPIPE, flags = 0u, hasMore = false)
             assertTrue(el.runIteration(Cqe()))
 
-            assertEquals(1, onReadClosedFires, "SENDMSG_ZC -EPIPE must fire onReadClosed via fireReadClosedOnce")
+            assertEquals(1, onReadClosedFires, "SENDMSG_ZC -EPIPE must report the end through the base gate")
         }
     }
 
     @Test
-    fun `direct gather writev unrecoverable error fires onReadClosed via fireReadClosedOnce`() {
+    fun `direct gather writev unrecoverable error reports the end through the base gate`() {
         // Deep-audit follow-up (F-1): `flushDirectSendGather` (the FALLBACK_CQE
         // synchronous direct-writev path) previously released buffers and
         // returned `true` to the pipeline on an unrecoverable -EBADF / -EPIPE /
@@ -209,7 +209,7 @@ class IoUringTransportWriteErrorSeamTest {
             assertEquals(
                 1,
                 onReadClosedFires,
-                "direct gather writev unrecoverable error must fire onReadClosed via fireReadClosedOnce",
+                "direct gather writev unrecoverable error must report the end through the base gate",
             )
         } finally {
             bufRing.close()
