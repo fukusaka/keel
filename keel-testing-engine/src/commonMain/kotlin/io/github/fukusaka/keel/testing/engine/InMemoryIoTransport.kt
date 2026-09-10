@@ -127,7 +127,8 @@ internal class InMemoryIoTransport(
         if (delivered) onReadComplete?.invoke()
         if (pendingEof) {
             pendingEof = false
-            onReadClosed?.invoke()
+            // Through the base gate, as the socket transports report.
+            reportInactiveOnce()
         }
     }
 
