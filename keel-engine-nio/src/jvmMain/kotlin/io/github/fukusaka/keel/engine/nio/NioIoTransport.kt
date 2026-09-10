@@ -233,7 +233,9 @@ internal class NioIoTransport(
             }
             n == -1 -> {
                 buf.release()
-                onReadClosed?.invoke()
+                // Through the base gate: a read re-armed after the FIN reads
+                // -1 again, and the idle reclamation reports from the base.
+                reportInactiveOnce()
             }
             else -> {
                 buf.release()

@@ -197,15 +197,17 @@ abstract class AbstractIoTransport(
      * reader with EOF. A pipeline absorbs a repeat, but that is a guard in
      * another module; a Coroutine-mode handler has none.
      *
-     * **This gate covers only what routes through it.** Every transport
-     * reaches it from the two idle-timeout reclamations here, which are this
-     * class's own code — but only the readiness transports route their
-     * wind-down through it as well. The rest report from their own peer-close
-     * handling without consulting the flag, so a FIN followed by an idle
-     * timeout reports twice there, unchanged from before this gate existed.
-     * netty and io_uring carry independent flags of their own; nodejs carries
-     * none and reports from two callbacks. Converging them is tracked with
-     * the rest of those transports' contract work.
+     * **Every report of the end goes through here.** The two idle-timeout
+     * reclamations in this class, the readiness transports' wind-down and
+     * each engine's own peer-close handling all route through this one
+     * gate, and so does the failure handling of netty, io_uring and the
+     * readiness transports (nio reports nothing on a failed read or write;
+     * NWConnection logs a failed send and relies on its receive side). A
+     * FIN followed by the idle reclamation, a read re-armed after the FIN
+     * that reads the same end again, or Node's `'end'` and `'error'` for
+     * one connection therefore reach the listener once. A subclass that
+     * invokes [onReadClosed] directly steps outside the contract
+     * [IoTransport.onReadClosed] states.
      *
      * **EventLoop thread**, like every other wind-down step.
      */
