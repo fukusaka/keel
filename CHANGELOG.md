@@ -147,6 +147,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-*`: a transport reports the end of a connection at most once, whichever paths observe it (#1102)
 - `core`: a lifecycle sweep (activation, ending, close) no longer stops at a handler that throws —
   the throw travels as an error and the event still reaches the handlers past it, once (#1096)
 - `core`: a handler that removes itself from inside its own callback no longer cuts the walk passing
