@@ -129,11 +129,14 @@ internal class NodeIoTransport(
         // `EPOLLRDHUP` analogue (Node's 'end') was effectively lost
         // because the listener was lazily registered inside `armRead()`,
         // which was never reached when `readEnabled` stayed `false`.
+        // Both through the base gate: 'end' and then 'error' (a write to the
+        // peer that finished) is one end, and so is the idle reclamation
+        // that reports from the base.
         socket.on("end") { _: dynamic ->
-            if (opened) onReadClosed?.invoke()
+            if (opened) reportInactiveOnce()
         }
         socket.on("error") { _: dynamic ->
-            if (opened) onReadClosed?.invoke()
+            if (opened) reportInactiveOnce()
         }
         // 'drain' fires when Node's internal write buffer has emptied into the
         // kernel — the peer has been draining, so a stalled write recovered. Cancel
