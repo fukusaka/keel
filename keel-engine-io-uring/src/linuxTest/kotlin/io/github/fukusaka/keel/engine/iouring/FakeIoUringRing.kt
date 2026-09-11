@@ -163,7 +163,7 @@ internal class FakeIoUringRing : IoUringRing {
 
     // --- Scripted CQEs (FIFO) ---
 
-    private data class ScriptedCqe(val userData: ULong, val res: Int, val flags: UInt, val hasMore: Boolean)
+    private data class ScriptedCqe(val userData: ULong, val res: Int, val flags: UInt)
 
     private val cqeQueue = ArrayDeque<ScriptedCqe>()
 
@@ -172,7 +172,12 @@ internal class FakeIoUringRing : IoUringRing {
      * `runIteration` consumes the queue in FIFO order until it is empty.
      */
     fun enqueueCqe(userData: ULong, res: Int, flags: UInt = 0u, hasMore: Boolean = false) {
-        cqeQueue.addLast(ScriptedCqe(userData, res, flags, hasMore))
+        // `hasMore` is `IORING_CQE_F_MORE` on a real ring, and the loop and the
+        // transport read it from different places (the drained `Cqe.hasMore`
+        // and `keel_cqe_has_more(flags)`), so the two are kept one fact here:
+        // the flag bit follows the parameter.
+        val f = if (hasMore) flags or IORING_CQE_F_MORE else flags and IORING_CQE_F_MORE.inv()
+        cqeQueue.addLast(ScriptedCqe(userData, res, f))
     }
 
     /**
@@ -323,7 +328,7 @@ internal class FakeIoUringRing : IoUringRing {
         out.userData = c.userData
         out.res = c.res
         out.flags = c.flags
-        out.hasMore = c.hasMore
+        out.hasMore = (c.flags and IORING_CQE_F_MORE) != 0u
         cqesDrainedCount++
         return true
     }
@@ -344,3 +349,6 @@ internal class FakeIoUringRing : IoUringRing {
         const val DEFER_FLAG: UInt = 4u
     }
 }
+
+/** `IORING_CQE_F_MORE` — the multishot SQE is still armed after this CQE. */
+private const val IORING_CQE_F_MORE: UInt = 0x2u
