@@ -4,6 +4,7 @@ import io.github.fukusaka.keel.buf.DefaultAllocator
 import io.github.fukusaka.keel.logging.NoopLoggerFactory
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.posix.ECANCELED
+import platform.posix.ECONNRESET
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -204,10 +205,76 @@ class IoUringTransportPeerFinSeamTest {
         }
     }
 
+    /** Arms a multishot recv on [transport] and returns the report count holder. */
+    private fun armMultishot(fake: FakeIoUringRing, el: IoUringEventLoop, transport: IoUringIoTransport): IntArray {
+        val reports = IntArray(1)
+        transport.onReadClosed = { reports[0]++ }
+        transport.onChannelAttached()
+        assertTrue(el.runIteration(Cqe()))
+        transport.readEnabled = true
+        assertEquals(IORING_OP_RECV, fake.lastSqeOp(), "armRecv submitted a recv")
+        assertEquals(
+            IORING_RECV_MULTISHOT,
+            fake.lastSqeIoprio().toUInt() and IORING_RECV_MULTISHOT,
+            "the recv is the multishot one — the tier under test",
+        )
+        return reports
+    }
+
+    /** Completes the in-flight recv with [res] and no `F_MORE`: the recv's terminal CQE. */
+    private fun terminate(fake: FakeIoUringRing, el: IoUringEventLoop, res: Int) {
+        fake.enqueueCqe(userData = fake.lastSqeUserData(), res = res, flags = 0u, hasMore = false)
+        assertTrue(el.runIteration(Cqe()))
+    }
+
+    @Test
+    fun `a multishot recv ended by the peer FIN releases its slot so re-enabling reads re-arms a recv`() {
+        withTransport { fake, el, _, transport ->
+            val reports = armMultishot(fake, el, transport)
+            terminate(fake, el, res = 0)
+            assertEquals(1, reports[0], "the FIN is reported once")
+            // The FIN was the recv's terminal CQE: the loop freed the slot, and
+            // the transport must have forgotten it too, or the setter's gate
+            // never lets a recv be armed again.
+            val sqesBefore = fake.getSqeCalls
+            transport.readEnabled = false
+            transport.readEnabled = true
+            assertEquals(sqesBefore + 1, fake.getSqeCalls, "re-enabling reads after the FIN submits exactly one SQE")
+            assertEquals(IORING_OP_RECV, fake.lastSqeOp(), "the new submission is a recv")
+        }
+    }
+
+    @Test
+    fun `a multishot recv ended by an error releases its slot the same way`() {
+        withTransport { fake, el, _, transport ->
+            val reports = armMultishot(fake, el, transport)
+            terminate(fake, el, res = -ECONNRESET)
+            assertEquals(1, reports[0], "the error is reported once")
+            val sqesBefore = fake.getSqeCalls
+            transport.readEnabled = false
+            transport.readEnabled = true
+            assertEquals(sqesBefore + 1, fake.getSqeCalls, "re-enabling reads after the error submits exactly one SQE")
+            assertEquals(IORING_OP_RECV, fake.lastSqeOp(), "the new submission is a recv")
+        }
+    }
+
+    @Test
+    fun `pausing reads after the peer FIN ended the multishot recv submits no cancel`() {
+        withTransport { fake, el, _, transport ->
+            val reports = armMultishot(fake, el, transport)
+            terminate(fake, el, res = 0)
+            assertEquals(1, reports[0], "the FIN is reported once")
+            // The slot the recv had is back on the loop's free list and may be
+            // another transport's by now: a cancel by that index would hit them.
+            val sqesBefore = fake.getSqeCalls
+            transport.pauseReads()
+            assertEquals(sqesBefore, fake.getSqeCalls, "nothing is in flight to cancel after the FIN")
+        }
+    }
+
     private companion object {
         // io_uring opcode values from `enum io_uring_op` in <linux/io_uring.h>.
         private const val IORING_OP_POLL_ADD: UByte = 6u
-        private const val IORING_OP_RECV: UByte = 27u
 
         // Linux <asm-generic/poll.h> bit values matching the keel cinterop
         // wrappers (`KEEL_POLLRDHUP` / `KEEL_POLLHUP` / `KEEL_POLLERR`).
