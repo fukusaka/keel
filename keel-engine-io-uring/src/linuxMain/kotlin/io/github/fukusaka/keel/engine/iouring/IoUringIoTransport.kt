@@ -271,7 +271,7 @@ internal class IoUringIoTransport(
      * in-flight recv is outstanding. Distinguishes the cancel's benign
      * `-ECANCELED` terminal CQE (clear state, maybe re-arm) from a
      * genuine connection error (which must still fire
-     * [fireReadClosedOnce]); teardown's own cancels are already filtered
+     * [reportInactiveOnce]); teardown's own cancels are already filtered
      * by the not-opened gate. Cleared on every recv terminal and on
      * [armRecv]. EventLoop-thread only.
      */
@@ -316,20 +316,6 @@ internal class IoUringIoTransport(
      * fd was closed and the kernel cancelled the op.
      */
     private var pollAddFinSlot = -1
-
-    /**
-     * Whether [onReadClosed] has already been invoked. Guards against
-     * double-firing when both [armPollAddForFin]'s POLL_ADD CQE and
-     * [armRecv]'s multishot recv CQE observe the same peer FIN. Set on
-     * the EventLoop thread only.
-     */
-    private var readClosedFired = false
-
-    private fun fireReadClosedOnce() {
-        if (readClosedFired) return
-        readClosedFired = true
-        onReadClosed?.invoke()
-    }
 
     /**
      * Arms a single-shot `IORING_OP_POLL_ADD` watching for `POLLRDHUP |
@@ -411,7 +397,7 @@ internal class IoUringIoTransport(
                     eventLoop.logger.debug {
                         "POLL_ADD FIN CQE: fd=$fd revents=0x${res.toString(16)}"
                     }
-                    fireReadClosedOnce()
+                    reportInactiveOnce()
                 }
                 // Negative `res` means the poll itself was cancelled
                 // (e.g. `-ECANCELED` when [teardownOnEventLoop] cancels the
@@ -512,14 +498,14 @@ internal class IoUringIoTransport(
                     }
                     res == -ECANCELED && recvCancelPending -> {
                         // Benign terminal of the pauseReads cancel — not a
-                        // connection error, so no fireReadClosedOnce. If the
+                        // connection error, so no report of the end. If the
                         // pause was already resumed, this CQE is the agreed
                         // re-arm point (arming earlier would double-arm).
                         recvCancelPending = false
                         recvSlot = -1
                         if (readEnabled && !readPaused && !recvStarved) armRecv()
                     }
-                    else -> fireReadClosedOnce()
+                    else -> reportInactiveOnce()
                 }
             },
         )
@@ -571,7 +557,7 @@ internal class IoUringIoTransport(
                         if (canRearmRecv) armRecv()
                     }
                     res == -ENOBUFS -> onRecvEnobufs(ring)
-                    else -> fireReadClosedOnce()
+                    else -> reportInactiveOnce()
                 }
             },
         )
@@ -630,7 +616,7 @@ internal class IoUringIoTransport(
                         // EOF (res = 0), or a receive error: the buffer never
                         // reaches the handler, so release it here.
                         pending.release()
-                        if (opened) fireReadClosedOnce()
+                        if (opened) reportInactiveOnce()
                     }
                     else -> {
                         touchIdleTimeout() // progress: refresh the read-idle deadline
@@ -909,19 +895,19 @@ internal class IoUringIoTransport(
                 }
                 is WriteResult.Failed -> {
                     // Unrecoverable error (EPIPE after peer RST, ECONNRESET, EBADF,
-                    // etc.). Surface to the pipeline via fireReadClosedOnce so the
+                    // etc.). Surface to the pipeline via reportInactiveOnce so the
                     // channel tears down — the previous "release and return true"
                     // path was silent from the pipeline's perspective, leaving the
                     // orphaned transport alive and the upstream codec convinced
                     // its bytes had landed. Same canonical pattern as
-                    // flushDirectSendSingle's `if (fatalError) fireReadClosedOnce()`
+                    // flushDirectSendSingle's `if (fatalError) reportInactiveOnce()`
                     // and the four async write callbacks fixed in PR #746.
                     eventLoop.logger.warn {
                         "writev() failed: fd=$fd ${errnoMessage(result.errno)} (totalBytes=$totalBytes)"
                     }
                     for (pw in pendingWrites) pw.buf.release()
                     updatePendingBytes(-totalBytes)
-                    fireReadClosedOnce()
+                    reportInactiveOnce()
                     return true
                 }
                 is WriteResult.Written -> result.bytes
@@ -1028,7 +1014,7 @@ internal class IoUringIoTransport(
             // Route through the read-closed path so the pipeline notifies
             // inactive and the channel tears down cleanly. Safe even though
             // the error is write-side: the connection is unusable either way.
-            fireReadClosedOnce()
+            reportInactiveOnce()
         }
         return true
     }
@@ -1109,7 +1095,7 @@ internal class IoUringIoTransport(
                     }
                     buf.release()
                     onComplete()
-                    if (res < 0) fireReadClosedOnce()
+                    if (res < 0) reportInactiveOnce()
                 }
             },
         )
@@ -1189,7 +1175,7 @@ internal class IoUringIoTransport(
                 for (pw in writes) pw.buf.release()
                 pendingWriteSnapshotPool.recycle(writes)
                 onAsyncFlushDone()
-                fireReadClosedOnce()
+                reportInactiveOnce()
                 return@submitWritevCallback
             }
             val writtenBytes = res
@@ -1337,7 +1323,7 @@ internal class IoUringIoTransport(
                     }
                     buf.release()
                     onComplete()
-                    fireReadClosedOnce()
+                    reportInactiveOnce()
                     return@submitSendZcFixedCallback
                 }
                 val sent = res
@@ -1372,7 +1358,7 @@ internal class IoUringIoTransport(
                     }
                     buf.release()
                     onComplete()
-                    fireReadClosedOnce()
+                    reportInactiveOnce()
                     return@submitSendZcCallback
                 }
                 val sent = res
@@ -1458,7 +1444,7 @@ internal class IoUringIoTransport(
                         "async SENDMSG_ZC CQE failed: sqeFd=$sqeFd res=$res (${errnoMessage(-res)})"
                     }
                     onAsyncFlushDone()
-                    fireReadClosedOnce()
+                    reportInactiveOnce()
                     return@submitSendmsgZcCallback
                 }
                 // Partial sendmsg is not retried — TCP guarantees in-order delivery,

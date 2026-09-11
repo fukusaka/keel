@@ -424,7 +424,10 @@ internal class NwIoTransport(
                     logger.warn { "NWConnection receive failed (errno=${outcome.errno}); closing connection" }
                 }
                 fallbackBuf.release()
-                onReadClosed?.invoke()
+                // Through the base gate: a receive re-armed after the FIN
+                // completes with the same end, and the idle reclamation
+                // reports from the base.
+                reportInactiveOnce()
             }
             NwReceiveOutcome.Spurious -> {
                 fallbackBuf.release()

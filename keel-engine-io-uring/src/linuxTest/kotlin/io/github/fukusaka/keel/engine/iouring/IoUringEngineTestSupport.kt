@@ -132,3 +132,6 @@ internal class RecordingLogger(private val captured: LogLevel) : Logger {
  * taken the port out from under the test server.)
  */
 internal const val LOOPBACK_HOST: String = "127.0.0.1"
+
+/** `IORING_OP_RECV` opcode, as the seam tests read it back from the fake ring's last SQE. */
+internal const val IORING_OP_RECV: UByte = 27u

@@ -126,17 +126,6 @@ internal class NettyIoTransport(
         }
     }
 
-    // Guarded by EventLoop thread — both channelInactive and userEventTriggered
-    // run there, so a plain var suffices.
-    private var readClosedFired = false
-
-    private fun fireReadClosed() {
-        if (!readClosedFired) {
-            readClosedFired = true
-            onReadClosed?.invoke()
-        }
-    }
-
     override var readEnabled: Boolean = false
         set(value) {
             field = value
@@ -284,7 +273,7 @@ internal class NettyIoTransport(
         }
 
         override fun channelInactive(ctx: ChannelHandlerContext) {
-            fireReadClosed()
+            reportInactiveOnce()
         }
 
         /**
@@ -309,18 +298,19 @@ internal class NettyIoTransport(
          *   `POLLRDHUP`); see [NettyTransport] KDoc for the
          *   `translateInterestOps` constraint.
          *
-         * Both events route to [fireReadClosed], which is idempotent.
+         * Both events route to the base gate, which reports once for the
+         * transport — the idle reclamation and `channelInactive` included.
          */
         override fun userEventTriggered(ctx: ChannelHandlerContext, evt: Any) {
             when (evt) {
-                is ChannelInputShutdownEvent -> fireReadClosed()
-                is ChannelInputShutdownReadComplete -> fireReadClosed()
+                is ChannelInputShutdownEvent -> reportInactiveOnce()
+                is ChannelInputShutdownReadComplete -> reportInactiveOnce()
             }
             ctx.fireUserEventTriggered(evt)
         }
 
         override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
-            fireReadClosed()
+            reportInactiveOnce()
             ctx.close()
         }
     }

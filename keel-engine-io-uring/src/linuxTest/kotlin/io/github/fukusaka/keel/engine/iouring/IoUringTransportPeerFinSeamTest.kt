@@ -31,7 +31,7 @@ import kotlin.test.assertTrue
  * 3. A `POLL_ADD` CQE with `res < 0` (e.g. `-ECANCELED` when the
  *    teardown path cancelled the SQE before close) does NOT fire
  *    `onReadClosed`.
- * 4. The `fireReadClosedOnce` guard ensures that two concurrent
+ * 4. The base once-gate (`reportInactiveOnce`) ensures that two concurrent
  *    peer-close signals — one through `POLL_ADD`, one through a
  *    multishot recv `res = 0` CQE — together fire `onReadClosed`
  *    just once.
@@ -134,7 +134,7 @@ class IoUringTransportPeerFinSeamTest {
 
     @Test
     fun `POLL_ADD FIN and multishot recv res zero together fire onReadClosed only once`() {
-        // The fireReadClosedOnce guard exists for this exact race: both the
+        // The base once-gate exists for this exact race: both the
         // POLL_ADD CQE and a multishot recv res = 0 CQE may observe the
         // same peer FIN. The guard makes sure onReadClosed fires once even
         // when both signals arrive.

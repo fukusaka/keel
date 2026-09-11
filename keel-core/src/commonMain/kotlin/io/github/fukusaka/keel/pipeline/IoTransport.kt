@@ -132,6 +132,13 @@ interface IoTransport {
      * Callback invoked when the read side is closed (EOF, error, or
      * connection reset).
      *
+     * At most once per transport, whichever paths observe the end: a peer
+     * FIN, a failure the transport reports, the idle reclamation, or a read
+     * re-armed after the FIN that reads the same end again all route through
+     * one gate ([AbstractIoTransport.reportInactiveOnce]; an implementation
+     * outside that class owes the same rule), so the listener never hears the
+     * same end twice and need not guard against it.
+     *
      * After this callback, no further [onRead] calls will occur.
      * The transport does NOT call [close] — the callback owner decides
      * whether to close the full connection.
