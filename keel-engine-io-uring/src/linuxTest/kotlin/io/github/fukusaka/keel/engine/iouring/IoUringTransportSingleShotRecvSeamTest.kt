@@ -239,15 +239,4 @@ class IoUringTransportSingleShotRecvSeamTest {
             )
         }
     }
-
-    companion object {
-        /** `IORING_OP_RECV` kernel ABI opcode (io_uring.h). */
-        private const val IORING_OP_RECV: UByte = 27u
-
-        /**
-         * `IORING_RECV_MULTISHOT` ioprio flag bit (io_uring.h: `1U << 1`).
-         * Precomputed because cinterop does not surface the `#define`.
-         */
-        private const val IORING_RECV_MULTISHOT: UInt = 2u
-    }
 }
