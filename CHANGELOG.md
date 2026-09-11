@@ -147,6 +147,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-io-uring`: a multishot recv ended by the peer's FIN or an error releases its callback slot, so reads can be
+  re-armed afterwards and a later pause or teardown no longer cancels by a slot index another connection may hold (#1103)
 - `engine-*`: a transport reports the end of a connection at most once, whichever paths observe it (#1102)
 - `core`: a lifecycle sweep (activation, ending, close) no longer stops at a handler that throws —
   the throw travels as an error and the event still reaches the handlers past it, once (#1096)
