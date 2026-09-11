@@ -271,9 +271,4 @@ class IoUringTransportRecvStarvationSeamTest {
             assertEquals(1L, bufRing.deferredRearmCount(), "the deferred branch registers one re-arm")
         }
     }
-
-    private companion object {
-        // io_uring opcode value from `enum io_uring_op` in <linux/io_uring.h>.
-        private const val IORING_OP_RECV: UByte = 27u
-    }
 }

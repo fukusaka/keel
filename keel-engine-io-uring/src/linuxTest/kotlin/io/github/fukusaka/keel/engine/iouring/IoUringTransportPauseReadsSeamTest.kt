@@ -225,7 +225,6 @@ class IoUringTransportPauseReadsSeamTest {
 
     private companion object {
         // io_uring opcode values from `enum io_uring_op` in <linux/io_uring.h>.
-        private const val IORING_OP_RECV: UByte = 27u
         private const val IORING_OP_ASYNC_CANCEL: UByte = 14u
     }
 }

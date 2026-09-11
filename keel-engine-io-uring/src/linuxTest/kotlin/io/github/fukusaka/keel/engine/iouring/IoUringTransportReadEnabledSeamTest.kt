@@ -150,10 +150,4 @@ class IoUringTransportReadEnabledSeamTest {
             )
         }
     }
-
-    private companion object {
-        // io_uring opcode value from `enum io_uring_op` in <linux/io_uring.h>.
-        // Same rationale as the other seam tests: stable kernel ABI.
-        private const val IORING_OP_RECV: UByte = 27u
-    }
 }

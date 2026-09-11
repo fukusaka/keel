@@ -135,3 +135,6 @@ internal const val LOOPBACK_HOST: String = "127.0.0.1"
 
 /** `IORING_OP_RECV` opcode, as the seam tests read it back from the fake ring's last SQE. */
 internal const val IORING_OP_RECV: UByte = 27u
+
+/** `IORING_RECV_MULTISHOT` — the `ioprio` bit that makes a recv SQE multishot. */
+internal const val IORING_RECV_MULTISHOT: UInt = 2u

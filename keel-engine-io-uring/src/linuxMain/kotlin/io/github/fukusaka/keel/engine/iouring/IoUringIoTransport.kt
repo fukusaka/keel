@@ -215,12 +215,28 @@ internal class IoUringIoTransport(
 
     /**
      * Callback slot of the in-flight recv SQE (multishot on 6.0+ kernels,
-     * single-shot buffer-select on 5.19), or -1 when no recv is armed.
-     * The single live-recv invariant — at most one armed recv per
-     * transport — is shared by both modes; the `recvSlot < 0` gates in
-     * the [readEnabled] setter and the single-shot re-arm both rely on it.
+     * single-shot buffer-select on 5.19), or -1 once this transport has
+     * nothing left to cancel by index — the recv's terminal CQE arrived
+     * ([onRecvTerminal]) or the teardown issued its cancel. The single
+     * live-recv invariant — at most one armed recv per transport — is
+     * shared by both modes; the `recvSlot < 0` gates in the [readEnabled]
+     * setter and the single-shot re-arm both rely on it.
      */
     private var recvSlot = -1
+
+    /**
+     * Bookkeeping every recv callback runs on its terminal CQE (`F_MORE`
+     * clear), before the `opened` check: the loop frees the callback slot
+     * after the callback returns, so the transport forgets it in the same
+     * breath — a slot index kept past this point would hold the re-arm gates
+     * shut and hand [pauseReads] / the teardown an index the loop may have
+     * given another transport. The fixed-op count settles here too, and is
+     * owed post-teardown (the deferred slot unregister waits on it).
+     */
+    private fun onRecvTerminal() {
+        recvSlot = -1
+        fixedOpCompleted()
+    }
 
     /**
      * The allocator-owned buffer of the in-flight plain single-shot recv
@@ -475,34 +491,27 @@ internal class IoUringIoTransport(
             fixedFile = useFixedFile,
             bgid = ring.bgid,
             onCqe = { res, flags ->
-                // Terminal CQE bookkeeping must run even post-teardown
-                // (the deferred slot unregister depends on it), so it
-                // precedes the opened check.
-                if (keel_cqe_has_more(flags) == 0) fixedOpCompleted()
+                // Every terminal — FIN, error, cancel, -ENOBUFS — runs the
+                // same bookkeeping; see [onRecvTerminal]. A terminal recv
+                // also has nothing left for a pause-cancel to hit, so the
+                // flag is read for this CQE's dispatch and then cleared.
+                val cancelPending = recvCancelPending
+                if (keel_cqe_has_more(flags) == 0) {
+                    onRecvTerminal()
+                    recvCancelPending = false
+                }
                 if (!opened) return@submitMultishotRecv
                 eventLoop.logger.debug {
                     "recv CQE: sqeFd=$sqeFd fixedFile=$useFixedFile res=$res flags=0x${flags.toString(16)}"
                 }
                 when {
                     res > 0 -> deliverRecv(ring, res, flags)
-                    res == -ENOBUFS -> {
-                        // Shared provided-buffer ring ran out. The kernel drops
-                        // IORING_CQE_F_MORE on -ENOBUFS so the CQE drain already
-                        // released the slot. A pause-cancel that raced this
-                        // natural termination has nothing left to cancel —
-                        // clear its flag so it cannot mask a later genuine
-                        // -ECANCELED.
-                        recvCancelPending = false
-                        recvSlot = -1
-                        onRecvEnobufs(ring)
-                    }
-                    res == -ECANCELED && recvCancelPending -> {
+                    res == -ENOBUFS -> onRecvEnobufs(ring) // shared provided-buffer ring ran out
+                    res == -ECANCELED && cancelPending -> {
                         // Benign terminal of the pauseReads cancel — not a
                         // connection error, so no report of the end. If the
                         // pause was already resumed, this CQE is the agreed
                         // re-arm point (arming earlier would double-arm).
-                        recvCancelPending = false
-                        recvSlot = -1
                         if (readEnabled && !readPaused && !recvStarved) armRecv()
                     }
                     else -> reportInactiveOnce()
@@ -531,15 +540,9 @@ internal class IoUringIoTransport(
             bgid = ring.bgid,
             len = ring.bufferSize,
             onCqe = { res, flags ->
-                // Single-shot: this CQE terminates the SQE. The drain frees
-                // this callback's slot after the callback returns (hasMore
-                // = false), so a re-arm below acquires a fresh slot; clear
-                // the in-flight marker first so the re-arm gates see
-                // recvSlot < 0. The fixed-op bookkeeping must run even
-                // post-teardown (deferred slot unregister), so it precedes
-                // the opened check.
-                recvSlot = -1
-                fixedOpCompleted()
+                // Single-shot: every CQE terminates the SQE, so a re-arm
+                // below acquires a fresh slot; see [onRecvTerminal].
+                onRecvTerminal()
                 if (!opened) return@submitRecvBufSelect
                 eventLoop.logger.debug {
                     "recv CQE (single-shot): sqeFd=$sqeFd fixedFile=$useFixedFile res=$res flags=0x${flags.toString(16)}"
@@ -593,11 +596,8 @@ internal class IoUringIoTransport(
             buf = buf.unsafePointer,
             len = readBufferSize,
             onCqe = { res, _ ->
-                // Single-shot: this CQE terminates the SQE (same slot
-                // lifecycle as the buffer-select variant above). Fixed-op
-                // bookkeeping runs even post-teardown (deferred unregister).
-                recvSlot = -1
-                fixedOpCompleted()
+                // Single-shot: every CQE terminates the SQE; see [onRecvTerminal].
+                onRecvTerminal()
                 val pending = pendingRecvBuf
                 pendingRecvBuf = null
                 eventLoop.logger.debug {
@@ -672,7 +672,8 @@ internal class IoUringIoTransport(
 
     /**
      * Handles a recv `-ENOBUFS` CQE (shared provided-buffer ring empty).
-     * Shared by both recv modes; the caller has already cleared [recvSlot].
+     * Shared by both recv modes; the caller reached it from a terminal CQE,
+     * after [onRecvTerminal].
      */
     private fun onRecvEnobufs(ring: ProvidedBufferRing) {
         ring.onRecvEnobufs() // occupancy observability: count every starvation CQE

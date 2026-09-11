@@ -239,6 +239,5 @@ class IoUringSqeSeamTest {
         // independent of cinterop enum-exposure details.
         private const val IORING_OP_POLL_ADD: UByte = 6u
         private const val IORING_OP_ACCEPT: UByte = 13u
-        private const val IORING_OP_RECV: UByte = 27u
     }
 }

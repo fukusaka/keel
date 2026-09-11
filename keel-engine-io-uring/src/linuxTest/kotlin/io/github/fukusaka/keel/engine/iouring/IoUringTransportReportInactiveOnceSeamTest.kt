@@ -17,8 +17,9 @@ import kotlin.test.assertTrue
  * with the same end again. Also pins what the read-idle clock does across a
  * pause: paused reads stop it, the FIN under a pause arms nothing, and
  * resuming is what starts it again — the transport-side facts a reader that
- * resumes on the FIN relies on. The re-arm cases run on the single-shot tier;
- * a multishot recv ends with the FIN and nothing re-arms it.
+ * resumes on the FIN relies on. The re-arm cases here run on the single-shot
+ * tier; the multishot tier's re-arm after a FIN is pinned in
+ * [IoUringTransportPeerFinSeamTest].
  */
 @OptIn(ExperimentalForeignApi::class)
 class IoUringTransportReportInactiveOnceSeamTest {
@@ -84,9 +85,7 @@ class IoUringTransportReportInactiveOnceSeamTest {
 
     @Test
     fun `a recv re-armed after a peer FIN completes with the same end and reports nothing`() {
-        // Single-shot tier: its FIN completion clears the recv slot, so
-        // re-enabling reads really submits a new recv. On the multishot tier
-        // the FIN ends the recv and nothing re-arms (the slot stays claimed).
+        // Single-shot tier; the multishot twin lives in the peer-FIN seam test.
         withTransport(multishot = false) { fake, el, transport ->
             var reports = 0
             transport.onReadClosed = { reports++ }

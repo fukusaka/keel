@@ -218,12 +218,6 @@ class IoUringTransportAllocRecvSeamTest {
         /** Per-recv allocation size for the harness (any pooled size works). */
         private const val RECV_BUFFER_SIZE = 64
 
-        /** `IORING_OP_RECV` kernel ABI opcode (io_uring.h). */
-        private const val IORING_OP_RECV: UByte = 27u
-
-        /** `IORING_RECV_MULTISHOT` ioprio flag bit (io_uring.h: `1U << 1`). */
-        private const val IORING_RECV_MULTISHOT: UInt = 2u
-
         /**
          * `IOSQE_BUFFER_SELECT` SQE flag (io_uring.h: `1U <<
          * IOSQE_BUFFER_SELECT_BIT` = `1U << 5`). Precomputed because
