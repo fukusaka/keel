@@ -147,6 +147,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `engine-io-uring`: a multishot recv the kernel ends with a data completion re-arms, so reads no longer stop
+  silently after it (#1104)
+- `engine-io-uring`: a recv completion that delivers nothing returns its provided buffer, instead of losing that
+  slot for the event loop's life (#1104)
 - `engine-io-uring`: a multishot recv ended by the peer's FIN or an error releases its callback slot, so reads can be
   re-armed afterwards and a later pause or teardown no longer cancels by a slot index another connection may hold (#1103)
 - `engine-*`: a transport reports the end of a connection at most once, whichever paths observe it (#1102)
