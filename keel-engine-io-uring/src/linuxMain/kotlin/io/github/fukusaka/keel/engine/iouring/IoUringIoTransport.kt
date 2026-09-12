@@ -221,7 +221,8 @@ internal class IoUringIoTransport(
      * ([onRecvTerminal]) or the teardown issued its cancel. The single
      * live-recv invariant — at most one armed recv per transport — is
      * shared by both modes; the `recvSlot < 0` gates in the [readEnabled]
-     * setter and the single-shot re-arm both rely on it.
+     * setter and in [rearmAfterTerminalData] both rely on it, and the
+     * latter carries it for every tier that re-arms after a delivery.
      */
     private var recvSlot = -1
 
@@ -538,14 +539,16 @@ internal class IoUringIoTransport(
 
     /**
      * Re-arms after a delivery whose CQE retired the recv — every one on
-     * the single-shot tier, and on the multishot tier the data CQE that
-     * arrives without `F_MORE`. The loop frees that CQE's slot once this
+     * the buffer-select single-shot tier, and on the multishot tier the
+     * data CQE that arrives without `F_MORE`. The allocator tier keeps its
+     * own gate, which has no starvation term to carry (no ring, no
+     * `-ENOBUFS`). The loop frees that CQE's slot once this
      * callback returns, and nothing re-arms on its own after it: each path
      * that could arm next waits for something a peer sending data will not
      * produce — the [readEnabled] setter for an assignment, [resumeReads]
      * for a pause to end, the ring's deferred callback for the `-ENOBUFS`
-     * that did not happen, the cancel branch for a cancel that a terminal
-     * CQE leaves nothing to match.
+     * that did not happen, and on the multishot tier the cancel branch for
+     * a cancel that a terminal CQE leaves nothing to match.
      *
      * The handler may have closed the transport, disabled reads, or
      * re-enabled them and so armed already (`recvSlot >= 0`); a pause is
@@ -1616,7 +1619,7 @@ internal class IoUringIoTransport(
             // the recv with data before the cancellation lands), and that
             // release lives in the kept callback's `!opened` branch. The
             // ring modes' callbacks are post-teardown-safe too (they return
-            // a data CQE's buffer to the ring, then stop).
+            // whatever buffer the CQE selected, then stop).
             eventLoop.cancelSqeKeepCallback(recvSlot)
             recvSlot = -1
         }
