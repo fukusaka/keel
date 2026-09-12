@@ -491,12 +491,14 @@ internal class IoUringIoTransport(
             fixedFile = useFixedFile,
             bgid = ring.bgid,
             onCqe = { res, flags ->
-                // Every terminal — FIN, error, cancel, -ENOBUFS — runs the
-                // same bookkeeping; see [onRecvTerminal]. A terminal recv
-                // also has nothing left for a pause-cancel to hit, so the
-                // flag is read for this CQE's dispatch and then cleared.
+                // Every terminal — FIN, error, cancel, -ENOBUFS, or the data
+                // the kernel retired the SQE with — runs the same
+                // bookkeeping; see [onRecvTerminal]. A terminal recv also has
+                // nothing left for a pause-cancel to hit, so the flag is read
+                // for this CQE's dispatch and then cleared.
                 val cancelPending = recvCancelPending
-                if (keel_cqe_has_more(flags) == 0) {
+                val terminal = keel_cqe_has_more(flags) == 0
+                if (terminal) {
                     onRecvTerminal()
                     recvCancelPending = false
                 }
@@ -505,7 +507,10 @@ internal class IoUringIoTransport(
                     "recv CQE: sqeFd=$sqeFd fixedFile=$useFixedFile res=$res flags=0x${flags.toString(16)}"
                 }
                 when {
-                    res > 0 -> deliverRecv(ring, res, flags)
+                    res > 0 -> {
+                        deliverRecv(ring, res, flags)
+                        if (terminal) rearmAfterTerminalData()
+                    }
                     res == -ENOBUFS -> onRecvEnobufs(ring) // shared provided-buffer ring ran out
                     res == -ECANCELED && cancelPending -> {
                         // Benign terminal of the pauseReads cancel — not a
@@ -521,6 +526,29 @@ internal class IoUringIoTransport(
         eventLoop.logger.debug {
             "armRecv submitted: sqeFd=$sqeFd fixedFile=$useFixedFile recvSlot=$recvSlot"
         }
+    }
+
+    /**
+     * Re-arms after a delivery whose CQE retired the recv — every one on
+     * the single-shot tier, and on the multishot tier the data CQE that
+     * arrives without `F_MORE`. The loop frees that CQE's slot once this
+     * callback returns, and nothing re-arms on its own after it: each path
+     * that could arm next waits for something a peer sending data will not
+     * produce — the [readEnabled] setter for an assignment, [resumeReads]
+     * for a pause to end, the ring's deferred callback for the `-ENOBUFS`
+     * that did not happen, the cancel branch for a cancel that a terminal
+     * CQE leaves nothing to match.
+     *
+     * The handler may have closed the transport, disabled reads, or
+     * re-enabled them and so armed already (`recvSlot >= 0`); a pause is
+     * gated inside [armRecv], where [resumeReads] takes over. On the
+     * multishot tier this is reached only when the CQE was terminal, so a
+     * delivery that continues the recv — the common case — evaluates one
+     * boolean and never the gate.
+     */
+    private fun rearmAfterTerminalData() {
+        val canRearmRecv = opened && readEnabled && !recvStarved && recvSlot < 0
+        if (canRearmRecv) armRecv()
     }
 
     /**
@@ -550,14 +578,10 @@ internal class IoUringIoTransport(
                 when {
                     res > 0 -> {
                         deliverRecv(ring, res, flags)
-                        // Re-arm only if the handler left the transport open
-                        // and reading. `onRead` or `onReadComplete` may have
-                        // flipped readEnabled (whose setter re-arms on the
-                        // false→true edge and sees recvSlot >= 0 once it has)
-                        // — the recvSlot guard keeps the single-live-recv
-                        // invariant.
-                        val canRearmRecv = opened && readEnabled && !recvStarved && recvSlot < 0
-                        if (canRearmRecv) armRecv()
+                        // Every CQE terminates this tier's SQE, so the
+                        // post-delivery re-arm is the same one the multishot
+                        // tier owes after a terminal data CQE.
+                        rearmAfterTerminalData()
                     }
                     res == -ENOBUFS -> onRecvEnobufs(ring)
                     else -> reportInactiveOnce()
