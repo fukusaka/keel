@@ -27,6 +27,7 @@ import io_uring.io_uring_prep_send
 import io_uring.iovec
 import io_uring.keel_alloc_iovec
 import io_uring.keel_cqe_get_buf_id
+import io_uring.keel_cqe_has_buffer
 import io_uring.keel_cqe_has_more
 import io_uring.keel_free_iovec
 import io_uring.keel_prep_poll_add
@@ -502,10 +503,17 @@ internal class IoUringIoTransport(
                     onRecvTerminal()
                     recvCancelPending = false
                 }
-                if (!opened) return@submitMultishotRecv
+                if (!opened) {
+                    discardRecvBuffer(ring, flags)
+                    return@submitMultishotRecv
+                }
                 eventLoop.logger.debug {
                     "recv CQE: sqeFd=$sqeFd fixedFile=$useFixedFile res=$res flags=0x${flags.toString(16)}"
                 }
+                // A delivery is what puts a selected buffer back within
+                // reach of a release; every other outcome returns it here.
+                // See [discardRecvBuffer].
+                if (res <= 0) discardRecvBuffer(ring, flags)
                 when {
                     res > 0 -> {
                         deliverRecv(ring, res, flags)
@@ -571,10 +579,14 @@ internal class IoUringIoTransport(
                 // Single-shot: every CQE terminates the SQE, so a re-arm
                 // below acquires a fresh slot; see [onRecvTerminal].
                 onRecvTerminal()
-                if (!opened) return@submitRecvBufSelect
+                if (!opened) {
+                    discardRecvBuffer(ring, flags)
+                    return@submitRecvBufSelect
+                }
                 eventLoop.logger.debug {
                     "recv CQE (single-shot): sqeFd=$sqeFd fixedFile=$useFixedFile res=$res flags=0x${flags.toString(16)}"
                 }
+                if (res <= 0) discardRecvBuffer(ring, flags) // see [discardRecvBuffer]
                 when {
                     res > 0 -> {
                         deliverRecv(ring, res, flags)
@@ -692,6 +704,26 @@ internal class IoUringIoTransport(
         }
         // One completion is one batch, whichever path delivered it.
         onReadComplete?.invoke()
+    }
+
+    /**
+     * Returns the buffer a CQE selected from [ring] when nothing will
+     * deliver it. Both ring tiers reach it for every CQE that lands after
+     * `close()`, and for every open-transport CQE that carries no bytes.
+     *
+     * A delivered slot goes back either when the handler releases the
+     * wrapper it was given, or when [deliverRecv] releases it itself under
+     * copy-on-pressure; a completion that delivers nothing has neither, so
+     * a slot skipped here stays out of the ring until the loop exits while
+     * the ring's occupancy count still holds it as available — a later
+     * `-ENOBUFS` would then re-arm at once and spin. Carrying no buffer is
+     * the ordinary shape here — an end, an error, a cancel — and nothing
+     * is owed for those.
+     */
+    private fun discardRecvBuffer(ring: ProvidedBufferRing, flags: UInt) {
+        if (keel_cqe_has_buffer(flags) == 0) return // nothing left the ring
+        ring.onConsumed()
+        ring.returnBuffer(keel_cqe_get_buf_id(flags).toInt())
     }
 
     /**
@@ -1583,8 +1615,8 @@ internal class IoUringIoTransport(
             // released by its terminal CQE (the kernel can still complete
             // the recv with data before the cancellation lands), and that
             // release lives in the kept callback's `!opened` branch. The
-            // ring modes' callbacks are post-teardown-safe too (they
-            // early-return on `!opened`).
+            // ring modes' callbacks are post-teardown-safe too (they return
+            // a data CQE's buffer to the ring, then stop).
             eventLoop.cancelSqeKeepCallback(recvSlot)
             recvSlot = -1
         }
