@@ -364,12 +364,11 @@ internal class DefaultPipeline(
         newCtx.prev = prev
         newCtx.next = next
         next.prev = newCtx
-        // From the context it is spliced behind, not from the one it
-        // replaces. A replacement is a new producer that has not stopped, so
-        // it does not inherit a raise the replaced handler made -- and
-        // replacing a handler that raised is a contract violation anyway,
-        // since a raise cannot be taken back.
-        newCtx.inheritReadClosedRegion(prev)
+        // The region of the context it replaces, since that is where it now
+        // stands -- and not that context's own raise or claim, which a
+        // replacement has not made. Replacing a handler that raised is a
+        // contract violation anyway, since a raise cannot be taken back.
+        newCtx.takeReadClosedRegionOf(oldCtx)
         // The old context is pointed at its replacement in both directions,
         // as in Netty: what the replaced handler forwards after replacing
         // itself — an upgrade decoder handing on the bytes it did not
@@ -597,6 +596,11 @@ internal class DefaultPipeline(
         ctx.deliverReadClosed(Mode.REPLAY, origin)
     }
 
+    /** Latches that a raise was made; the region outlives the handler that made it. */
+    internal fun recordReadClosedRaiseMade() {
+        readClosedRaiseMade = true
+    }
+
     /** Whether the ending has been delivered; read by a context recording a raise. */
     internal val endingPhaseDelivered: Boolean get() = endingPhase == Phase.DELIVERED
 
@@ -612,7 +616,7 @@ internal class DefaultPipeline(
 
     /** Whether the read side is over by either route: the transport reported it, or a handler raised one. */
     private val readClosedRecorded: Boolean
-        get() = readClosedPhase == Phase.DELIVERED || anyReadClosedRaise
+        get() = readClosedPhase == Phase.DELIVERED || readClosedRaiseMade
 
     /**
      * Walks the event again for the contexts the last walk could not offer it
@@ -633,16 +637,17 @@ internal class DefaultPipeline(
         head.deliverReadClosed(Mode.SWEEP, origin)
     }
 
-    /** Whether any raise has been made on this chain, which the late arrivals read. */
-    private val anyReadClosedRaise: Boolean
-        get() {
-            var c: DefaultContext? = head.next
-            while (c != null) {
-                if (c.hasRaisedReadClosed) return true
-                c = c.next
-            }
-            return false
-        }
+    /**
+     * Whether a handler has raised the event on this chain.
+     *
+     * Latched, not searched. The region a raise speaks for outlives the
+     * handler that named it — that is the whole of why the region is what
+     * carries the position — so asking the live chain whether a raiser is
+     * still in it answers a different question, and answers it wrongly: the
+     * contexts standing in the region are still owed the event after their
+     * raiser has gone.
+     */
+    private var readClosedRaiseMade: Boolean = false
 
     private fun startReadClosedSweep() {
         readClosedPhase = Phase.DELIVERED
@@ -780,7 +785,7 @@ internal class DefaultPipeline(
      */
     internal fun offerReadClosedToLateActivations() {
         if (activationSweepRunning) return
-        if (readClosedPhase != Phase.DELIVERED && !anyReadClosedRaise) return
+        if (!readClosedRecorded) return
         if (endingPhase == Phase.DELIVERED || !transport.isOpen) return
         reofferReadClosed()
     }
@@ -1200,6 +1205,23 @@ internal class DefaultPipeline(
             belowReadClosedClaim = before.belowReadClosedClaim || before.hasClaimedReadClosed
         }
 
+        /**
+         * Takes the region of the context this one replaces, which is where
+         * it now stands.
+         *
+         * Not from the context above, which is where a joining context takes
+         * it from: a replacement stands in the replaced context's place, and
+         * that place is inside a region whenever the replaced context was —
+         * including after the handler that named the region has been removed,
+         * when the context above is no longer inside it. What does not carry
+         * over is the naming itself: a replacement has raised nothing and
+         * taken nothing, so it is not offered a region of its own making.
+         */
+        fun takeReadClosedRegionOf(replaced: DefaultContext) {
+            belowReadClosedRaise = replaced.belowReadClosedRaise
+            belowReadClosedClaim = replaced.belowReadClosedClaim
+        }
+
         /** Marks every context below this one as standing in the region a raise or a claim names. */
         fun markRegionBelow(raise: Boolean) {
             var c = next
@@ -1279,6 +1301,7 @@ internal class DefaultPipeline(
         private fun recordRaisedHere() {
             if (pipelineRef.destroying || pipelineRef.endingPhaseDelivered) return
             hasRaisedReadClosed = true
+            pipelineRef.recordReadClosedRaiseMade()
             markRegionBelow(raise = true)
         }
 

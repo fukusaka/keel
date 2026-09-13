@@ -1150,6 +1150,74 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a raise still reaches a late activation after its raiser has left`() = readClosedTest {
+        // The region outlives the handler that named it, so what decides
+        // delivery is the region a context stands in and not whether a
+        // raiser is still in the chain.
+        val f = Fixture(deferDrain = true)
+        var held: PipelineHandlerContext? = null
+        f.pipeline.addLast(
+            "raiser",
+            object : Recorder("raiser", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    ctx.propagateActive()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addLast(
+            "holder",
+            object : Recorder("holder", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    held = ctx // the activation is held; passed on from another frame later
+                }
+            },
+        )
+        f.pipeline.addLast("late", f.recorder("late"))
+        f.channel.ensureBridge()
+        f.queue.runQueued()
+        assertFalse(f.log.contains("late:active"), "premise: the last is still waiting: ${f.log}")
+
+        f.pipeline.remove("raiser")
+        checkNotNull(held).propagateActive()
+        f.queue.runQueued()
+
+        assertTrue(f.log.contains("late:active"), "premise: it activated from the later frame: ${f.log}")
+        assertTrue(
+            f.log.contains("late:readClosed"),
+            "it stands in the region, and the region outlives its raiser: ${f.log}",
+        )
+        f.channel.close()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a replacement inside a region keeps it after the handler that named it has left`() = readClosedTest {
+        // The replacement stands where the replaced context stood, which is
+        // inside the region even once the context above is no longer in it.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "raiser",
+            object : Recorder("raiser", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    ctx.propagateActive()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addLast("inside", f.recorder("inside"))
+        f.pipeline.remove("raiser")
+
+        f.pipeline.replace("inside", "successor", f.recorder("successor"))
+
+        assertTrue(
+            "successor:readClosed" in f.log,
+            "it took the place of a context inside the region: ${f.log}",
+        )
+        f.channel.close()
+    }
+
+    @Test
     fun `handlers activated after the report hear it in chain order`() = readClosedTest {
         val f = Fixture(deferDrain = true)
         f.pipeline.addLast(
