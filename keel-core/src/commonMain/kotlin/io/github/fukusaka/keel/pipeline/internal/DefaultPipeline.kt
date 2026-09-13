@@ -580,6 +580,10 @@ internal class DefaultPipeline(
     private fun startReadClosedSweep() {
         readClosedPhase = Phase.DELIVERED
         readClosed.offered = readClosed.offered || !isEmpty
+        // Whoever this walk passes over is what the tail is told about, so
+        // the record starts empty: the contexts the walk before it skipped
+        // are the ones it is here to catch up, and they answer on the way.
+        readClosed.passedOver = false
         head.deliverReadClosed(Mode.SWEEP)
     }
 
@@ -1340,7 +1344,13 @@ internal class DefaultPipeline(
          * the tail must not answer for the chain before it has had it.
          */
         private fun carryReadClosedPast(mode: Mode, ownEnd: Boolean) {
-            if (!ownEnd && lifecycle != Lifecycle.ACTIVE && lifecycle != Lifecycle.REMOVED) {
+            // Owed the offer later, and only then: a context that has not
+            // heard the activation gets it when it does. One that already
+            // heard the ending is past being owed anything — it hears the
+            // ending while a walk is still travelling, and the gate below
+            // that would have turned this event away for it runs after this
+            // one — and a removed context is gone.
+            if (!ownEnd && lifecycle == Lifecycle.PENDING) {
                 pipelineRef.readClosed.passedOver = true
             }
             if (mode == Mode.SWEEP && lifecycle != Lifecycle.REMOVED) {
@@ -1918,9 +1928,17 @@ internal class ReadClosedOwnership {
     var offered: Boolean = false
 
     /**
-     * A context was passed over while the event travelled: it had not heard
-     * the activation yet, so it could not be offered this. The offer comes
-     * back to it when it activates, and the tail answers then.
+     * A context was passed over on the walk that is running now: it had not
+     * heard the activation yet, so it could not be offered this. The offer
+     * comes back to it when it activates, and the tail answers then.
+     *
+     * Cleared where each walk starts, not latched across walks. The tail
+     * decides when the offer reaches it, and what it needs to know is
+     * whether anyone was skipped on the way *this* time — a walk that
+     * catches up the context skipped by the one before it leaves nobody
+     * unanswered, and the tail may answer for the chain. Kept across walks
+     * it would say, for the rest of the connection, that an answer is still
+     * outstanding from a context that has since given one.
      */
     var passedOver: Boolean = false
 

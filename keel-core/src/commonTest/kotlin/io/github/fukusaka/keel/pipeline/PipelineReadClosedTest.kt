@@ -929,6 +929,35 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a handler passed over and then caught up lets the tail close`() = readClosedTest {
+        // The walk that ran while the second was still pending could not
+        // offer it the event and said so. The catch-up offers it and it
+        // declines like the first — so by the time the tail is asked again
+        // nobody is left to answer and nobody took it.
+        val f = Fixture(deferDrain = true)
+        f.pipeline.addLast(
+            "first",
+            object : Recorder("first", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    ctx.pipeline.notifyReadClosed()
+                    ctx.propagateActive()
+                }
+            },
+        )
+        f.pipeline.addLast("second", f.recorder("second"))
+        f.queue.runQueued()
+
+        assertEquals(
+            listOf("first:readClosed", "second:readClosed"),
+            f.log.filter { it.endsWith(":readClosed") },
+        )
+        assertFalse(f.channel.isOpen, "nobody claimed the end of file so the tail closes")
+
+        f.transport.releaseWritten()
+        f.tracker.assertNoLeaks()
+    }
+
+    @Test
     fun `handlers activated after the report hear it in chain order`() = readClosedTest {
         val f = Fixture(deferDrain = true)
         f.pipeline.addLast(
