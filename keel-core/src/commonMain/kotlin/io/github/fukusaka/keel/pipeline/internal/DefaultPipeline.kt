@@ -1028,16 +1028,32 @@ internal class DefaultPipeline(
 
     /**
      * Runs one composition operation — an add or a replace, through the
-     * replay the handler it adds is owed — as a single frame.
+     * replay the handler it adds is owed — with the close decision held
+     * until it returns.
      *
      * Each part opens its own frame and returns to depth zero between them:
      * `handlerAdded` closes its frame before the replay starts, and a
      * `replace` removes one handler in one frame and adds another in the
-     * next. Anything the epilogue reads would then read the chain part-way
-     * through the caller's operation, with a handler removed and its
-     * replacement not yet added.
+     * next. A decision read there would read the chain part-way through the
+     * caller's operation, with a handler removed and its replacement not yet
+     * heard.
+     *
+     * Only the decision is held. The operation is not one frame: the rest of
+     * the epilogue — the journal's owed work, the end of life — keeps running
+     * between the parts, where it ran before the decision existed.
      */
-    private inline fun <T> operation(block: () -> T): T = frame(block)
+    private inline fun <T> operation(block: () -> T): T {
+        operationDepth++
+        try {
+            return block()
+        } finally {
+            operationDepth--
+            if (operationDepth == 0 && frameDepth == 0) decideReadClosedClose()
+        }
+    }
+
+    /** How many composition operations are on the stack; see [operation]. */
+    private var operationDepth: Int = 0
 
     /**
      * Runs [block] as a handler frame. When the outermost frame returns, the
@@ -1091,9 +1107,9 @@ internal class DefaultPipeline(
      * — an activation sweep and its catch-up, the two walks of a re-offer, the
      * stages of a discard, an in-place close — return to it between steps.
      * What keeps an early reading from closing wrongly is the last condition,
-     * that no active handler owed the report has yet to hear it; `add*` and
-     * `replace` are each one frame so a caller's operation is not split, and
-     * a drain is not read until it has finished.
+     * that no active handler owed the report has yet to hear it; the decision
+     * is not read inside an `add*` or `replace` ([operation]) nor inside a
+     * drain, and each reads it once it has finished.
      *
      * A context that is still PENDING here is not counted. The activation has
      * been delivered — the report is only delivered after it — so a context
@@ -1107,7 +1123,7 @@ internal class DefaultPipeline(
      * decision already made.
      */
     private fun decideReadClosedClose() {
-        if (readClosed.decidedToClose || draining) return
+        if (readClosed.decidedToClose || draining || operationDepth > 0) return
         if (readClosedPhase != Phase.DELIVERED || endingPhase == Phase.DELIVERED || !transport.isOpen) return
         if (readClosed.claimed) return
         if (!readClosed.offered && !answerableWithoutAnOffer()) return

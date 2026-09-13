@@ -216,6 +216,29 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a writability journalled for a chain reaches the first handler added once the loop has stopped`() = readClosedTest {
+        // The same discard as above, for the writability. The discard delivers the
+        // lifecycle but not the writability; what delivers that is the replay the
+        // added handler is owed, and it only does so once the discard has run. Both
+        // belong to the add, and the discard must not wait for the add to finish.
+        val f = Fixture()
+        f.pipeline.notifyWritabilityChanged(false)
+        f.transport.owningContextAlive = false
+
+        f.pipeline.addLast(
+            "w",
+            object : Recorder("w", f.log) {
+                override fun onWritabilityChanged(ctx: PipelineHandlerContext, isWritable: Boolean) {
+                    f.log.add("w:writable=$isWritable")
+                    ctx.propagateWritabilityChanged(isWritable)
+                }
+            },
+        )
+
+        assertTrue(f.log.contains("w:writable=false"), "the journalled writability is delivered: ${f.log}")
+    }
+
+    @Test
     fun `a close a handler walked to the head is this side's`() = readClosedTest {
         // Nobody asked the pipeline for this close: a handler starts the walk from
         // its own callback and it runs all the way to the head, which is where the
@@ -1198,31 +1221,6 @@ class PipelineReadClosedDecisionTest {
     }
 
     @Test
-    fun `a replace is one operation when the handler it removes closes the channel`() = readClosedTest {
-        // The removal and the add are each a frame of their own, and depth zero
-        // came back between them: a close made while the old handler was
-        // removed ran the end of life there, and removed the replacement
-        // before it had been added.
-        val f = Fixture()
-        f.pipeline.addLast(
-            "old",
-            object : Recorder("old", f.log) {
-                override fun handlerRemoved(ctx: PipelineHandlerContext) {
-                    f.log.add("old:removed")
-                    ctx.channel.close()
-                }
-            },
-        )
-
-        f.pipeline.replace("old", "new", f.recorder("new"))
-
-        val added = f.log.indexOf("new:added")
-        val removed = f.log.indexOf("new:removed")
-        assertTrue(added >= 0, "the replacement was added: ${f.log}")
-        assertTrue(removed < 0 || added < removed, "and added before it was removed: ${f.log}")
-    }
-
-    @Test
     fun `a report closes after an ending a handler synthesized has ended every inbound handler`() = readClosedTest {
         // Outside the contract: a handler does not synthesize the ending, which
         // reaches the chain only through the channel's close. The TLS handler
@@ -1354,6 +1352,39 @@ class PipelineReadClosedDecisionTest {
 
             assertFalse(f.transport.isOpen, "nobody can answer it and nobody took it: ${f.log}")
         }
+
+    @Test
+    fun `the close is not decided part-way through a replace`() = readClosedTest {
+        // A replace links the replacement in before it removes the handler it
+        // replaces, and the report arrives from inside that removal. Read there,
+        // the replacement has not had its replay yet and so is still pending —
+        // and a pending handler is not waited on — so the connection would close
+        // before the replacement, which takes the report, has heard it.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "old",
+            object : Recorder("old", f.log) {
+                override fun handlerRemoved(ctx: PipelineHandlerContext) {
+                    f.log.add("old:removed")
+                    f.peerFin()
+                }
+            },
+        )
+
+        f.pipeline.replace(
+            "old",
+            "claimant",
+            object : Recorder("claimant", f.log) {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    f.log.add("claimant:readClosed") // taken
+                }
+            },
+        )
+
+        assertTrue(f.log.contains("claimant:readClosed"), "the replacement took the report: ${f.log}")
+        assertTrue(f.transport.isOpen, "and owns the connection: ${f.log}")
+        f.channel.close()
+    }
 }
 
 /**
