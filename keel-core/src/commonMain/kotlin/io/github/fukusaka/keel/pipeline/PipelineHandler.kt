@@ -44,7 +44,8 @@ interface PipelineHandler {
  * The default implementation of each callback propagates the event to the
  * next inbound handler via [PipelineHandlerContext.propagateRead] etc.
  *
- * **A throw does not stop a lifecycle event.** When [onActive] or [onInactive]
+ * **A throw does not stop a lifecycle event.** When [onActive],
+ * [InboundHandler.onReadClosed] or [onInactive]
  * throws, the throw reaches the handlers below as [onError], and the event
  * reaches them too: the pipeline propagates it on the handler's behalf if the
  * handler had not, and adds nothing if it had. Every handler hears each
@@ -69,13 +70,16 @@ interface PipelineHandler {
  * **Each lifecycle event arrives at most once, and the ending may come first.**
  * A handler that joins a connection already over hears [onInactive] without
  * an [onActive] before it, so what [onInactive] undoes must tolerate never
- * having been done. No activation follows an ending. [onInactive] says the
- * connection is over as far as this pipeline is concerned; it does not say the
- * transport is closed yet — on the owning loop it is still open — and whether
- * it precedes or follows [OutboundHandler.onClose] is only fixed for the
- * channel's own close on its loop. A handler passes the ending on from
- * [onInactive] and does not raise one of its own from another callback: the
- * ending is the pipeline's to deliver.
+ * having been done. No activation follows an ending, and no [onReadClosed]
+ * does either. [onInactive] says the connection is over as far as this
+ * pipeline is concerned; it does not say the transport is closed yet — on the
+ * owning loop it is still open — and whether it precedes or follows
+ * [OutboundHandler.onClose] is only fixed for the channel's own close on its
+ * loop. A handler passes the ending on from [onInactive] and does not raise
+ * one of its own from another callback: the ending is the pipeline's to
+ * deliver, and so is the peer's end of file — a handler that learns of one
+ * inside its own protocol (a TLS close_notify) passes on [onReadClosed], not
+ * the ending.
  *
  * [acceptedType] and [producedType] declare the message types this handler
  * consumes and produces. The pipeline validates type chain consistency at
@@ -143,7 +147,33 @@ interface InboundHandler : PipelineHandler {
     }
 
     /**
-     * Called when the connection has ended for this pipeline.
+     * The peer closed its side for writing: no more data will arrive, and
+     * the connection is still open and still writable.
+     *
+     * What this handler does with the event decides who owns the connection.
+     * Pass it on ([PipelineHandlerContext.propagateReadClosed]) and the
+     * answer moves down the chain; take it and the connection is this
+     * handler's — which is how a handler opts into answering a peer that
+     * half-closed, and which obliges it to close the connection when the
+     * answer is written. An event no handler takes reaches the tail, and the
+     * tail closes.
+     *
+     * The default passes it on, so a handler that does not care about the
+     * peer's end of file does not accidentally claim the connection.
+     *
+     * Once per handler. A handler that joins after the event was delivered
+     * is offered it on joining, and one that had yet to activate is offered
+     * it when it activates.
+     */
+    fun onReadClosed(ctx: PipelineHandlerContext) {
+        ctx.propagateReadClosed()
+    }
+
+    /**
+     * Called when the connection has ended for this pipeline: nothing more
+     * arrives, nothing more can be sent. The peer's end of file alone is not
+     * this — that is [onReadClosed], and the connection is still writable
+     * after it.
      *
      * At most once per handler, and possibly the first thing it hears: the
      * pipeline delivers the ending once, and a handler above that throws or

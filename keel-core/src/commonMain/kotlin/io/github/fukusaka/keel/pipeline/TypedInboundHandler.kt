@@ -139,6 +139,7 @@ private class PropagateTrackingContext(
     override fun propagateReadComplete() = delegate.propagateReadComplete()
 
     override fun propagateFlushComplete() = delegate.propagateFlushComplete()
+    override fun propagateReadClosed() = delegate.propagateReadClosed()
     override fun propagateInactive() = delegate.propagateInactive()
     override fun propagateError(cause: Throwable) = delegate.propagateError(cause)
     override fun propagateUserEvent(event: Any) = delegate.propagateUserEvent(event)

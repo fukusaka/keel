@@ -93,6 +93,25 @@ interface PipelineHandlerContext {
     /** Passes a flush completion to the next inbound handler. */
     fun propagateFlushComplete()
 
+    /**
+     * Passes the peer's end of file to the next inbound handler — and says,
+     * by passing it, that this handler is not the one that answers for the
+     * connection.
+     *
+     * Not calling it is the other answer: the handler keeps the event, which
+     * claims the connection. A claimant owes it one of the two endings —
+     * close it, or pass the event on after all — since nothing below is
+     * offered what was taken and the tail answers for nothing.
+     *
+     * This is also how a handler raises the end of file itself, for a
+     * protocol whose own close means the peer has finished: a codec turning
+     * a TLS `close_notify` into this event tells the chain below it the read
+     * side is over, and the chain answers as it would for a transport's
+     * report. It is the only way in from inside the chain.
+     */
+    fun propagateReadClosed() {
+    }
+
     /** Propagates a channel-inactive event to the next inbound handler. */
     fun propagateInactive()
 
