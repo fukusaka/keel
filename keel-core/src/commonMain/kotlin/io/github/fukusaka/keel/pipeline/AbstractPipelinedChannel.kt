@@ -292,7 +292,6 @@ abstract class AbstractPipelinedChannel(
     }
 
     /**
-     * Set by [close] before it does anything, and read — together with the
      * Records that this side asked for the close, unless the transport
      * already reported the end. Called at each ask — this channel's [close],
      * the pipeline's `requestClose`, a handler's `propagateClose` from
@@ -303,6 +302,15 @@ abstract class AbstractPipelinedChannel(
      */
     internal fun markClosedByThisSide() {
         if (endCause == EndCause.NONE) endCause = EndCause.THIS_SIDE
+    }
+
+    /**
+     * Records that the transport ended this connection, unless this side
+     * already asked. Called from each of the transport's reports before the
+     * close that follows it.
+     */
+    private fun markEndedByTransport() {
+        if (endCause == EndCause.NONE) endCause = EndCause.TRANSPORT
     }
 
     /**
@@ -345,15 +353,6 @@ abstract class AbstractPipelinedChannel(
      * inside a replayed read — and a second close from another thread both
      * find the finished steps done.
      */
-    /**
-     * Records that the transport ended this connection, unless this side
-     * already asked. Called from each of the transport's reports before the
-     * close that follows it.
-     */
-    private fun markEndedByTransport() {
-        if (endCause == EndCause.NONE) endCause = EndCause.TRANSPORT
-    }
-
     override fun close() {
         markClosedByThisSide()
         if (transport.inOwningContext) {
