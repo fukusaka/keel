@@ -1218,6 +1218,47 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a raise made while the report is still being answered does not close`() = readClosedTest {
+        // The offer is recorded before the handler is asked, so for the whole
+        // of that callback the chain reads as offered with nobody claiming
+        // and nobody passed over. A raise made from inside it walks into that
+        // window, and must still not be what closes the connection.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "upper",
+            object : Recorder("upper", f.log) {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    f.log.add("upper:readClosed")
+                    ctx.propagateRead(f.bytes(1)) // the one below raises from its own read
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addLast(
+            "lower",
+            object : Recorder("lower", f.log) {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                    (msg as IoBuf).release()
+                    ctx.propagateReadClosed()
+                }
+
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    f.log.add("lower:readClosed") // taken, not passed on
+                }
+            },
+        )
+
+        f.peerFin()
+
+        assertTrue(
+            f.channel.isOpen,
+            "the handler below went on to take the report, so nothing answers for closing it: ${f.log}",
+        )
+        f.channel.close()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
     fun `handlers activated after the report hear it in chain order`() = readClosedTest {
         val f = Fixture(deferDrain = true)
         f.pipeline.addLast(

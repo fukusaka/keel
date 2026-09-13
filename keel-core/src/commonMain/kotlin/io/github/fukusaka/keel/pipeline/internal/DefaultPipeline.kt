@@ -1452,6 +1452,20 @@ internal class DefaultPipeline(
             // lie. The pipeline's own ends hear it whatever their lifecycle
             // says — the tail is where an unclaimed event is answered.
             val ownEnd = this === pipelineRef.head || this === pipelineRef.tail
+            // The tail answers for the transport's report only. A raise says
+            // the raiser's own output is over, which leaves the descriptor
+            // open in both directions and the handlers above it reading -- so
+            // the close the tail performs for an unclaimed report, whose
+            // reason is a descriptor left in CLOSE-WAIT, has no counterpart
+            // here. An unclaimed raise goes back to the raiser instead, as
+            // the answer `propagateReadClosed` returns it.
+            //
+            // Guarded here and not left to the offer record alone. The record
+            // is written *before* the handler is asked, so for the whole of a
+            // handler's callback the chain reads as offered, unclaimed and
+            // with nobody passed over -- and that is exactly the window a
+            // raise made from inside such a callback walks into.
+            if (this === pipelineRef.tail && origin == ReadClosedOrigin.RAISE) return false
             // Outside the region the event speaks for, and below a handler
             // that took it, nothing is owed: carried past without a record,
             // since a context that is not owed the offer is not one the tail
@@ -1484,10 +1498,9 @@ internal class DefaultPipeline(
             // reaching the tail finds nothing to answer for and the raiser
             // gets the answer instead.
             //
-            // A second guard at the tail would be unreachable: an offer
-            // recorded with nobody claiming and nobody passed over is one the
-            // tail has already closed for, so no raise can arrive to find
-            // that state. This is the one place the rule lives.
+            // Recorded before the handler is asked, which is why the tail
+            // needs its own guard as well: this record alone says nothing
+            // during the callback it precedes.
             if (!ownEndContext) {
                 readClosedHeard = true
                 if (origin == ReadClosedOrigin.TRANSPORT) pipelineRef.readClosed.offered = true
