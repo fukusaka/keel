@@ -124,7 +124,43 @@ interface Pipeline {
      */
     fun notifyFlushComplete(): Pipeline
 
-    /** Notifies the pipeline that the channel is now inactive. */
+    /**
+     * The peer has closed its side for writing: an orderly end of file, and
+     * nothing else. The connection stays open and stays writable.
+     *
+     * The event travels the chain like the other inbound ones, and where it
+     * stops decides who owns what is left. A handler that takes it and does
+     * not pass it on claims the connection — it may answer the peer that
+     * half-closed, and the close is then its own to make. One that passes it
+     * on has said the connection is not its to end. When every handler has
+     * said so the event reaches the tail, which closes: the descriptor would
+     * otherwise sit in CLOSE-WAIT with nobody to release it, and the close
+     * delivers the ending the chain is owed.
+     *
+     * Offered to a chain that has handlers in it. A report that arrives to a
+     * chain nobody has joined is journalled and offered when the first
+     * handler does, since an event nobody was offered is not one the chain
+     * turned down. A context that had yet to hear the activation is offered
+     * it when it activates, and the tail is asked again behind it.
+     *
+     * A buffer that arrives for a chain whose journal is full is released
+     * rather than handed to it, and that release is recorded — once per
+     * connection, at warn — so a chain that lost bytes is not left to infer
+     * it from a protocol error later.
+     *
+     * Idempotent per connection: the first report is delivered and the rest
+     * are absorbed, which the transport's own once-per-transport contract
+     * makes the second line of rather than the first.
+     */
+    fun notifyReadClosed(): Pipeline = this
+
+    /**
+     * Notifies the pipeline that the connection has ended.
+     *
+     * The end, not the peer's end of file — that is [notifyReadClosed]. No
+     * inbound event follows, nothing can be written. Delivered once, as
+     * [InboundHandler.onInactive]; a close of the channel delivers it too.
+     */
     fun notifyInactive(): Pipeline
 
     /**

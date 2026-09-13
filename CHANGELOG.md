@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `core`: `InboundHandler.onReadClosed` / `Pipeline.notifyReadClosed` / `PipelineHandlerContext.propagateReadClosed`
+  — the peer's end of file as its own event, journalled and replayed like the other inbound events. A handler may
+  also raise one for the region below it, which is what a codec turning a TLS `close_notify` into this event does;
+  `propagateReadClosed` answers whether a handler there took it, and nothing closes for a raise nobody took —
+  the descriptor is open both ways and the handlers above are still reading, so the raiser decides;
+  `IoTransport.onClosed` — a transport reporting that it ended the connection itself;
+  `PipelinedChannel.endedByTransport` — whether the channel closed for an end it did not start, which is what a
+  `read()` finding the channel closed answers `-1` for rather than refusing as a misuse. A caller answered `-1`
+  is not handed bytes that arrive afterwards. Each is defaulted, so a
+  pipeline, context, handler, transport or channel written before them still compiles; a transport that extends
+  `AbstractIoTransport` also behaves as it did, and one implementing `IoTransport` directly answers the interface's
+  `false` and is read as telling the two ends apart (#1098)
+- `core`: `AbstractIoTransport.reportReadClosedOnce` / `reportEndOnce` / `readClosedAlreadyReported` /
+  `endAlreadyReported` — four `protected` members a transport gains for reporting the peer's end of file apart
+  from the connection's end, and for asking which has been reported (#1098)
 - `core`: `AbstractIoTransport` parks, sweeps and answers the callers waiting on a flush — one
   implementation for the three transports that wait this way, and eight `protected` members a
   subclass outside the tree gains with them (#1076)
@@ -66,6 +81,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
+  before the pipeline took it releases it, and so does one that finds the channel closed. A caller has nothing to
+  release in a `catch`; one that released the buffer itself there must stop. A write given nothing to write is
+  unchanged: it takes nothing and the buffer is still the caller's (#1098)
+- `core`: **BREAKING** (semantics, for a transport that opts in): where a transport reports the peer's end of file
+  apart from the connection's, `InboundHandler.onInactive` means the connection is over and the peer's end of file
+  is `onReadClosed`, after which the connection stays writable and in Pipeline mode the channel closes itself — so
+  an answer to a peer that half-closed is written from inside that callback. No engine in this tree opts in yet, so
+  what a handler hears is unchanged until its engine does (#1098)
+- `core`: **BREAKING** (semantics, for transports outside the tree): a transport reports the peer's end of file
+  with `reportReadClosedOnce` and every other end with `reportEndOnce`, and
+  `IoTransport.reportsEveryEndAsReadClosed` says which contract it speaks. `AbstractIoTransport` answers `true`, so
+  a transport extending it is read as it was until it overrides the property to `false`. The interface answers
+  `false`: a transport implementing `IoTransport` directly and still making one report for every end has that
+  report read as the peer's alone, so a reset or a failure reaches a chain as a half-close and no ending follows —
+  such a transport must override the property, or store `onClosed` — a channel refuses at construction a transport
+  that answers `false` and leaves that hook at its discarding default. `AbstractIoTransport.reportInactiveOnce` /
+  `inactiveAlreadyReported` are deprecated (#1098)
 - `build`: `scripts/gate.sh` (two-host pre-merge gate) and `scripts/bench-sync.sh` (bench host
   sync and build) replace `scripts/check-local.sh`, which is removed (#1100)
 - `codec-websocket`: `WsFrameDecoder` stops decoding once the connection has ended; bytes after it
@@ -147,6 +180,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `core`: a close a handler asks for with `propagateClose` off the event loop is recorded as this side's when it is
+  asked for, not when the walk lands — a transport report arriving in between read as an end under the caller (#1098)
+- `core`: a close, a close asked of the pipeline, and a journal's drain now survive a loop that refuses the hand-off
+  after answering it could take it — the closes run where the caller is, and the journal's reads are released rather
+  than stranded (#1098)
+- `core`: a Coroutine-mode `read()` after the connection ended under the caller returns `-1` instead of throwing
+  `Channel is closed` — `PipelinedChannel.endedByTransport` says which it was. Reached once an engine reports that end
+  apart from the peer's; until then a read there throws as before (#1098)
+- `core`: a handler joining a chain after the peer's end of file was delivered to an empty one is told the
+  connection is over and is removed with it, rather than hearing only that the peer finished on a channel nothing
+  goes on to close — on the path a transport reaching it must opt into; no engine in this tree does yet (#1098)
+- `core`: a handler that becomes active after the peer's end of file was delivered — one below the handler that
+  raised it from inside its own activation — now hears it, rather than never being told; on the same opt-in path (#1098)
+- `core`: a chain that had handlers when the peer's end of file was reported still releases the descriptor when
+  something empties it before the report reaches anyone — the connection is then nobody's, not its caller's; on the
+  same opt-in path (#1098)
 - `engine-io-uring`: a multishot recv the kernel ends with a data completion re-arms, so reads no longer stop
   silently after it (#1104)
 - `engine-io-uring`: a recv completion that delivers nothing returns its provided buffer, instead of losing that

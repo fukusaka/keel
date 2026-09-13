@@ -116,7 +116,10 @@ import io.github.fukusaka.keel.pipeline.IoTransport
  *                          without per-segment bookkeeping.
  * @property idleTimeoutMillis Per-connection idle (no-progress) timeout in
  *                          milliseconds: if no bytes are read from a connection
- *                          for this long, the connection is closed. This is the
+ *                          for this long while it is waiting to read, the
+ *                          connection is closed — including one whose peer has
+ *                          finished sending and whose caller never closed it.
+ *                          This is the
  *                          transport-level, protocol-agnostic time-axis defence
  *                          against slowloris / stalled peers — a peer that
  *                          connects then sends nothing (or trickles bytes below

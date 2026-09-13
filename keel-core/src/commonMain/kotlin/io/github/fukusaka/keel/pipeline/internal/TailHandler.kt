@@ -81,6 +81,31 @@ internal class TailHandler(
         // Terminal — do not propagate.
     }
 
+    /**
+     * The peer's end of file that the chain turned down.
+     *
+     * A handler that takes this event and does not pass it on claims the
+     * connection: it may answer the peer that half-closed, and it closes
+     * when it is done. One that passes it on has said the connection is not
+     * its to end, and when every handler has said so the connection has
+     * nobody left to answer for it — so the tail closes, which releases the
+     * descriptor that would otherwise sit in CLOSE-WAIT and delivers the
+     * ending the chain still needs.
+     *
+     * Not for an event the chain has not finished being offered: a context
+     * that had yet to activate is offered it when it does, and the tail is
+     * asked again after that. Not for an empty chain either — nobody has
+     * turned it down, and the report waits in the journal for the first
+     * handler to arrive.
+     */
+    override fun onReadClosed(ctx: PipelineHandlerContext) {
+        if (!pipeline.readClosed.refusedByAll) return
+        // Asked for, not performed here: the event is still travelling, and
+        // a handler joining behind it is owed the offer before the
+        // connection goes. The frame's epilogue performs it.
+        pipeline.closeOwedByTail = true
+    }
+
     override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
         logger.warn { "Unhandled user event reached TAIL: ${event::class.simpleName}" }
     }
