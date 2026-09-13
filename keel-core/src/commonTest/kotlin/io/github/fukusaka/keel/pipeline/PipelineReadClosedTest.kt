@@ -1015,6 +1015,32 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a context the tail was waiting on leaving lets the tail decide`() = readClosedTest {
+        // The tail defers while a context that has yet to activate stands in
+        // the chain. Leaving answers the question as surely as activating
+        // does, and nothing was asking again.
+        val f = Fixture(deferDrain = true)
+        f.pipeline.addLast(
+            "holder",
+            object : Recorder("holder", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    f.log.add("holder:active") // the activation is held, so the next stays pending
+                }
+            },
+        )
+        f.pipeline.addLast("waited", f.recorder("waited"))
+        f.queue.runQueued()
+        f.peerFin()
+        f.queue.runQueued()
+        assertTrue(f.channel.isOpen, "premise: the tail waits on the one that has yet to activate: ${f.log}")
+
+        f.pipeline.remove("waited")
+
+        assertFalse(f.channel.isOpen, "nobody is left to answer, so the tail closes: ${f.log}")
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
     fun `handlers activated after the report hear it in chain order`() = readClosedTest {
         val f = Fixture(deferDrain = true)
         f.pipeline.addLast(
@@ -1101,10 +1127,109 @@ class PipelineReadClosedTest {
  *
  * A raise says one handler's output is over, so what it is owed to is the
  * chain below it — and the region, not the handler, is what carries that
- * position: it outlives the raiser's removal, does not pass to a
- * replacement, and composes with a second raise without arbitration.
+ * position: it outlives the raiser's removal, is inherited by a replacement
+ * standing inside it while making that replacement no raiser of its own,
+ * and composes with a second raise without arbitration.
  */
 class PipelineReadClosedRaiseRegionTest {
+
+    /** A chain whose top handler takes the transport's report and whose next raises from its own read. */
+    private fun claimedThenRaised(f: Fixture): Fixture {
+        f.pipeline.addLast(
+            "claimant",
+            object : Recorder("claimant", f.log) {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    f.log.add("claimant:readClosed") // taken, not passed on
+                }
+            },
+        )
+        f.pipeline.addLast(
+            "raiser",
+            object : Recorder("raiser", f.log) {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                    (msg as IoBuf).release()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        return f
+    }
+
+    @Test
+    fun `a raise below a claimant reaches a handler that joins its region afterwards`() = readClosedTest {
+        // The walk that named the region is one of three places that decide
+        // who is owed it. A handler joining afterwards asks another.
+        val f = claimedThenRaised(Fixture())
+        f.pipeline.addLast("under", f.recorder("under"))
+        f.peerFin()
+        f.transport.onRead?.invoke(f.bytes(1))
+        assertTrue("under:readClosed" in f.log, "premise: the region was named: ${f.log}")
+
+        f.pipeline.addLast("late", f.recorder("late"))
+
+        assertTrue("late:readClosed" in f.log, "it joined the region the raise names: ${f.log}")
+        f.channel.close()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a raise below a claimant reaches a context in its region that activates afterwards`() = readClosedTest {
+        // And a third place: the catch-up that runs when an activation held
+        // to a later frame finally goes on.
+        val f = claimedThenRaised(Fixture(deferDrain = true))
+        var held: PipelineHandlerContext? = null
+        f.pipeline.addLast(
+            "holder",
+            object : Recorder("holder", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    f.log.add("holder:active")
+                    held = ctx
+                }
+            },
+        )
+        f.pipeline.addLast("late", f.recorder("late"))
+        f.queue.runQueued()
+        f.peerFin()
+        f.queue.runQueued()
+        f.transport.onRead?.invoke(f.bytes(1))
+        assertFalse(f.log.contains("late:active"), "premise: it was still waiting when the raise walked: ${f.log}")
+
+        checkNotNull(held).propagateActive()
+        f.queue.runQueued()
+
+        assertTrue(f.log.contains("late:active"), "premise: it activated from the later frame: ${f.log}")
+        assertTrue(f.log.contains("late:readClosed"), "an activation is owed what its region holds: ${f.log}")
+        f.channel.close()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a handler that took the report and then raised names a region its joiners inherit`() = readClosedTest {
+        val f = Fixture()
+        f.pipeline.addLast(
+            "both",
+            object : Recorder("both", f.log) {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    f.log.add("both:readClosed") // taken
+                }
+
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                    (msg as IoBuf).release()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addLast("under", f.recorder("under"))
+        f.peerFin()
+        f.transport.onRead?.invoke(f.bytes(1))
+        assertTrue("under:readClosed" in f.log, "premise: ${f.log}")
+
+        f.pipeline.addLast("late", f.recorder("late"))
+
+        assertTrue("late:readClosed" in f.log, "it joined the same region: ${f.log}")
+        f.channel.close()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
 
     @Test
     fun `a raise made below a claimant reaches the handlers under it`() = readClosedTest {

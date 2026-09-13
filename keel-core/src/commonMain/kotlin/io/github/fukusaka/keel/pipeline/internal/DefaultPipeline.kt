@@ -343,6 +343,13 @@ internal class DefaultPipeline(
         unlink(ctx)
         ctx.lifecycle = Lifecycle.REMOVED
         callHandlerRemoved(ctx)
+        // Leaving changes who is owed the event, the same way joining does.
+        // The tail defers while a context that has yet to activate stands in
+        // the chain, and nothing asked it again when that context left rather
+        // than activated -- so a report nobody was left to answer sat with
+        // the descriptor it should have released. Not while a walk is
+        // travelling: it is the one that will ask.
+        if (!destroying && readClosedCursor == null) offerReadClosedToLateActivations()
     }
 
     private fun unlink(ctx: DefaultContext) {
@@ -591,9 +598,11 @@ internal class DefaultPipeline(
      * descriptor is open in both directions.
      */
     private fun replayReadClosedTo(ctx: DefaultContext) {
-        val origin = if (readClosedPhase == Phase.DELIVERED) ReadClosedOrigin.TRANSPORT else ReadClosedOrigin.RAISE
-        if (origin == ReadClosedOrigin.TRANSPORT) readClosed.offered = true
-        ctx.deliverReadClosed(Mode.REPLAY, origin)
+        for (origin in readClosedOriginsFor(ctx)) {
+            if (origin == ReadClosedOrigin.TRANSPORT) readClosed.offered = true
+            ctx.deliverReadClosed(Mode.REPLAY, origin)
+            if (ctx.readClosedHeard) return
+        }
     }
 
     /** Latches that a raise was made; the region outlives the handler that made it. */
@@ -612,7 +621,24 @@ internal class DefaultPipeline(
      * which the context carries as a bit of its own.
      */
     private fun readClosedHoldsFor(ctx: DefaultContext): Boolean =
-        readClosedPhase == Phase.DELIVERED || ctx.belowReadClosedRaise
+        readClosedOriginsFor(ctx).isNotEmpty()
+
+    /**
+     * Which of the two events [ctx] is owed, in the order they would be
+     * delivered.
+     *
+     * Asked here in the same shape the walk asks it, and for the same reason:
+     * each region answers for its own event, so a context standing below a
+     * handler that took the transport's report may still be owed a raise made
+     * under it. Answering by the phase alone, or by one blanket claim bit,
+     * reaches only whichever of the two the phase happens to name — which is
+     * how a raise came to be delivered on the walk that named it and dropped
+     * for everything joining or activating afterwards.
+     */
+    private fun readClosedOriginsFor(ctx: DefaultContext): List<ReadClosedOrigin> = buildList {
+        if (readClosedPhase == Phase.DELIVERED && !ctx.belowReadClosedClaim) add(ReadClosedOrigin.TRANSPORT)
+        if (ctx.belowReadClosedRaise) add(ReadClosedOrigin.RAISE)
+    }
 
     /** Whether the read side is over by either route: the transport reported it, or a handler raised one. */
     private val readClosedRecorded: Boolean
@@ -633,8 +659,11 @@ internal class DefaultPipeline(
         // the record starts empty. It is written only by the transport's own
         // walk, which is the one the tail answers for.
         readClosed.passedOver = false
-        val origin = if (readClosedPhase == Phase.DELIVERED) ReadClosedOrigin.TRANSPORT else ReadClosedOrigin.RAISE
-        head.deliverReadClosed(Mode.SWEEP, origin)
+        // One walk per recorded event, since each is owed to a different set
+        // of contexts: a single walk carries one origin, and whichever it
+        // carried would turn away everyone owed the other.
+        if (readClosedPhase == Phase.DELIVERED) head.deliverReadClosed(Mode.SWEEP, ReadClosedOrigin.TRANSPORT)
+        if (readClosedRaiseMade) head.deliverReadClosed(Mode.SWEEP, ReadClosedOrigin.RAISE)
     }
 
     /**
@@ -1281,6 +1310,9 @@ internal class DefaultPipeline(
             // before the walk, so a context joining that region later
             // inherits it from the context it joins behind.
             val raisedHere = !mine
+            // Called for the mark it leaves, not for the answer it gives:
+            // this records that the context propagated, and its answer is
+            // true exactly when `replayed` is, so the return never fires.
             if (heldBack(cursor) && !replayed) return false
             if (raisedHere) recordRaisedHere()
             val origin = if (raisedHere) ReadClosedOrigin.RAISE else checkNotNull(cursor).origin
@@ -1853,10 +1885,7 @@ internal class DefaultPipeline(
         if (ctx.lifecycle != Lifecycle.ACTIVE || endingPhase == Phase.DELIVERED) return
         // The peer's end of file, if the chain heard it and no running sweep
         // will still bring it here.
-        if (readClosedHoldsFor(ctx) &&
-            readClosedCursor?.stillReaches(ctx) != true &&
-            !readClosed.isBelowClaimant(ctx)
-        ) {
+        if (readClosedHoldsFor(ctx) && readClosedCursor?.stillReaches(ctx) != true) {
             // Who owns the connection is asked again, and asked before the
             // handler hears the event — the same order the sweep uses, and
             // for the same reason: a handler that removes itself from inside
