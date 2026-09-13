@@ -132,16 +132,18 @@ interface Pipeline {
      * stops decides who owns what is left. A handler that takes it and does
      * not pass it on claims the connection — it may answer the peer that
      * half-closed, and the close is then its own to make. One that passes it
-     * on has said the connection is not its to end. When every handler has
-     * said so the event reaches the tail, which closes: the descriptor would
-     * otherwise sit in CLOSE-WAIT with nobody to release it, and the close
-     * delivers the ending the chain is owed.
+     * on has said the connection is not its to end. When every active handler
+     * owed it has answered and none took it, the pipeline closes the
+     * connection once the frame that delivered it has finished: the
+     * descriptor would otherwise sit in CLOSE-WAIT with nobody to release it,
+     * and the close delivers the ending the chain is owed.
      *
      * Offered to a chain that has handlers in it. A report that arrives to a
      * chain nobody has joined is journalled and offered when the first
      * handler does, since an event nobody was offered is not one the chain
      * turned down. A context that had yet to hear the activation is offered
-     * it when it activates, and the tail is asked again behind it.
+     * it when it activates; a context whose activation a handler above kept
+     * back past the end of a frame is not waited on for the close.
      *
      * Idempotent per connection: the first report is delivered and the rest
      * are absorbed, which the transport's own once-per-transport contract

@@ -155,8 +155,8 @@ interface InboundHandler : PipelineHandler {
      * answer moves down the chain; take it and the connection is this
      * handler's — which is how a handler opts into answering a peer that
      * half-closed, and which obliges it to close the connection when the
-     * answer is written. An event no handler takes reaches the tail, and the
-     * tail closes.
+     * answer is written. An event no handler takes closes the connection,
+     * once the frame that delivered it has finished.
      *
      * The default passes it on, so a handler that does not care about the
      * peer's end of file does not accidentally claim the connection.

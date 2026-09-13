@@ -292,15 +292,20 @@ class PipelineReadClosedTest {
             },
         )
         f.pipeline.addLast("second", f.recorder("second"))
-        f.channel.ensureBridge()
         f.queue.runQueued()
         assertTrue(f.log.contains("first:active"), "premise: the first activated: ${f.log}")
         assertFalse(f.log.contains("second:active"), "premise: the second is still waiting: ${f.log}")
+        // Joined after the activation was delivered, the bridge is activated by
+        // its own replay while the second is still waiting above it. It takes
+        // the report and so keeps the connection open: without a claimant the
+        // pipeline does not wait on a context whose activation was held back,
+        // and would close at the report.
+        f.channel.ensureBridge()
         f.peerFin()
         f.queue.runQueued()
         assertTrue(f.log.contains("first:readClosed"), "premise: the report reached the chain: ${f.log}")
         assertFalse(f.log.contains("second:readClosed"), "premise: not owed yet: ${f.log}")
-        assertTrue(f.transport.isOpen, "premise: the bridge kept the connection open")
+        assertTrue(f.transport.isOpen, "premise: the bridge took it and kept the connection open")
         checkNotNull(held).propagateActive()
         f.queue.runQueued()
         assertTrue(f.log.contains("second:active"), "premise: the second activated from the later frame: ${f.log}")
@@ -1015,29 +1020,113 @@ class PipelineReadClosedTest {
     }
 
     @Test
-    fun `a context the tail was waiting on leaving lets the tail decide`() = readClosedTest {
-        // The tail defers while a context that has yet to activate stands in
-        // the chain. Leaving answers the question as surely as activating
-        // does, and nothing was asking again.
+    fun `a context whose activation was held past the report is not waited on`() = readClosedTest {
+        // A handler that keeps the activation from the one below past the end
+        // of a frame leaves it pending, and a pending context is not counted:
+        // it is indistinguishable from one a replay left behind, and waiting
+        // on either leaves the connection with nobody to close it.
         val f = Fixture(deferDrain = true)
         f.pipeline.addLast(
             "holder",
             object : Recorder("holder", f.log) {
                 override fun onActive(ctx: PipelineHandlerContext) {
-                    f.log.add("holder:active") // the activation is held, so the next stays pending
+                    f.log.add("holder:active") // the activation is kept back
                 }
             },
         )
         f.pipeline.addLast("waited", f.recorder("waited"))
         f.queue.runQueued()
+        assertFalse(f.log.contains("waited:active"), "premise: it was kept waiting: ${f.log}")
+
         f.peerFin()
         f.queue.runQueued()
-        assertTrue(f.channel.isOpen, "premise: the tail waits on the one that has yet to activate: ${f.log}")
 
-        f.pipeline.remove("waited")
-
-        assertFalse(f.channel.isOpen, "nobody is left to answer, so the tail closes: ${f.log}")
+        assertTrue(f.log.contains("holder:readClosed"), "premise: the handler that is active heard it: ${f.log}")
+        assertFalse(f.channel.isOpen, "nobody took it, and the pending one is not waited on: ${f.log}")
         assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a claimant added in the frame the report arrived in is not closed out from under`() = readClosedTest {
+        // The report can be delivered to a chain holding only outbound handlers
+        // while an inbound one is being added in the same frame. That one has
+        // not activated yet only because its drain is scheduled, not because
+        // anyone held it back — and it goes on to take the report.
+        val f = Fixture(deferDrain = true)
+        f.pipeline.addLast(
+            "out",
+            object : OutboundHandler {
+                override fun handlerAdded(ctx: PipelineHandlerContext) {
+                    f.peerFin()
+                    ctx.pipeline.addLast(
+                        "claimant",
+                        object : Recorder("claimant", f.log) {
+                            override fun onReadClosed(ctx: PipelineHandlerContext) {
+                                f.log.add("claimant:readClosed") // taken
+                            }
+                        },
+                    )
+                }
+            },
+        )
+        f.queue.runQueued()
+
+        assertTrue(f.log.contains("claimant:readClosed"), "premise: it took the report: ${f.log}")
+        assertTrue(f.channel.isOpen, "the handler that took it owns the connection: ${f.log}")
+        f.channel.close()
+    }
+
+    @Test
+    fun `an early reading on a stopped loop does not close before an active handler hears the report`() = readClosedTest {
+        // Depth zero is reached between the stages of a discard, not only at
+        // the end of an operation. What keeps a reading there from closing is
+        // that an active handler owed the report has not heard it yet.
+        val f = Fixture(deferDrain = true)
+        f.pipeline.addLast(
+            "one",
+            object : Recorder("one", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    f.log.add("one:active")
+                    ctx.pipeline.notifyReadClosed()
+                    ctx.propagateActive()
+                }
+            },
+        )
+        f.pipeline.addLast("two", f.recorder("two"))
+        f.pipeline.addLast("x", f.recorder("x"))
+        f.transport.owningContextAlive = false
+
+        f.pipeline.remove("x")
+
+        val heard = f.log.indexOf("two:readClosed")
+        val ended = f.log.indexOf("two:inactive")
+        assertTrue(heard >= 0, "the active handler below heard the report: ${f.log}")
+        assertTrue(ended < 0 || heard < ended, "and heard it before the connection ended: ${f.log}")
+    }
+
+    @Test
+    fun `a replace is one operation when the handler it removes closes the channel`() = readClosedTest {
+        // The removal and the add are each a frame of their own, and depth zero
+        // came back between them: a close made while the old handler was
+        // removed ran the end of life there, and removed the replacement
+        // before it had been added.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "old",
+            object : Recorder("old", f.log) {
+                override fun handlerRemoved(ctx: PipelineHandlerContext) {
+                    f.log.add("old:removed")
+                    ctx.channel.close()
+                }
+            },
+        )
+
+        f.pipeline.replace("old", "new", f.recorder("new"))
+
+        val added = f.log.indexOf("new:added")
+        val removed = f.log.indexOf("new:removed")
+        assertTrue(added >= 0, "the replacement was added: ${f.log}")
+        assertTrue(removed < 0 || added < removed, "and added before it was removed: ${f.log}")
     }
 
     @Test

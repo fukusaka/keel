@@ -82,46 +82,30 @@ internal class TailHandler(
     }
 
     /**
-     * The peer's end of file that the chain turned down.
+     * The peer's end of file reaching the end of the chain. Terminal, and
+     * nothing is decided here.
      *
-     * A handler that takes this event and does not pass it on claims the
-     * connection: it may answer the peer that half-closed, and it closes
-     * when it is done. One that passes it on has said the connection is not
-     * its to end, and when every handler has said so the connection has
-     * nobody left to answer for it — so the tail closes, which releases the
-     * descriptor that would otherwise sit in CLOSE-WAIT and delivers the
-     * ending the chain still needs.
+     * Whether the connection closes for an event nobody took is read by the
+     * pipeline once the frame that delivered it has finished, not as the
+     * event arrives: arriving, it can find a handler that took the event
+     * before that handler's callback has returned to record it, and a
+     * handler that is leaving the chain in the same operation before it has
+     * gone. See [DefaultPipeline.decideReadClosedClose].
      *
-     * Not for an event the chain has not finished being offered: a context
-     * that had yet to activate is offered it when it does, and the tail is
-     * asked again after that. Not for an empty chain either — nobody has
-     * turned it down, and the report waits for the first handler to arrive —
-     * in the journal while one is still filling, and in the record of an
-     * offer nobody has been made once it has drained.
-     *
-     * Not for an end of file a handler raised, either. That one says one
-     * handler's own output is over, which leaves the descriptor open in both
-     * directions and the handlers above it reading, so the CLOSE-WAIT this
-     * close exists to release is not what a raise leaves behind. The answer
-     * goes back to the handler that raised it instead.
-     *
-     * **And a handler that took either kind has taken the connection, not
-     * the event.** So once one has, this closes for nothing afterwards —
-     * including the transport's own report, which such a handler is not even
-     * told about, since it has heard the read side end once already and
-     * hears it once. What looks from here like a report nobody answered is a
-     * report whose answer was given earlier, by a handler that owed the close —
-     * one that may since have left the chain, which does not give the claim
-     * back. Where a read-idle timeout is configured it reclaims a connection
-     * whose claimant never closes; it is off by default, and there the
-     * connection is held until its owner closes it.
+     * What is decided there: the connection closes for the transport's
+     * report when it was offered to a handler, no handler took it, and no
+     * active handler owed it has still to hear it — releasing the descriptor
+     * that would otherwise sit in CLOSE-WAIT, and delivering the ending the
+     * chain still needs. A handler that took either kind of end of file has
+     * taken the connection, and nothing closes for it afterwards; one that
+     * leaves the chain does not give the claim back. A raise is never closed
+     * for: it leaves the descriptor open in both directions with the handlers
+     * above still reading, and its answer goes back to the handler that
+     * raised it. A claimant that never closes leaves the connection to a
+     * read-idle timeout where one is configured — it is off by default.
      */
     override fun onReadClosed(ctx: PipelineHandlerContext) {
-        if (!pipeline.readClosed.refusedByAll) return
-        // Asked for, not performed here: the event is still travelling, and
-        // a handler joining behind it is owed the offer before the
-        // connection goes. The frame's epilogue performs it.
-        pipeline.closeOwedByTail = true
+        // Terminal — do not propagate.
     }
 
     override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {

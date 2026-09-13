@@ -99,25 +99,30 @@ interface PipelineHandlerContext {
      * connection.
      *
      * Not calling it is the other answer: the handler keeps the event, which
-     * claims the connection. A claimant owes it one of the two endings —
-     * close it, or pass the event on after all — since nothing below is
-     * offered what was taken and the tail answers for nothing.
+     * claims the connection, and the close is then the claimant's to make —
+     * nothing below is offered what was taken, and nothing else closes for
+     * it. A claimant that wants the handlers below to hear the end of file
+     * first calls this afterwards, which raises it for the region below: it
+     * does not give the claim back, and its answer says whether a handler
+     * below took the connection over, in which case the claimant must not
+     * close.
      *
      * The connection, not the event. A handler that keeps an end of file
      * another handler raised has taken the connection just as surely as one
      * that keeps the transport's report, and owes the same close. It will
      * not be told when the transport reports afterwards: it has heard the
      * read side end once, and hears it once. Nothing else closes for it
-     * either — the tail answers for a report only while no handler has taken
-     * one — so a claimant that never closes leaves the connection to a
+     * either — the pipeline closes for a report only while no handler has
+     * taken one — so a claimant that never closes leaves the connection to a
      * read-idle timeout where one is configured, and holds it where none
      * is.
      *
      * This is also how a handler raises the end of file itself, for a
      * protocol whose own close means the peer has finished: a codec turning
      * a TLS `close_notify` into this event tells the chain below it the read
-     * side is over, and the chain answers as it would for a transport's
-     * report. It is the only way a handler raises one for the region below it;
+     * side is over. The chain below answers it as it would the transport's
+     * report — each handler passes it on or takes it — but nothing closes for
+     * a raise nobody took. It is the only way a handler raises one for the region below it;
      * `Pipeline.notifyReadClosed` is the transport's entrance, and the
      * channel's to call.
      *
@@ -137,7 +142,7 @@ interface PipelineHandlerContext {
      * on. The walk runs to the end of the region before this call returns, so
      * the answer is settled here. Nothing closes for an unclaimed raise: the
      * descriptor is open in both directions and the handlers above are still
-     * reading, so the close the tail performs for an unclaimed report from
+     * reading, so the close the pipeline makes for an unclaimed report from
      * the transport has no counterpart. A handler that raised the event and
      * wants the connection ended closes it here, having been told that
      * nobody below took it; told that somebody did, it must not close, since
