@@ -81,6 +81,33 @@ internal class TailHandler(
         // Terminal — do not propagate.
     }
 
+    /**
+     * The peer's end of file reaching the end of the chain. Terminal, and
+     * nothing is decided here.
+     *
+     * Whether the connection closes for an event nobody took is read by the
+     * pipeline once the frame that delivered it has finished, not as the
+     * event arrives: arriving, it can find a handler that took the event
+     * before that handler's callback has returned to record it, and a
+     * handler that is leaving the chain in the same operation before it has
+     * gone. See [DefaultPipeline.decideReadClosedClose].
+     *
+     * What is decided there: the connection closes for the transport's
+     * report when it was offered to a handler, no handler took it, and no
+     * active handler owed it has still to hear it — releasing the descriptor
+     * that would otherwise sit in CLOSE-WAIT, and delivering the ending the
+     * chain still needs. A handler that took either kind of end of file has
+     * taken the connection, and nothing closes for it afterwards; one that
+     * leaves the chain does not give the claim back. A raise is never closed
+     * for: it leaves the descriptor open in both directions with the handlers
+     * above still reading, and its answer goes back to the handler that
+     * raised it. A claimant that never closes leaves the connection to a
+     * read-idle timeout where one is configured — it is off by default.
+     */
+    override fun onReadClosed(ctx: PipelineHandlerContext) {
+        // Terminal — do not propagate.
+    }
+
     override fun onUserEvent(ctx: PipelineHandlerContext, event: Any) {
         logger.warn { "Unhandled user event reached TAIL: ${event::class.simpleName}" }
     }

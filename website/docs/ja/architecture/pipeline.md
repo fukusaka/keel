@@ -76,6 +76,7 @@ interface InboundHandler : PipelineHandler {
     fun onActive(ctx: PipelineHandlerContext) { ctx.propagateActive() }
     fun onRead(ctx: PipelineHandlerContext, msg: Any) { ctx.propagateRead(msg) }
     fun onReadComplete(ctx: PipelineHandlerContext) { ctx.propagateReadComplete() }
+    fun onReadClosed(ctx: PipelineHandlerContext) { ctx.propagateReadClosed() }
     fun onInactive(ctx: PipelineHandlerContext) { ctx.propagateInactive() }
     fun onError(ctx: PipelineHandlerContext, cause: Throwable) { ctx.propagateError(cause) }
     fun onUserEvent(ctx: PipelineHandlerContext, event: Any) { ctx.propagateUserEvent(event) }

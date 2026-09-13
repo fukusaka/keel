@@ -5,6 +5,7 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.debug
 import io.github.fukusaka.keel.logging.error
 import io.github.fukusaka.keel.logging.warn
+import io.github.fukusaka.keel.pipeline.AbstractPipelinedChannel
 import io.github.fukusaka.keel.pipeline.InboundHandler
 import io.github.fukusaka.keel.pipeline.IoTransport
 import io.github.fukusaka.keel.pipeline.OutboundHandler
@@ -14,7 +15,6 @@ import io.github.fukusaka.keel.pipeline.PipelineHandlerContext
 import io.github.fukusaka.keel.pipeline.PipelineTypeException
 import io.github.fukusaka.keel.pipeline.PipelinedChannel
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Runnable
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.EmptyCoroutineContext
@@ -40,9 +40,11 @@ import kotlin.coroutines.EmptyCoroutineContext
  * **State.** Everything the pipeline decides on is a record of something that
  * happened, kept as a small state machine rather than as a set of flags:
  *
- * - [activationPhase] / [endingPhase]: `NONE → OBSERVED → DELIVERED`. Observed
- *   when the transport reported it while the journal was still collecting;
- *   delivered when the sweep from the head started.
+ * - [activationPhase] / [readClosedPhase] / [endingPhase]: `NONE → OBSERVED →
+ *   DELIVERED`. Observed when the transport reported it while the journal was
+ *   still collecting; delivered when the sweep from the head started. The
+ *   peer's end of file sits between the other two, and is journalled and
+ *   replayed the same way ([readClosedCursor] alongside the other cursors).
  * - [journal]: `FILLING → DRAIN_SCHEDULED | DRAIN_OWED → DRAINED`, or
  *   `→ DISCARD_OWED | DISCARDED` when nothing will ever drain it. The pre-attach
  *   journal holds what arrived before the first inbound handler.
@@ -96,20 +98,6 @@ internal class DefaultPipeline(
 
     // --- State ---
 
-    /** Whether the transport reported the event, and whether the sweep from the head has started. */
-    private enum class Phase { NONE, OBSERVED, DELIVERED }
-
-    /** The close walk: running while a close delivery that invoked a handler is on the stack. */
-    private enum class CloseWalk { NONE, RUNNING, DONE }
-
-    /**
-     * The pre-attach journal. `DRAIN_SCHEDULED`: a drain is queued on the
-     * dispatcher. `DRAIN_OWED`: an inline dispatcher, the drain runs when the
-     * outermost handler frame returns. `DISCARD_OWED`: the reads are already
-     * released, the lifecycle delivery is owed to the same epilogue.
-     */
-    private enum class Journal { FILLING, DRAIN_SCHEDULED, DRAIN_OWED, DRAINED, DISCARD_OWED, DISCARDED }
-
     /** The pipeline's end of life; see [terminate]. */
     internal enum class Life { LIVE, TERMINATE_OWED, ENDING, DESTROYING, DESTROYED }
 
@@ -124,6 +112,18 @@ internal class DefaultPipeline(
     internal enum class Lifecycle { PENDING, ACTIVE, ENDED, REMOVED }
 
     private var activationPhase: Phase = Phase.NONE
+
+    /**
+     * The peer's end of file: observed by [notifyReadClosed], delivered by
+     * the read-closed sweep. Sits between the activation and the ending and
+     * is never delivered after the ending — a read side that closes after
+     * the connection ended is no news.
+     */
+    private var readClosedPhase: Phase = Phase.NONE
+
+    /** Who has been offered the peer's end of file, and who took it. */
+    internal val readClosed = ReadClosedOwnership()
+
     private var endingPhase: Phase = Phase.NONE
     private var closeWalk: CloseWalk = CloseWalk.NONE
 
@@ -168,24 +168,8 @@ internal class DefaultPipeline(
      */
     private var writabilityCurrent: Boolean? = null
 
-    /**
-     * Where a lifecycle sweep is: the context whose handler is being invoked,
-     * how (sweep or replay), and whether it has propagated yet. A handler
-     * installed below a sweep that has not propagated is reached by the
-     * sweep and not replayed to as well; a handler that throws without
-     * propagating has the event propagated on its behalf; a replayed event's
-     * default propagation is held back ([DefaultContext.heldBack]). Nested
-     * sweeps restore the outer cursor.
-     */
-    private class Cursor(val ctx: DefaultContext, val mode: Mode) {
-        var propagated: Boolean = false
-
-        /** Whether this sweep has yet to reach [target]: it lies ahead of a handler that has not propagated. */
-        fun stillReaches(target: DefaultContext): Boolean =
-            mode == Mode.SWEEP && !propagated && ctx.leadsTo(target)
-    }
-
     private var activeCursor: Cursor? = null
+    private var readClosedCursor: Cursor? = null
     private var inactiveCursor: Cursor? = null
     private var writabilityCursor: Cursor? = null
     private var closeCursor: Cursor? = null
@@ -279,57 +263,57 @@ internal class DefaultPipeline(
 
     // --- Composition ---
 
-    override fun addFirst(name: String, handler: PipelineHandler): Pipeline {
+    override fun addFirst(name: String, handler: PipelineHandler): Pipeline = operation {
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
         val after = head.next!!
-        validateInboundTypeChain(head.handler, handler, name)
-        validateInboundTypeChain(handler, after.handler, after.name)
+        validateInboundTypeChain(head, head.handler, handler, name)
+        validateInboundTypeChain(head, handler, after.handler, after.name)
         insertBetween(head, newCtx, after)
         callHandlerAdded(newCtx)
-        return this
+        this
     }
 
-    override fun addLast(name: String, handler: PipelineHandler): Pipeline {
+    override fun addLast(name: String, handler: PipelineHandler): Pipeline = operation {
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
         val before = tail.prev!!
-        validateInboundTypeChain(before.handler, handler, name)
-        validateInboundTypeChain(handler, tail.handler, "TAIL")
+        validateInboundTypeChain(head, before.handler, handler, name)
+        validateInboundTypeChain(head, handler, tail.handler, "TAIL")
         insertBetween(before, newCtx, tail)
         callHandlerAdded(newCtx)
-        return this
+        this
     }
 
-    override fun addBefore(baseName: String, name: String, handler: PipelineHandler): Pipeline {
+    override fun addBefore(baseName: String, name: String, handler: PipelineHandler): Pipeline = operation {
         val base = getContext(baseName)
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
         val before = base.prev!!
-        validateInboundTypeChain(before.handler, handler, name)
-        validateInboundTypeChain(handler, base.handler, baseName)
+        validateInboundTypeChain(head, before.handler, handler, name)
+        validateInboundTypeChain(head, handler, base.handler, baseName)
         insertBetween(before, newCtx, base)
         callHandlerAdded(newCtx)
-        return this
+        this
     }
 
-    override fun addAfter(baseName: String, name: String, handler: PipelineHandler): Pipeline {
+    override fun addAfter(baseName: String, name: String, handler: PipelineHandler): Pipeline = operation {
         val base = getContext(baseName)
         checkDuplicateName(name)
         val newCtx = DefaultContext(this, name, handler)
         val after = base.next!!
-        validateInboundTypeChain(base.handler, handler, name)
-        validateInboundTypeChain(handler, after.handler, after.name)
+        validateInboundTypeChain(head, base.handler, handler, name)
+        validateInboundTypeChain(head, handler, after.handler, after.name)
         insertBetween(base, newCtx, after)
         callHandlerAdded(newCtx)
-        return this
+        this
     }
 
     override fun remove(name: String): PipelineHandler {
         val ctx = getContext(name)
         val prev = ctx.prev!!
         val next = ctx.next!!
-        validateInboundTypeChain(prev.handler, next.handler, next.name)
+        validateInboundTypeChain(head, prev.handler, next.handler, next.name)
         removeContext(ctx)
         // A mutation on a stopped loop is the last chance to notice that the
         // journal's drain is never going to run — the same as for an add.
@@ -368,18 +352,23 @@ internal class DefaultPipeline(
         if (next != null && next.prev === ctx) next.prev = prev
     }
 
-    override fun replace(oldName: String, newName: String, newHandler: PipelineHandler): PipelineHandler {
+    override fun replace(oldName: String, newName: String, newHandler: PipelineHandler): PipelineHandler = operation {
         val oldCtx = getContext(oldName)
         if (oldName != newName) checkDuplicateName(newName)
         val prev = oldCtx.prev!!
         val next = oldCtx.next!!
-        validateInboundTypeChain(prev.handler, newHandler, newName)
-        validateInboundTypeChain(newHandler, next.handler, next.name)
+        validateInboundTypeChain(head, prev.handler, newHandler, newName)
+        validateInboundTypeChain(head, newHandler, next.handler, next.name)
         val newCtx = DefaultContext(this, newName, newHandler)
         prev.next = newCtx
         newCtx.prev = prev
         newCtx.next = next
         next.prev = newCtx
+        // The region of the context it replaces, since that is where it now
+        // stands -- and not that context's own raise or claim, which a
+        // replacement has not made. Replacing a handler that raised is a
+        // contract violation anyway, since a raise cannot be taken back.
+        newCtx.takeReadClosedRegionOf(oldCtx)
         // The old context is pointed at its replacement in both directions,
         // as in Netty: what the replaced handler forwards after replacing
         // itself — an upgrade decoder handing on the bytes it did not
@@ -389,7 +378,7 @@ internal class DefaultPipeline(
         oldCtx.lifecycle = Lifecycle.REMOVED
         callHandlerRemoved(oldCtx)
         callHandlerAdded(newCtx)
-        return oldCtx.handler
+        oldCtx.handler
     }
 
     override fun get(name: String): PipelineHandler? = findContext(name)?.handler
@@ -463,6 +452,30 @@ internal class DefaultPipeline(
             // activation issues a flush inside that window, and dropping its
             // answer loses it for good.
             else -> pendingFlushCompletions++
+        }
+        return this
+    }
+
+    override fun notifyReadClosed(): Pipeline {
+        if (destroying || readClosedPhase == Phase.DELIVERED || endingPhase == Phase.DELIVERED) return this
+        when (journal) {
+            // Not after the descriptor is gone — there is no connection left
+            // to answer on, so what the chain is owed there is the ending, and
+            // it is owed it: a handler releases what it holds on being
+            // removed, and the removal comes with the ending.
+            Journal.DRAINED, Journal.DISCARDED ->
+                if (ended) startEndingSweep() else startReadClosedSweep()
+            // A chain with handlers but none inbound never asks for a drain,
+            // so a FIN journalled for it would wait forever: it is swept now
+            // — the sweep reaches nobody, and the channel decides on it.
+            // Not on a descriptor that is already gone, which is the same
+            // question the branch above asks: a sweep there reaches the head's
+            // own refusal, which asks the tail's close of a frame that is not
+            // running, and nothing performs it. Journalled instead — the
+            // drain declines it for the same reason, and the ending is what
+            // the chain is owed.
+            Journal.FILLING -> if (ended || isEmpty) readClosedPhase = Phase.OBSERVED else startReadClosedSweep()
+            else -> readClosedPhase = Phase.OBSERVED
         }
         return this
     }
@@ -549,8 +562,132 @@ internal class DefaultPipeline(
     }
 
     private fun startActivationSweep() {
-        activationPhase = Phase.DELIVERED
-        head.deliverActive(Mode.SWEEP)
+        activationSweepRunning = true
+        try {
+            activationPhase = Phase.DELIVERED
+            head.deliverActive(Mode.SWEEP)
+            // A report that arrived while this sweep was running — a handler
+            // raising its own end of stream from inside its activation is the
+            // documented shape — reached only the handlers active then. The
+            // ones this sweep activated after it are owed it too, swept again
+            // from the head rather than caught up where each context
+            // activates: that happens as the recursion unwinds, so the chain
+            // would hear it tail first. Every context that already heard it
+            // returns at its own record.
+            if (readClosedRecorded && endingPhase != Phase.DELIVERED && transport.isOpen) {
+                reofferReadClosed()
+            }
+        } finally {
+            activationSweepRunning = false
+        }
+    }
+
+    /**
+     * Replays the peer's end of file to a context that just joined or just
+     * activated, carrying the origin the state came from.
+     *
+     * Delivered as the transport's report, a replayed raise would record the
+     * offer and let its carry-on ask the tail to close a connection whose
+     * descriptor is open in both directions.
+     */
+    private fun replayReadClosedTo(ctx: DefaultContext) {
+        for (origin in readClosedOriginsFor(ctx)) {
+            if (origin == ReadClosedOrigin.TRANSPORT) readClosed.offered = true
+            ctx.deliverReadClosed(Mode.REPLAY, origin)
+            if (ctx.readClosedHeard) return
+        }
+    }
+
+    /** Latches that a raise was made; the region outlives the handler that made it. */
+    internal fun recordReadClosedRaiseMade() {
+        readClosedRaiseMade = true
+    }
+
+    /** Whether the ending has been delivered; read by a context recording a raise. */
+    internal val endingPhaseDelivered: Boolean get() = endingPhase == Phase.DELIVERED
+
+    /**
+     * Whether the peer's end of file holds for [ctx] — the two ways it can.
+     *
+     * The transport's report is about the connection and is owed to every
+     * context. A raise is about the region below the handler that made it,
+     * which the context carries as a bit of its own.
+     */
+    private fun readClosedHoldsFor(ctx: DefaultContext): Boolean =
+        readClosedOriginsFor(ctx).isNotEmpty()
+
+    /**
+     * Which of the two events [ctx] is owed, in the order they would be
+     * delivered.
+     *
+     * Asked here in the same shape the walk asks it, and for the same reason:
+     * each region answers for its own event, so a context standing below a
+     * handler that took the transport's report may still be owed a raise made
+     * under it. Answering by the phase alone, or by one blanket claim bit,
+     * reaches only whichever of the two the phase happens to name — which is
+     * how a raise came to be delivered on the walk that named it and dropped
+     * for everything joining or activating afterwards.
+     */
+    private fun readClosedOriginsFor(ctx: DefaultContext): List<ReadClosedOrigin> =
+        ReadClosedOrigin.entries.filter { owesReadClosed(ctx, it) }
+
+    /**
+     * Whether [ctx] is owed the event [origin] names — the one place that
+     * question is answered.
+     *
+     * Every path that decides whether to hand a context the peer's end of
+     * file asks it here: the walk as it reaches each context, the replay a
+     * joining handler gets, and the catch-up for a late activation. It used
+     * to be answered in more than one place, and each time the answer was
+     * corrected in one of them the others went on answering the old way.
+     *
+     * The transport's report is owed once it has been reported, except below
+     * a handler that took it. A raise is owed inside the region its raiser
+     * named. Each region answers only for its own event.
+     */
+    internal fun owesReadClosed(ctx: DefaultContext, origin: ReadClosedOrigin): Boolean =
+        when (origin) {
+            ReadClosedOrigin.TRANSPORT -> readClosedPhase == Phase.DELIVERED && !ctx.belowReadClosedClaim
+            ReadClosedOrigin.RAISE -> ctx.belowReadClosedRaise
+        }
+
+    /** Whether the read side is over by either route: the transport reported it, or a handler raised one. */
+    private val readClosedRecorded: Boolean
+        get() = readClosedPhase == Phase.DELIVERED || readClosedRaiseMade
+
+    /**
+     * Walks the event again for the contexts the last walk could not offer it
+     * to, from the head, with each context answering for itself whether it is
+     * owed it.
+     *
+     * Not a fresh report: nothing here decides that the read side is over, so
+     * the phase is left alone. Setting it would swallow the transport's own
+     * report when a handler raised one first, and the raiser is owed that
+     * report.
+     */
+    private fun reofferReadClosed() {
+        // One walk per recorded event, since each is owed to a different set
+        // of contexts: a single walk carries one origin, and whichever it
+        // carried would turn away everyone owed the other.
+        if (readClosedPhase == Phase.DELIVERED) head.deliverReadClosed(Mode.SWEEP, ReadClosedOrigin.TRANSPORT)
+        if (readClosedRaiseMade) head.deliverReadClosed(Mode.SWEEP, ReadClosedOrigin.RAISE)
+    }
+
+    /**
+     * Whether a handler has raised the event on this chain.
+     *
+     * Latched, not searched. The region a raise speaks for outlives the
+     * handler that named it — that is the whole of why the region is what
+     * carries the position — so asking the live chain whether a raiser is
+     * still in it answers a different question, and answers it wrongly: the
+     * contexts standing in the region are still owed the event after their
+     * raiser has gone.
+     */
+    private var readClosedRaiseMade: Boolean = false
+
+    private fun startReadClosedSweep() {
+        readClosedPhase = Phase.DELIVERED
+        head.deliverReadClosed(Mode.SWEEP, ReadClosedOrigin.TRANSPORT)
     }
 
     private fun startEndingSweep() {
@@ -592,7 +729,25 @@ internal class DefaultPipeline(
             return true
         }
         if (!transport.isOpen || !transport.canDispatchToOwningContext) return false
-        ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
+        return handOff { block() }
+    }
+
+    /**
+     * Gives [block] to the loop, and answers whether the loop took it.
+     *
+     * A loop answers whether it can take a hand-off and is given one a moment
+     * later, and it can stop in between; a throw here is that. Each caller has
+     * its own answer for a loop that cannot take the work — tell whoever handed
+     * the work over, run the close in place, release the reads nothing will
+     * drain — and a refusal is answered the same way rather than travelling.
+     */
+    private inline fun handOff(crossinline block: () -> Unit): Boolean {
+        try {
+            ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
+        } catch (refused: Throwable) {
+            logger.warn(refused) { "the loop refused a hand-off it said it could take" }
+            return false
+        }
         return true
     }
 
@@ -612,10 +767,7 @@ internal class DefaultPipeline(
             block()
             return
         }
-        if (transport.canDispatchToOwningContext) {
-            ioDispatcher.dispatch(EmptyCoroutineContext) { block() }
-            return
-        }
+        if (transport.canDispatchToOwningContext && handOff { block() }) return
         runInPlace { block() }
     }
 
@@ -649,7 +801,40 @@ internal class DefaultPipeline(
         return this
     }
 
+    /**
+     * The close the tail asked for, waiting for the walk it was decided in to
+     * finish. Performed by the frame epilogue, so the event reaches the rest
+     * of the chain before the connection goes.
+     */
+    internal var closeOwedByTail = false
+
+    /**
+     * Offers the peer's end of file, if it is still true, to whoever has just
+     * become active and has not heard it — swept from the head, since the
+     * contexts below are owed it in chain order and each that heard it stops
+     * at its own record.
+     */
+    internal fun offerReadClosedToLateActivations() {
+        if (activationSweepRunning) return
+        if (!readClosedRecorded) return
+        if (endingPhase == Phase.DELIVERED || !transport.isOpen) return
+        reofferReadClosed()
+    }
+
+    /**
+     * Whether an activation sweep is running. It catches its own contexts up
+     * at the end, in one walk from the head; a context activating inside it
+     * is not owed a walk of its own.
+     */
+    private var activationSweepRunning = false
+
+    /** Tells the channel this side asked for the close; one outside this module carries no cause. */
+    internal fun askedCloseFromThisSide() {
+        (channel as? AbstractPipelinedChannel)?.markClosedByThisSide()
+    }
+
     override fun requestClose(): Pipeline {
+        askedCloseFromThisSide()
         onOwningContextForClose { startTailWalk() }
         return this
     }
@@ -704,6 +889,10 @@ internal class DefaultPipeline(
             startTailWalk()
         }
         if (transport.isOpen) {
+            // The other place this side releases the transport: a handler
+            // consumed the walk, so it never reached the head, and the close
+            // is finished here instead. Nothing is recorded: the ask that
+            // started this walk already said whose close it is.
             try {
                 transport.close()
             } catch (e: Throwable) {
@@ -838,6 +1027,35 @@ internal class DefaultPipeline(
     // --- Frames ---
 
     /**
+     * Runs one composition operation — an add or a replace, through the
+     * replay the handler it adds is owed — with the close decision held
+     * until it returns.
+     *
+     * Each part opens its own frame and returns to depth zero between them:
+     * `handlerAdded` closes its frame before the replay starts, and a
+     * `replace` removes one handler in one frame and adds another in the
+     * next. A decision read there would read the chain part-way through the
+     * caller's operation, with a handler removed and its replacement not yet
+     * heard.
+     *
+     * Only the decision is held. The operation is not one frame: the rest of
+     * the epilogue — the journal's owed work, the end of life — keeps running
+     * between the parts, where it ran before the decision existed.
+     */
+    private inline fun <T> operation(block: () -> T): T {
+        operationDepth++
+        try {
+            return block()
+        } finally {
+            operationDepth--
+            if (operationDepth == 0 && frameDepth == 0) decideReadClosedClose()
+        }
+    }
+
+    /** How many composition operations are on the stack; see [operation]. */
+    private var operationDepth: Int = 0
+
+    /**
      * Runs [block] as a handler frame. When the outermost frame returns, the
      * work owed to the epilogue runs ([runOwed]) — after a throw too.
      */
@@ -863,17 +1081,100 @@ internal class DefaultPipeline(
             Journal.DISCARD_OWED -> deliverDiscardedLifecycle()
             else -> {}
         }
+        if (closeOwedByTail) {
+            closeOwedByTail = false
+            channel.close()
+        }
+        decideReadClosedClose()
         if (life == Life.TERMINATE_OWED) terminate()
     }
 
-    // --- Internal ---
+    /** Set for the length of a journal drain, so no decision is read off a half-delivered journal. */
+    private var draining: Boolean = false
 
-    private fun insertBetween(before: DefaultContext, new: DefaultContext, after: DefaultContext) {
-        before.next = new
-        new.prev = before
-        new.next = after
-        after.prev = new
+    /**
+     * Closes the connection for the transport's report if every handler it
+     * is owed to has answered and none of them took it.
+     *
+     * Read here, at depth zero, and not by the tail as the event reaches it.
+     * Acting as the walk arrives reads a partial set of answers: a handler
+     * that takes the event records the claim only when its callback returns,
+     * and one that leaves the chain in the same operation has not left yet.
+     * What is read is the record of what handlers did — heard, claimed — and
+     * who is in the chain now, not an inference of what the chain is for.
+     *
+     * Depth zero is not the end of an operation: several internal sequences
+     * — an activation sweep and its catch-up, the two walks of a re-offer, the
+     * stages of a discard, an in-place close — return to it between steps.
+     * What keeps an early reading from closing wrongly is the last condition,
+     * that no active handler owed the report has yet to hear it; the decision
+     * is not read inside an `add*` or `replace` ([operation]) nor inside a
+     * drain, and each reads it once it has finished.
+     *
+     * A context that is still PENDING here is not counted. The activation has
+     * been delivered — the report is only delivered after it — so a context
+     * that has not activated by the end of a frame is one whose activation a
+     * handler above kept back. That is a rule rather than an observation: an
+     * activation held on purpose and one a replay left behind look the same
+     * from here, and counting either leaves a connection nobody closes.
+     *
+     * Consumed before it acts, like the rest of the epilogue's work: the close
+     * runs a drain whose own frames come back here, and they must find the
+     * decision already made.
+     */
+    private fun decideReadClosedClose() {
+        if (readClosed.decidedToClose || draining || operationDepth > 0) return
+        if (readClosedPhase != Phase.DELIVERED || endingPhase == Phase.DELIVERED || !transport.isOpen) return
+        if (readClosed.claimed) return
+        if (!readClosed.offered && !answerableWithoutAnOffer()) return
+        var c = head.next
+        while (c != null && c !== tail) {
+            if (stillToAnswerTheReport(c)) return
+            c = c.next
+        }
+        readClosed.decidedToClose = true
+        channel.close()
     }
+
+    /** An active inbound handler owed the transport's report that has not heard it yet. */
+    private fun stillToAnswerTheReport(c: DefaultContext): Boolean {
+        if (c.handler !is InboundHandler || c.lifecycle != Lifecycle.ACTIVE) return false
+        return owesReadClosed(c, ReadClosedOrigin.TRANSPORT) && !c.readClosedHeard
+    }
+
+    /**
+     * Whether the chain can be closed for the report although no handler was
+     * offered it — as opposed to the chain nobody has joined, which waits for
+     * the first handler to arrive.
+     *
+     * A chain whose handlers are all outbound has nobody who can be offered it.
+     * And once the activation has reached the chain, whoever is left without
+     * an offer is past being offered one — ended, already told the read side
+     * is over, or kept pending by a handler above — which is not waiting for a
+     * handler to arrive. What still waits is a chain with an inbound handler
+     * whose activation has not been delivered yet: it has joined, and the
+     * report is on its way to it.
+     *
+     * An offer alone stood in for "an inbound handler could be offered it",
+     * and the two part company exactly there: every inbound handler left is
+     * past being offered, so none is, and the chain was read as one nobody
+     * had joined and left open.
+     */
+    private fun answerableWithoutAnOffer(): Boolean {
+        if (isEmpty) return false
+        return activationPhase == Phase.DELIVERED || noInboundHandler()
+    }
+
+    private fun noInboundHandler(): Boolean {
+        var c = head.next
+        while (c != null && c !== tail) {
+            if (c.handler is InboundHandler) return false
+            c = c.next
+        }
+        return true
+    }
+
+    // --- Internal ---
 
     private fun findContext(name: String): DefaultContext? {
         var ctx = head.next
@@ -948,7 +1249,10 @@ internal class DefaultPipeline(
             discardJournal(JournalDiscard.OWNING_CONTEXT_STOPPED)
         } else if (ioDispatcher.isDispatchNeeded(EmptyCoroutineContext)) {
             journal = Journal.DRAIN_SCHEDULED
-            ioDispatcher.dispatch(EmptyCoroutineContext, Runnable { drainJournal() })
+            // A refusal leaves nothing to run the drain, and the journal would
+            // sit scheduled with the reads in it: they are released instead,
+            // the same answer as for a loop that says up front it has stopped.
+            if (!handOff { drainJournal() }) discardJournal(JournalDiscard.OWNING_CONTEXT_STOPPED)
         } else {
             journal = Journal.DRAIN_OWED
             if (frameDepth == 0) drainJournal()
@@ -963,43 +1267,6 @@ internal class DefaultPipeline(
                 logger.error(e) { "handlerRemoved() threw for '${ctx.name}'" }
             }
         }
-    }
-
-    /**
-     * Validates inbound type chain between adjacent handlers.
-     *
-     * Skipped when either handler is not a [InboundHandler] or when
-     * either type is [Any] (opt-out default).
-     */
-    private fun validateInboundTypeChain(
-        prevHandler: PipelineHandler,
-        nextHandler: PipelineHandler,
-        nextName: String,
-    ) {
-        if (prevHandler !is InboundHandler) return
-        if (nextHandler !is InboundHandler) return
-        val produced = prevHandler.producedType
-        val accepted = nextHandler.acceptedType
-        if (produced == Any::class || accepted == Any::class) return
-        // KMP limitation: no reflective supertype traversal (Class.isAssignableFrom
-        // is JVM-only). Validate exact type match only. Subtype relationships
-        // (e.g., HttpObject → HttpRequest) are not detected; handlers should
-        // declare the exact type they produce/accept.
-        if (produced != accepted) {
-            throw PipelineTypeException(
-                "Type mismatch in pipeline: '${nameOf(prevHandler)}' produces " +
-                    "${produced.simpleName} but '$nextName' accepts ${accepted.simpleName}",
-            )
-        }
-    }
-
-    private fun nameOf(handler: PipelineHandler): String {
-        var ctx: DefaultContext? = head
-        while (ctx != null) {
-            if (ctx.handler === handler) return ctx.name
-            ctx = ctx.next
-        }
-        return handler::class.simpleName ?: "unknown"
     }
 
     // --- DefaultContext ---
@@ -1047,6 +1314,69 @@ internal class DefaultPipeline(
          */
         var lifecycle: Lifecycle = Lifecycle.PENDING
 
+        /** Whether this context heard the peer's end of file; once, between activation and ending. */
+        var readClosedHeard: Boolean = false
+
+        /**
+         * Whether this context raised the peer's end of file itself, saying
+         * its own output is over.
+         *
+         * Irreversible for the rest of the connection: what it told the
+         * handlers below cannot be untold, so the position it speaks for
+         * outlives it.
+         */
+        var hasRaisedReadClosed: Boolean = false
+
+        /**
+         * Whether this context stands in the region a raise speaks for.
+         *
+         * The region, not the raiser, is what a raise has a position by. A
+         * context reference cannot express it: searched upward it cannot
+         * reach a raiser that has been removed, and searched downward it
+         * misses whoever is inserted into the gap a removed raiser's frozen
+         * link spans. A context that joins inherits this from the one it
+         * joins behind, which is the chain's own answer to where the cut is.
+         */
+        var belowReadClosedRaise: Boolean = false
+
+        /** Whether this context took the event and did not pass it on, claiming the connection. */
+        var hasClaimedReadClosed: Boolean = false
+
+        /** Whether this context stands below a context that took the event; the same region shape. */
+        var belowReadClosedClaim: Boolean = false
+
+        /** Takes the region this context is born into from the one it joins behind. */
+        fun inheritReadClosedRegion(before: DefaultContext) {
+            belowReadClosedRaise = before.belowReadClosedRaise || before.hasRaisedReadClosed
+            belowReadClosedClaim = before.belowReadClosedClaim || before.hasClaimedReadClosed
+        }
+
+        /**
+         * Takes the region of the context this one replaces, which is where
+         * it now stands.
+         *
+         * Not from the context above, which is where a joining context takes
+         * it from: a replacement stands in the replaced context's place, and
+         * that place is inside a region whenever the replaced context was —
+         * including after the handler that named the region has been removed,
+         * when the context above is no longer inside it. What does not carry
+         * over is the naming itself: a replacement has raised nothing and
+         * taken nothing, so it is not offered a region of its own making.
+         */
+        fun takeReadClosedRegionOf(replaced: DefaultContext) {
+            belowReadClosedRaise = replaced.belowReadClosedRaise
+            belowReadClosedClaim = replaced.belowReadClosedClaim
+        }
+
+        /** Marks every context below this one as standing in the region a raise or a claim names. */
+        fun markRegionBelow(raise: Boolean) {
+            var c = next
+            while (c != null) {
+                if (raise) c.belowReadClosedRaise = true else c.belowReadClosedClaim = true
+                c = c.next
+            }
+        }
+
         /** Whether this (outbound) context has heard its close; once. */
         var closeDelivered: Boolean = false
 
@@ -1082,6 +1412,46 @@ internal class DefaultPipeline(
         override fun propagateFlushComplete() {
             val nextCtx = findNextInbound() ?: return
             nextCtx.invokeOnFlushComplete()
+        }
+
+        override fun propagateReadClosed(): Boolean {
+            // A replay carries on to the tail, unlike the sibling events:
+            // stopping here would leave the offer made and nobody to answer
+            // it.
+            val cursor = pipelineRef.readClosedCursor
+            val mine = cursor != null && cursor.ctx === this
+            val replayed = mine && cursor.mode == Mode.REPLAY
+            // Nothing was delivering the event to this context, so this is a
+            // handler raising it rather than passing one on -- the one way in
+            // from inside the chain. The region it speaks for is marked
+            // before the walk, so a context joining that region later
+            // inherits it from the context it joins behind.
+            val raisedHere = !mine
+            // Called for the mark it leaves, not for the answer it gives:
+            // this records that the context propagated, and its answer is
+            // true exactly when `replayed` is, so the return never fires.
+            if (heldBack(cursor) && !replayed) return false
+            if (raisedHere) recordRaisedHere()
+            val origin = if (raisedHere) ReadClosedOrigin.RAISE else checkNotNull(cursor).origin
+            val took = findNextInbound()?.deliverReadClosed(Mode.SWEEP, origin) ?: false
+            if (mine) checkNotNull(cursor).tookBelow = took
+            return took
+        }
+
+        /**
+         * Records that this context raised the event, and the region it
+         * speaks for.
+         *
+         * The transport's report is untouched. That one is a fact about the
+         * connection and is owed to every context, this one included: a
+         * handler that says its own output is over is still downstream of a
+         * transport that has not finished.
+         */
+        private fun recordRaisedHere() {
+            if (pipelineRef.destroying || pipelineRef.endingPhaseDelivered) return
+            hasRaisedReadClosed = true
+            pipelineRef.recordReadClosedRaiseMade()
+            markRegionBelow(raise = true)
         }
 
         override fun propagateInactive() {
@@ -1154,7 +1524,14 @@ internal class DefaultPipeline(
          * close request can run.
          */
         override fun propagateClose() {
+            // A handler asking the chain to close is this side closing, and
+            // off the loop the walk is handed over and lands a turn later.
+            // Recorded at the ask for the same reason `requestClose` records
+            // there — but only from outside a walk: inside one, the ask that
+            // started it already said whose close this is, and a handler
+            // propagating the walk it was handed is not a new ask.
             val cursor = pipelineRef.closeCursor
+            if (cursor == null || cursor.ctx !== this) pipelineRef.askedCloseFromThisSide()
             if (cursor != null && cursor.ctx === this) {
                 cursor.propagated = true
                 pipelineRef.deliverCloseFrom(prev)
@@ -1204,8 +1581,134 @@ internal class DefaultPipeline(
                     }
                 } finally {
                     pipelineRef.activeCursor = outer
+                    // The peer's end of file is a state, true from the report
+                    // until the ending, so a context that has just activated
+                    // is owed it. The sweep and the replay catch up their own;
+                    // this catches an activation held to a later frame.
+                    if (mode == Mode.SWEEP) pipelineRef.offerReadClosedToLateActivations()
                 }
             }
+        }
+
+        /**
+         * The peer's end of file: once per context, only to a context that
+         * heard the activation and not the ending, and not once the
+         * descriptor is gone — then the ending is what there is to say.
+         */
+        fun deliverReadClosed(mode: Mode, origin: ReadClosedOrigin): Boolean {
+            // The activation gate is about the caller's handlers: telling one
+            // the read side is over before it heard the connection begin is a
+            // lie. The pipeline's own ends hear it whatever their lifecycle
+            // says — the tail is where the walk ends.
+            val ownEnd = this === pipelineRef.head || this === pipelineRef.tail
+            // A raise's walk ends before the tail. The tail stands in no
+            // region and has nothing past it to tell, and a raise reaching it
+            // with the descriptor already gone must not be what schedules the
+            // close below: that close is owed for the transport's own report,
+            // and a raise is answered by the handler that made it.
+            if (this === pipelineRef.tail && origin == ReadClosedOrigin.RAISE) return false
+            // Outside the region the event speaks for, and below a handler
+            // that took it, nothing is owed: carried past without a record,
+            // since a context that is not owed the offer is not one the close
+            // waits on.
+            if (!ownEnd && !owedReadClosed(origin)) return carryReadClosedPast(mode, origin)
+            if (readClosedHeard || (lifecycle != Lifecycle.ACTIVE && !ownEnd)) {
+                return carryReadClosedPast(mode, origin)
+            }
+            if (pipelineRef.endingPhase == Phase.DELIVERED) return false
+            if (!pipelineRef.transport.isOpen) {
+                // The descriptor went while the event travelled: what the
+                // handlers below are owed is the ending, which the close
+                // delivers.
+                pipelineRef.closeOwedByTail = true
+                return false
+            }
+            val h = handler as? InboundHandler ?: return false
+            val ownEndContext = this === pipelineRef.head || this === pipelineRef.tail
+            // Once per handler, for the caller's handlers. The own ends are
+            // asked as often as the event travels.
+            //
+            // The offer is history the close reads, and it is recorded for
+            // the transport's report alone: a raise leaves the descriptor
+            // open in both directions with the handlers above still reading,
+            // so nothing closes for one and nothing about one is recorded for
+            // the close. Recorded before the handler is asked — which is why
+            // the close is read once the frame has finished, and not here.
+            if (!ownEndContext) {
+                readClosedHeard = true
+                if (origin == ReadClosedOrigin.TRANSPORT) pipelineRef.readClosed.offered = true
+            }
+            return askReadClosed(h, mode, origin, ownEndContext)
+        }
+
+        /**
+         * Asks this context's handler, and answers whether it or anything
+         * below it took the event.
+         */
+        private fun askReadClosed(
+            h: InboundHandler,
+            mode: Mode,
+            origin: ReadClosedOrigin,
+            ownEndContext: Boolean,
+        ): Boolean {
+            val cursor = Cursor(this, mode, origin)
+            val outer = pipelineRef.readClosedCursor
+            pipelineRef.readClosedCursor = cursor
+            pipelineRef.frame {
+                try {
+                    h.onReadClosed(this)
+                    // Stopped here: this handler answers for the connection,
+                    // so nothing below is offered it and nothing closes for it.
+                    if (!cursor.propagated && !ownEndContext) takeReadClosed()
+                } catch (e: Throwable) {
+                    if (mode == Mode.REPLAY) {
+                        pipelineRef.logger.error(e) { "onReadClosed() replay threw for '$name'" }
+                    } else {
+                        propagateError(e)
+                        if (!cursor.propagated) propagateReadClosed()
+                    }
+                } finally {
+                    pipelineRef.readClosedCursor = outer
+                }
+            }
+            // Took it here by not passing it on, or something below did.
+            return (!cursor.propagated && !ownEndContext) || cursor.tookBelow
+        }
+
+        /** Records that this context claimed the connection, and the region that claim covers. */
+        private fun takeReadClosed() {
+            pipelineRef.readClosed.claimed = true
+            hasClaimedReadClosed = true
+            markRegionBelow(raise = false)
+        }
+
+        /**
+         * Whether this context is owed the event, given where it entered the
+         * chain.
+         *
+         * Each region answers for the event it belongs to. A handler that
+         * took the transport's report answered for the chain below it *on
+         * that report*, and a handler below it goes on receiving reads
+         * precisely because it was never told the read side was over — so a
+         * raise made down there afterwards is a fact it has not heard and
+         * still needs: what its own producer says has stopped. Turning that
+         * away because of an older claim leaves those handlers waiting for
+         * data no one will send.
+         */
+        private fun owedReadClosed(origin: ReadClosedOrigin): Boolean = pipelineRef.owesReadClosed(this, origin)
+
+        /**
+         * Carries the event past a context not owed it — it heard it already,
+         * or has not heard the activation — since the handlers below may be
+         * owed it and a walk from the head is how they hear it. One passed
+         * over for the second reason is owed the offer when it activates, and
+         * the tail must not answer for the chain before it has had it.
+         */
+        private fun carryReadClosedPast(mode: Mode, origin: ReadClosedOrigin): Boolean {
+            if (mode == Mode.SWEEP && lifecycle != Lifecycle.REMOVED) {
+                return findNextInbound()?.deliverReadClosed(mode, origin) ?: false
+            }
+            return false
         }
 
         /** The ending: once per context, and possibly the first thing it hears. */
@@ -1468,6 +1971,25 @@ internal class DefaultPipeline(
         if (activationPhase != Phase.DELIVERED) return
         ctx.deliverActive(Mode.REPLAY)
         if (ctx.lifecycle != Lifecycle.ACTIVE || endingPhase == Phase.DELIVERED) return
+        // The peer's end of file, if the chain heard it and no running sweep
+        // will still bring it here.
+        if (readClosedHoldsFor(ctx) && readClosedCursor?.stillReaches(ctx) != true) {
+            // Who owns the connection is asked again, and asked before the
+            // handler hears the event — the same order the sweep uses, and
+            // for the same reason: a handler that removes itself from inside
+            // its own callback must not answer for the chain it is joining.
+            // It was answered once when the sweep ran, and a handler arriving
+            // after that changes it: a chain that was empty then — nobody's,
+            // so nothing closed — is keel's now, and the descriptor is
+            // keel's to release. Asked here rather than left to the ending,
+            // because there is no ending coming; the close delivers one.
+            // The replay carries the origin the state came from. Delivered as
+            // the transport's report, a replayed raise would record the offer
+            // and let its carry-on ask the tail to close a connection whose
+            // descriptor is open in both directions.
+            replayReadClosedTo(ctx)
+            if (ctx.lifecycle != Lifecycle.ACTIVE || endingPhase == Phase.DELIVERED) return
+        }
         // Not while a writability sweep still reaches the context: the sweep
         // delivers the value, and a replay ahead of it would make the sweep
         // stop at this context's own record, hiding the change from the
@@ -1479,8 +2001,8 @@ internal class DefaultPipeline(
     /**
      * Drains the pre-attach event journal onto the assembled chain: the
      * activation, the reads in arrival order, the batch boundary, the flush
-     * completions, the writability, the user events, the errors, and the
-     * ending if it was observed. Marked `DRAINED` at the *start*, so an add
+     * completions, the writability, the user events, the errors, the peer's
+     * end of file if it was observed, and the ending if it was observed. Marked `DRAINED` at the *start*, so an add
      * from inside a replayed event bypasses the journal — it is one-shot — and
      * a read arriving meanwhile goes straight through the head.
      *
@@ -1500,7 +2022,35 @@ internal class DefaultPipeline(
             else -> return
         }
         journal = Journal.DRAINED
+        draining = true
+        try {
+            drainJournalBody()
+        } finally {
+            draining = false
+        }
+        // A drain handed to the loop as a task starts at depth zero, and every
+        // epilogue inside it was suppressed above, so nothing after it would
+        // read the decision.
+        if (frameDepth == 0) decideReadClosedClose()
+    }
+
+    private fun drainJournalBody() {
         if (activationPhase == Phase.OBSERVED) startActivationSweep()
+        drainReadSide()
+        drainWriteSide()
+        drainUserEvents()
+        drainErrors()
+        // The peer's end of file last, after everything else the journal
+        // holds: in Pipeline mode its delivery closes the channel, and a
+        // flush completion, a user event or a reason journalled before the
+        // FIN was reported would otherwise be dropped by the ending it
+        // brings — the reason is owed to the handlers before the end.
+        if (readClosedPhase == Phase.OBSERVED && !ended) startReadClosedSweep()
+        if (endingPhase == Phase.OBSERVED) startEndingSweep()
+    }
+
+    /** The reads in arrival order, then the batch boundary. */
+    private fun drainReadSide() {
         while (pendingReads.isNotEmpty()) {
             val msg = pendingReads.removeFirst()
             if (ended) ReferenceCountUtil.safeRelease(msg) else head.invokeOnRead(msg)
@@ -1509,6 +2059,10 @@ internal class DefaultPipeline(
             pendingReadComplete = false
             if (!ended) head.invokeOnReadComplete()
         }
+    }
+
+    /** The flush completions, then the journalled writability if no real report came first. */
+    private fun drainWriteSide() {
         while (pendingFlushCompletions > 0) {
             pendingFlushCompletions--
             if (!ended) head.invokeOnFlushComplete()
@@ -1520,25 +2074,32 @@ internal class DefaultPipeline(
                 if (!ended) head.deliverWritability(writable, Mode.SWEEP)
             }
         }
+    }
+
+    private fun drainUserEvents() {
         while (pendingUserEvents.isNotEmpty()) {
             val event = pendingUserEvents.removeFirst()
             if (!ended) head.invokeOnUserEvent(event)
         }
+    }
+
+    /**
+     * The journalled errors. Gated by the ending's delivery alone, not by
+     * the descriptor: a reason is not data. The transport reports the
+     * failure that ends a connection before it reports the ending, and
+     * closes itself in between; the head stayed quiet about that failure
+     * because this drain was going to hand it over, so it is handed over,
+     * still before the end.
+     */
+    private fun drainErrors() {
         while (pendingErrors.isNotEmpty()) {
             val cause = pendingErrors.removeFirst()
-            // Gated by the ending's delivery alone, not by the descriptor: a
-            // reason is not data. The transport reports the failure that ends
-            // a connection before it reports the ending, and closes itself in
-            // between; the head stayed quiet about that failure because this
-            // drain was going to hand it over, so it is handed over, still
-            // before the end.
             if (endingPhase == Phase.DELIVERED) {
                 logger.warn(cause) { "A journalled error arrived after the connection ended; no handler can act on it" }
             } else {
                 head.invokeOnError(cause)
             }
         }
-        if (endingPhase == Phase.OBSERVED) startEndingSweep()
     }
 
     /**
@@ -1597,35 +2158,171 @@ internal class DefaultPipeline(
         // Stated here as well as in `deliverActive`'s own gate: no activation
         // on a connection that ended or whose descriptor is gone.
         if (activationPhase == Phase.OBSERVED && endingPhase == Phase.NONE && transport.isOpen) startActivationSweep()
+        if (readClosedPhase == Phase.OBSERVED && endingPhase == Phase.NONE && transport.isOpen) startReadClosedSweep()
         if (endingPhase == Phase.OBSERVED) startEndingSweep()
     }
+}
 
-    /** Why the pre-attach journal was released without being drained. */
-    private enum class JournalDiscard(val because: String) {
-        OWNING_CONTEXT_STOPPED(
-            "a handler was added, or a close requested, after this connection's owning context stopped, " +
-                "so the deferred replay would never have run",
-        ),
-        END_OF_LIFE("the channel's close released the transport before any inbound handler was installed"),
+// --- File-level state and helpers of DefaultPipeline (kept out of the class for its size) ---
+
+/**
+ * Where a read-closed walk entered the chain.
+ *
+ * The transport's report is a fact about the connection and is owed to every
+ * context. A raise is a handler saying its own output is over, and is owed to
+ * the region below it. The two differ in who is owed the event, in who records
+ * that the chain was asked, and in whether the connection is closed for it.
+ */
+internal enum class ReadClosedOrigin { TRANSPORT, RAISE }
+
+/** Whether the transport reported the event, and whether the sweep from the head has started. */
+private enum class Phase { NONE, OBSERVED, DELIVERED }
+
+/** The close walk: running while a close delivery that invoked a handler is on the stack. */
+private enum class CloseWalk { NONE, RUNNING, DONE }
+
+/**
+ * The pre-attach journal. `DRAIN_SCHEDULED`: a drain is queued on the
+ * dispatcher. `DRAIN_OWED`: an inline dispatcher, the drain runs when the
+ * outermost handler frame returns. `DISCARD_OWED`: the reads are already
+ * released, the lifecycle delivery is owed to the same epilogue.
+ */
+private enum class Journal { FILLING, DRAIN_SCHEDULED, DRAIN_OWED, DRAINED, DISCARD_OWED, DISCARDED }
+
+/** Why the pre-attach journal was released without being drained. */
+private enum class JournalDiscard(val because: String) {
+    OWNING_CONTEXT_STOPPED(
+        "a handler was added, or a close requested, after this connection's owning context stopped, " +
+            "so the deferred replay would never have run",
+    ),
+    END_OF_LIFE("the channel's close released the transport before any inbound handler was installed"),
+}
+
+/**
+ * Where a lifecycle sweep is: the context whose handler is being invoked,
+ * how (sweep or replay), and whether it has propagated yet. A handler
+ * installed below a sweep that has not propagated is reached by the
+ * sweep and not replayed to as well; a handler that throws without
+ * propagating has the event propagated on its behalf; a replayed event's
+ * default propagation is held back ([DefaultContext.heldBack]). Nested
+ * sweeps restore the outer cursor.
+ */
+private class Cursor(
+    val ctx: DefaultPipeline.DefaultContext,
+    val mode: DefaultPipeline.Mode,
+    val origin: ReadClosedOrigin = ReadClosedOrigin.TRANSPORT,
+) {
+    var propagated: Boolean = false
+
+    /** Whether a context below the one this cursor belongs to took the event. */
+    var tookBelow: Boolean = false
+
+    /** Whether this sweep has yet to reach [target]: it lies ahead of a handler that has not propagated. */
+    fun stillReaches(target: DefaultPipeline.DefaultContext): Boolean =
+        mode == DefaultPipeline.Mode.SWEEP && !propagated && ctx.leadsTo(target)
+}
+
+/**
+ * Per-pipeline cap on buffered inbound messages waiting for the
+ * first user [InboundHandler]. Sized to handle realistic codec
+ * setup races (HTTP/1 request line + headers + small body
+ * chunks) without unbounded growth if the user forgets to
+ * install a handler. Overflow drops the oldest queued message
+ * with a `WARN` log — protocol streams cannot recover from
+ * out-of-order delivery, so the WARN flags a likely user-side
+ * bug.
+ */
+private const val MAX_PRE_ATTACH_READS = 64
+
+/** Cap on buffered errors. Pathological error storms get truncated. */
+private const val MAX_PRE_ATTACH_ERRORS = 8
+
+/** Cap on buffered user events. */
+private const val MAX_PRE_ATTACH_USER_EVENTS = 16
+
+private fun insertBetween(
+    before: DefaultPipeline.DefaultContext,
+    new: DefaultPipeline.DefaultContext,
+    after: DefaultPipeline.DefaultContext,
+) {
+    before.next = new
+    new.prev = before
+    new.next = after
+    after.prev = new
+    new.inheritReadClosedRegion(before)
+}
+
+private fun nameOf(head: DefaultPipeline.DefaultContext, handler: PipelineHandler): String {
+    var ctx: DefaultPipeline.DefaultContext? = head
+    while (ctx != null) {
+        if (ctx.handler === handler) return ctx.name
+        ctx = ctx.next
     }
+    return handler::class.simpleName ?: "unknown"
+}
 
-    private companion object {
-        /**
-         * Per-pipeline cap on buffered inbound messages waiting for the
-         * first user [InboundHandler]. Sized to handle realistic codec
-         * setup races (HTTP/1 request line + headers + small body
-         * chunks) without unbounded growth if the user forgets to
-         * install a handler. Overflow drops the oldest queued message
-         * with a `WARN` log — protocol streams cannot recover from
-         * out-of-order delivery, so the WARN flags a likely user-side
-         * bug.
-         */
-        private const val MAX_PRE_ATTACH_READS = 64
-
-        /** Cap on buffered errors. Pathological error storms get truncated. */
-        private const val MAX_PRE_ATTACH_ERRORS = 8
-
-        /** Cap on buffered user events. */
-        private const val MAX_PRE_ATTACH_USER_EVENTS = 16
+/**
+ * Validates inbound type chain between adjacent handlers.
+ *
+ * Skipped when either handler is not a [InboundHandler] or when
+ * either type is [Any] (opt-out default).
+ */
+private fun validateInboundTypeChain(
+    head: DefaultPipeline.DefaultContext,
+    prevHandler: PipelineHandler,
+    nextHandler: PipelineHandler,
+    nextName: String,
+) {
+    if (prevHandler !is InboundHandler) return
+    if (nextHandler !is InboundHandler) return
+    val produced = prevHandler.producedType
+    val accepted = nextHandler.acceptedType
+    if (produced == Any::class || accepted == Any::class) return
+    // KMP limitation: no reflective supertype traversal (Class.isAssignableFrom
+    // is JVM-only). Validate exact type match only. Subtype relationships
+    // (e.g., HttpObject → HttpRequest) are not detected; handlers should
+    // declare the exact type they produce/accept.
+    if (produced != accepted) {
+        throw PipelineTypeException(
+            "Type mismatch in pipeline: '${nameOf(head, prevHandler)}' produces " +
+                "${produced.simpleName} but '$nextName' accepts ${accepted.simpleName}",
+        )
     }
+}
+
+/**
+ * Who has been offered the peer's end of file on one connection, and who
+ * took it.
+ *
+ * The history the close for the transport's report reads, and nothing
+ * else: whether a handler was offered it, whether any handler took either
+ * kind of end of file, and whether the close has already been decided. Who
+ * is in the chain now, and whether they have heard it, is not stored here —
+ * it is read off the chain when the close is decided, because every way the
+ * chain changes would otherwise have to keep a copy of it up to date.
+ *
+ * Owning-context-confined, like the phases it sits beside.
+ */
+internal class ReadClosedOwnership {
+    /**
+     * Offered to a chain with handlers in it. Latched where the offer
+     * starts: a handler that removes itself, or empties the chain, while
+     * hearing the event was offered it all the same.
+     */
+    var offered: Boolean = false
+
+    /**
+     * The pipeline has decided to close for the transport's report. Set before
+     * the close runs, since the close runs frames whose epilogues read the
+     * decision again.
+     */
+    var decidedToClose: Boolean = false
+
+    /**
+     * Whether a context took the event and did not pass it on. It claimed the
+     * connection, so nothing closes for it — and a handler joining below it
+     * is not offered what the claimant already answered for, which the
+     * region bit each context carries answers.
+     */
+    var claimed: Boolean = false
 }

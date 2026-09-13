@@ -119,6 +119,12 @@ internal class HeadHandler(
     }
 
     override fun onClose(ctx: PipelineHandlerContext) {
+        // Nothing is recorded here. A close reaches the head from the
+        // channel's own, from `requestClose`, and from a handler's
+        // `propagateClose`, and each of those says whose close it is where
+        // it is asked for — which is a turn earlier than this when the walk
+        // was handed over, and is where a transport reporting in between
+        // still finds the cause already settled.
         transport.close()
     }
 }

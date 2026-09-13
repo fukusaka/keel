@@ -93,6 +93,63 @@ interface PipelineHandlerContext {
     /** Passes a flush completion to the next inbound handler. */
     fun propagateFlushComplete()
 
+    /**
+     * Passes the peer's end of file to the next inbound handler — and says,
+     * by passing it, that this handler is not the one that answers for the
+     * connection.
+     *
+     * Not calling it is the other answer: the handler keeps the event, which
+     * claims the connection, and the close is then the claimant's to make —
+     * nothing below is offered what was taken, and nothing else closes for
+     * it. A claimant that wants the handlers below to hear the end of file
+     * first calls this afterwards, which raises it for the region below: it
+     * does not give the claim back, and its answer says whether a handler
+     * below took the connection over, in which case the claimant must not
+     * close.
+     *
+     * The connection, not the event. A handler that keeps an end of file
+     * another handler raised has taken the connection just as surely as one
+     * that keeps the transport's report, and owes the same close. It will
+     * not be told when the transport reports afterwards: it has heard the
+     * read side end once, and hears it once. Nothing else closes for it
+     * either — the pipeline closes for a report only while no handler has
+     * taken one — so a claimant that never closes leaves the connection to a
+     * read-idle timeout where one is configured, and holds it where none
+     * is.
+     *
+     * This is also how a handler raises the end of file itself, for a
+     * protocol whose own close means the peer has finished: a codec turning
+     * a TLS `close_notify` into this event tells the chain below it the read
+     * side is over. The chain below answers it as it would the transport's
+     * report — each handler passes it on or takes it — but nothing closes for
+     * a raise nobody took. It is the only way a handler raises one for the region below it;
+     * `Pipeline.notifyReadClosed` is the transport's entrance, and the
+     * channel's to call.
+     *
+     * What it speaks for is the region below this context: the handlers
+     * there now, a handler that joins there afterwards, and a context there
+     * that activates afterwards. A handler joining above it is not offered
+     * it, and neither is this one — the transport has not finished, and its
+     * own report, when it comes, is owed to every context including this.
+     *
+     * Irreversible. What the handlers below were told cannot be untold, so
+     * the region outlives the handler that named it: removing this handler
+     * afterwards does not give the connection its read side back, and
+     * replacing it with a handler that produces again is a contract
+     * violation rather than a way to resume.
+     *
+     * **Returns whether a handler below took the event** and did not pass it
+     * on. The walk runs to the end of the region before this call returns, so
+     * the answer is settled here. Nothing closes for an unclaimed raise: the
+     * descriptor is open in both directions and the handlers above are still
+     * reading, so the close the pipeline makes for an unclaimed report from
+     * the transport has no counterpart. A handler that raised the event and
+     * wants the connection ended closes it here, having been told that
+     * nobody below took it; told that somebody did, it must not close, since
+     * that handler has taken on answering the peer.
+     */
+    fun propagateReadClosed(): Boolean = false
+
     /** Propagates a channel-inactive event to the next inbound handler. */
     fun propagateInactive()
 
