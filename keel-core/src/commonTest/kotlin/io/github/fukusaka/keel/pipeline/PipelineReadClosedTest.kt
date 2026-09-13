@@ -238,6 +238,47 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `a catch-up sweep does not offer the event below the handler that took it`() = readClosedTest {
+        // The claimant answered for its side, so the chain under it is not
+        // offered the event -- by any route. The replay honoured that; the
+        // sweep that catches up a held activation did not, and a context
+        // below the claimant heard it from there.
+        val f = Fixture(deferDrain = true)
+        var held: PipelineHandlerContext? = null
+        f.pipeline.addLast(
+            "claimant",
+            object : Recorder("claimant", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    f.log.add("claimant:active")
+                    held = ctx
+                }
+
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    f.log.add("claimant:readClosed") // taken, not passed on
+                }
+            },
+        )
+        f.pipeline.addLast("below", f.recorder("below"))
+        f.channel.ensureBridge()
+        f.queue.runQueued()
+        f.peerFin()
+        f.queue.runQueued()
+        assertTrue(f.log.contains("claimant:readClosed"), "premise: the claimant took it: ${f.log}")
+        assertFalse(f.log.contains("below:active"), "premise: the one below is still waiting: ${f.log}")
+
+        checkNotNull(held).propagateActive()
+        f.queue.runQueued()
+
+        assertTrue(f.log.contains("below:active"), "premise: it activated from the later frame: ${f.log}")
+        assertFalse(
+            f.log.contains("below:readClosed"),
+            "it stands below the handler that took the event: ${f.log}",
+        )
+        f.channel.close()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
     fun `a handler activated by an activation held to a later frame hears the end of file`() = readClosedTest {
         val f = Fixture(deferDrain = true)
         var held: PipelineHandlerContext? = null

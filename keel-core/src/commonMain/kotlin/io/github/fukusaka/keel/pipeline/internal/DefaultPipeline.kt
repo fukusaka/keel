@@ -1188,16 +1188,23 @@ internal class DefaultPipeline(
          */
         var belowReadClosedRaise: Boolean = false
 
+        /** Whether this context took the event and did not pass it on, claiming the connection. */
+        var hasClaimedReadClosed: Boolean = false
+
+        /** Whether this context stands below a context that took the event; the same region shape. */
+        var belowReadClosedClaim: Boolean = false
+
         /** Takes the region this context is born into from the one it joins behind. */
         fun inheritReadClosedRegion(before: DefaultContext) {
             belowReadClosedRaise = before.belowReadClosedRaise || before.hasRaisedReadClosed
+            belowReadClosedClaim = before.belowReadClosedClaim || before.hasClaimedReadClosed
         }
 
-        /** Marks every context below this one as standing in the region a raise names. */
-        fun markRegionBelow() {
+        /** Marks every context below this one as standing in the region a raise or a claim names. */
+        fun markRegionBelow(raise: Boolean) {
             var c = next
             while (c != null) {
-                c.belowReadClosedRaise = true
+                if (raise) c.belowReadClosedRaise = true else c.belowReadClosedClaim = true
                 c = c.next
             }
         }
@@ -1272,7 +1279,7 @@ internal class DefaultPipeline(
         private fun recordRaisedHere() {
             if (pipelineRef.destroying || pipelineRef.endingPhaseDelivered) return
             hasRaisedReadClosed = true
-            markRegionBelow()
+            markRegionBelow(raise = true)
         }
 
         override fun propagateInactive() {
@@ -1483,7 +1490,7 @@ internal class DefaultPipeline(
                     h.onReadClosed(this)
                     // Stopped here: this handler answers for the connection,
                     // so nothing below is offered it and nothing closes for it.
-                    if (!cursor.propagated && !ownEndContext) pipelineRef.readClosed.claimedBy = this
+                    if (!cursor.propagated && !ownEndContext) takeReadClosed()
                 } catch (e: Throwable) {
                     if (mode == Mode.REPLAY) {
                         pipelineRef.logger.error(e) { "onReadClosed() replay threw for '$name'" }
@@ -1499,9 +1506,18 @@ internal class DefaultPipeline(
             return (!cursor.propagated && !ownEndContext) || cursor.tookBelow
         }
 
+        /** Records that this context claimed the connection, and the region that claim covers. */
+        private fun takeReadClosed() {
+            pipelineRef.readClosed.claimed = true
+            hasClaimedReadClosed = true
+            markRegionBelow(raise = false)
+        }
+
         /** Whether this context is owed the event, given where it entered the chain. */
-        private fun owedReadClosed(origin: ReadClosedOrigin): Boolean =
-            origin == ReadClosedOrigin.TRANSPORT || belowReadClosedRaise
+        private fun owedReadClosed(origin: ReadClosedOrigin): Boolean {
+            if (belowReadClosedClaim) return false
+            return origin == ReadClosedOrigin.TRANSPORT || belowReadClosedRaise
+        }
 
         /**
          * Carries the event past a context not owed it — it heard it already,
@@ -2132,27 +2148,21 @@ internal class ReadClosedOwnership {
     var passedOver: Boolean = false
 
     /**
-     * The context that took the event and did not pass it on, if one has. It
-     * claimed the connection, so nothing closes for it — and a handler
-     * joining below it is not offered what the claimant already answered for.
+     * Whether a context took the event and did not pass it on. It claimed the
+     * connection, so nothing closes for it — and a handler joining below it
+     * is not offered what the claimant already answered for, which the
+     * region bit each context carries answers.
      */
-    var claimedBy: Any? = null
+    var claimed: Boolean = false
 
     /** Offered to the chain, taken by nobody, and owed to nobody who has yet to hear it. */
-    val refusedByAll: Boolean get() = offered && claimedBy == null && !passedOver
+    val refusedByAll: Boolean get() = offered && !claimed && !passedOver
 
     /**
      * Whether [ctx] sits below the handler that claimed the event. A claimant
      * answered for the connection; the chain under it is not offered what it
-     * already took.
+     * already took. Read from the region the context carries, so it survives
+     * the claimant's removal and a handler inserted where the claimant was.
      */
-    fun isBelowClaimant(ctx: DefaultPipeline.DefaultContext): Boolean {
-        val claimant = claimedBy as? DefaultPipeline.DefaultContext ?: return false
-        var c: DefaultPipeline.DefaultContext? = claimant.next
-        while (c != null) {
-            if (c === ctx) return true
-            c = c.next
-        }
-        return false
-    }
+    fun isBelowClaimant(ctx: DefaultPipeline.DefaultContext): Boolean = ctx.belowReadClosedClaim
 }
