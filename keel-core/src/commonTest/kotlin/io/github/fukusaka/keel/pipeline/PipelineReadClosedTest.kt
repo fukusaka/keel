@@ -1130,10 +1130,14 @@ class PipelineReadClosedTest {
     }
 
     @Test
-    fun `a report nobody left can be offered closes when every inbound handler has already ended`() = readClosedTest {
-        // The ending was raised to the chain before the peer's end of file came.
-        // Nobody left can be offered the report, so nobody records an offer —
-        // and that is not the chain nobody has joined, which waits.
+    fun `a report closes after an ending a handler synthesized has ended every inbound handler`() = readClosedTest {
+        // Outside the contract: a handler does not synthesize the ending, which
+        // reaches the chain only through the channel's close. The TLS handler
+        // does so today on a close_notify, until it raises the peer's end of
+        // file instead — so this pins what that shape does meanwhile rather
+        // than a shape the pipeline supports. What it does is close: nobody
+        // left can be offered the report, so nobody records an offer, and that
+        // is not the chain nobody has joined, which waits.
         val f = Fixture(deferDrain = true)
         var outCtx: PipelineHandlerContext? = null
         f.pipeline.addLast(
@@ -1156,7 +1160,10 @@ class PipelineReadClosedTest {
     }
 
     @Test
-    fun `a report closes after the handler that ended the chain below it has left`() = readClosedTest {
+    fun `a report closes after a handler that synthesized an ending below it has left`() = readClosedTest {
+        // Outside the contract, as above: the shape the TLS handler produces
+        // today on a close_notify, pinned for what it does until it raises the
+        // peer's end of file instead.
         val f = Fixture(deferDrain = true)
         var tlsCtx: PipelineHandlerContext? = null
         f.pipeline.addLast(
@@ -1227,6 +1234,33 @@ class PipelineReadClosedTest {
 
         assertFalse(f.transport.isOpen, "a pending context is not waited on: ${f.log}")
     }
+
+    @Test
+    fun `a report closes when the only inbound handler already heard a raise from an outbound handler still present`() =
+        readClosedTest {
+            // The raise told the one inbound handler its read side was over, so
+            // no offer is recorded when the transport's report comes: that
+            // handler has heard it once, and hears it once. It is past being
+            // offered the report, and it did not take the raise either.
+            val f = Fixture(deferDrain = true)
+            var out: PipelineHandlerContext? = null
+            f.pipeline.addLast(
+                "out",
+                object : OutboundHandler {
+                    override fun handlerAdded(ctx: PipelineHandlerContext) {
+                        out = ctx
+                    }
+                },
+            )
+            f.pipeline.addLast("app", f.recorder("app"))
+            f.queue.runQueued()
+            assertFalse(checkNotNull(out).propagateReadClosed(), "premise: nobody took the raise")
+
+            f.peerFin()
+            f.queue.runQueued()
+
+            assertFalse(f.transport.isOpen, "nobody can answer it and nobody took it: ${f.log}")
+        }
 
     @Test
     fun `handlers activated after the report hear it in chain order`() = readClosedTest {
