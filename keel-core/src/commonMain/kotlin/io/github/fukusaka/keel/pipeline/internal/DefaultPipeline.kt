@@ -1549,11 +1549,24 @@ internal class DefaultPipeline(
             markRegionBelow(raise = false)
         }
 
-        /** Whether this context is owed the event, given where it entered the chain. */
-        private fun owedReadClosed(origin: ReadClosedOrigin): Boolean {
-            if (belowReadClosedClaim) return false
-            return origin == ReadClosedOrigin.TRANSPORT || belowReadClosedRaise
-        }
+        /**
+         * Whether this context is owed the event, given where it entered the
+         * chain.
+         *
+         * Each region answers for the event it belongs to. A handler that
+         * took the transport's report answered for the chain below it *on
+         * that report*, and a handler below it goes on receiving reads
+         * precisely because it was never told the read side was over — so a
+         * raise made down there afterwards is a fact it has not heard and
+         * still needs: what its own producer says has stopped. Turning that
+         * away because of an older claim leaves those handlers waiting for
+         * data no one will send.
+         */
+        private fun owedReadClosed(origin: ReadClosedOrigin): Boolean =
+            when (origin) {
+                ReadClosedOrigin.TRANSPORT -> !belowReadClosedClaim
+                ReadClosedOrigin.RAISE -> belowReadClosedRaise
+            }
 
         /**
          * Carries the event past a context not owed it — it heard it already,

@@ -1107,6 +1107,45 @@ class PipelineReadClosedTest {
 class PipelineReadClosedRaiseRegionTest {
 
     @Test
+    fun `a raise made below a claimant reaches the handlers under it`() = readClosedTest {
+        // The claimant answered for its side on the transport's report, and
+        // the handlers below it go on receiving reads precisely because they
+        // were never told the read side was over. A raise made down there is
+        // a fact they have not heard and still need.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "claimant",
+            object : Recorder("claimant", f.log) {
+                override fun onReadClosed(ctx: PipelineHandlerContext) {
+                    f.log.add("claimant:readClosed") // taken, not passed on
+                }
+            },
+        )
+        var answer: Boolean? = null
+        f.pipeline.addLast(
+            "raiser",
+            object : Recorder("raiser", f.log) {
+                override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                    (msg as IoBuf).release()
+                    answer = ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addLast("under", f.recorder("under"))
+
+        f.peerFin()
+        assertEquals(listOf("claimant:readClosed"), f.log.filter { it.endsWith(":readClosed") })
+
+        // The claimant goes on relaying reads; the raiser says its own output is over.
+        f.transport.onRead?.invoke(f.bytes(1))
+
+        assertTrue("under:readClosed" in f.log, "it stands in the raise's region: ${f.log}")
+        assertEquals(false, answer, "it was offered and passed on, so nobody took it")
+        f.channel.close()
+        assertEquals(0, f.tracker.outstandingCount)
+    }
+
+    @Test
     fun `a raise reaches a handler that joins its region after the raiser leaves`() = readClosedTest {
         // The region outlives the handler that named it. What the handlers
         // below were told cannot be untold, so a handler joining behind one
