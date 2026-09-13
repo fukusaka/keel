@@ -957,6 +957,99 @@ class PipelineReadClosedTest {
     }
 
     @Test
+    fun `handlers activated after the report hear it in chain order`() = readClosedTest {
+        val f = Fixture(deferDrain = true)
+        f.pipeline.addLast(
+            "one",
+            object : Recorder("one", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    f.log.add("one:active")
+                    // Raised before the activation goes on down, so the two
+                    // below are still waiting for theirs.
+                    ctx.pipeline.notifyReadClosed()
+                    ctx.propagateActive()
+                }
+            },
+        )
+        f.pipeline.addLast("two", f.recorder("two"))
+        f.pipeline.addLast("three", f.recorder("three"))
+        f.channel.ensureBridge()
+        f.queue.runQueued()
+
+        // Caught up from the head, so the chain hears it in its own order. A
+        // catch-up made where each context activates runs as the recursion
+        // unwinds, and the chain would hear it tail first.
+        assertEquals(
+            listOf("one:readClosed", "two:readClosed", "three:readClosed"),
+            f.log.filter { it.endsWith(":readClosed") },
+        )
+
+        f.channel.close()
+        f.transport.releaseWritten()
+        f.tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a handler that becomes active after the report still hears it`() = readClosedTest {
+        // The chain is assembled before anything is delivered, so the
+        // activation reaches its handlers one at a time. The first raises the
+        // report from inside its own activation — the entry the documentation
+        // offers for a codec's own end of stream — and the second is still
+        // waiting to be activated when the sweep for it runs. The bridge keeps
+        // the connection open, so there is no ending to carry the news.
+        val f = Fixture(deferDrain = true)
+        f.pipeline.addLast(
+            "first",
+            object : Recorder("first", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    f.log.add("first:active")
+                    // Raised before the activation goes on down, so the
+                    // handler below is still waiting for its own activation
+                    // when the sweep for the report runs.
+                    ctx.pipeline.notifyReadClosed()
+                    ctx.propagateActive()
+                }
+            },
+        )
+        f.pipeline.addLast("second", f.recorder("second"))
+        f.channel.ensureBridge()
+        f.queue.runQueued()
+
+        assertTrue(f.log.contains("first:readClosed"), "premise: the report reached the chain: ${f.log}")
+        assertTrue(f.log.contains("second:active"), "premise: the second was activated after it: ${f.log}")
+        assertTrue(f.transport.isOpen, "premise: the bridge kept the connection open")
+        assertTrue(
+            f.log.contains("second:readClosed"),
+            "a handler activated after the report hears it too: ${f.log}",
+        )
+
+        f.channel.close()
+        f.transport.releaseWritten()
+        f.tracker.assertNoLeaks()
+    }
+}
+
+/**
+ * What a channel remembers about how its connection ended, and what a caller
+ * reading it is told.
+ *
+ * The mark separates a connection that ended under its caller from one this
+ * side closed — the caller's own close, a close asked of the pipeline, one a
+ * handler walked to the head or ended where it stands. A read after the first
+ * is the end of file; after the second it is the misuse the base refuses.
+ */
+/**
+ * When the pipeline closes the connection for the transport's report.
+ *
+ * The close is read at depth zero from the record of what handlers did and
+ * who is in the chain, so these cases build chains where a reading taken too
+ * early — mid-operation, mid-drain, before a handler owed the report has heard
+ * it — would close a connection a handler still owns, and chains where waiting
+ * for someone who can no longer answer would leave it open.
+ */
+class PipelineReadClosedDecisionTest {
+
+    @Test
     fun `a handler that never activated does not keep the peer's end of file from the ones below`() = readClosedTest {
         val f = Fixture(deferDrain = true)
         // Consumes the activation, as a handler may: what is below it stays
@@ -1261,89 +1354,8 @@ class PipelineReadClosedTest {
 
             assertFalse(f.transport.isOpen, "nobody can answer it and nobody took it: ${f.log}")
         }
-
-    @Test
-    fun `handlers activated after the report hear it in chain order`() = readClosedTest {
-        val f = Fixture(deferDrain = true)
-        f.pipeline.addLast(
-            "one",
-            object : Recorder("one", f.log) {
-                override fun onActive(ctx: PipelineHandlerContext) {
-                    f.log.add("one:active")
-                    // Raised before the activation goes on down, so the two
-                    // below are still waiting for theirs.
-                    ctx.pipeline.notifyReadClosed()
-                    ctx.propagateActive()
-                }
-            },
-        )
-        f.pipeline.addLast("two", f.recorder("two"))
-        f.pipeline.addLast("three", f.recorder("three"))
-        f.channel.ensureBridge()
-        f.queue.runQueued()
-
-        // Caught up from the head, so the chain hears it in its own order. A
-        // catch-up made where each context activates runs as the recursion
-        // unwinds, and the chain would hear it tail first.
-        assertEquals(
-            listOf("one:readClosed", "two:readClosed", "three:readClosed"),
-            f.log.filter { it.endsWith(":readClosed") },
-        )
-
-        f.channel.close()
-        f.transport.releaseWritten()
-        f.tracker.assertNoLeaks()
-    }
-
-    @Test
-    fun `a handler that becomes active after the report still hears it`() = readClosedTest {
-        // The chain is assembled before anything is delivered, so the
-        // activation reaches its handlers one at a time. The first raises the
-        // report from inside its own activation — the entry the documentation
-        // offers for a codec's own end of stream — and the second is still
-        // waiting to be activated when the sweep for it runs. The bridge keeps
-        // the connection open, so there is no ending to carry the news.
-        val f = Fixture(deferDrain = true)
-        f.pipeline.addLast(
-            "first",
-            object : Recorder("first", f.log) {
-                override fun onActive(ctx: PipelineHandlerContext) {
-                    f.log.add("first:active")
-                    // Raised before the activation goes on down, so the
-                    // handler below is still waiting for its own activation
-                    // when the sweep for the report runs.
-                    ctx.pipeline.notifyReadClosed()
-                    ctx.propagateActive()
-                }
-            },
-        )
-        f.pipeline.addLast("second", f.recorder("second"))
-        f.channel.ensureBridge()
-        f.queue.runQueued()
-
-        assertTrue(f.log.contains("first:readClosed"), "premise: the report reached the chain: ${f.log}")
-        assertTrue(f.log.contains("second:active"), "premise: the second was activated after it: ${f.log}")
-        assertTrue(f.transport.isOpen, "premise: the bridge kept the connection open")
-        assertTrue(
-            f.log.contains("second:readClosed"),
-            "a handler activated after the report hears it too: ${f.log}",
-        )
-
-        f.channel.close()
-        f.transport.releaseWritten()
-        f.tracker.assertNoLeaks()
-    }
 }
 
-/**
- * What a channel remembers about how its connection ended, and what a caller
- * reading it is told.
- *
- * The mark separates a connection that ended under its caller from one this
- * side closed — the caller's own close, a close asked of the pipeline, one a
- * handler walked to the head or ended where it stands. A read after the first
- * is the end of file; after the second it is the misuse the base refuses.
- */
 /**
  * The region a handler's own raise speaks for.
  *
