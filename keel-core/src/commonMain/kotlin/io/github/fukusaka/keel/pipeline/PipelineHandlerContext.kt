@@ -108,6 +108,11 @@ interface PipelineHandlerContext {
      * a TLS `close_notify` into this event tells the chain below it the read
      * side is over, and the chain answers as it would for a transport's
      * report. It is the only way in from inside the chain.
+     *
+     * What it reaches is the chain below this context as it stands now. A
+     * handler that joins afterwards, and a context that activates
+     * afterwards, are not offered it — unlike the transport's own report,
+     * which every context is owed. See [InboundHandler.onReadClosed].
      */
     fun propagateReadClosed() {
     }

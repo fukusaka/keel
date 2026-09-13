@@ -958,51 +958,6 @@ class PipelineReadClosedTest {
     }
 
     @Test
-    fun `an end of file a handler raised reaches a context that activates after it`() = readClosedTest {
-        // The entrance the contract names for a codec's own end of stream.
-        // What it raises is the same state the transport's report is, so the
-        // handler below hears it when its activation arrives.
-        val f = Fixture(deferDrain = true)
-        f.pipeline.addLast(
-            "first",
-            object : Recorder("first", f.log) {
-                override fun onActive(ctx: PipelineHandlerContext) {
-                    ctx.propagateReadClosed()
-                    ctx.propagateActive()
-                }
-            },
-        )
-        f.pipeline.addLast("second", f.recorder("second"))
-        f.queue.runQueued()
-
-        assertEquals(listOf("second:readClosed"), f.log.filter { it.endsWith(":readClosed") })
-
-        f.transport.releaseWritten()
-        f.tracker.assertNoLeaks()
-    }
-
-    @Test
-    fun `an end of file a handler raised reaches a handler that joins after it`() = readClosedTest {
-        val f = Fixture(deferDrain = true)
-        f.pipeline.addLast(
-            "first",
-            object : Recorder("first", f.log) {
-                override fun onActive(ctx: PipelineHandlerContext) {
-                    ctx.propagateActive()
-                    ctx.propagateReadClosed()
-                }
-            },
-        )
-        f.queue.runQueued()
-        f.pipeline.addLast("late", f.recorder("late"))
-
-        assertEquals(listOf("late:readClosed"), f.log.filter { it.endsWith(":readClosed") })
-
-        f.transport.releaseWritten()
-        f.tracker.assertNoLeaks()
-    }
-
-    @Test
     fun `handlers activated after the report hear it in chain order`() = readClosedTest {
         val f = Fixture(deferDrain = true)
         f.pipeline.addLast(

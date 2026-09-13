@@ -161,9 +161,18 @@ interface InboundHandler : PipelineHandler {
      * The default passes it on, so a handler that does not care about the
      * peer's end of file does not accidentally claim the connection.
      *
-     * Once per handler. A handler that joins after the event was delivered
-     * is offered it on joining, and one that had yet to activate is offered
-     * it when it activates.
+     * Once per handler. For the transport's own report, a handler that joins
+     * after it was delivered is offered it on joining, and one that had yet
+     * to activate is offered it when it activates — the read side being over
+     * is a state that holds until the ending, not a moment that passes.
+     *
+     * An end of file a handler raised from inside the chain
+     * ([PipelineHandlerContext.propagateReadClosed]) reaches the chain below
+     * the raiser as it stands when the raise is made, and no further: a
+     * handler joining afterwards is not offered it, nor is a context that
+     * activates afterwards. What a raise would have to carry for those to
+     * work is a position, and a position outlives neither the raiser's
+     * removal nor a second raise below it.
      */
     fun onReadClosed(ctx: PipelineHandlerContext) {
         ctx.propagateReadClosed()

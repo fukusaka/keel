@@ -569,8 +569,8 @@ internal class DefaultPipeline(
             // activates: that happens as the recursion unwinds, so the chain
             // would hear it tail first. Every context that already heard it
             // returns at its own record.
-            if (readClosedRecorded && endingPhase != Phase.DELIVERED && transport.isOpen) {
-                reofferReadClosed()
+            if (readClosedPhase == Phase.DELIVERED && endingPhase != Phase.DELIVERED && transport.isOpen) {
+                startReadClosedSweep()
             }
         } finally {
             activationSweepRunning = false
@@ -585,41 +585,6 @@ internal class DefaultPipeline(
         // are the ones it is here to catch up, and they answer on the way.
         readClosed.passedOver = false
         head.deliverReadClosed(Mode.SWEEP)
-    }
-
-    /**
-     * Whether the peer's end of file holds for [ctx] — the two ways it can.
-     *
-     * The transport's report is about the connection and is owed to every
-     * context. A handler's raise is about the chain below it: a codec
-     * turning a `close_notify` into this event tells the handlers under it
-     * their read side is over, and says nothing about its own.
-     */
-    /** Whether the read side is over by either route: the transport reported it, or a handler raised one. */
-    private val readClosedRecorded: Boolean
-        get() = readClosedPhase == Phase.DELIVERED || readClosed.raisedAfter != null
-
-    private fun readClosedHoldsFor(ctx: DefaultContext): Boolean =
-        readClosedPhase == Phase.DELIVERED || readClosed.isBelowRaise(ctx)
-
-    /**
-     * Walks the event again for the contexts the last walk could not offer
-     * it to, from wherever it entered the chain.
-     *
-     * Not a fresh report: nothing here decides that the read side is over —
-     * that is already recorded — so the phase is left alone. Setting it
-     * would swallow the transport's own report when a handler raised one
-     * first, and the raiser is owed that report.
-     */
-    private fun reofferReadClosed() {
-        readClosed.passedOver = false
-        if (readClosedPhase == Phase.DELIVERED) {
-            // The transport's report is owed to the whole chain, and it is
-            // the broader of the two when a handler also raised one.
-            head.deliverReadClosed(Mode.SWEEP)
-        } else {
-            readClosed.raisedAfter?.deliverReadClosedBelow()
-        }
     }
 
     private fun startEndingSweep() {
@@ -741,26 +706,6 @@ internal class DefaultPipeline(
     internal var closeOwedByTail = false
 
     /**
-     * Records that a handler raised the peer's end of file at [ctx], the one
-     * way in from inside the chain.
-     *
-     * The read side being over is a state that holds from here to the
-     * ending, not a walk that happens once: a context that becomes active
-     * afterwards is offered it, and so is a handler that joins. Both read
-     * that state, so raising it has to write it — otherwise the handlers
-     * below the raise that were not active at the moment never hear it, and
-     * the tail is never asked for a chain that never finished answering.
-     *
-     * The position is kept with it. What a raise says is that the read side
-     * is over for the chain *below* the raiser.
-     */
-    internal fun recordReadClosedRaisedAt(ctx: DefaultContext) {
-        if (destroying || endingPhase == Phase.DELIVERED) return
-        readClosed.raisedAfter = ctx
-        readClosed.passedOver = false
-    }
-
-    /**
      * Offers the peer's end of file, if it is still true, to whoever has just
      * become active and has not heard it — swept from the head, since the
      * contexts below are owed it in chain order and each that heard it stops
@@ -768,9 +713,9 @@ internal class DefaultPipeline(
      */
     internal fun offerReadClosedToLateActivations() {
         if (activationSweepRunning) return
-        if (!readClosedRecorded) return
+        if (readClosedPhase != Phase.DELIVERED) return
         if (endingPhase == Phase.DELIVERED || !transport.isOpen) return
-        reofferReadClosed()
+        startReadClosedSweep()
     }
 
     /**
@@ -1197,15 +1142,7 @@ internal class DefaultPipeline(
             // it.
             val cursor = pipelineRef.readClosedCursor
             val replayed = cursor != null && cursor.ctx === this && cursor.mode == Mode.REPLAY
-            // Nothing was delivering the event to this context, so this is a
-            // handler raising it rather than passing one on -- the one way in
-            // from inside the chain. Recorded before the walk: the read side
-            // being over is a state the chain reads afterwards, and a context
-            // that activates later or a handler that joins is owed it from
-            // that record, not from this walk.
-            val raisedHere = cursor == null || cursor.ctx !== this
             if (heldBack(cursor) && !replayed) return
-            if (raisedHere) pipelineRef.recordReadClosedRaisedAt(this)
             findNextInbound()?.deliverReadClosed(Mode.SWEEP)
         }
 
@@ -1621,11 +1558,6 @@ internal class DefaultPipeline(
 
         // --- Navigation ---
 
-        /** Continues a read-closed walk below this context, where a handler raised it. */
-        fun deliverReadClosedBelow() {
-            findNextInbound()?.deliverReadClosed(Mode.SWEEP)
-        }
-
         private fun findNextInbound(): DefaultContext? {
             var ctx = next
             while (ctx != null) {
@@ -1688,7 +1620,7 @@ internal class DefaultPipeline(
         if (ctx.lifecycle != Lifecycle.ACTIVE || endingPhase == Phase.DELIVERED) return
         // The peer's end of file, if the chain heard it and no running sweep
         // will still bring it here.
-        if (readClosedHoldsFor(ctx) &&
+        if (readClosedPhase == Phase.DELIVERED &&
             readClosedCursor?.stillReaches(ctx) != true &&
             !readClosed.isBelowClaimant(ctx)
         ) {
@@ -2011,17 +1943,6 @@ internal class ReadClosedOwnership {
     var passedOver: Boolean = false
 
     /**
-     * The context a handler raised the event at, if a handler did rather
-     * than the transport reporting it. What is owed the offer is the chain
-     * below it: a handler above raised it for those below, and one joining
-     * above is no more owed it than the raiser is.
-     *
-     * Null for the transport's own report, which enters at the head and is
-     * owed to the whole chain.
-     */
-    var raisedAfter: DefaultPipeline.DefaultContext? = null
-
-    /**
      * The context that took the event and did not pass it on, if one has. It
      * claimed the connection, so nothing closes for it — and a handler
      * joining below it is not offered what the claimant already answered for.
@@ -2038,17 +1959,7 @@ internal class ReadClosedOwnership {
      */
     fun isBelowClaimant(ctx: DefaultPipeline.DefaultContext): Boolean {
         val claimant = claimedBy as? DefaultPipeline.DefaultContext ?: return false
-        return isBelow(claimant, ctx)
-    }
-
-    /** Whether [ctx] sits below the context a handler raised the event at. */
-    fun isBelowRaise(ctx: DefaultPipeline.DefaultContext): Boolean {
-        val from = raisedAfter ?: return false
-        return isBelow(from, ctx)
-    }
-
-    private fun isBelow(from: DefaultPipeline.DefaultContext, ctx: DefaultPipeline.DefaultContext): Boolean {
-        var c: DefaultPipeline.DefaultContext? = from.next
+        var c: DefaultPipeline.DefaultContext? = claimant.next
         while (c != null) {
             if (c === ctx) return true
             c = c.next
