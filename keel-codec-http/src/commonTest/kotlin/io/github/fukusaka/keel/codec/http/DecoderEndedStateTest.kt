@@ -461,21 +461,31 @@ class DecoderEndedStateTest {
     // --- R8: PASS_THROUGH keeps relaying ---
 
     @Test
-    fun `a switched protocol keeps receiving raw bytes after the ending`() {
-        // After 101 the decoder is not decoding but relaying; what an ending
-        // means for the switched protocol is its own handler's decision, so
-        // the relay does not stop on it.
+    fun `a switched protocol keeps relaying raw bytes across reads`() {
+        // After 101 the decoder is not decoding but relaying: each read of
+        // raw bytes is passed on, the decode-ending logic never applying to
+        // the switched protocol's traffic.
         val tracker = TrackingAllocator(DefaultAllocator)
         val c = openResponseConnection(tracker)
         c.read("HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\n\r\nRAW1", tracker)
-        // The ending as the read side reports it. The channel's own close is
-        // not usable here: it ends the pipeline's life, after which nothing
-        // is delivered to anyone.
-        c.channel.pipeline.notifyInactive()
         c.read("RAW2", tracker)
         assertEquals(listOf("head 101", "end 0", "raw RAW1", "raw RAW2"), c.sink.events)
         c.sink.releaseHeads()
         assertEquals(0, tracker.outstandingCount, "every recv buffer is back")
+    }
+
+    @Test
+    fun `a switched protocol relays nothing after the ending`() {
+        // The ending is the connection over: even a raw relay stops, and a
+        // read that arrives after it is released rather than relayed.
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val c = openResponseConnection(tracker)
+        c.read("HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\n\r\nRAW1", tracker)
+        c.channel.pipeline.notifyInactive()
+        c.read("RAW2", tracker)
+        assertEquals(listOf("head 101", "end 0", "raw RAW1"), c.sink.events, "RAW2 is not relayed after the ending")
+        c.sink.releaseHeads()
+        assertEquals(0, tracker.outstandingCount, "the read after the ending is released")
     }
 
     // --- R9: a replayed read after the ending is not decoded ---
