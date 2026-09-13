@@ -88,9 +88,13 @@ abstract class AbstractPipelinedChannel(
      * descriptor is already going still reports what it saw — so the first
      * writer is the one that answers, and everything after it is the other
      * side catching up. Written at the ask on this side ([close], the
-     * pipeline's `requestClose`, a handler's `propagateClose`) and at the
-     * report on the transport's, both before [isOpen] turns false, so a
-     * reader that arrives afterwards reads a cause that is already settled.
+     * pipeline's `requestClose`, a handler's `propagateClose`), which is
+     * before [isOpen] turns false, and at the report on the transport's,
+     * which is before the close this channel performs but not always before
+     * the descriptor goes: two of the three reports are for an end whose
+     * descriptor is already released, and a read landing in that window is
+     * refused rather than answered. [PipelinedChannel.endedByTransport] says
+     * what a transport can do about it.
      *
      * Atomic because the two marks run on different threads — this side's at
      * the ask, on whatever thread called, and the transport's on its loop —
