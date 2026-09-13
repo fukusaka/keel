@@ -223,7 +223,7 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
         // Taken, not passed on. The caller holds this channel and reads it;
         // the end of file is theirs to be told about — `read` drains what is
         // queued and then answers `-1` — and the close is theirs to make.
-        // Passing it on would let the tail close a connection its owner is
+        // Passing it on would let the pipeline close a connection its owner is
         // still reading, and sever an answer to a peer that half-closed.
     }
 

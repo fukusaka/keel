@@ -1110,9 +1110,7 @@ internal class DefaultPipeline(
         if (readClosed.decidedToClose || draining) return
         if (readClosedPhase != Phase.DELIVERED || endingPhase == Phase.DELIVERED || !transport.isOpen) return
         if (readClosed.claimed) return
-        // Offered to a handler, or to a chain with handlers of which none is
-        // inbound: nobody there can be offered it, and nobody will join to be.
-        if (!readClosed.offered && !(!isEmpty && noInboundHandler())) return
+        if (!readClosed.offered && !answerableWithoutAnOffer()) return
         var c = head.next
         while (c != null && c !== tail) {
             if (stillToAnswerTheReport(c)) return
@@ -1126,6 +1124,29 @@ internal class DefaultPipeline(
     private fun stillToAnswerTheReport(c: DefaultContext): Boolean {
         if (c.handler !is InboundHandler || c.lifecycle != Lifecycle.ACTIVE) return false
         return owesReadClosed(c, ReadClosedOrigin.TRANSPORT) && !c.readClosedHeard
+    }
+
+    /**
+     * Whether the chain can be closed for the report although no handler was
+     * offered it — as opposed to the chain nobody has joined, which waits for
+     * the first handler to arrive.
+     *
+     * A chain whose handlers are all outbound has nobody who can be offered it.
+     * And once the activation has reached the chain, whoever is left without
+     * an offer is past being offered one — ended, already told the read side
+     * is over, or kept pending by a handler above — which is not waiting for a
+     * handler to arrive. What still waits is a chain with an inbound handler
+     * whose activation has not been delivered yet: it has joined, and the
+     * report is on its way to it.
+     *
+     * An offer alone stood in for "an inbound handler could be offered it",
+     * and the two part company exactly there: every inbound handler left is
+     * past being offered, so none is, and the chain was read as one nobody
+     * had joined and left open.
+     */
+    private fun answerableWithoutAnOffer(): Boolean {
+        if (isEmpty) return false
+        return activationPhase == Phase.DELIVERED || noInboundHandler()
     }
 
     private fun noInboundHandler(): Boolean {

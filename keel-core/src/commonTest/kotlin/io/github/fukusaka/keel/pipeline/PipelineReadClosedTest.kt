@@ -496,7 +496,7 @@ class PipelineReadClosedTest {
     fun `a handler that joins and takes the end of file and leaves has still claimed it`() = readClosedTest {
         // Taking the event claims the connection; leaving afterwards does not
         // give it back. Nothing below is offered what this handler took, and
-        // the tail answers for nothing — so the connection waits for the
+        // nothing else closes for it — so the connection waits for the
         // close its claimant owes it.
         val f = Fixture()
         f.pipeline.addLast("h0", f.recorder("h0"))
@@ -660,8 +660,8 @@ class PipelineReadClosedTest {
     }
 
     @Test
-    fun `the tail closes for the transport's report and not for a raise`() = readClosedTest {
-        // The tail's close releases a descriptor that would otherwise sit in
+    fun `the connection closes for the transport's report and not for a raise`() = readClosedTest {
+        // The close for an unclaimed report releases a descriptor that would otherwise sit in
         // CLOSE-WAIT, which is the transport's report and not a raise: there
         // the socket is open both ways and the handlers above the raiser are
         // still reading. So the report closes and the raise does not.
@@ -701,7 +701,7 @@ class PipelineReadClosedTest {
         // The claim travels with the event, not with a field naming a handler
         // that has left. A bridge taken out of the chain is not offered the
         // end of file and claims nothing; the handlers that are there answer,
-        // and what they turn down the tail closes.
+        // and what they turn down is closed for.
         val f = Fixture()
         f.pipeline.addLast("h", f.recorder("h"))
         f.channel.ensureBridge()
@@ -991,10 +991,10 @@ class PipelineReadClosedTest {
     }
 
     @Test
-    fun `a handler passed over and then caught up lets the tail close`() = readClosedTest {
+    fun `a handler passed over and then caught up lets the connection close`() = readClosedTest {
         // The walk that ran while the second was still pending could not
         // offer it the event and said so. The catch-up offers it and it
-        // declines like the first — so by the time the tail is asked again
+        // declines like the first — so once that frame has finished
         // nobody is left to answer and nobody took it.
         val f = Fixture(deferDrain = true)
         f.pipeline.addLast(
@@ -1013,7 +1013,7 @@ class PipelineReadClosedTest {
             listOf("first:readClosed", "second:readClosed"),
             f.log.filter { it.endsWith(":readClosed") },
         )
-        assertFalse(f.channel.isOpen, "nobody claimed the end of file so the tail closes")
+        assertFalse(f.channel.isOpen, "nobody claimed the end of file so the connection closes")
 
         f.transport.releaseWritten()
         f.tracker.assertNoLeaks()
@@ -1127,6 +1127,105 @@ class PipelineReadClosedTest {
         val removed = f.log.indexOf("new:removed")
         assertTrue(added >= 0, "the replacement was added: ${f.log}")
         assertTrue(removed < 0 || added < removed, "and added before it was removed: ${f.log}")
+    }
+
+    @Test
+    fun `a report nobody left can be offered closes when every inbound handler has already ended`() = readClosedTest {
+        // The ending was raised to the chain before the peer's end of file came.
+        // Nobody left can be offered the report, so nobody records an offer —
+        // and that is not the chain nobody has joined, which waits.
+        val f = Fixture(deferDrain = true)
+        var outCtx: PipelineHandlerContext? = null
+        f.pipeline.addLast(
+            "out",
+            object : OutboundHandler {
+                override fun handlerAdded(ctx: PipelineHandlerContext) {
+                    outCtx = ctx
+                }
+            },
+        )
+        f.pipeline.addLast("app", f.recorder("app"))
+        f.queue.runQueued()
+        checkNotNull(outCtx).propagateInactive()
+        assertTrue(f.log.contains("app:inactive"), "premise: the handler was ended: ${f.log}")
+
+        f.peerFin()
+        f.queue.runQueued()
+
+        assertFalse(f.transport.isOpen, "nobody can answer it and nobody took it: ${f.log}")
+    }
+
+    @Test
+    fun `a report closes after the handler that ended the chain below it has left`() = readClosedTest {
+        val f = Fixture(deferDrain = true)
+        var tlsCtx: PipelineHandlerContext? = null
+        f.pipeline.addLast(
+            "tls",
+            object : Recorder("tls", f.log) {
+                override fun handlerAdded(ctx: PipelineHandlerContext) {
+                    tlsCtx = ctx
+                    super.handlerAdded(ctx)
+                }
+            },
+        )
+        f.pipeline.addLast("app", f.recorder("app"))
+        f.queue.runQueued()
+        checkNotNull(tlsCtx).propagateInactive()
+        f.pipeline.remove("tls")
+
+        f.peerFin()
+        f.queue.runQueued()
+
+        assertFalse(f.transport.isOpen, "nobody can answer it and nobody took it: ${f.log}")
+    }
+
+    @Test
+    fun `a report closes after a handler that raised one below it has left`() = readClosedTest {
+        val f = Fixture(deferDrain = true)
+        var rCtx: PipelineHandlerContext? = null
+        f.pipeline.addLast(
+            "tls",
+            object : Recorder("tls", f.log) {
+                override fun handlerAdded(ctx: PipelineHandlerContext) {
+                    rCtx = ctx
+                    super.handlerAdded(ctx)
+                }
+            },
+        )
+        f.pipeline.addLast("app", f.recorder("app"))
+        f.queue.runQueued()
+        assertFalse(checkNotNull(rCtx).propagateReadClosed(), "premise: nobody below took the raise")
+        f.pipeline.remove("tls")
+
+        f.peerFin()
+        f.queue.runQueued()
+
+        assertFalse(f.transport.isOpen, "the one handler left has heard the read side end: ${f.log}")
+    }
+
+    @Test
+    fun `a report closes when the handler holding an activation left before it came`() = readClosedTest {
+        // The context below was kept pending, and is still pending once its
+        // holder is gone. A pending context is not waited on, however it came
+        // to be left behind.
+        val f = Fixture(deferDrain = true)
+        f.pipeline.addLast(
+            "holder",
+            object : Recorder("holder", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    f.log.add("holder:active")
+                }
+            },
+        )
+        f.pipeline.addLast("waited", f.recorder("waited"))
+        f.queue.runQueued()
+        f.pipeline.remove("holder")
+        assertFalse(f.log.contains("waited:active"), "premise: still pending: ${f.log}")
+
+        f.peerFin()
+        f.queue.runQueued()
+
+        assertFalse(f.transport.isOpen, "a pending context is not waited on: ${f.log}")
     }
 
     @Test
