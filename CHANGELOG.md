@@ -93,8 +93,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a transport extending it is read as it was until it overrides the property to `false`. The interface answers
   `false`: a transport implementing `IoTransport` directly and still making one report for every end has that
   report read as the peer's alone, so a reset or a failure reaches a chain as a half-close and no ending follows —
-  such a transport must override the property. `AbstractIoTransport.reportInactiveOnce` / `inactiveAlreadyReported`
-  are deprecated (#1098)
+  such a transport must override the property, or store `onClosed` — a channel refuses at construction a transport
+  that answers `false` and leaves that hook at its discarding default. `AbstractIoTransport.reportInactiveOnce` /
+  `inactiveAlreadyReported` are deprecated (#1098)
 - `build`: `scripts/gate.sh` (two-host pre-merge gate) and `scripts/bench-sync.sh` (bench host
   sync and build) replace `scripts/check-local.sh`, which is removed (#1100)
 - `codec-websocket`: `WsFrameDecoder` stops decoding once the connection has ended; bytes after it

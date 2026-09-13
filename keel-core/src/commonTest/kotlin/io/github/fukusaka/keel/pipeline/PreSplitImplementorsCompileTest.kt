@@ -14,6 +14,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -178,6 +179,28 @@ class PreSplitImplementorsCompileTest {
         override suspend fun awaitClosed() = Unit
 
         override fun close() = Unit
+    }
+
+    @Test
+    fun `a transport on the split arms with nowhere to report the end is refused`() {
+        // The hook's default accessors discard what is assigned to them, so
+        // a channel wiring itself to such a transport would be told the
+        // connection ended by nobody: resets and failures would arrive as
+        // the peer merely finishing, and the descriptor would stay. Nothing
+        // later notices, so the channel reads the hook back at construction.
+        val transport = PreSplitTransport()
+        assertFalse(
+            transport.reportsEveryEndAsReadClosed,
+            "the interface default puts a direct implementor on the split arms",
+        )
+
+        val refused = assertFailsWith<IllegalStateException> {
+            object : AbstractPipelinedChannel(transport, PrintLogger("pre-split")) {}
+        }
+        assertTrue(
+            refused.message?.contains("onClosed") == true,
+            "the refusal names the hook that was discarded: ${refused.message}",
+        )
     }
 
     @Test

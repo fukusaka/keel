@@ -260,6 +260,19 @@ abstract class AbstractPipelinedChannel(
             markEndedByTransport()
             close()
         }
+        // Read back rather than trusted. The hook's default accessors store
+        // nothing — deliberately, so a transport that has one report for
+        // every end carries no field for a report it never makes — which
+        // means the assignment above is discarded in silence. A transport
+        // that answers `false` above and keeps those accessors is on the
+        // split arms with nowhere to report the end: its resets, failed
+        // reads and reclamations would reach the chain as the peer's end of
+        // file alone, leaving no ending, no close, a descriptor in
+        // CLOSE-WAIT and a channel that still calls itself writable. There
+        // is no later moment that catches this, so it is refused here.
+        check(transport.reportsEveryEndAsReadClosed || transport.onClosed != null) {
+            "a transport that reports the peer's end of file apart from the end must store onClosed"
+        }
         // The channel is assembled and can carry traffic, so its pipeline is
         // told. Nothing sent this before, so `onActive` never ran on any
         // connection — and it is the only thing that puts a connection into

@@ -158,8 +158,11 @@ interface PipelinedChannel : Channel {
     override suspend fun read(buf: IoBuf): Int {
         // One reading decides. A second one on this thread could see an end
         // that landed between the two and refuse as a misuse what is the
-        // end of file; the channel marks the transport's end before it
-        // closes, so a reading that sees the close sees the mark.
+        // end of file. The channel marks the transport's end before the
+        // close it performs, so a reading that sees that close sees the
+        // mark; where the transport released its descriptor before making
+        // the report, the reading that falls between the two is refused, as
+        // [endedByTransport] says it is.
         if (!isOpen) {
             if (endedByTransport) return -1
             error("Channel is closed")

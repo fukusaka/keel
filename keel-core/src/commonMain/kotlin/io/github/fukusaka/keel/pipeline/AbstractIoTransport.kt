@@ -274,10 +274,16 @@ abstract class AbstractIoTransport(
         }
         val end = onClosed
         if (end == null) {
-            // Nothing offered a hook for the end: the one report takes it.
-            // No listener in this tree leaves it empty — a channel fills it
-            // for every transport — so this arm is defensive and untested,
-            // and it is here for a listener that is not a channel.
+            // Nothing offered a hook for the end, so the one report takes it
+            // — where it still can. A listener that already heard the read
+            // side finish has had that report, and giving it the same one
+            // again would be the repeat the once-per-transport rule exists
+            // to prevent; so for the ordinary order, a peer that finishes
+            // and then goes away, the end is not reported at all. That is
+            // the cost of leaving the hook empty, and it is why a channel
+            // refuses a transport that does (`AbstractPipelinedChannel`
+            // reads the hook back after setting it). This arm is for a
+            // listener that is not a channel, and it is untested.
             reportReadClosedNow()
             return
         }
