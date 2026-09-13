@@ -635,10 +635,28 @@ internal class DefaultPipeline(
      * how a raise came to be delivered on the walk that named it and dropped
      * for everything joining or activating afterwards.
      */
-    private fun readClosedOriginsFor(ctx: DefaultContext): List<ReadClosedOrigin> = buildList {
-        if (readClosedPhase == Phase.DELIVERED && !ctx.belowReadClosedClaim) add(ReadClosedOrigin.TRANSPORT)
-        if (ctx.belowReadClosedRaise) add(ReadClosedOrigin.RAISE)
-    }
+    private fun readClosedOriginsFor(ctx: DefaultContext): List<ReadClosedOrigin> =
+        ReadClosedOrigin.entries.filter { owesReadClosed(ctx, it) }
+
+    /**
+     * Whether [ctx] is owed the event [origin] names — the one place that
+     * question is answered.
+     *
+     * Every path that decides whether to hand a context the peer's end of
+     * file asks it here: the walk as it reaches each context, the replay a
+     * joining handler gets, and the catch-up for a late activation. It used
+     * to be answered in more than one place, and each time the answer was
+     * corrected in one of them the others went on answering the old way.
+     *
+     * The transport's report is owed once it has been reported, except below
+     * a handler that took it. A raise is owed inside the region its raiser
+     * named. Each region answers only for its own event.
+     */
+    internal fun owesReadClosed(ctx: DefaultContext, origin: ReadClosedOrigin): Boolean =
+        when (origin) {
+            ReadClosedOrigin.TRANSPORT -> readClosedPhase == Phase.DELIVERED && !ctx.belowReadClosedClaim
+            ReadClosedOrigin.RAISE -> ctx.belowReadClosedRaise
+        }
 
     /** Whether the read side is over by either route: the transport reported it, or a handler raised one. */
     private val readClosedRecorded: Boolean
@@ -1594,11 +1612,7 @@ internal class DefaultPipeline(
          * away because of an older claim leaves those handlers waiting for
          * data no one will send.
          */
-        private fun owedReadClosed(origin: ReadClosedOrigin): Boolean =
-            when (origin) {
-                ReadClosedOrigin.TRANSPORT -> !belowReadClosedClaim
-                ReadClosedOrigin.RAISE -> belowReadClosedRaise
-            }
+        private fun owedReadClosed(origin: ReadClosedOrigin): Boolean = pipelineRef.owesReadClosed(this, origin)
 
         /**
          * Carries the event past a context not owed it — it heard it already,
@@ -2235,12 +2249,4 @@ internal class ReadClosedOwnership {
 
     /** Offered to the chain, taken by nobody, and owed to nobody who has yet to hear it. */
     val refusedByAll: Boolean get() = offered && !claimed && !passedOver
-
-    /**
-     * Whether [ctx] sits below the handler that claimed the event. A claimant
-     * answered for the connection; the chain under it is not offered what it
-     * already took. Read from the region the context carries, so it survives
-     * the claimant's removal and a handler inserted where the claimant was.
-     */
-    fun isBelowClaimant(ctx: DefaultPipeline.DefaultContext): Boolean = ctx.belowReadClosedClaim
 }
