@@ -143,11 +143,6 @@ interface Pipeline {
      * turned down. A context that had yet to hear the activation is offered
      * it when it activates, and the tail is asked again behind it.
      *
-     * A buffer that arrives for a chain whose journal is full is released
-     * rather than handed to it, and that release is recorded — once per
-     * connection, at warn — so a chain that lost bytes is not left to infer
-     * it from a protocol error later.
-     *
      * Idempotent per connection: the first report is delivered and the rest
      * are absorbed, which the transport's own once-per-transport contract
      * makes the second line of rather than the first.

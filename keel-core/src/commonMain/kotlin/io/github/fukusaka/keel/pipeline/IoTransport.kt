@@ -188,8 +188,10 @@ interface IoTransport {
      * hook existed — one that has a single report for every way its
      * connection can be over — is not obliged to carry a field for a report
      * it never makes. Keeping them means this transport can never report a
-     * forced end; see [reportsEveryEndAsReadClosed] for how a channel then
-     * reads the one report it does make.
+     * forced end, which is why [reportsEveryEndAsReadClosed] must then answer
+     * `true`: that is how a channel reads the one report it does make, and a
+     * transport that keeps these accessors while answering `false` is
+     * refused where a channel is built.
      */
     var onClosed: (() -> Unit)?
         get() = null
@@ -213,10 +215,18 @@ interface IoTransport {
      * last transport has learned the difference.
      *
      * A transport that implements this interface directly and still makes one
-     * report for every end must override this to `true`. Left at `false`, its
-     * resets and failures are read as the peer merely finishing: the chain
-     * hears [InboundHandler.onReadClosed] rather than the ending, and a
-     * caller reading the channel is told the connection is still writable.
+     * report for every end overrides this to `true`. Answering `false` is
+     * saying the two are reported apart, which means [onClosed] is stored:
+     * the default accessors discard what a listener assigns, so an end
+     * reported through them reaches nobody, and `AbstractPipelinedChannel`
+     * refuses such a transport where it is built rather than let that
+     * silence stand. What it cannot refuse is a transport that stores the
+     * hook and never reports through it — there its resets and failures are
+     * read as the peer merely finishing: the chain hears
+     * [InboundHandler.onReadClosed] rather than the ending, and a caller
+     * reading the channel is told the connection is still writable. A
+     * transport that can never force an end stores the hook too, since
+     * whether one will is not knowable where the refusal is made.
      */
     val reportsEveryEndAsReadClosed: Boolean get() = false
 

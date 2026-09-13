@@ -113,8 +113,9 @@ class SuspendBridgeHandler : DuplexHandler, OwnedSuspendSource {
 
     /**
      * Whether the bridge has observed the end of the read side — the peer's
-     * end of file or the connection's end. Read inside this class to refuse a
-     * read arriving afterwards, and nowhere else in the tree — a read arms the
+     * end of file or the connection's end. The refusal inside this class reads the
+     * field directly; this is what the tests pinning the bridge's end of file
+     * read, and nothing in production reads it — a read arms the
      * transport whether or not the read side is over, because that arming is
      * what starts the clock a half-closed connection is reclaimed by. User
      * code should observe EOF via [read] returning `-1` rather than polling

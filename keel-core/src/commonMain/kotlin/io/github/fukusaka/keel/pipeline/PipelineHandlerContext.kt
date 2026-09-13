@@ -109,14 +109,17 @@ interface PipelineHandlerContext {
      * not be told when the transport reports afterwards: it has heard the
      * read side end once, and hears it once. Nothing else closes for it
      * either — the tail answers for a report only while no handler has taken
-     * one — so a claimant that never closes leaves the connection to the
-     * read-idle timeout.
+     * one — so a claimant that never closes leaves the connection to a
+     * read-idle timeout where one is configured, and holds it where none
+     * is.
      *
      * This is also how a handler raises the end of file itself, for a
      * protocol whose own close means the peer has finished: a codec turning
      * a TLS `close_notify` into this event tells the chain below it the read
      * side is over, and the chain answers as it would for a transport's
-     * report. It is the only way in from inside the chain.
+     * report. It is the only way a handler raises one for the region below it;
+     * `Pipeline.notifyReadClosed` is the transport's entrance, and the
+     * channel's to call.
      *
      * What it speaks for is the region below this context: the handlers
      * there now, a handler that joins there afterwards, and a context there
