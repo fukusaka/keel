@@ -19,7 +19,14 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * A witness that the peer's end of file can be added to these interfaces
- * without an implementor written before it having to change.
+ * without an implementor written before it failing to compile.
+ *
+ * Compiling is what this witnesses, and it is not the same as behaving as it
+ * did: a transport implementing [IoTransport] directly reads the interface's
+ * own `false` for whether it reports every end on the read side, so one
+ * written before this event is on the split arms and has to say otherwise.
+ * The case at the end of this file is that break made loud where the answer
+ * alone left it silent.
  *
  * Each type below implements only what existed before the event, and the file
  * has to compile: a member added to one of them without a default turns that

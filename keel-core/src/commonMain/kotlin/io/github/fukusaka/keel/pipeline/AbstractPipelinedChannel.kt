@@ -91,10 +91,14 @@ abstract class AbstractPipelinedChannel(
      * pipeline's `requestClose`, a handler's `propagateClose`), which is
      * before [isOpen] turns false, and at the report on the transport's,
      * which is before the close this channel performs but not always before
-     * the descriptor goes: two of the three reports are for an end whose
-     * descriptor is already released, and a read landing in that window is
-     * refused rather than answered. [PipelinedChannel.endedByTransport] says
-     * what a transport can do about it.
+     * the descriptor goes. Of the transport's three reports, the refused
+     * send precedes the end entirely and the end's own report precedes the
+     * release for a transport that reports before releasing, which is what
+     * the interface asks of it; the third is taken *because* the descriptor
+     * has already gone, and a read landing between that release and that
+     * report is refused rather than answered.
+     * [PipelinedChannel.endedByTransport] says what a transport can do about
+     * it.
      *
      * Atomic because the two marks run on different threads — this side's at
      * the ask, on whatever thread called, and the transport's on its loop —
@@ -248,7 +252,7 @@ abstract class AbstractPipelinedChannel(
                 pipeline.notifyReadClosed()
             }
         }
-        transport.onClosed = {
+        val endReport = {
             // The transport ended the connection itself — a reset, a failed
             // read or write, an idle reclamation, a stopped loop. Nothing is
             // left to answer, in either mode: the close delivers the ending,
@@ -264,7 +268,8 @@ abstract class AbstractPipelinedChannel(
             markEndedByTransport()
             close()
         }
-        // Read back rather than trusted. The hook's default accessors store
+        transport.onClosed = endReport
+        // Read back, and read by identity. The hook's default accessors store
         // nothing — deliberately, so a transport that has one report for
         // every end carries no field for a report it never makes — which
         // means the assignment above is discarded in silence. A transport
@@ -274,7 +279,19 @@ abstract class AbstractPipelinedChannel(
         // file alone, leaving no ending, no close, a descriptor in
         // CLOSE-WAIT and a channel that still calls itself writable. There
         // is no later moment that catches this, so it is refused here.
-        check(transport.reportsEveryEndAsReadClosed || transport.onClosed != null) {
+        //
+        // Identity rather than presence: a getter that answers something
+        // while the setter still discards passes a null check and drops this
+        // report exactly as the default does, which is the shape a partial
+        // adoption takes. What is asked is whether this report is the one
+        // the transport will make.
+        //
+        // A transport that answers `false` and can never force an end still
+        // stores it. Whether one will is not knowable here, and a field it
+        // never reads costs it a line; see [IoTransport.reportsEveryEndAsReadClosed].
+        // Thrown from construction, so a caller that builds channels handles
+        // it as it handles any other failure to build one.
+        check(transport.reportsEveryEndAsReadClosed || transport.onClosed === endReport) {
             "a transport that reports the peer's end of file apart from the end must store onClosed"
         }
         // The channel is assembled and can carry traffic, so its pipeline is
