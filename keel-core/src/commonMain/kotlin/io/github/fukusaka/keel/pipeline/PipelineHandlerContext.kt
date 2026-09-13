@@ -109,13 +109,29 @@ interface PipelineHandlerContext {
      * side is over, and the chain answers as it would for a transport's
      * report. It is the only way in from inside the chain.
      *
-     * What it reaches is the chain below this context as it stands now. A
-     * handler that joins afterwards, and a context that activates
-     * afterwards, are not offered it — unlike the transport's own report,
-     * which every context is owed. See [InboundHandler.onReadClosed].
+     * What it speaks for is the region below this context: the handlers
+     * there now, a handler that joins there afterwards, and a context there
+     * that activates afterwards. A handler joining above it is not offered
+     * it, and neither is this one — the transport has not finished, and its
+     * own report, when it comes, is owed to every context including this.
+     *
+     * Irreversible. What the handlers below were told cannot be untold, so
+     * the region outlives the handler that named it: removing this handler
+     * afterwards does not give the connection its read side back, and
+     * replacing it with a handler that produces again is a contract
+     * violation rather than a way to resume.
+     *
+     * **Returns whether a handler below took the event** and did not pass it
+     * on. The walk runs to the end of the region before this call returns, so
+     * the answer is settled here. Nothing closes for an unclaimed raise: the
+     * descriptor is open in both directions and the handlers above are still
+     * reading, so the close the tail performs for an unclaimed report from
+     * the transport has no counterpart. A handler that raised the event and
+     * wants the connection ended closes it here, having been told that
+     * nobody below took it; told that somebody did, it must not close, since
+     * that handler has taken on answering the peer.
      */
-    fun propagateReadClosed() {
-    }
+    fun propagateReadClosed(): Boolean = false
 
     /** Propagates a channel-inactive event to the next inbound handler. */
     fun propagateInactive()

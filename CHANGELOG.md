@@ -9,7 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `core`: `InboundHandler.onReadClosed` / `Pipeline.notifyReadClosed` / `PipelineHandlerContext.propagateReadClosed`
-  — the peer's end of file as its own event, journalled and replayed like the other inbound events;
+  — the peer's end of file as its own event, journalled and replayed like the other inbound events. A handler may
+  also raise one for the region below it, which is what a codec turning a TLS `close_notify` into this event does;
+  `propagateReadClosed` answers whether a handler there took it, and nothing closes for a raise nobody took —
+  the descriptor is open both ways and the handlers above are still reading, so the raiser decides;
   `IoTransport.onClosed` — a transport reporting that it ended the connection itself;
   `PipelinedChannel.endedByTransport` — whether the channel closed for an end it did not start, which is what a
   `read()` finding the channel closed answers `-1` for rather than refusing as a misuse. A caller answered `-1`

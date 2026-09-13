@@ -167,12 +167,12 @@ interface InboundHandler : PipelineHandler {
      * is a state that holds until the ending, not a moment that passes.
      *
      * An end of file a handler raised from inside the chain
-     * ([PipelineHandlerContext.propagateReadClosed]) reaches the chain below
-     * the raiser as it stands when the raise is made, and no further: a
-     * handler joining afterwards is not offered it, nor is a context that
-     * activates afterwards. What a raise would have to carry for those to
-     * work is a position, and a position outlives neither the raiser's
-     * removal nor a second raise below it.
+     * ([PipelineHandlerContext.propagateReadClosed]) is owed to the region
+     * below the handler that raised it, on the same terms: a handler joining
+     * that region afterwards is offered it, and so is a context there that
+     * activates afterwards. A handler above the raise is not, and neither is
+     * the raiser — what a raise says is that one handler's own output is
+     * over, not that the connection's read side is.
      */
     fun onReadClosed(ctx: PipelineHandlerContext) {
         ctx.propagateReadClosed()

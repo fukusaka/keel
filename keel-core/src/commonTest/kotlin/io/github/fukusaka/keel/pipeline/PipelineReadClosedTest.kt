@@ -23,6 +23,8 @@ import kotlin.time.Duration.Companion.seconds
  * Every case here parks a reader or waits on a dispatcher hop, so each is
  * bounded on the wall clock rather than on the test scheduler's virtual time.
  */
+private fun f2Recorder(): PipelineHandler = object : InboundHandler {}
+
 private fun readClosedTest(body: suspend TestScope.() -> Unit) = runTest(timeout = 15.seconds, testBody = body)
 
 /**
@@ -54,6 +56,15 @@ private class Fixture(deferDrain: Boolean = false, val tracker: TrackingAllocato
     val pipeline: Pipeline get() = channel.pipeline
 
     fun recorder(name: String): Recorder = Recorder(name, log)
+
+    /** A recorder that raises the peer's end of file once its own activation has gone on. */
+    fun raiserOnActive(name: String): Recorder =
+        object : Recorder(name, log) {
+            override fun onActive(ctx: PipelineHandlerContext) {
+                ctx.propagateActive()
+                ctx.propagateReadClosed()
+            }
+        }
 
     fun bytes(vararg values: Byte): IoBuf = tracker.allocate(8).also { buf -> for (v in values) buf.writeByte(v) }
 
@@ -577,12 +588,13 @@ class PipelineReadClosedTest {
         // That is the route a codec takes when its own protocol's close — a
         // TLS close_notify — is the peer's end of file to the chain below it.
         val f = Fixture()
+        var takenBelow: Boolean? = null
         f.pipeline.addLast(
             "typed",
             object : TypedInboundHandler<IoBuf>(IoBuf::class) {
                 override fun onReadTyped(ctx: PipelineHandlerContext, msg: IoBuf) {
                     msg.release()
-                    ctx.propagateReadClosed()
+                    takenBelow = ctx.propagateReadClosed()
                 }
             },
         )
@@ -591,18 +603,22 @@ class PipelineReadClosedTest {
         f.transport.onRead?.invoke(f.bytes(1))
 
         assertEquals(
-            listOf("below:added", "below:active", "below:readClosed", "below:inactive", "below:close", "below:removed"),
+            listOf("below:added", "below:active", "below:readClosed"),
             f.log,
-            "the event reached through the wrapper, and nobody claimed it, so the tail closed",
+            "the region below hears it; nothing closes for a raise",
         )
+        assertEquals(false, takenBelow, "the answer goes back to the handler that raised it")
+        assertTrue(f.channel.isOpen, "the descriptor is open both ways and the handlers above are still reading")
+        f.channel.close()
         assertEquals(0, f.tracker.outstandingCount)
     }
 
     @Test
-    fun `a handler raising the read closed from the chain closes a Pipeline-mode channel`() = readClosedTest {
-        // The report, whoever makes it: a TLS layer turning a close_notify
-        // into the peer's end of file gets the close that follows delivery,
-        // where passing the event on to the handlers below gets none.
+    fun `the tail closes for the transport's report and not for a raise`() = readClosedTest {
+        // The tail's close releases a descriptor that would otherwise sit in
+        // CLOSE-WAIT, which is the transport's report and not a raise: there
+        // the socket is open both ways and the handlers above the raiser are
+        // still reading. So the report closes and the raise does not.
         val raised = Fixture()
         raised.pipeline.addLast("h", raised.recorder("h"))
         raised.pipeline.notifyReadClosed()
@@ -955,6 +971,141 @@ class PipelineReadClosedTest {
 
         f.transport.releaseWritten()
         f.tracker.assertNoLeaks()
+    }
+
+    @Test
+    fun `a raise reaches a handler that joins its region after the raiser leaves`() = readClosedTest {
+        // The region outlives the handler that named it. What the handlers
+        // below were told cannot be untold, so a handler joining behind one
+        // of them joins a read side that is already over.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "raiser",
+            object : Recorder("raiser", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    ctx.propagateActive()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addLast("below", f.recorder("below"))
+        f.pipeline.remove("raiser")
+
+        f.pipeline.addLast("late", f.recorder("late"))
+
+        assertEquals(
+            listOf("below:readClosed", "late:readClosed"),
+            f.log.filter { it.endsWith(":readClosed") },
+        )
+        f.channel.close()
+    }
+
+    @Test
+    fun `a raise reaches a handler inserted directly below the raiser`() = readClosedTest {
+        val f = Fixture()
+        f.pipeline.addLast(
+            "raiser",
+            object : Recorder("raiser", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    ctx.propagateActive()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addAfter("raiser", "inserted", f.recorder("inserted"))
+
+        assertEquals(listOf("inserted:readClosed"), f.log.filter { it.endsWith(":readClosed") })
+        f.channel.close()
+    }
+
+    @Test
+    fun `a handler joining above a raise is not offered it`() = readClosedTest {
+        val f = Fixture()
+        f.pipeline.addLast(
+            "raiser",
+            object : Recorder("raiser", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    ctx.propagateActive()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.addFirst("above", f.recorder("above"))
+
+        assertEquals(emptyList(), f.log.filter { it.endsWith(":readClosed") })
+        f.channel.close()
+    }
+
+    @Test
+    fun `a replacement for a raiser is not offered the raise`() = readClosedTest {
+        // A replacement is a new producer that has not stopped, so it takes
+        // the region it is spliced into and not the one it replaces.
+        val f = Fixture()
+        f.pipeline.addLast(
+            "raiser",
+            object : Recorder("raiser", f.log) {
+                override fun onActive(ctx: PipelineHandlerContext) {
+                    ctx.propagateActive()
+                    ctx.propagateReadClosed()
+                }
+            },
+        )
+        f.pipeline.replace("raiser", "successor", f.recorder("successor"))
+
+        assertEquals(emptyList(), f.log.filter { it.endsWith(":readClosed") })
+        f.channel.close()
+    }
+
+    @Test
+    fun `a second raise below the first loses neither region`() = readClosedTest {
+        val f = Fixture()
+        f.pipeline.addLast("upper", f.raiserOnActive("upper"))
+        f.pipeline.addLast("middle", f.recorder("middle"))
+        f.pipeline.addLast("lower", f.raiserOnActive("lower"))
+        f.pipeline.addLast("bottom", f.recorder("bottom"))
+
+        f.pipeline.addAfter("upper", "between", f.recorder("between"))
+
+        assertTrue(
+            "between:readClosed" in f.log,
+            "joined below the upper raise, so it is owed it: ${f.log.filter { it.endsWith(":readClosed") }}",
+        )
+        f.channel.close()
+    }
+
+    @Test
+    fun `a raise answers its raiser whether the region below took it`() = readClosedTest {
+        // Settled over the region as it stands when the raise is made: the
+        // walk runs to the end of it before the call returns.
+        fun run(below: PipelineHandler): Pair<Boolean?, Boolean> {
+            val f = Fixture()
+            var answer: Boolean? = null
+            f.pipeline.addLast(
+                "raiser",
+                object : InboundHandler {
+                    override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+                        (msg as IoBuf).release()
+                        answer = ctx.propagateReadClosed()
+                    }
+                },
+            )
+            f.pipeline.addLast("below", below)
+            f.transport.onRead?.invoke(f.bytes(1))
+            val open = f.channel.isOpen
+            f.channel.close()
+            return answer to open
+        }
+
+        val (refused, openAfterRefusal) = run(f2Recorder())
+        assertEquals(false, refused, "the default passes it on, so nobody took it")
+        assertTrue(openAfterRefusal, "nothing closes for an unclaimed raise")
+
+        val (taken, _) = run(
+            object : InboundHandler {
+                override fun onReadClosed(ctx: PipelineHandlerContext) = Unit
+            },
+        )
+        assertEquals(true, taken, "the handler below took it and owes the close")
     }
 
     @Test
