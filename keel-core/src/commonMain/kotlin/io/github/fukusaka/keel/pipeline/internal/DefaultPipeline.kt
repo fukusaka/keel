@@ -463,7 +463,13 @@ internal class DefaultPipeline(
             // A chain with handlers but none inbound never asks for a drain,
             // so a FIN journalled for it would wait forever: it is swept now
             // — the sweep reaches nobody, and the channel decides on it.
-            Journal.FILLING -> if (isEmpty) readClosedPhase = Phase.OBSERVED else startReadClosedSweep()
+            // Not on a descriptor that is already gone, which is the same
+            // question the branch above asks: a sweep there reaches the head's
+            // own refusal, which asks the tail's close of a frame that is not
+            // running, and nothing performs it. Journalled instead — the
+            // drain declines it for the same reason, and the ending is what
+            // the chain is owed.
+            Journal.FILLING -> if (ended || isEmpty) readClosedPhase = Phase.OBSERVED else startReadClosedSweep()
             else -> readClosedPhase = Phase.OBSERVED
         }
         return this
