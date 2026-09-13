@@ -97,6 +97,21 @@ internal class TailHandler(
      * asked again after that. Not for an empty chain either — nobody has
      * turned it down, and the report waits in the journal for the first
      * handler to arrive.
+     *
+     * Not for an end of file a handler raised, either. That one says one
+     * handler's own output is over, which leaves the descriptor open in both
+     * directions and the handlers above it reading, so the CLOSE-WAIT this
+     * close exists to release is not what a raise leaves behind. The answer
+     * goes back to the handler that raised it instead.
+     *
+     * **And a handler that took either kind has taken the connection, not
+     * the event.** So once one has, this closes for nothing afterwards —
+     * including the transport's own report, which such a handler is not even
+     * told about, since it has heard the read side end once already and
+     * hears it once. What looks from here like a report nobody answered is a
+     * report whose answer was given earlier, by a handler that owes the
+     * close and has yet to make it. The read-idle timeout is what reclaims a
+     * connection whose claimant never does.
      */
     override fun onReadClosed(ctx: PipelineHandlerContext) {
         if (!pipeline.readClosed.refusedByAll) return

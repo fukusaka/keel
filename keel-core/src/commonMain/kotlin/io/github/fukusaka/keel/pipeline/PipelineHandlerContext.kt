@@ -103,6 +103,15 @@ interface PipelineHandlerContext {
      * close it, or pass the event on after all — since nothing below is
      * offered what was taken and the tail answers for nothing.
      *
+     * The connection, not the event. A handler that keeps an end of file
+     * another handler raised has taken the connection just as surely as one
+     * that keeps the transport's report, and owes the same close. It will
+     * not be told when the transport reports afterwards: it has heard the
+     * read side end once, and hears it once. Nothing else closes for it
+     * either — the tail answers for a report only while no handler has taken
+     * one — so a claimant that never closes leaves the connection to the
+     * read-idle timeout.
+     *
      * This is also how a handler raises the end of file itself, for a
      * protocol whose own close means the peer has finished: a codec turning
      * a TLS `close_notify` into this event tells the chain below it the read
