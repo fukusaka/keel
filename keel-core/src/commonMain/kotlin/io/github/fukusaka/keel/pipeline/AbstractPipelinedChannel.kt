@@ -6,7 +6,8 @@ import io.github.fukusaka.keel.logging.Logger
 import io.github.fukusaka.keel.logging.warn
 import io.github.fukusaka.keel.pipeline.internal.DefaultPipeline
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
@@ -91,11 +92,26 @@ abstract class AbstractPipelinedChannel(
      * report on the transport's, both before [isOpen] turns false, so a
      * reader that arrives afterwards reads a cause that is already settled.
      *
-     * Volatile because [read] reads it from the caller's thread, the same
-     * way [isOpen] reads the transport's own flag.
+     * Atomic because the two marks run on different threads — this side's at
+     * the ask, on whatever thread called, and the transport's on its loop —
+     * and "the first writer answers" is a claim about the pair, not about
+     * each write. A read and a write far enough apart to interleave lets
+     * both sides believe they were first, and the loser's cause is the one
+     * that sticks: a transport's end recorded as this side's refuses a read
+     * that should be the end of file, and the mirror answers the end of file
+     * to a caller that closed the channel itself. Published like [isOpen] is,
+     * since [read] reads it from the caller's thread.
      */
-    @Volatile
-    internal var endCause: EndCause = EndCause.NONE
+    @OptIn(ExperimentalAtomicApi::class)
+    private val endCauseOrdinal = AtomicInt(EndCause.NONE.ordinal)
+
+    @OptIn(ExperimentalAtomicApi::class)
+    internal val endCause: EndCause get() = EndCause.entries[endCauseOrdinal.load()]
+
+    @OptIn(ExperimentalAtomicApi::class)
+    private fun markEndCause(cause: EndCause) {
+        endCauseOrdinal.compareAndSet(EndCause.NONE.ordinal, cause.ordinal)
+    }
 
     /**
      * A read after the connection ended under the caller — a reset, a failed
@@ -301,7 +317,7 @@ abstract class AbstractPipelinedChannel(
      * write refused and the end reported while the walk is still travelling.
      */
     internal fun markClosedByThisSide() {
-        if (endCause == EndCause.NONE) endCause = EndCause.THIS_SIDE
+        markEndCause(EndCause.THIS_SIDE)
     }
 
     /**
@@ -310,7 +326,7 @@ abstract class AbstractPipelinedChannel(
      * close that follows it.
      */
     private fun markEndedByTransport() {
-        if (endCause == EndCause.NONE) endCause = EndCause.TRANSPORT
+        markEndCause(EndCause.TRANSPORT)
     }
 
     /**
