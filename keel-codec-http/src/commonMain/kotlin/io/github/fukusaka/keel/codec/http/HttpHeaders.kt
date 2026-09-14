@@ -835,6 +835,22 @@ class HttpHeaders {
     /** Whether these headers came from the pool at all; headers built directly own nothing to give back. */
     internal val isPooled: Boolean get() = pooled
 
+    /**
+     * Whether [other] is an HTTP message holding [lease] on these same pooled
+     * headers. Headers that were never borrowed own nothing, so two messages
+     * sharing them (such as [EMPTY]) share no ownership.
+     */
+    internal fun sharesBorrowWith(lease: Int, other: Any): Boolean {
+        if (!pooled) return false
+        return when (other) {
+            is HttpRequestHead -> other.headers === this && other.headersLease == lease
+            is HttpResponseHead -> other.headers === this && other.headersLease == lease
+            is HttpRequest -> other.headers === this && other.headersLease == lease
+            is HttpResponse -> other.headers === this && other.headersLease == lease
+            else -> false
+        }
+    }
+
     /** Whether the borrow [expected] is still the current one and not yet released. */
     internal fun holdsLease(expected: Int): Boolean = pooled && checkedOut && lease == expected
 

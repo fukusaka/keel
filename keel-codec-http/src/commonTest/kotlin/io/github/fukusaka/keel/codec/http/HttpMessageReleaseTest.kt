@@ -116,6 +116,72 @@ class HttpMessageReleaseTest {
         assertEquals(0, tracker.outstandingCount)
     }
 
+    @Test
+    fun `a typed handler that passes on a copy leaves its headers to the handler that holds it`() {
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val rewrite = object : TypedInboundHandler<HttpMessage>(HttpMessage::class) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: HttpMessage) {
+                if (msg is HttpRequestHead) ctx.propagateRead(msg.copy(uri = "/rewritten")) else ctx.propagateRead(msg)
+            }
+        }
+        val holder = Holder()
+        val connection = channelOn(
+            tracker,
+            "decoder" to HttpRequestDecoder(),
+            "rewrite" to rewrite,
+            "aggregator" to HttpBodyAggregator(),
+            "holder" to holder,
+        )
+
+        read(connection, tracker, POST)
+
+        val request = holder.received.single() as HttpRequest
+        assertEquals("/rewritten", request.uri)
+        assertEquals("first", request.headers.getString("X-Owner"), "the aggregator held the copy across the body")
+        assertTrue(request.release(), "and the holder is the one that releases the headers")
+        assertEquals(0, tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a typed handler that passes on a request built from the head's headers leaves them to the receiver`() {
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val build = object : TypedInboundHandler<HttpMessage>(HttpMessage::class) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: HttpMessage) {
+                if (msg is HttpRequestHead) {
+                    ctx.propagateRead(HttpRequest(msg.method, msg.uri, msg.version, msg.headers))
+                }
+            }
+        }
+        val holder = Holder()
+        val connection = channelOn(tracker, "decoder" to HttpRequestDecoder(), "build" to build, "holder" to holder)
+
+        read(connection, tracker, REQUEST)
+
+        val request = holder.received.single() as HttpRequest
+        assertEquals("first", request.headers.getString("X-Owner"))
+        assertTrue(request.release())
+        assertEquals(0, tracker.outstandingCount)
+    }
+
+    @Test
+    fun `a typed handler that passes on a copy with headers of its own still releases the original`() {
+        val tracker = TrackingAllocator(DefaultAllocator)
+        val rebuild = object : TypedInboundHandler<HttpMessage>(HttpMessage::class) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: HttpMessage) {
+                if (msg is HttpRequestHead) {
+                    ctx.propagateRead(msg.copy(headers = HttpHeaders().add("X-Owner", "rebuilt")))
+                }
+            }
+        }
+        val holder = Holder()
+        val connection = channelOn(tracker, "decoder" to HttpRequestDecoder(), "rebuild" to rebuild, "holder" to holder)
+
+        read(connection, tracker, REQUEST)
+
+        assertEquals("rebuilt", (holder.received.single() as HttpRequestHead).headers.getString("X-Owner"))
+        assertEquals(0, tracker.outstandingCount, "the decoded head was released when the callback returned")
+    }
+
     // --- A release only ever gives back the borrow it was built on ---
 
     @Test
@@ -165,6 +231,32 @@ class HttpMessageReleaseTest {
 
         assertTrue(request.release())
         assertFalse(head.release())
+    }
+
+    @Test
+    fun `a copy and a message built from the same headers share ownership and nothing else does`() {
+        val stack = ArrayDeque<HttpHeaders>()
+        val head = pooledHead("first", stack)
+
+        assertTrue(head.sharesOwnershipWith(head.copy(uri = "/elsewhere")))
+        assertTrue(head.sharesOwnershipWith(HttpRequest(head.method, head.uri, head.version, head.headers)))
+        assertFalse(head.sharesOwnershipWith(pooledHead("other")), "a different borrow")
+
+        head.release()
+        val relent = pooledHead("second", stack)
+        assertSame(head.headers, relent.headers, "premise: the pool lent the same instance again")
+        assertFalse(head.sharesOwnershipWith(relent), "the same instance on a later borrow")
+        relent.release()
+    }
+
+    @Test
+    fun `messages whose headers own nothing share no ownership`() {
+        val a = HttpRequestHead(HttpMethod.GET, "/a", headers = HttpHeaders.EMPTY)
+        val b = HttpRequestHead(HttpMethod.GET, "/b", headers = HttpHeaders.EMPTY)
+
+        assertSame(a.headers, b.headers, "premise: both use the shared empty headers")
+        assertFalse(a.sharesOwnershipWith(b))
+        assertTrue(a.sharesOwnershipWith(a))
     }
 
     // --- Keeping a message beyond the call that delivered it ---
@@ -244,6 +336,14 @@ class HttpMessageReleaseTest {
         return buf
     }
 
+    /** Keeps every message it receives, without releasing any. */
+    private class Holder : InboundHandler {
+        val received = mutableListOf<Any>()
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+            if (msg is HttpBody) msg.release() else received.add(msg)
+        }
+    }
+
     /** Releases the body messages that follow a head, so only the head is under test. */
     private class BodyDropper : InboundHandler {
         override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
@@ -253,6 +353,7 @@ class HttpMessageReleaseTest {
 
     private companion object {
         const val REQUEST = "GET /a HTTP/1.1\r\nHost: x\r\nX-Owner: first\r\n\r\n"
+        const val POST = "POST /a HTTP/1.1\r\nHost: x\r\nX-Owner: first\r\nContent-Length: 2\r\n\r\nok"
         const val RESPONSE = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Owner: first\r\n\r\nok"
     }
 }
