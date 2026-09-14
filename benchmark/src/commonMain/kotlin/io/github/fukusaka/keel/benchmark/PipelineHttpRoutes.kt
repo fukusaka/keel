@@ -206,7 +206,7 @@ private class BenchmarkRoutingHandler : InboundHandler {
                     // buffer ring has only DEFAULT_BUFFER_COUNT slots, so a
                     // missing release here exhausts the ring within ~64 requests
                     // and collapses throughput by ~6000×.
-                    msg.headers.release()
+                    msg.release()
                     return
                 }
                 when {
@@ -263,7 +263,7 @@ private class BenchmarkRoutingHandler : InboundHandler {
                 // /ws-* return path above for rationale (io-uring provided
                 // buffer ring exhaustion under the PR #596 byte-range
                 // storage contract).
-                msg.headers.release()
+                msg.release()
             }
             is HttpBodyEnd -> {
                 when {

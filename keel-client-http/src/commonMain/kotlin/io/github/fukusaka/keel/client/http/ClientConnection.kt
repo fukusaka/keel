@@ -121,7 +121,7 @@ internal class ClientConnection private constructor(
                 }
                 val bridge = SuspendMessageBridge(
                     HttpResponse::class,
-                    releaseUndelivered = { it.headers.release() },
+                    releaseUndelivered = { it.release() },
                 )
                 withContext(channel.ioDispatcher) {
                     channel.addHttp1ClientCodec()

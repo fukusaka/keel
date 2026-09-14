@@ -96,8 +96,8 @@ class HttpResponseBodyAggregator(
      * stream interim so its terminating [HttpBodyEnd] is swallowed.
      */
     private fun beginInterim(interimHead: HttpResponseHead) {
-        interimHead.headers.release()
-        head?.headers?.release()
+        interimHead.release()
+        head?.release()
         head = null
         acc?.release()
         acc = null
@@ -120,8 +120,8 @@ class HttpResponseBodyAggregator(
         // A new head before the previous body completed: release the previous
         // head's pooled headers (which retain the recv buffer via addRange) and
         // any chunks still held, so a malformed sequence cannot leak the pool /
-        // recv buffer. release() is a no-op for non-pooled headers.
-        head?.headers?.release()
+        // recv buffer. release() does nothing for a head whose headers own nothing.
+        head?.release()
         acc?.release()
         head = newHead
         acc = null
@@ -171,7 +171,7 @@ class HttpResponseBodyAggregator(
         if (overflowed) {
             // The head is discarded here (never emitted): release its pooled
             // headers (recv buffer via addRange) before resetting the rest.
-            aggregatedHead.headers.release()
+            aggregatedHead.release()
             resetAggregation()
             ctx.propagateError(
                 HttpParseException(
@@ -192,7 +192,7 @@ class HttpResponseBodyAggregator(
                 chunks.toByteArray()
             } catch (t: Throwable) {
                 chunks.release()
-                aggregatedHead.headers.release()
+                aggregatedHead.release()
                 throw t
             }
         }
@@ -209,7 +209,7 @@ class HttpResponseBodyAggregator(
     private fun resetAggregation() {
         // Release a held head's pooled headers (recv buffer via addRange) and
         // any held chunks: a close / error / stray-end discards them unemitted.
-        head?.headers?.release()
+        head?.release()
         acc?.release()
         head = null
         acc = null
