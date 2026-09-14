@@ -97,6 +97,16 @@ class HttpHeaders {
     // stays true across recycle) — this tracks the borrow/return cycle.
     private var checkedOut: Boolean = false
 
+    // Which borrow of this instance is current. [checkedOut] alone cannot tell
+    // a release from the holder of the current borrow apart from one made
+    // through a reference kept from an earlier borrow: the pool hands the same
+    // instance out again and re-arms [checkedOut], so a stale release would
+    // return the new borrower's headers to the pool while it still reads them.
+    // A message captures the value when it is built ([currentLease]) and
+    // releases through [releaseLease], which does nothing once the instance
+    // has been borrowed again.
+    private var lease: Int = 0
+
     // Caller-cache handle (Netty-Recycler style): the pool stack this instance
     // was borrowed from, recorded by [HttpHeadersPool.borrowFrom] so [release]
     // returns it without a per-call [headersPoolScope] lookup. Null when the
@@ -790,11 +800,52 @@ class HttpHeaders {
         append(")")
     }
 
+    /**
+     * Returns these headers to the pool they were borrowed from, together
+     * with every receive buffer their values view.
+     *
+     * For headers the caller borrowed itself ([borrow]). Headers that arrived
+     * in a message ([HttpRequestHead], [HttpResponseHead], [HttpRequest],
+     * [HttpResponse]) are released through the message's `release()`, which
+     * does nothing if the pool has since lent this instance to someone else —
+     * a release made here through a reference kept too long returns the new
+     * borrower's headers instead. A second call, and a call on headers that
+     * were never borrowed, do nothing.
+     */
     fun release() {
         if (!pooled || !checkedOut) return
         checkedOut = false
         resetForReuse()
         HttpHeadersPool.giveBack(this)
+    }
+
+    /**
+     * A copy of these headers whose names and values are heap `String`s,
+     * detached from the pool and from any receive buffer.
+     */
+    internal fun heapCopy(): HttpHeaders {
+        val copy = HttpHeaders()
+        forEach { name, value -> copy.add(name, value) }
+        return copy
+    }
+
+    /** The borrow these headers are on now; a message records it when it is built. */
+    internal val currentLease: Int get() = lease
+
+    /** Whether these headers came from the pool at all; headers built directly own nothing to give back. */
+    internal val isPooled: Boolean get() = pooled
+
+    /** Whether the borrow [expected] is still the current one and not yet released. */
+    internal fun holdsLease(expected: Int): Boolean = pooled && checkedOut && lease == expected
+
+    /**
+     * Releases these headers if [expected] is still the current, unreleased
+     * borrow. Returns whether this call returned them.
+     */
+    internal fun releaseLease(expected: Int): Boolean {
+        if (!holdsLease(expected)) return false
+        release()
+        return true
     }
 
     /**
@@ -859,10 +910,12 @@ class HttpHeaders {
      * Marks the instance as checked out of the pool (borrowed, not yet
      * released). Called by [HttpHeadersPool.borrow] on every hand-out so
      * the first [release] returns it exactly once and a double release
-     * no-ops. See [checkedOut].
+     * no-ops, and starts a new [lease] so a release kept from an earlier
+     * borrow no longer matches. See [checkedOut].
      */
     internal fun markCheckedOut() {
         checkedOut = true
+        lease++
     }
 
     companion object {
