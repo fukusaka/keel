@@ -31,4 +31,20 @@ interface Releasable {
      * @throws IllegalStateException if the resource has already been fully released.
      */
     fun release(): Boolean
+
+    /**
+     * Whether [other] owns the same resource as this — whether releasing one
+     * of the two gives back what the other still holds.
+     *
+     * Code that releases on someone else's behalf asks it before doing so: a
+     * handler that passed on an object sharing ownership with the one it
+     * received has handed that ownership on, and releasing the received one
+     * too would free what the next handler holds.
+     *
+     * The default is identity. A derived object that takes its own reference
+     * — a slice retains its source — does not share ownership in this sense;
+     * a type whose copies share one resource without counting it overrides
+     * this.
+     */
+    fun sharesOwnershipWith(other: Any): Boolean = other === this
 }

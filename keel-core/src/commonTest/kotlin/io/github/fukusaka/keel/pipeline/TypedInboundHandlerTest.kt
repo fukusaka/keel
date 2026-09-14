@@ -1,5 +1,6 @@
 package io.github.fukusaka.keel.pipeline
 
+import io.github.fukusaka.keel.buf.Releasable
 import io.github.fukusaka.keel.logging.PrintLogger
 import io.github.fukusaka.keel.testing.InjectedFault
 import io.github.fukusaka.keel.testing.transport.TestIoTransport
@@ -201,6 +202,86 @@ class TypedInboundHandlerTest {
         assertEquals("transformed", received[0])
         // The original TrackableMessage was not forwarded.
         assertTrue(received.none { it === refCounted })
+    }
+
+    /**
+     * A resource handle whose copies share one resource, the way a decoded
+     * message and its copy share pooled headers: [resource] is the shared part.
+     */
+    private class SharedHandle(val resource: IntArray = IntArray(1)) : Releasable {
+        override fun release(): Boolean {
+            resource[0]++
+            return true
+        }
+
+        override fun sharesOwnershipWith(other: Any): Boolean = other is SharedHandle && other.resource === resource
+
+        val releases: Int get() = resource[0]
+    }
+
+    private class Holder : InboundHandler {
+        val received = mutableListOf<Any>()
+        override fun onRead(ctx: PipelineHandlerContext, msg: Any) {
+            received.add(msg)
+        }
+    }
+
+    @Test
+    fun `autoRelease leaves a message to the next handler when what it passed on shares its ownership`() {
+        val pipeline = createPipeline()
+        val input = SharedHandle()
+        val handler = object : TypedInboundHandler<SharedHandle>(SharedHandle::class) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: SharedHandle) {
+                ctx.propagateRead(SharedHandle(msg.resource))
+            }
+        }
+        val holder = Holder()
+        pipeline.addLast("typed", handler)
+        pipeline.addLast("holder", holder)
+
+        pipeline.notifyRead(input)
+
+        assertEquals(1, holder.received.size)
+        assertEquals(0, input.releases, "the resource went on with the copy, so the input is not released")
+    }
+
+    @Test
+    fun `autoRelease releases a message when what it passed on owns something else`() {
+        val pipeline = createPipeline()
+        val input = SharedHandle()
+        val handler = object : TypedInboundHandler<SharedHandle>(SharedHandle::class) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: SharedHandle) {
+                ctx.propagateRead(SharedHandle())
+            }
+        }
+        pipeline.addLast("typed", handler)
+        pipeline.addLast("holder", Holder())
+
+        pipeline.notifyRead(input)
+
+        assertEquals(1, input.releases)
+    }
+
+    @Test
+    fun `autoRelease leaves the input to the next handler when it was passed on before something else`() {
+        // The input went on first; a later message the callback also passes on
+        // does not take that back.
+        val pipeline = createPipeline()
+        val input = SharedHandle()
+        val handler = object : TypedInboundHandler<SharedHandle>(SharedHandle::class) {
+            override fun onReadTyped(ctx: PipelineHandlerContext, msg: SharedHandle) {
+                ctx.propagateRead(msg)
+                ctx.propagateRead(SharedHandle())
+            }
+        }
+        val holder = Holder()
+        pipeline.addLast("typed", handler)
+        pipeline.addLast("holder", holder)
+
+        pipeline.notifyRead(input)
+
+        assertEquals(2, holder.received.size)
+        assertEquals(0, input.releases)
     }
 
     // --- Exception handling ---
