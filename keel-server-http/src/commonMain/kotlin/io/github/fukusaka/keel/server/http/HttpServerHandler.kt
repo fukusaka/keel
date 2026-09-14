@@ -230,7 +230,7 @@ internal class HttpServerHandler(
      * closure. That keeps the SuspendLambda off the per-request allocation path —
      * only the coroutine's own state-machine copy, which any `suspend` invocation
      * needs, remains per request. The `try/finally` lives here so the exactly-once
-     * pooled `head.headers.release()` runs once whether the handler completes
+     * pooled `head.release()` runs once whether the handler completes
      * synchronously, throws, or suspends-then-resumes.
      */
     private val dispatchBody: suspend () -> Unit = {
@@ -254,7 +254,7 @@ internal class HttpServerHandler(
             call.discardUnconsumedBody()
             // Return the pooled request headers; the response has been written so
             // no further reads of the head are valid. Runs exactly once per request.
-            call.head.headers.release()
+            call.head.release()
             // Draining: the request has been answered, so close the keep-alive
             // connection now (the response already carried `Connection: close`).
             if (draining) channel.close()
@@ -339,7 +339,7 @@ internal class HttpServerHandler(
             // The rejection is by design — the request is answered `400`
             // and not propagated; the cause carries no further detail the
             // client should see.
-            head.headers.release()
+            head.release()
             ctx.propagateWriteAndFlush(BAD_REQUEST_RESPONSE)
             if (draining) channel.close()
             return
@@ -359,7 +359,7 @@ internal class HttpServerHandler(
         val unmatched = match?.handler == null && !isUpgrade
         val noAsyncWork = middlewares.isEmpty() && errorHandlers.notFound == null
         if (unmatched && noAsyncWork) {
-            head.headers.release()
+            head.release()
             ctx.propagateWriteAndFlush(errorResponseFor(resolution))
             if (draining) channel.close()
             return
@@ -389,7 +389,7 @@ internal class HttpServerHandler(
         // the EventLoop thread) and registers its cancellation on that Job (so
         // [onInactive]'s `connectionScope.cancel()` still tears it down). The
         // `try/finally` lives in [dispatchBody], so the exactly-once pooled
-        // `head.headers.release()` runs once whether the body completes
+        // `head.release()` runs once whether the body completes
         // synchronously, throws, or suspends-then-resumes.
         // The intrinsic returns `Unit` on synchronous completion or
         // COROUTINE_SUSPENDED when the body suspended (which then completes on its

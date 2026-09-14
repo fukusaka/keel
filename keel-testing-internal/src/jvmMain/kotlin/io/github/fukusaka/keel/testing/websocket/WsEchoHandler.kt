@@ -50,7 +50,7 @@ public class WsEchoHandler(
                 // Terminal consumer of the request head: release its headers
                 // so the recv buffer the byte-range views retain is freed
                 // (HttpHeaders now owns a buffer reference under view storage).
-                msg.headers.release()
+                msg.release()
             }
             is HttpBodyEnd -> {
                 if (wsUpgradePending) {

@@ -188,7 +188,7 @@ class SuspendMessageBridge<T : Any>(
  * @param capacity the coroutine channel buffer capacity (default unlimited).
  * @param releaseUndelivered optional release hook for undelivered pooled
  *   messages; pass `null` (default) when [T] owns no pooled resources, or e.g.
- *   `{ it.headers.release() }` for a pooled response whose headers must be
+ *   `{ it.release() }` for a pooled response whose headers must be
  *   released if the connection is torn down while a message is still buffered.
  */
 public inline fun <reified T : Any> suspendMessageBridge(

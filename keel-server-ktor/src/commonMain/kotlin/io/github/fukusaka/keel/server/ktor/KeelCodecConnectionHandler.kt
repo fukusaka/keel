@@ -161,7 +161,7 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
         try {
             runWebSocketUpgrade(channel, head.headers, handler)
         } finally {
-            head.headers.release()
+            head.release()
         }
         return true
     }
@@ -183,7 +183,7 @@ internal class KeelCodecConnectionHandler : KtorConnectionHandler {
             // the request is fully handled, returning the pooled HttpHeaders +
             // recv buffer for reuse. Skipping this leaks one recv buffer per
             // request under view storage.
-            head.headers.release()
+            head.release()
         }
     }
 

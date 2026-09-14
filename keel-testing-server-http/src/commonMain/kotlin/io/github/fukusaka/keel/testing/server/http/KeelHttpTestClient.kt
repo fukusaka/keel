@@ -78,7 +78,7 @@ public class KeelHttpTestClient internal constructor(
             // release hook does that for a stranded response.
             val bridge = SuspendMessageBridge(
                 HttpResponse::class,
-                releaseUndelivered = { it.headers.release() },
+                releaseUndelivered = { it.release() },
             )
             // Everything that touches pooled state runs on the channel's
             // EventLoop dispatcher: the pipeline mutation and outbound write

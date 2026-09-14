@@ -95,7 +95,7 @@ class WireLog : InboundHandler {
 }
 
 val bridge = suspendMessageBridge<HttpResponse>(
-    releaseUndelivered = { it.headers.release() },
+    releaseUndelivered = { it.release() },
 )
 val channel = engine.connectPipeline("127.0.0.1", 8080) {
     it.addHttp1ClientCodec()

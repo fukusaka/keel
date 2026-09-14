@@ -33,6 +33,6 @@ public inline fun <R> HttpResponse.materializeReleasingHeaders(block: (detached:
         headers.forEach { name, value -> detached.add(name, value) }
         return block(detached)
     } finally {
-        headers.release()
+        release()
     }
 }

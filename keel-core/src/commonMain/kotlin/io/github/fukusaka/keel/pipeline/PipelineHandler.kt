@@ -108,7 +108,14 @@ interface InboundHandler : PipelineHandler {
         ctx.propagateActive()
     }
 
-    /** Called when data is received. */
+    /**
+     * Called when data is received.
+     *
+     * The message is this handler's once delivered: pass it on, or consume
+     * it and release what it owns ([io.github.fukusaka.keel.buf.Releasable]).
+     * A message the pipeline drops unconsumed, and one delivered to a
+     * callback that throws, the pipeline releases itself.
+     */
     fun onRead(ctx: PipelineHandlerContext, msg: Any) {
         ctx.propagateRead(msg)
     }

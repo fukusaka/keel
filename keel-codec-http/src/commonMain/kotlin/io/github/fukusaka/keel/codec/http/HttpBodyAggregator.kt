@@ -78,9 +78,9 @@ class HttpBodyAggregator(
         // A new head before the previous body completed: release the previous
         // head's pooled headers (which retain the recv buffer via the decoder's
         // addRange zero-copy path) and any chunks still held, so a malformed
-        // sequence cannot leak the pool / the recv buffer. release() is a no-op
-        // for a non-pooled HttpHeaders and is idempotent for a pooled one.
-        head?.headers?.release()
+        // sequence cannot leak the pool / the recv buffer. release() does
+        // nothing for a head whose headers own nothing, or once released.
+        head?.release()
         acc?.release()
         head = newHead
         acc = null
@@ -130,7 +130,7 @@ class HttpBodyAggregator(
         if (overflowed) {
             // `head` is already nulled, so resetAggregation cannot release the
             // head's pooled headers — release the captured head's headers here.
-            aggregatedHead.headers.release()
+            aggregatedHead.release()
             resetAggregation()
             ctx.propagateError(
                 HttpParseException(
@@ -151,7 +151,7 @@ class HttpBodyAggregator(
                 chunks.toByteArray()
             } catch (t: Throwable) {
                 chunks.release()
-                aggregatedHead.headers.release()
+                aggregatedHead.release()
                 throw t
             }
         }
@@ -173,7 +173,7 @@ class HttpBodyAggregator(
         // larger) recv buffer on the abort paths (onError / onInactive /
         // stray-end). Ownership is transferred to the emitted HttpRequest on
         // the success path, which does not route through here.
-        head?.headers?.release()
+        head?.release()
         acc?.release()
         head = null
         acc = null
