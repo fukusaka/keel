@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `codec-http`: decoded `HttpRequestHead` / `HttpResponseHead` / `HttpRequest` / `HttpResponse` are `Releasable`, and
+  `detach()` keeps one past the callback that delivered it (#1105)
 - `core`: `InboundHandler.onReadClosed` / `Pipeline.notifyReadClosed` / `PipelineHandlerContext.propagateReadClosed`
   — the peer's end of file as its own event, journalled and replayed like the other inbound events. A handler may
   also raise one for the region below it, which is what a codec turning a TLS `close_notify` into this event does;
@@ -81,6 +83,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `codec-http`: **BREAKING** (semantics): a `TypedInboundHandler` that takes a decoded HTTP head, request or response
+  now releases its pooled headers when its callback returns; keep it with `detach()` or `autoRelease = false` (#1105)
 - `core`: **BREAKING** (semantics): `Channel.write` takes the buffer in every outcome — a write that throws
   before the pipeline took it releases it, and so does one that finds the channel closed. A caller has nothing to
   release in a `catch`; one that released the buffer itself there must stop. A write given nothing to write is
@@ -180,6 +184,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `codec-http`: a decoded HTTP head, request or response the pipeline drops, or hands to a handler that throws, no
+  longer leaks its pooled headers and receive buffer (#1105)
 - `core`: a close a handler asks for with `propagateClose` off the event loop is recorded as this side's when it is
   asked for, not when the walk lands — a transport report arriving in between read as an end under the caller (#1098)
 - `core`: a close, a close asked of the pipeline, and a journal's drain now survive a loop that refuses the hand-off
