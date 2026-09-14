@@ -17,7 +17,11 @@ import kotlin.reflect.KClass
  * A transforming handler (e.g. [IoBuf] → [WsFrame]) propagates a different
  * object; the original input is still auto-released. This prevents both
  * use-after-free (when the original is forwarded) and memory leaks (when a
- * transformed replacement is forwarded instead).
+ * transformed replacement is forwarded instead). A message that owns pooled
+ * resources — a decoded HTTP head, for instance — is not valid after the
+ * callback returns: keep one beyond it through the ownership transfer its
+ * type offers (such as `detach()`), or construct the handler with
+ * `autoRelease = false` and release it yourself.
  *
  * **Pipeline type validation**: [acceptedType] is automatically set to [type],
  * enabling construction-time type chain validation.
